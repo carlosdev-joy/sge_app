@@ -568,3 +568,44 @@ def test_truncamento_nao_parte_emoji_ao_meio():
 def test_titulo_com_emoji_respeita_o_limite_da_coluna():
     from utils.servicenow_sync import TITULO_MAX, unidades_utf16
     assert unidades_utf16(truncar_titulo("ção🔥" * 200)) <= TITULO_MAX
+
+
+# ═══════════ estados terminais do sc_req_item ═══════════════════════════════
+# Portado da F1: a correção que produção já tinha e a main não.
+
+def test_ritm_closed_complete_e_terminal_e_nao_aguardando():
+    """`state=3` em sc_req_item é "Closed Complete": CONCLUÍDO.
+
+    A main mapeava para 'aguardando'. Medido no espelho do dev em 2026-08-28:
+    **1472 RITMs** "Encerrado concluído" carregavam esse rótulo. Eles têm
+    ativo=0, então não poluíam a FILA — o estrago estava nas contas que
+    agrupam por estado_kanban sobre o espelho inteiro (histórico, entradas ×
+    saídas, resolvidos do período), onde chamado concluído era somado como
+    chamado esperando alguém.
+
+    'encerrado' é FORA_DO_KANBAN: sai da fila e continua no espelho, que é
+    exatamente o que um pedido concluído deve fazer.
+    """
+    assert mapear_estado("sc_req_item", "3") == "encerrado"
+    assert mapear_estado("sc_req_item", 3) == "encerrado"
+
+
+def test_o_terminal_do_ritm_nao_contaminou_as_outras_tabelas():
+    """Cada tabela tem seu próprio mapa — `3` significa coisas diferentes.
+
+    Em sc_task, `3` é "Closed Complete" e o espelho o trata como 'resolvido'
+    (fica na fila, na coluna Resolvido); em incident, `3` é "On Hold". Aplicar
+    a correção do RITM às outras moveria card em silêncio.
+    """
+    assert mapear_estado("sc_task", "3") == "resolvido"
+    assert mapear_estado("incident", "3") == "aguardando"
+
+
+def test_estados_de_espera_do_ritm_continuam_na_fila():
+    """A correção do `3` não pode arrastar os vizinhos: `-5` e `2` seguem
+    vivos, e `4`/`5` seguem como espera — mexer neles esvaziaria a coluna
+    Aguardando sem que ninguém tivesse pedido isso."""
+    assert mapear_estado("sc_req_item", "-5") == "aguardando"
+    assert mapear_estado("sc_req_item", "2") == "andamento"
+    assert mapear_estado("sc_req_item", "4") == "aguardando"
+    assert mapear_estado("sc_req_item", "5") == "aguardando"

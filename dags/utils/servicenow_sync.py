@@ -51,7 +51,12 @@ CAMPOS = ("sys_id,number,short_description,state,priority,assigned_to,"
           # é campo customizado da instância; se não existir na tabela, a
           # Table API apenas o omite.
           "description,work_notes,cat_item,requested_for,"
-          "estimated_delivery,due_date,u_sla_expired")
+          "estimated_delivery,due_date,u_sla_expired,"
+          # O e-mail do analista: o dashboard filtra "Meu painel" por
+          # IGUALDADE, e não por LIKE sobre o nome — nome do meio,
+          # abreviação e homônimo fazem o LIKE trazer chamado alheio,
+          # e a tela mostra a fila filtrada, nunca a regra.
+          "assigned_to.email")
 
 # Limite da coluna titulo (NVARCHAR(400) na migration 088).
 TITULO_MAX = 400
@@ -95,7 +100,14 @@ ESTADOS = {
         "-5": "aguardando",                     # ✅ "Pendente"
         "1": "novo",                            # ✅ "Em aberto"
         "2": "andamento",                       # ✅ "Trabalho em andamento"
-        "3": "aguardando", "4": "aguardando", "5": "aguardando",
+        # ⚠️ cru=3 é "Closed Complete" em sc_req_item: CONCLUÍDO.
+        # Apurado contra a instância em 2026-08-21 e confirmado no dev
+        # em 2026-08-28, com 1472 RITMs "Encerrado concluído" caindo
+        # em 'aguardando'. Eles têm ativo=0, então não poluem a fila —
+        # o estrago é nas contas que agrupam por estado_kanban sobre o
+        # espelho INTEIRO (histórico, entradas × saídas, resolvidos):
+        # lá, chamado concluído era contado como esperando alguém.
+        "3": "encerrado", "4": "aguardando", "5": "aguardando",
         "6": "resolvido",                       # ✅ "Resolvido"
         "7": "encerrado",
     },
@@ -240,6 +252,11 @@ def normalizar(registro: dict, tabela: str, tipo: str, url_base: str) -> dict:
         "estado_kanban": estado_kanban if estado_kanban != FORA_DO_KANBAN else "resolvido",
         "prioridade": _display(registro.get("priority"))[:20],
         "atribuido_a": _cortar(_display(registro.get("assigned_to")), 120),
+        # `_cru` e não `_display`: em assigned_to.email o valor É o
+        # e-mail, e o display_value vem vazio para campos derivados
+        # por ponto. Usar _display aqui gravaria '' em toda linha, e o
+        # filtro do "Meu painel" não acharia ninguém — sem erro nenhum.
+        "atribuido_a_email": _cortar(_cru(registro.get("assigned_to.email")), 200),
         "grupo": _cortar(_display(registro.get("assignment_group")), 120),
         "aberto_em": _data(_cru(registro.get("opened_at"))),
         "atualizado_em": _data(_cru(registro.get("sys_updated_on"))),
@@ -307,6 +324,8 @@ def query_do_grupo(grupos: list[str]) -> str:
 CAMPOS_UPSERT = (
     "numero", "tipo", "titulo", "estado_origem", "estado_kanban",
     "prioridade", "atribuido_a", "grupo", "aberto_em", "atualizado_em",
+    # migration 100 — e-mail do analista, para o filtro por igualdade
+    "atribuido_a_email",
     "encerrado_em", "ativo", "url", "estado_cru", "pai_sys_id", "pai_numero",
     # migration 091
     "descricao", "work_notes", "catalogo", "demandante", "prazo",
@@ -336,3 +355,291 @@ def upsert_params(linha: dict) -> tuple:
     """Os parâmetros do MERGE, na ordem: chave + UPDATE + INSERT."""
     campos = tuple(linha[c] for c in CAMPOS_UPSERT)
     return (linha["sys_id"],) + campos + campos
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Delta, notas, anexos e snapshot — portados do motor que roda em produção.
+#
+# O ciclo completo (etl_servicenow_sync) varre a fila inteira a cada 15 min.
+# O DELTA existe para o que não pode esperar 15 min e o FULL para a
+# reconciliação periódica: sem os dois, ou a fila fica velha ou a instância
+# recebe varredura completa o tempo todo.
+#
+# ⚠️ Árvore dags/: placeholder pymssql é %s. A árvore api/ usa ?, e trocar dá
+# "Incorrect syntax near '?'" com a task VERDE, porque o try/except engole.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def grupos_ativos(hook) -> list[str]:
+    """Os grupos que o delta e o full monitoram.
+
+    ⚠️ DUAS FONTES PARA A MESMA PERGUNTA, e é por isso que esta função existe
+    em vez de um SELECT solto. O ciclo completo (`etl_servicenow_sync`) lê
+    `servicenow_grupos` de `dbo.etl_app_config` — o campo que a tela Admin
+    edita. O delta e o full, que vieram de produção, leem a TABELA
+    `dbo.etl_servicenow_grupo`.
+
+    Se as duas divergirem, o ciclo completo e o incremental passam a olhar
+    filas diferentes, e nada avisa: os dois continuam "OK", com contagens que
+    ninguém compara.
+
+    A ordem aqui resolve o conflito sem inventar regra nova:
+
+      1. a TABELA manda, quando tem linha ativa — é o cadastro mais específico,
+         com ativo/inativo por grupo, e é o que produção usa hoje;
+      2. sem nenhuma linha ativa, cai para a CONFIG. Isso é o que faz um
+         ambiente recém-migrado funcionar: a 098 cria a tabela vazia, e sem
+         este fallback o delta pularia em silêncio para sempre — foi
+         exatamente o que aconteceu no dev em 2026-08-28
+         ("nenhum grupo ativo em etl_servicenow_grupo — skip").
+
+    Lista vazia nos dois lugares levanta no caller: delta sem filtro traria a
+    instância inteira.
+    """
+    conn = hook.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT nome FROM dbo.etl_servicenow_grupo WHERE ativo=1 ORDER BY nome")
+    rows = [r[0] for r in cur.fetchall() if (r[0] or "").strip()]
+
+    if not rows:
+        cur.execute(
+            "SELECT config_value FROM dbo.etl_app_config "
+            "WHERE config_key='servicenow_grupos'")
+        linha = cur.fetchone()
+        bruto = (linha[0] if linha else "") or ""
+        # Mesmo separador que `servicenow.parse_grupos()` usa na árvore api/:
+        # 'A; B ;;C' → ['A', 'B', 'C']. Divergir daqui faria a mesma string
+        # significar coisas diferentes nos dois lados.
+        rows = [g.strip() for g in bruto.split(";") if g.strip()]
+
+    cur.close()
+    conn.close()
+    return rows
+
+
+def ultimo_delta_em(hook) -> _dt.datetime:
+    """Ponto de corte do delta. Fallback: NOW() - 30min."""
+    conn = hook.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT MAX(iniciado_em) FROM dbo.etl_chamado_ciclo "
+        "WHERE modo='delta' AND status IN ('OK','PARCIAL')")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    ts = row[0] if row else None
+    if ts is None:
+        return _dt.datetime.now() - _dt.timedelta(minutes=30)
+    return ts
+
+
+def query_delta(grupos: list[str], desde: _dt.datetime) -> str:
+    """sysparm_query com filtro de grupo E sys_updated_on >= desde."""
+    if not grupos:
+        raise ValueError("nenhum grupo configurado — delta sem filtro traria fila inteira")
+    desde_str = desde.strftime("%Y-%m-%d %H:%M:%S")
+    grupo_parte = "^OR".join(f"assignment_group.name={g}" for g in grupos)
+    return f"{grupo_parte}^sys_updated_on>={desde_str}"
+
+
+def buscar_notas(cliente, url: str, sys_id: str) -> list[dict]:
+    """sys_journal_field para um chamado. Apenas work_notes."""
+    endpoint = (f"{url}/api/now/table/sys_journal_field"
+                f"?sysparm_query=element_id={sys_id}^element=work_notes"
+                f"^ORDERBYcreated_on&sysparm_display_value=all"
+                f"&sysparm_fields=sys_id,element_id,sys_created_by,"
+                f"sys_created_on,value,element")
+    resp = cliente.get(endpoint)
+    resp.raise_for_status()
+    notas = []
+    for r in resp.json().get("result", []):
+        sys_id_nota = _cru(r.get("sys_id")) or _display(r.get("sys_id"))
+        notas.append({
+            "sys_id_nota": sys_id_nota[:32],
+            "sys_id_chamado": sys_id[:32],
+            "autor": _cortar(_display(r.get("sys_created_by")), 120),
+            "autor_email": "",  # sys_journal_field não expõe email diretamente
+            "criado_em": _data(_cru(r.get("sys_created_on"))),
+            "texto": truncar_texto(_cru(r.get("value"))),
+            "tipo": (_cru(r.get("element")) or "work_notes")[:20],
+        })
+    return notas
+
+
+def buscar_anexos(cliente, url: str, sys_id: str) -> list[dict]:
+    """Metadados de anexos de um chamado via /api/now/attachment."""
+    endpoint = (f"{url}/api/now/attachment"
+                f"?sysparm_query=table_sys_id={sys_id}"
+                f"&sysparm_fields=sys_id,file_name,content_type,size_bytes,"
+                f"sys_created_on")
+    resp = cliente.get(endpoint)
+    resp.raise_for_status()
+    anexos = []
+    for r in resp.json().get("result", []):
+        sys_id_anexo = (r.get("sys_id") or "")[:32]
+        anexos.append({
+            "sys_id_anexo": sys_id_anexo,
+            "sys_id_chamado": sys_id[:32],
+            "nome_arquivo": _cortar(r.get("file_name") or "", 255),
+            "mime_type": _cortar(r.get("content_type") or "", 100),
+            "tamanho_bytes": int(r["size_bytes"]) if r.get("size_bytes") else None,
+            "url_download": _cortar(
+                f"{url}/api/now/attachment/{sys_id_anexo}/file", 500),
+            "criado_em": _data((r.get("sys_created_on") or "").strip()),
+        })
+    return anexos
+
+
+def upsert_nota_sql() -> str:
+    """MERGE por sys_id_nota — SOMENTE INSERT, notas são imutáveis."""
+    return """
+        MERGE dbo.etl_chamado_nota AS t
+        USING (SELECT %s AS sys_id_nota) AS s ON t.sys_id_nota = s.sys_id_nota
+        WHEN NOT MATCHED THEN INSERT
+            (sys_id_nota, sys_id_chamado, autor, autor_email,
+             criado_em, texto, tipo)
+            VALUES (s.sys_id_nota, %s, %s, %s, %s, %s, %s);
+    """
+
+
+def upsert_nota_params(nota: dict) -> tuple:
+    """Parâmetros do MERGE de nota: chave + INSERT."""
+    return (
+        nota["sys_id_nota"],
+        nota["sys_id_chamado"], nota["autor"], nota["autor_email"],
+        nota["criado_em"], nota["texto"], nota["tipo"],
+    )
+
+
+def upsert_anexo_sql() -> str:
+    """MERGE por sys_id_anexo — INSERT apenas (sem update de metadados)."""
+    return """
+        MERGE dbo.etl_chamado_anexo AS t
+        USING (SELECT %s AS sys_id_anexo) AS s ON t.sys_id_anexo = s.sys_id_anexo
+        WHEN NOT MATCHED THEN INSERT
+            (sys_id_anexo, sys_id_chamado, nome_arquivo, mime_type,
+             tamanho_bytes, url_download, criado_em)
+            VALUES (s.sys_id_anexo, %s, %s, %s, %s, %s, %s);
+    """
+
+
+def upsert_anexo_params(anexo: dict) -> tuple:
+    return (
+        anexo["sys_id_anexo"],
+        anexo["sys_id_chamado"], anexo["nome_arquivo"], anexo["mime_type"],
+        anexo["tamanho_bytes"], anexo["url_download"], anexo["criado_em"],
+    )
+
+
+def capturar_snapshot(hook) -> int:
+    """Grava snapshot + filhas. Retorna id do snapshot gravado."""
+    conn = hook.get_conn()
+    cur = conn.cursor()
+
+    # ── contagens gerais ─────────────────────────────────────────────────────
+    cur.execute(
+        "SELECT COUNT(*) AS total, "
+        "  SUM(CASE WHEN estado_kanban='novo' THEN 1 ELSE 0 END), "
+        "  SUM(CASE WHEN estado_kanban='andamento' THEN 1 ELSE 0 END), "
+        "  SUM(CASE WHEN estado_kanban='aguardando' THEN 1 ELSE 0 END), "
+        "  SUM(CASE WHEN estado_kanban='resolvido' THEN 1 ELSE 0 END), "
+        "  SUM(CASE WHEN estado_kanban='outros' THEN 1 ELSE 0 END), "
+        "  SUM(CASE WHEN sla_vencido=1 THEN 1 ELSE 0 END) "
+        "FROM dbo.etl_chamado WHERE ativo=1")
+    r = cur.fetchone() or (0,)*7
+    total, novo, andamento, aguardando, resolvido, outros, sla_vencidos = (
+        r[0] or 0, r[1] or 0, r[2] or 0, r[3] or 0, r[4] or 0, r[5] or 0, r[6] or 0)
+
+    cur.execute(
+        "SELECT AVG(CAST(DATEDIFF(DAY, aberto_em, GETDATE()) AS DECIMAL(6,1))) "
+        "FROM dbo.etl_chamado WHERE ativo=1 AND aberto_em IS NOT NULL")
+    idade_media = (cur.fetchone() or (None,))[0]
+
+    cur.execute(
+        "SELECT AVG(CAST(DATEDIFF(HOUR, aberto_em, encerrado_em) AS DECIMAL(8,1))) "
+        "FROM dbo.etl_chamado "
+        "WHERE encerrado_em >= DATEADD(DAY, -30, GETDATE()) "
+        "  AND aberto_em IS NOT NULL AND encerrado_em IS NOT NULL")
+    tempo_medio = (cur.fetchone() or (None,))[0]
+
+    cur.execute(
+        "SELECT COUNT(*) FROM dbo.etl_chamado "
+        "WHERE encerrado_em >= DATEADD(DAY, -7, GETDATE())")
+    qtd_enc_7d = (cur.fetchone() or (0,))[0] or 0
+
+    cur.execute(
+        "SELECT COUNT(*) FROM dbo.etl_chamado "
+        "WHERE aberto_em >= DATEADD(DAY, -7, GETDATE())")
+    qtd_ab_7d = (cur.fetchone() or (0,))[0] or 0
+
+    cur.execute(
+        "SELECT COUNT(*) FROM dbo.etl_chamado "
+        "WHERE ativo=1 AND tipo_demanda='iniciativa'")
+    qtd_inic = (cur.fetchone() or (0,))[0] or 0
+
+    # ── INSERT snapshot cabeçalho ────────────────────────────────────────────
+    cur.execute(
+        "INSERT INTO dbo.etl_indicador_snapshot "
+        "  (total_ativos, novo, andamento, aguardando, resolvido, outros, "
+        "   sla_vencidos, idade_media_dias, tempo_medio_resolucao_horas, "
+        "   qtd_encerrados_7d, qtd_abertos_7d, qtd_iniciativas_abertas) "
+        "OUTPUT INSERTED.id "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (total, novo, andamento, aguardando, resolvido, outros, sla_vencidos,
+         idade_media, tempo_medio, qtd_enc_7d, qtd_ab_7d, qtd_inic))
+    snap_id = cur.fetchone()[0]
+
+    # ── por analista ─────────────────────────────────────────────────────────
+    cur.execute(
+        # ⚠️ AGRUPA PELA CHAVE, não por nome + chave.
+        #
+        # A PK de etl_indicador_snapshot_analista é (id_snapshot,
+        # atribuido_a_email). Agrupando por `atribuido_a, atribuido_a_email`,
+        # dois analistas com o MESMO e-mail — ou, muito mais comum, dois
+        # chamados SEM responsável, cujo e-mail é '' — produzem duas linhas com
+        # a mesma chave, e o INSERT seguinte viola a PK.
+        #
+        # Não é hipótese: com a coluna recém-criada (todos os e-mails vazios), o
+        # ciclo inteiro abortou no dev em 2026-08-28 com
+        # "Violation of PRIMARY KEY constraint 'PK_snapshot_analista'". Em
+        # produção o defeito está latente — basta um segundo chamado sem
+        # responsável na fila ativa.
+        #
+        # MAX(atribuido_a) escolhe um nome representativo para o balde. Quando o
+        # e-mail existe ele É a identidade (foi para isso que a coluna veio);
+        # quando não existe, o balde é "sem responsável" e o nome é decorativo.
+        "SELECT ISNULL(MAX(atribuido_a),''), ISNULL(atribuido_a_email,''), "
+        "  COUNT(*), "
+        "  SUM(CASE WHEN sla_vencido=1 THEN 1 ELSE 0 END), "
+        "  AVG(CAST(DATEDIFF(DAY, aberto_em, GETDATE()) AS DECIMAL(6,1))) "
+        "FROM dbo.etl_chamado WHERE ativo=1 "
+        "GROUP BY ISNULL(atribuido_a_email,'')")
+    for ra in cur.fetchall():
+        cur.execute(
+            "INSERT INTO dbo.etl_indicador_snapshot_analista "
+            "  (id_snapshot, atribuido_a, atribuido_a_email, "
+            "   total_ativos, sla_vencidos, idade_media_dias) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (snap_id, ra[0], ra[1], ra[2], ra[3] or 0, ra[4]))
+
+    # ── por grupo ────────────────────────────────────────────────────────────
+    cur.execute(
+        # Mesma armadilha do bloco por analista, um degrau mais discreta: o
+        # SELECT já normaliza com ISNULL, mas o GROUP BY era pela coluna CRUA.
+        # Um `grupo` NULL e outro '' são dois grupos para o GROUP BY e o MESMO
+        # valor depois do ISNULL — duas linhas com a chave (id_snapshot, '').
+        # A PK é (id_snapshot, grupo): o INSERT seguinte violaria.
+        "SELECT ISNULL(grupo,''), COUNT(*), "
+        "  SUM(CASE WHEN sla_vencido=1 THEN 1 ELSE 0 END), "
+        "  AVG(CAST(DATEDIFF(DAY, aberto_em, GETDATE()) AS DECIMAL(6,1))) "
+        "FROM dbo.etl_chamado WHERE ativo=1 "
+        "GROUP BY ISNULL(grupo,'')")
+    for rg in cur.fetchall():
+        cur.execute(
+            "INSERT INTO dbo.etl_indicador_snapshot_grupo "
+            "  (id_snapshot, grupo, total_ativos, sla_vencidos, idade_media_dias) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (snap_id, rg[0], rg[1], rg[2] or 0, rg[3]))
+
+    conn.commit()
+    return snap_id

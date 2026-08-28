@@ -88,20 +88,20 @@ _OBJETOS = re.compile(
     r"|TB_[A-Z_0-9]+|VW_[A-Z_0-9]+|PRC_[A-Z_0-9]+)",
     re.IGNORECASE)
 
-# "dia a dia - bug" → bug. O travessão pode ser hífen ou en-dash: quem digita
-# no ServiceNow usa os dois, e aceitar só um jogaria metade das marcações no
-# balde genérico.
+# Duas categorias principais reconhecidas nas work_notes:
+#   "dia a dia"  — qualquer variação de "dia a dia" (com ou sem subcategoria
+#                  como "- bug", "- manutenção" etc.). A subcategoria é
+#                  ignorada: o balde é "dia a dia", ponto.
+#   "iniciativa" — chamado vinculado a projeto/iniciativa estratégica.
 #
-# Depois do travessão vem `[^\S\n]*` — espaço em branco EXCETO quebra de
-# linha. Com `\s*`, um "dia a dia -" no fim da linha faz a captura pular para
-# a linha seguinte e a frase inteira do técnico vira "categoria", enchendo o
-# gráfico de barras de uso único. (O `.splitlines()[0]` adiante não protegia
-# disso: `.` já não casa `\n`.)
-_DIAADIA_COM_CATEGORIA = re.compile(r"dia\s+a\s+dia[^\S\n]*[-–][^\S\n]*(.+)",
-                                    re.IGNORECASE)
-_DIAADIA_SOLTO = re.compile(r"\bdia\s+a\s+dia\b", re.IGNORECASE)
+# O travessão pode ser hífen ou en-dash: quem digita no ServiceNow usa os
+# dois. `[^\S\n]*` (espaço exceto newline) evita que um "dia a dia -" no fim
+# de linha arraste a próxima linha toda como subcategoria.
+_DIAADIA = re.compile(r"\bdia\s+a\s+dia\b", re.IGNORECASE)
+_INICIATIVA = re.compile(r"\biniciativa\b", re.IGNORECASE)
 
-CATEGORIA_GERAL = "geral"
+CATEGORIA_DIAADIA  = "dia a dia"
+CATEGORIA_INICIATIVA = "iniciativa"
 
 
 def tipo_demanda(titulo: str, catalogo: str = "") -> str:
@@ -120,25 +120,24 @@ def tipo_demanda(titulo: str, catalogo: str = "") -> str:
 
 
 def categoria_diaadia(work_notes: str) -> str:
-    """A categoria que a equipe já escreve à mão nas work notes.
+    """Classifica o chamado em uma das duas categorias operacionais:
 
-    Sem marcação nenhuma devolve string vazia — e isso é diferente de
-    "geral": o primeiro é chamado que ninguém classificou, o segundo é
-    chamado marcado como dia a dia sem categoria. Colapsar os dois inventaria
-    classificação que ninguém fez.
+      "dia a dia"  — marcado pela equipe com qualquer variação de "dia a dia"
+                     nas work notes. Subcategorias (bug, manutenção…) são
+                     tratamento futuro e não alteram o balde principal.
+      "iniciativa" — marcado com "iniciativa", indicando vínculo a projeto
+                     estratégico.
+
+    Precedência: "dia a dia" antes de "iniciativa", pois um mesmo comentário
+    pode conter os dois e o mais operacional prevalece.
+    Sem marcação reconhecida devolve "" — diferente de qualquer categoria,
+    para não inventariar classificação que ninguém fez.
     """
     texto = str(work_notes or "")
-    achado = _DIAADIA_COM_CATEGORIA.search(texto)
-    if achado:
-        # `.rstrip('.')` porque a marcação costuma terminar a frase.
-        categoria = achado.group(1).strip().rstrip(".").strip().lower()
-        if categoria:
-            return cortar(categoria, CATEGORIA_MAX)
-        # "dia a dia - ." é marcação sem categoria, não ausência de
-        # marcação: devolver vazio aqui mandaria o chamado para o balde de
-        # "ninguém classificou", contrariando a regra deste módulo.
-    if _DIAADIA_SOLTO.search(texto):
-        return CATEGORIA_GERAL
+    if _DIAADIA.search(texto):
+        return CATEGORIA_DIAADIA
+    if _INICIATIVA.search(texto):
+        return CATEGORIA_INICIATIVA
     return ""
 
 
