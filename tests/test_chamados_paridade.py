@@ -151,6 +151,22 @@ def _literais(no: ast.AST) -> str:
                     if isinstance(x, ast.Constant) and isinstance(x.value, str))
 
 
+def _sql_em_ordem(no: ast.AST) -> str:
+    """O SQL remontado na ORDEM em que aparece no arquivo.
+
+    `ast.walk` percorre em largura e devolve os literais fora de ordem — o que
+    basta para procurar substring, mas não para perguntar "o que vem DEPOIS do
+    GROUP BY". Ordenar por posição reconstrói a concatenação como ela é lida.
+    (Este teste nasceu com esse defeito: acusou duas queries de fluxo cujo `?`
+    está no WHERE, não no GROUP BY.)
+    """
+    partes = sorted(
+        ((x.lineno, x.col_offset, x.value) for x in ast.walk(no)
+         if isinstance(x, ast.Constant) and isinstance(x.value, str)),
+        key=lambda t: (t[0], t[1]))
+    return " ".join(p[2] for p in partes)
+
+
 def _executes_sobre_o_espelho() -> list[tuple[int, str, bool]]:
     """Cada `cur.execute` que cita dbo.etl_chamado: linha, trecho, tem recorte."""
     achados = []
@@ -179,6 +195,17 @@ SEM_RECORTE_POR_DESIGN = {
     # As filhas de um RITM: pedir "só trabalhos" aqui devolveria zero — a
     # rota existe justamente para listar filhas.
     "SELECT sys_id, numero, tipo, titulo, estado_kanban, prioridade",
+    # ── Consultas POR ID, não agregações ────────────────────────────────────
+    # O recorte responde "este registro conta na SOMA?". Quem abriu um chamado
+    # específico já sabe qual quer — aplicar o recorte aqui faria a tela de
+    # detalhe de uma TAREFA responder 404, e é justamente pela tarefa que se
+    # abre o detalhe a partir da linha dentro do card.
+    "SELECT sys_id, numero, tipo, titulo, descricao, estado_kanban",
+    # Notas e anexos de UM chamado, buscados por sys_id do pai.
+    "SELECT sys_id_nota, autor, autor_email, criado_em, texto, tipo",
+    "SELECT sys_id_anexo, nome_arquivo, mime_type, tamanho_bytes, criado_em",
+    # O proxy de anexo resolve UMA url a partir do id do anexo.
+    "SELECT url_download, nome_arquivo, mime_type",
 }
 
 
@@ -202,3 +229,43 @@ def test_o_varredor_acha_alguma_coisa() -> None:
         f"router foi reescrito, este teste precisa ser revisto, não ignorado")
     assert sum(1 for _, _, tem in achados if tem) >= 10, (
         "quase nenhuma query passa pelo recorte — o varredor perdeu o alvo")
+
+
+# ── 4. o parâmetro que não pode entrar no GROUP BY ──────────────────────────
+
+def test_nenhuma_query_usa_parametro_no_group_by() -> None:
+    """`GROUP BY ISNULL(expr, ?)` é recusado pelo SQL Server — e em silêncio.
+
+    O valor do parâmetro não é conhecido em tempo de compilação, então a
+    expressão do GROUP BY não é reconhecida como a mesma do SELECT:
+
+        Column 'tipo_demanda' is invalid in the select list because it is not
+        contained in either an aggregate function or the GROUP BY clause
+
+    O estrago é mudo: a exceção cai no `except` que envolve o bloco inteiro
+    dos indicadores, e a resposta segue "servindo o painel base". Os chips de
+    tipo, categoria, sem_categoria, resolvidos e os três da triagem somem — sem
+    erro na tela, sem número errado. Só o log sabe.
+
+    Estava assim na `main` e passou por toda a suíte, porque teste com cursor
+    dublê não executa SQL. Foi encontrado rodando contra o banco do dev em
+    2026-08-28. O rótulo do vazio se aplica no Python.
+    """
+    arvore = ast.parse(FONTE.read_text(encoding="utf-8"))
+    problemas = []
+    for no in ast.walk(arvore):
+        if not (isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute)
+                and no.func.attr == "execute"):
+            continue
+        sql = _sql_em_ordem(no)
+        if "GROUP BY" not in sql.upper():
+            continue
+        depois = sql.upper().split("GROUP BY", 1)[1]
+        # corta no ORDER BY: parâmetro lá é legítimo
+        depois = depois.split("ORDER BY", 1)[0]
+        if "?" in depois:
+            problemas.append((no.lineno, sql[:70]))
+    assert not problemas, (
+        "parâmetro dentro do GROUP BY — o SQL Server recusa e o bloco inteiro "
+        "degrada em silêncio:\n" +
+        "\n".join(f"  linha {ln}: {tr}…" for ln, tr in problemas))
