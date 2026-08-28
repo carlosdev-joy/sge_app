@@ -166,6 +166,45 @@ venceu no banco foi `pai_sys_id` (nossa `090`), e o endpoint de produção lê p
 Fica como registro histórico: **não é backlog**.
 
 
+
+### 4.6 A rota de salvar config descarta `proxy` e `grupos` em silêncio
+
+`PUT /admin/servicenow/config` (produção) filtra o payload por uma lista fixa:
+
+```python
+_campos_validos = {"servicenow_url", "servicenow_usuario",
+                   "servicenow_habilitado", "servicenow_senha_enc"}
+for campo, valor in payload.items():
+    if campo not in _campos_validos:
+        continue          # ← servicenow_proxy e servicenow_grupos caem aqui
+```
+
+Quem editar o proxy ou o grupo de atribuição nessa tela recebe `{"ok": true}` e **nada
+muda no banco**. Os dois campos são justamente os que mais mudam entre ambientes: o proxy
+é obrigatório dentro da Caixa e precisa ser vazio fora dela; o grupo define a fila
+inteira.
+
+A `main` não tem esse defeito — ela grava por `servicenow_set`, que passa pelos dois
+(`proxy_valido()` aceita vazio como rota direta, e `parse_grupos()` trata a lista). **No
+porte, prevalece o caminho da `main`.**
+
+### 4.7 A instância responde de fora da rede corporativa
+
+Verificado em 2026-08-28 a partir da VPS: `cvpsnprod.service-now.com` resolve, o TLS sobe,
+`GET /api/now/table/sc_req_item` devolve **401** sem credencial e a conta de serviço
+**autentica com sucesso** pela sonda. Ou seja, **não há ACL por IP** na instância.
+
+Duas consequências:
+
+1. O ambiente dev consegue sincronizar contra a instância real, o que permite validar o
+   porte com dado de verdade antes de qualquer coisa ir para produção — com
+   `servicenow_proxy` **vazio**, porque `webproxycvp.adcorp.intranet` não resolve fora da
+   rede da Caixa.
+2. É mais uma razão para os dados de infraestrutura não circularem em repositório
+   público (§4.4): a instância é alcançável da internet, e o que faltava ao conjunto
+   publicado era só a senha.
+
+
 ## 5. Fases
 
 ### F0 — As 9 tabelas viram migrations `094`+ ✅ **destravada**
@@ -219,6 +258,9 @@ O padrão do repositório para isso é `Depends(get_admin_user)` (`api/deps.py`,
 
 - **Aceite:** teste que chama cada rota admin com usuário **sem** `acao_admin` e exige
   **403**. Sem esse teste a proteção volta a cair em silêncio no próximo refactor.
+- **Corrigir o descarte silencioso (§4.6):** `proxy` e `grupos` precisam persistir, e o
+  teste tem de conferir o valor **no banco** depois do `{"ok": true}` — um teste que só
+  olha o código de resposta passa verde com o defeito intacto.
 - ⚠️ Enquanto a F3 não subir, a exposição continua **viva em produção**.
 
 ### F4 — O front
