@@ -408,3 +408,67 @@ def test_o_aviso_nomeia_o_recorte(cen: dict, caso: str, esperado: str) -> None:
     """TODO número da aba muda com o filtro. A ausência de aviso é a afirmação
     de que os números são da fila inteira."""
     assert cen["filtro_responsaveis"]["puras"][caso] == esperado
+
+
+# ═══════════ 8. a aparência do quadro ═══════════════════════════════════════
+#
+# "o fundo dos cards no kanban, gostaria de algo com uma visiblidade melhor…
+#  parece que são quadrados jogados."
+#
+# ⚠️ ERA UM DEFEITO DE TOKEN, não de gosto. O card vinha pintado com
+# `bg-canvas` — o token do FUNDO DA PÁGINA (`--canvas`) — em vez de `bg-panel`,
+# o de superfície. Literalmente: o cartão tinha a mesma cor do que estava atrás
+# dele, e o que separava um card do outro era uma borda de 1px.
+#
+# Isto não aparece em teste de comportamento: a tela renderiza, os dados estão
+# certos, e o card só não se distingue do fundo. Por isso o estilo saiu para
+# `lib/estiloKanban` — para a escolha do token virar uma afirmação verificável.
+
+@pytest.mark.parametrize("caso", ["card_normal", "card_urgente"])
+def test_o_card_usa_o_token_de_SUPERFICIE(cen: dict, caso: str) -> None:
+    """`--panel` é a superfície da casa (o mesmo que `Painel`, `Dashboard` e os
+    modais usam); `--canvas` é o fundo da página."""
+    classes = cen["kanban"][caso]
+    assert "bg-panel" in classes
+    assert "bg-canvas" not in classes, (
+        "pintar o card com o token do fundo o faz sumir dentro da página — "
+        "foi exatamente o defeito relatado")
+
+
+def test_a_raia_e_REBAIXADA_e_nao_clara(cen: dict) -> None:
+    """A raia mais escura é o que faz o card parecer estar SOBRE ela. Uma raia
+    clara sob card claro voltaria a depender só das bordas — o problema que
+    esta mudança corrige."""
+    raia = cen["kanban"]["raia"]
+    assert "bg-black/" in raia, "a raia escurece o fundo, não o clareia"
+    assert "bg-panel" not in raia, "raia com a cor do card apaga a separação"
+
+
+def test_o_card_urgente_continua_sendo_um_card(cen: dict) -> None:
+    """O destaque do incidente muda a BORDA, não a superfície: um card
+    vermelho inteiro no meio da coluna vira alarme constante."""
+    urgente = cen["kanban"]["card_urgente"]
+    assert "bg-panel" in urgente
+    assert "border-red-200" in urgente
+    assert "border-edge" not in urgente, "a borda neutra dá lugar à de alerta"
+    # ⚠️ Esta linha faltava, e a sabotagem passou: sem ela o teste afirmava no
+    # nome que o card urgente continua um card, mas aceitava um fundo vermelho
+    # sólido — que é justamente o alarme constante que ele diz evitar.
+    assert not any(f"bg-red-{n}" in urgente for n in
+                   (50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950)), (
+        "o destaque muda a BORDA; superfície vermelha na coluna inteira vira "
+        "alarme constante, e alarme constante ninguém lê")
+
+
+def test_coluna_desconhecida_ainda_ganha_um_ponto(cen: dict) -> None:
+    """O backend pode devolver uma coluna nova. Sem queda, o ponto ficaria sem
+    classe de cor — um buraco no cabeçalho da raia."""
+    assert cen["kanban"]["tom_conhecido"] == "bg-blue-500"
+    assert cen["kanban"]["tom_desconhecido"] == "bg-slate-400"
+
+
+def test_toda_coluna_do_kanban_tem_tom(cen: dict) -> None:
+    """As cinco colunas que a fila usa. Uma sem tom passaria despercebida — a
+    queda a esconderia atrás do cinza."""
+    assert cen["kanban"]["colunas_com_tom"] == [
+        "aguardando", "andamento", "novo", "outros", "resolvido"]

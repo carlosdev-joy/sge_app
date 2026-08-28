@@ -30,6 +30,10 @@ import {
   CATEGORIAS, SEM_ATRIBUICAO, SEM_MARCACAO, algumFiltroAtivo, casaFiltros,
   destacaIncidente, ordenarColuna, tiposDisponiveis,
 } from '../lib/filtrosKanban'
+// A aparência do quadro — superfície do card e tom da raia — mora em
+// `estiloKanban`: foi num TOKEN que estava o defeito, e token errado não
+// aparece em teste de comportamento.
+import { CLASSE_RAIA, classeDoCard, tomDaColuna } from '../lib/estiloKanban'
 import { ExternalLink, LifeBuoy, RefreshCw, Search, X } from 'lucide-react'
 
 // Aviso com tom próprio. O InfoBanner da casa é azul e DISPENSÁVEL — certo
@@ -297,43 +301,46 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
   const [verDetalhe, setVerDetalhe] = useState(false)
   const estilo = c.veredito ? ESTILO_VEREDITO[c.veredito] : undefined
   return (
-    <div data-urgente={urgente || undefined}
-      className={`rounded-md p-2.5 flex flex-col gap-1.5 shadow-sm border
-        ${urgente
-          ? 'bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-800 '
-            + 'border-l-4 border-l-red-500 dark:border-l-red-500'
-          : 'bg-canvas border-edge'}`}>
+    <div data-urgente={urgente || undefined} className={classeDoCard(urgente)}>
+      {/* A marca do incidente como BARRA sobreposta, não como borda grossa:
+          borda muda o tamanho da caixa e desalinha o card dos vizinhos. */}
+      {urgente && (
+        <span aria-hidden
+          className="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg
+            bg-red-500 dark:bg-red-500" />
+      )}
       <CabecalhoCard numero={c.numero} titulo={c.titulo} url={c.url}
         aoAbrirDetalhe={() => setVerDetalhe(true)} />
       {verDetalhe && (
         <ChamadoDetalheModal sysId={c.sys_id} numero={c.numero}
           aoFechar={() => setVerDetalhe(false)} />
       )}
-      <div className="flex flex-wrap items-center gap-1">
+      {/* UMA fileira de marcas, não duas. Antes eram duas linhas de chips
+          empilhadas — o que dava ao card a silhueta de formulário e fazia a
+          coluna parecer uma pilha de retângulos. O conteúdo é o MESMO: nada
+          saiu, tudo passou a fluir na mesma linha, quebrando quando precisa.
+          Todos com a mesma altura e o mesmo raio, para o olho ler "marcas" em
+          vez de "elementos diferentes". */}
+      <div className="flex flex-wrap items-center gap-1 text-[10px]">
         {/* O rótulo do tipo carrega o tom. Cor sozinha não informa quem não a
             distingue: aqui a palavra "Incidente" continua sendo o que diz o
             que é, e o vermelho só reforça. */}
-        <Badge value={urgente ? 'error' : 'neutral'}>
+        <span className={`px-2 py-0.5 rounded-full border font-medium ${urgente
+          ? 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/50 '
+            + 'dark:text-red-300 dark:border-red-800'
+          : 'bg-canvas text-dim border-edge'}`}>
           {ROTULO_TIPO[c.tipo] ?? c.tipo}
-        </Badge>
-        {c.prioridade && <Badge value="neutral">{c.prioridade}</Badge>}
-        {/* estado_origem no title: quando o card cai em "Outros", é ele que
-            explica por quê — o valor cru que o ServiceNow devolveu. */}
-        {c.estado_origem && (
-          <span className="text-[10px] text-dim" title={`Estado na origem: ${c.estado_origem}`}>
-            {c.estado_origem}
+        </span>
+        {c.prioridade && (
+          <span className="px-2 py-0.5 rounded-full bg-canvas border border-edge text-dim">
+            {c.prioridade}
           </span>
         )}
-      </div>
-      {/* Derivações: o que o painel da estação lia nas entrelinhas e a tela
-          não mostrava. O tipo aparece sempre; categoria e objetos só quando
-          existem — chip vazio é ruído que ensina a ignorar a linha inteira. */}
-      <div className="flex flex-wrap items-center gap-1 text-[10px]">
         {/* O title NÃO afirma de onde veio o tipo: a dedução usa o título e,
             em segunda mão, o catálogo, e o backend não devolve qual dos dois
             casou. Atribuir a proveniência ao catálogo seria mentir sempre que
             o título tiver vencido — que é o caso comum. */}
-        <span className="px-1.5 py-0.5 rounded bg-panel border border-edge text-dim"
+        <span className="px-2 py-0.5 rounded-full bg-canvas border border-edge text-dim"
           title={`Tipo deduzido do título e do catálogo${c.catalogo ? ` · catálogo na origem: ${c.catalogo}` : ''}`}>
           {c.tipo_demanda}
         </span>
@@ -346,9 +353,9 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
             é ruído que ensina a ignorar a linha inteira — quem procura o que
             falta classificar tem o filtro "Sem marcação" acima. */}
         {c.categoria_diaadia && (
-          <span className={`px-1.5 py-0.5 rounded border font-medium
+          <span className={`px-2 py-0.5 rounded-full border font-medium
             ${TOM_CATEGORIA[c.categoria_diaadia]
-              ?? 'bg-panel border-edge text-dim'}`}
+              ?? 'bg-canvas border-edge text-dim'}`}
             title={`Categoria marcada pela equipe nas work notes: ${c.categoria_diaadia}`}>
             {c.categoria_diaadia}
           </span>
@@ -359,8 +366,18 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
             {c.objetos}
           </span>
         )}
+        {/* estado_origem sem moldura: ele é CONTEXTO, não classificação —
+            quando o card cai em "Outros", é ele que explica por quê. Com
+            moldura, competiria com as marcas que pedem leitura. */}
+        {c.estado_origem && (
+          <span className="text-dim" title={`Estado na origem: ${c.estado_origem}`}>
+            {c.estado_origem}
+          </span>
+        )}
         {c.sla_vencido === true && (
-          <span className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300"
+          <span className="px-2 py-0.5 rounded-full border border-red-300
+            dark:border-red-800 bg-red-100 dark:bg-red-950/60
+            text-red-700 dark:text-red-300 font-medium"
             title="O ServiceNow marcou este chamado com SLA vencido">
             SLA vencido
           </span>
@@ -369,7 +386,7 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
             selo — pintá-lo de âmbar diria que ele foi reprovado. */}
         {estilo && (
           <button type="button" onClick={() => setVerLaudo(true)}
-            className={`px-1.5 py-0.5 rounded ${estilo.classe}`}
+            className={`px-2 py-0.5 rounded-full border ${estilo.classe}`}
             title={c.triagem_origem === 'heuristica'
               ? 'Veredito por regra de texto (a IA não respondeu) — clique para ver'
               : 'Veredito da análise por IA — clique para ver o laudo'}>
@@ -390,15 +407,17 @@ function CardChamado({ c, filhas = [] }: { c: Chamado; filhas?: Chamado[] }) {
           premissa "mesmo responsável" mostra que quebrou, antes de virar
           dúvida no gráfico de carga. */}
       {filhas.length > 0 && (
-        <div className="flex flex-col gap-0.5 pt-1 border-t border-edge">
+        <div className="flex flex-col gap-0.5 -mx-1 px-1 pt-2 border-t border-edge">
           {filhas.map(f => (
             <div key={f.sys_id}
-              className="flex items-center gap-1.5 text-[10px] text-dim">
+              className="flex items-center gap-1.5 text-[10px] text-dim
+                rounded px-1 py-0.5 hover:bg-canvas">
               <span aria-hidden className="shrink-0">↳</span>
               {/* O número da TASK também se copia: é ele que se cita ao
                   perguntar de uma tarefa a quem a executa. */}
               <NumeroChamado numero={f.numero} className="shrink-0" />
-              <span className="px-1 py-px rounded bg-panel border border-edge shrink-0">
+              <span className="px-1.5 py-px rounded-full bg-canvas border
+                border-edge shrink-0">
                 {ROTULO_COLUNA[f.estado_kanban] ?? f.estado_kanban}
               </span>
               {f.atribuido_a && f.atribuido_a !== c.atribuido_a && (
@@ -632,16 +651,37 @@ export default function Chamados() {
             const daColuna = ordenarColuna(
               filtrados.filter(c => c.estado_kanban === coluna))
             return (
-              <div key={coluna} className="flex flex-col gap-2 min-w-0">
-                <div className="flex items-center justify-between px-1">
-                  <h2 className="text-xs font-semibold text-dim uppercase tracking-wider">
-                    {ROTULO_COLUNA[coluna] ?? coluna}
-                  </h2>
-                  <span className="text-xs text-dim">{daColuna.length}</span>
+              // ⚠️ A RAIA. Antes a coluna não tinha superfície nenhuma: os
+              // cards flutuavam direto sobre o fundo da página, sem nada que
+              // dissesse onde uma coluna termina e a outra começa. Somado ao
+              // card pintado com a cor do próprio fundo, era a leitura de
+              // "quadrados jogados". Ver `estiloKanban`.
+              <div key={coluna} className={CLASSE_RAIA}>
+                <div className="flex items-center justify-between gap-2 px-3 py-2
+                  border-b border-edge">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {/* O ponto NÃO carrega informação sozinho — o nome está do
+                        lado. Ele serve de marco para achar a raia certa sem
+                        reler os cinco títulos. */}
+                    <span aria-hidden
+                      className={`w-2 h-2 rounded-full shrink-0 ${tomDaColuna(coluna)}`} />
+                    <h2 className="text-[11px] font-semibold text-ink uppercase
+                      tracking-wider truncate">
+                      {ROTULO_COLUNA[coluna] ?? coluna}
+                    </h2>
+                  </div>
+                  {/* A contagem numa pílula: solta, ela se confundia com o
+                      texto do título ao lado. */}
+                  <span className="shrink-0 text-[11px] text-dim tabular-nums
+                    px-2 py-0.5 rounded-full bg-panel border border-edge">
+                    {daColuna.length}
+                  </span>
                 </div>
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-2 p-2">
                   {daColuna.length === 0 ? (
-                    <p className="text-[11px] text-dim px-1 py-2">nenhum</p>
+                    <p className="text-[11px] text-dim px-1 py-3 text-center">
+                      nenhum
+                    </p>
                   ) : (
                     daColuna.map(c => (
                       <CardChamado key={c.sys_id} c={c}

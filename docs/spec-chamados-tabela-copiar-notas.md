@@ -339,3 +339,43 @@ outro continua, sem nada na tela denunciando — o mesmo padrão do
 `pages/Chamados.tsx`, que importa react-query, e nenhuma bancada o monta. A
 ligação entre a decisão e a classe do card é uma expressão só, coberta por
 `tsc -b` e conferida a olho em dev.
+
+## F10 — O quadro: era defeito de token, não gosto
+
+> "o fundo dos cards no kanban, gostaria de algo com uma visiblidade melhor,
+> algo mais proximo de ferramentas que utilizam esse formato de card com visual
+> mais moderno também parece que são quadrados jogados."
+
+⚠️ **A causa é literal.** O card vinha pintado com **`bg-canvas`** — o token do
+**fundo da página** (`--canvas`) — em vez de `bg-panel`, o de superfície. O
+cartão tinha exatamente a mesma cor do que estava atrás dele, e o que separava
+um card do outro era uma borda de 1px. "Quadrados jogados" descreve o que
+estava na tela: eram **contornos**, não superfícies. `--panel` é o token que
+`Painel`, o `Dashboard` e os modais já usavam.
+
+Somava-se a isso a **coluna sem superfície nenhuma**: os cards flutuavam direto
+sobre o fundo da página, sem nada dizendo onde uma coluna termina e a outra
+começa.
+
+O que mudou:
+
+* **Card em `bg-panel`**, com `rounded-lg`, sombra leve e realce ao passar o
+  mouse.
+* **Raia** por coluna, **rebaixada** (mais escura que o card, não mais clara) —
+  é o que faz o card parecer estar *sobre* ela. Cabeçalho com ponto colorido,
+  nome e a contagem em pílula.
+* **Hierarquia invertida no card**: o título passa a ser o elemento maior e em
+  tom cheio; o número, menor e apagado. O título é o que se **lê** na fila; o
+  número serve para **citar** o chamado a outra pessoa. Antes os dois tinham o
+  mesmo peso e o olho não sabia onde pousar.
+* **Uma fileira de marcas, não duas.** O conteúdo é o mesmo — nada saiu —, mas
+  as duas linhas empilhadas davam ao card a silhueta de formulário. Todas as
+  marcas com a mesma altura e o mesmo raio.
+* **A barra do incidente é sobreposta**, não borda grossa: borda muda o tamanho
+  da caixa e desalinha o card dos vizinhos. E o destaque muda a **borda**, não a
+  superfície — card vermelho inteiro na coluna vira alarme constante.
+
+O estilo saiu para `lib/estiloKanban` porque **defeito de token não aparece em
+teste de comportamento**: a tela renderiza, os dados estão certos, e o card só
+não se distingue do fundo. Agora a escolha do token é uma afirmação
+verificável — e a sabotagem que devolve `bg-canvas` derruba o teste.

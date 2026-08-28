@@ -27,6 +27,7 @@ const ENTRADAS = [
   'lib/tabelaChamados.ts',
   'lib/filtroResponsaveis.ts',
   'lib/filtrosKanban.ts',
+  'lib/estiloKanban.ts',
 ]
 
 function resolverRelativo(deDir, especificador) {
@@ -107,6 +108,7 @@ const { copiarTexto } = require(path.join(tmp, 'lib/copiar.js'))
 const alturas = require(path.join(tmp, 'lib/tabelaChamados.js'))
 const fr = require(path.join(tmp, 'lib/filtroResponsaveis.js'))
 const fk = require(path.join(tmp, 'lib/filtrosKanban.js'))
+const est = require(path.join(tmp, 'lib/estiloKanban.js'))
 
 const el = (tipo, props) => mini.criar(tipo, props)
 const achar = (tela, atributo) =>
@@ -454,6 +456,14 @@ const kanban = {
     fk.ordenarColuna(original)
     return original.map(c => c.numero)
   })(),
+
+  // ── a aparência do quadro ───────────────────────────────────────────────
+  card_normal: est.classeDoCard(false),
+  card_urgente: est.classeDoCard(true),
+  raia: est.CLASSE_RAIA,
+  tom_conhecido: est.tomDaColuna('novo'),
+  tom_desconhecido: est.tomDaColuna('coluna_que_o_backend_inventou'),
+  colunas_com_tom: Object.keys(est.TOM_COLUNA).sort(),
 
   ativo_vazio: fk.algumFiltroAtivo(F({})),
   ativo_com_categoria: fk.algumFiltroAtivo(F({ categoria: fk.SEM_MARCACAO })),

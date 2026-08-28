@@ -27,7 +27,7 @@ export function CabecalhoCard({ numero, titulo, url, aoAbrirDetalhe }: {
         {/* O número vem com o botão de copiar: levar um número a outra pessoa
             é o gesto mais comum daqui, e redigitar erra — `RITM0103367` e
             `RITM0103387` diferem por um caractere. */}
-        <NumeroChamado numero={numero} className="text-xs font-semibold text-ink" />
+        <NumeroChamado numero={numero} className="text-[11px] font-medium text-dim" />
         <div className="flex items-center gap-2 shrink-0">
           {/* Ícone E palavra. Ícone sozinho vira adivinhação: "lupa" pode ser
               buscar, ampliar ou inspecionar, e quem chega na tela pela
@@ -51,9 +51,14 @@ export function CabecalhoCard({ numero, titulo, url, aoAbrirDetalhe }: {
         </div>
       </div>
       {/* O título segue clicando para o mesmo lugar: quem já descobriu o gesto
-          tem um alvo maior, e quem não descobriu tem o botão acima. */}
+          tem um alvo maior, e quem não descobriu tem o botão acima.
+          Ele é o que se LÊ no card — o número serve para citar o chamado a
+          outra pessoa, não para reconhecê-lo na fila. Por isso a hierarquia se
+          inverteu: título maior e em tom cheio, número menor e apagado. Antes
+          os dois tinham o mesmo tamanho e o olho não sabia onde pousar. */}
       <button type="button" data-titulo onClick={aoAbrirDetalhe}
-        className="text-xs text-ink leading-snug text-left hover:underline"
+        className="text-[13px] font-medium text-ink leading-snug text-left
+          hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
         title={AJUDA}>
         {titulo || '(sem título)'}
       </button>
