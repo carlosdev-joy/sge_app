@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -176,10 +177,11 @@ def _executes_sobre_o_espelho() -> list[tuple[int, str, bool]]:
                 and no.func.attr == "execute"):
             continue
         sql = _literais(no)
-        if "dbo.etl_chamado" not in sql:
-            continue
-        # o espelho do ciclo (etl_chamado_sync) não é fila de chamados
-        if "dbo.etl_chamado_sync" in sql and "FROM dbo.etl_chamado " not in sql:
+        # A tabela EXATA, não o prefixo: `dbo.etl_chamado_ciclo`,
+        # `_nota`, `_anexo` e `_sync` são tabelas do módulo que não são a fila
+        # — contá-las aqui faria o varredor cobrar recorte de quem lista ciclo
+        # de sincronização. (Este teste nasceu com esse falso positivo.)
+        if not re.search(r"dbo\.etl_chamado(?![a-z_])", sql):
             continue
         achados.append((no.lineno, sql[:70], _chama_o_recorte(no)))
     return achados
