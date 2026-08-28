@@ -26,7 +26,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from db import get_db_conn
-from deps import get_current_user
+from deps import get_admin_user, get_current_user
 
 log = logging.getLogger("orquestra-api")
 
@@ -1194,3 +1194,251 @@ def chamado_anexo_proxy(sys_id: str, sys_id_anexo: str,
 
 
 # ── Admin ServiceNow ──────────────────────────────────────────────────────────
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Admin do módulo ServiceNow — grupos, ciclos, categorias e perfis de acesso.
+#
+# ⚠️ TODAS exigem `acao_admin` (`Depends(get_admin_user)`), e isso é uma
+# MUDANÇA em relação ao que roda em produção, onde as dez rotas de
+# /admin/servicenow/* pedem apenas autenticação: hoje, lá, qualquer usuário
+# logado lê e GRAVA a configuração da integração, edita grupos, salva os
+# perfis de acesso e dispara o delta. `tests/test_chamados_admin_rbac.py`
+# chama cada uma sem a permissão e exige 403 — sem esse teste a proteção volta
+# a cair no próximo refactor, em silêncio.
+#
+# ⚠️ NÃO foram portadas três rotas que produção tem aqui, porque a `main` já
+# tem equivalente melhor e duplicar criaria duas verdades:
+#   • GET  /admin/servicenow/config  → já existe em `routers/admin.py`;
+#   • PUT  /admin/servicenow/config  → a ação `servicenow_set` (POST /admin)
+#     faz o mesmo E grava `proxy` e `grupos`, que a versão de produção
+#     DESCARTA em silêncio (ela filtra o payload por uma lista de 4 campos e
+#     responde {"ok": true} sem gravar os outros dois);
+#   • POST /admin/servicenow/testar  → a sonda de diagnóstico da #300 é mais
+#     completa e já está no Admin.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/admin/servicenow/categorias", tags=["admin"])
+def criar_categoria(body: dict, _admin: dict = Depends(get_admin_user)):
+    """Cadastra uma nova categoria de classificação de chamados."""
+    slug = (body.get("slug") or "").strip().lower()
+    label = (body.get("label") or "").strip()
+    descricao = (body.get("descricao") or "").strip() or None
+    if not slug or not label:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="slug e label são obrigatórios")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO dbo.etl_sn_categoria (slug, label, descricao) "
+            "VALUES (?, ?, ?)", [slug, label, descricao])
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "slug": slug, "label": label}
+
+
+@router.delete("/admin/servicenow/categorias/{cat_id}", tags=["admin"])
+def excluir_categoria(cat_id: int, _admin: dict = Depends(get_admin_user)):
+    """Remove uma categoria (apenas as não-padrão podem ser excluídas)."""
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT padrao FROM dbo.etl_sn_categoria WHERE id = ?", [cat_id])
+        row = cur.fetchone()
+        if not row:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Categoria não encontrada")
+        if row[0]:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409,
+                                detail="Categorias padrão não podem ser excluídas")
+        cur.execute("DELETE FROM dbo.etl_sn_categoria WHERE id = ?", [cat_id])
+        conn.commit()
+        cur.close(); conn.close()
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        if "HTTPException" in type(e).__name__:
+            raise
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True}
+
+
+# ── Novos endpoints: detalhe, proxy de anexos, indicadores históricos, admin ──
+import httpx as _httpx
+import os as _os
+
+from fastapi import HTTPException as _HTTPException
+from fastapi.responses import StreamingResponse as _StreamingResponse
+from services.conn_crypto import decrypt_password
+
+
+@router.get("/admin/servicenow/grupos", tags=["admin"])
+def admin_sn_grupos(_admin: dict = Depends(get_admin_user)):
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT id, nome, ativo, criado_em FROM dbo.etl_servicenow_grupo "
+            "ORDER BY ativo DESC, nome")
+        result = [
+            {"id": r[0], "nome": r[1], "ativo": bool(r[2]),
+             "criado_em": str(r[3]) if r[3] else None}
+            for r in cur.fetchall()
+        ]
+        cur.close(); conn.close()
+        return result
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("admin_sn_grupos: erro (%s: %s)", type(e).__name__, e)
+        raise _HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/servicenow/grupos", tags=["admin"])
+def admin_sn_grupo_criar(payload: dict, _admin: dict = Depends(get_admin_user)):
+    nome = (payload.get("nome") or "").strip()
+    if not nome:
+        raise _HTTPException(status_code=422, detail="nome obrigatório")
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO dbo.etl_servicenow_grupo (nome) VALUES (?)", [nome])
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True}
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("admin_sn_grupo_criar: erro (%s: %s)", type(e).__name__, e)
+        if "2627" in str(e) or "UQ_sn_grupo" in str(e) or "duplicate key" in str(e).lower():
+            raise _HTTPException(status_code=409, detail=f"Grupo '{nome}' já existe.")
+        raise _HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/admin/servicenow/grupos/{grupo_id}", tags=["admin"])
+def admin_sn_grupo_editar(grupo_id: int, payload: dict,
+                          _admin: dict = Depends(get_admin_user)):
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if "ativo" in payload:
+            cur.execute(
+                "UPDATE dbo.etl_servicenow_grupo "
+                "SET ativo=?, alterado_em=GETDATE() WHERE id=?",
+                [1 if payload["ativo"] else 0, grupo_id])
+        if "nome" in payload:
+            cur.execute(
+                "UPDATE dbo.etl_servicenow_grupo "
+                "SET nome=?, alterado_em=GETDATE() WHERE id=?",
+                [(payload["nome"] or "").strip(), grupo_id])
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True}
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("admin_sn_grupo_editar: erro (%s: %s)", type(e).__name__, e)
+        raise _HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/servicenow/ciclos", tags=["admin"])
+def admin_sn_ciclos(_admin: dict = Depends(get_admin_user)):
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT TOP 20 id, modo, iniciado_em, terminado_em, status, "
+            "  qtd_chamados, qtd_notas, qtd_anexos, qtd_desativados, "
+            "  disparado_por, erro "
+            "FROM dbo.etl_chamado_ciclo ORDER BY id DESC")
+        result = [
+            {"id": r[0], "modo": r[1],
+             "iniciado_em": str(r[2]) if r[2] else None,
+             "terminado_em": str(r[3]) if r[3] else None,
+             "status": r[4], "qtd_chamados": r[5], "qtd_notas": r[6],
+             "qtd_anexos": r[7], "qtd_desativados": r[8],
+             "disparado_por": r[9], "erro": r[10]}
+            for r in cur.fetchall()
+        ]
+        cur.close(); conn.close()
+        return result
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("admin_sn_ciclos: erro (%s: %s)", type(e).__name__, e)
+        raise _HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/servicenow/disparar-delta", tags=["admin"])
+def admin_sn_disparar_delta(_admin: dict = Depends(get_admin_user)):
+    airflow_url = _os.getenv("AIRFLOW_URL", "http://airflow-webserver:8080")
+    airflow_user = _os.getenv("AIRFLOW_USER", "airflow")
+    airflow_pass = _os.getenv("AIRFLOW_PASSWORD", "airflow")
+    try:
+        with _httpx.Client(
+                auth=(airflow_user, airflow_pass), timeout=10) as cli:
+            resp = cli.post(
+                f"{airflow_url}/api/v1/dags/etl_servicenow_delta/dagRuns",
+                json={})
+            resp.raise_for_status()
+        return {"ok": True, "dag_run_id": resp.json().get("dag_run_id")}
+    except Exception as e:
+        raise _HTTPException(status_code=502,
+                             detail=f"Airflow indisponível: {e}")
+
+
+@router.get("/admin/servicenow/perfis-acesso", tags=["admin"])
+def admin_sn_perfis(_admin: dict = Depends(get_admin_user)):
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "SELECT config_value FROM dbo.etl_app_config "
+            "WHERE config_key='servicenow_admin_perfis'")
+        row = cur.fetchone()
+        perfis = (row[0] or "").split(",") if row else []
+        cur.close(); conn.close()
+        return {"perfis": [p.strip() for p in perfis if p.strip()]}
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("admin_sn_perfis: erro (%s: %s)", type(e).__name__, e)
+        raise _HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/admin/servicenow/perfis-acesso", tags=["admin"])
+def admin_sn_perfis_salvar(payload: dict, _admin: dict = Depends(get_admin_user)):
+    perfis = ",".join(payload.get("perfis", []))
+    conn = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        cur.execute(
+            "MERGE dbo.etl_app_config AS t "
+            "USING (SELECT 'servicenow_admin_perfis' AS config_key) AS s "
+            "ON t.config_key=s.config_key "
+            "WHEN MATCHED THEN UPDATE SET config_value=? "
+            "WHEN NOT MATCHED THEN INSERT (config_key,config_value) VALUES (?,?)",
+            [perfis, "servicenow_admin_perfis", perfis])
+        conn.commit(); cur.close(); conn.close()
+        return {"ok": True}
+    except Exception as e:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        log.warning("admin_sn_perfis_salvar: erro (%s: %s)", type(e).__name__, e)
+        raise _HTTPException(status_code=500, detail=str(e))
