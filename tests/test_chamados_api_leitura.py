@@ -42,13 +42,21 @@ from routers import chamados as mod  # noqa: E402
 
 
 class CursorFalso:
-    def __init__(self, filas=None, explode=False):
+    def __init__(self, filas=None, explode=False, padrao=None):
         self.filas = list(filas or [])
         self.explode = explode
+        # `padrao` é o que `fetchone` devolve quando não há fila preparada.
+        # None reproduz "não achou" (é o que o teste de 404 precisa); uma
+        # tupla deixa a rota seguir até o fim, que é o que os testes de
+        # ESTRUTURA da consulta precisam — sem ela a rota morre no primeiro
+        # `fetchone()[0]` e as consultas seguintes nunca são emitidas.
+        self.padrao = padrao
         self.sqls: list[str] = []
+        self._ultimo = ""
 
     def execute(self, sql, params=None):
         self.sqls.append(sql)
+        self._ultimo = sql
         if self.explode:
             raise RuntimeError("Invalid object name 'dbo.etl_chamado_nota'")
         return self
@@ -58,7 +66,16 @@ class CursorFalso:
 
     def fetchone(self):
         linhas = self.filas.pop(0) if self.filas else []
-        return linhas[0] if linhas else None
+        if linhas:
+            return linhas[0]
+        # Dublê HONESTO: responde o TIPO que a pergunta pede. `SELECT CAST(
+        # GETDATE() AS DATE)` recebe uma data — devolver 0 ali faz a rota
+        # morrer em `fromisoformat('0')` e as consultas seguintes nunca são
+        # emitidas, então o teste "a consulta X existe" passaria por não achar
+        # o que também não foi executado.
+        if self.padrao is not None and "GETDATE() AS DATE)" in getattr(self, "_ultimo", ""):
+            return ("2026-08-28",)
+        return self.padrao
 
     def close(self):
         pass
@@ -76,6 +93,28 @@ def cliente():
 @pytest.fixture
 def banco(monkeypatch):
     estado = {"cur": CursorFalso()}
+
+    class ConexaoFalsa:
+        def cursor(self):
+            return estado["cur"]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "get_db_conn", lambda: ConexaoFalsa())
+    return estado
+
+
+@pytest.fixture
+def banco_ate_o_fim(monkeypatch):
+    """Como `banco`, mas com `fetchone` devolvendo `(0,)` em vez de None.
+
+    Os testes que inspecionam QUAIS consultas a rota emite precisam que ela
+    termine: com None, a rota morre no primeiro `fetchone()[0]` e as consultas
+    seguintes nunca chegam a ser emitidas — o teste passaria por não achar o
+    que também não foi executado.
+    """
+    estado = {"cur": CursorFalso(padrao=(0,))}
 
     class ConexaoFalsa:
         def cursor(self):
@@ -190,3 +229,120 @@ def test_espelho_indisponivel_nas_categorias_avisa(cliente, banco):
     r = cliente.get("/chamados/categorias")
     assert r.status_code == 200
     assert r.json().get("migration_ausente") is True
+
+
+# ═══════════ 5. o filtro por responsável dos Indicadores ════════════════════
+# Pedido dos gestores: um filtro só, valendo para TODA a análise da aba.
+
+def test_o_filtro_alcanca_todas_as_agregacoes(cliente, banco_ate_o_fim):
+    """Filtro que alcança metade das contas é pior que filtro nenhum.
+
+    A aba mostraria o aging de uma pessoa ao lado do fluxo de todas, com os
+    dois números parecendo certos — a mesma armadilha da Fila × Indicadores
+    que a F5 fechou, só que dentro da mesma tela.
+    """
+    cliente.get("/chamados/indicadores?responsavel=Fulano")
+    sobre_o_espelho = [s for s in banco_ate_o_fim["cur"].sqls
+                       if "dbo.etl_chamado" in s and "GETDATE()) AS DATE)" not in s]
+    sem_filtro = [s for s in sobre_o_espelho
+                  if "WHERE ativo = 1" in s and "atribuido_a = ?" not in s
+                  # a consulta das OPÇÕES do seletor é a única que não filtra,
+                  # de propósito: com o filtro, o seletor ficaria com uma opção
+                  # só e não haveria como trocar
+                  and "GROUP BY NULLIF(LTRIM(RTRIM(atribuido_a))" not in s]
+    assert not sem_filtro, (
+        "estas consultas ignoram o filtro e falariam da fila inteira:\n" +
+        "\n".join(f"  {s[:80]}…" for s in sem_filtro[:5]))
+
+
+def test_sem_responsavel_e_um_balde_filtravel(cliente, banco_ate_o_fim):
+    """É o que o gestor procura primeiro: o que ninguém pegou.
+
+    Comparar com a string "sem responsável" não acharia ninguém — ela é
+    rótulo da tela, e o banco guarda NULL ou vazio.
+    """
+    cliente.get("/chamados/indicadores?responsavel=sem responsável")
+    sql = " ".join(banco_ate_o_fim["cur"].sqls)
+    assert "NULLIF(LTRIM(RTRIM(atribuido_a)), '') IS NULL" in sql
+    assert "atribuido_a = ?" not in sql, (
+        "'sem responsável' é condição, não valor — comparar por igualdade "
+        "devolveria zero sempre")
+
+
+def test_as_opcoes_do_seletor_nao_encolhem_com_a_escolha(cliente, banco_ate_o_fim):
+    """Com o filtro aplicado nelas, a tela prenderia quem analisa na escolha
+    que acabou de fazer: uma opção só, sem como voltar."""
+    cliente.get("/chamados/indicadores?responsavel=Fulano")
+    opcoes = [s for s in banco_ate_o_fim["cur"].sqls
+              if "GROUP BY NULLIF(LTRIM(RTRIM(atribuido_a))" in s]
+    assert opcoes, "a consulta das opções sumiu"
+    assert "atribuido_a = ?" not in opcoes[0]
+
+
+def test_a_resposta_diz_qual_filtro_esta_em_vigor(cliente, banco):
+    """Número filtrado sem aviso vira 'a fila tem 16 chamados' num print."""
+    corpo = cliente.get("/chamados/indicadores?responsavel=Fulano").json()
+    assert corpo["responsavel"] == "Fulano"
+    assert cliente.get("/chamados/indicadores").json()["responsavel"] is None
+
+
+def test_espaco_em_branco_nao_vira_filtro(cliente, banco_ate_o_fim):
+    """`?responsavel=%20` filtraria por ninguém e devolveria zero em tudo."""
+    corpo = cliente.get("/chamados/indicadores?responsavel=%20%20").json()
+    assert corpo["responsavel"] is None
+    assert "atribuido_a = ?" not in " ".join(banco_ate_o_fim["cur"].sqls)
+
+
+# ═══════════ 6. o aging mede quem AINDA espera ══════════════════════════════
+
+def test_o_aging_nao_conta_quem_ja_foi_resolvido(cliente, banco_ate_o_fim):
+    """A pergunta é "tem coisa velha PARADA?", e ela existe para priorizar.
+
+    Um chamado resolvido há 40 dias não está parado — está pronto. Contá-lo
+    enchia a faixa "mais de 14 dias" com trabalho FEITO, e a barra mais
+    alarmante do painel passava a medir justamente o que ninguém precisa
+    olhar. Medido no dev: 35 esperando de verdade contra 56 ativos.
+    """
+    cliente.get("/chamados/indicadores")
+    aging = [s for s in banco_ate_o_fim["cur"].sqls if "0-3 dias" in s]
+    assert aging, "a consulta do aging sumiu"
+    assert "estado_kanban NOT IN ('resolvido','encerrado')" in aging[0]
+
+
+def test_o_denominador_do_aging_e_o_mesmo_recorte(cliente, banco_ate_o_fim):
+    """Com `total_ativos`, o "x de y" diria "27 de 56" — vinte e sete velhos
+    sobre uma fila que inclui o trabalho já feito, e a soma das faixas não
+    fecharia com o total ao lado."""
+    corpo = cliente.get("/chamados/indicadores").json()
+    assert "total_em_fila" in corpo
+    assert corpo["total_em_fila"] == sum(f["total"] for f in corpo["aging"])
+
+
+# ═══════════ 7. o cartão de resolvidos se deixa conferir ════════════════════
+
+def test_resolvidas_vem_do_mais_recente(cliente, banco_ate_o_fim):
+    """A leitura natural de "o que a equipe entregou" começa pelo que saiu.
+
+    Por `aberto_em ASC`, o topo era o chamado mais ANTIGO — que é o que menos
+    ajuda a validar o número.
+    """
+    cliente.get("/chamados/dashboard?visao=geral")
+    q = [s for s in banco_ate_o_fim["cur"].sqls
+         if "estado_kanban='resolvido'" in s and "resolvido','encerrado'" not in s]
+    assert q, "a consulta de resolvidas sumiu"
+    assert "COALESCE(encerrado_em, atualizado_em) DESC" in q[0], (
+        "ordenar só por encerrado_em deixaria os resolvidos — que não têm "
+        "essa data — numa ordem arbitrária")
+
+
+def test_o_painel_traz_as_duas_datas_do_fim(cliente, banco_ate_o_fim):
+    """`encerrado_em` E `atualizado_em`.
+
+    No ServiceNow "Resolvido" ainda não é "Encerrado": `closed_at` só é
+    preenchido no encerramento definitivo — dos 21 resolvidos ativos no dev,
+    ZERO tinham. Trazer só ele deixaria a coluna de datas vazia justamente no
+    cartão que existe para ser conferido.
+    """
+    cliente.get("/chamados/dashboard?visao=geral")
+    q = [s for s in banco_ate_o_fim["cur"].sqls if "estado_kanban='resolvido'" in s]
+    assert "encerrado_em, atualizado_em" in q[0]

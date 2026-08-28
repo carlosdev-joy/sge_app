@@ -19,9 +19,16 @@
 // Duas regras que valem em todos os quatro: nenhuma percentagem aparece sem o
 // "x de y" ao lado, e nenhuma série é identificada só por cor — há legenda e
 // rótulo direto.
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { PageSpinner } from '../components/ui/Spinner'
+// A linguagem visual das abas de Chamados mora em components/chamados/graficos
+// — a aba Dashboard usa as mesmas formas, e duas cópias divergiriam.
+import { BarrasHorizontais, Painel } from '../components/chamados/graficos'
+import {
+  SERIE_ENTRADAS, SERIE_SAIDAS, passoRampa, xDeY,
+} from '../components/chamados/escalas'
 
 interface FaixaAging { faixa: string; total: number }
 interface Celula { tipo: string; estado: string; total: number }
@@ -31,8 +38,17 @@ interface Carga { responsavel: string; total: number }
 interface PorTipoDemanda { tipo: string; total: number }
 interface PorCategoria { categoria: string; total: number }
 
+export interface Responsavel { nome: string; total: number }
+
 export interface RespostaIndicadores {
+  // O filtro em vigor e as opções. A tela precisa dos dois: um para desenhar
+  // o seletor, outro para DIZER que está filtrando — número filtrado sem
+  // aviso é a mesma armadilha do total que não bate com a lista.
+  responsavel: string | null
+  responsaveis: Responsavel[]
   aging: FaixaAging[]
+  /** Ativos que ainda NÃO foram resolvidos — o denominador do aging. */
+  total_em_fila: number
   tipo_estado: { tipos: string[]; estados: string[]; celulas: Celula[] }
   fluxo: DiaFluxo[]
   carga: Carga[]
@@ -78,73 +94,6 @@ const ROTULO_ESTADO: Record<string, string> = {
 }
 
 // Rampa sequencial de uma hue (azul), clara → escura. Mais escuro = mais alto.
-const RAMPA = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#2a78d6', '#1c5cab']
-
-// Séries categóricas do fluxo. Slots 1 e 2 da paleta validada.
-const SERIE_ENTRADAS = '#2a78d6'
-const SERIE_SAIDAS = '#eb6834'
-
-function passoRampa(valor: number, maximo: number): string {
-  if (maximo <= 0 || valor <= 0) return RAMPA[0]
-  const i = Math.min(RAMPA.length - 1,
-    Math.max(1, Math.round((valor / maximo) * (RAMPA.length - 1))))
-  return RAMPA[i]
-}
-
-// "3 de 12 (25%)" — a regra da casa: percentagem nunca sozinha.
-function xDeY(parte: number, total: number): string {
-  if (!total) return `${parte}`
-  return `${parte} de ${total} (${Math.round((parte / total) * 100)}%)`
-}
-
-function Painel({ titulo, descricao, children }: {
-  titulo: string; descricao: string; children: React.ReactNode
-}) {
-  return (
-    <section className="bg-panel border border-edge rounded-lg p-4 flex flex-col gap-3">
-      <div>
-        <h2 className="text-sm font-semibold text-ink">{titulo}</h2>
-        <p className="text-[11px] text-dim">{descricao}</p>
-      </div>
-      {children}
-    </section>
-  )
-}
-
-/** Barras horizontais com rótulo direto — serve aging e carga. */
-function BarrasHorizontais({ itens, total }: {
-  itens: { rotulo: string; valor: number }[]; total: number
-}) {
-  const maximo = Math.max(1, ...itens.map(i => i.valor))
-  if (itens.length === 0) {
-    return <p className="text-xs text-dim">nenhum chamado na fila</p>
-  }
-  return (
-    <div className="flex flex-col gap-1.5">
-      {itens.map(i => (
-        <div key={i.rotulo} className="flex items-center gap-2 text-xs">
-          <span className="w-36 shrink-0 text-dim truncate" title={i.rotulo}>
-            {i.rotulo}
-          </span>
-          <div className="flex-1 min-w-0 h-4 flex items-center">
-            <svg width="100%" height="16" role="img"
-              aria-label={`${i.rotulo}: ${xDeY(i.valor, total)}`}>
-              {/* 4px de raio na ponta do dado, ancorada na linha de base */}
-              <rect x="0" y="3" rx="4" ry="4" height="10"
-                width={`${(i.valor / maximo) * 100}%`}
-                fill={passoRampa(i.valor, maximo)} />
-            </svg>
-          </div>
-          {/* Valor em token de texto, nunca na cor da série */}
-          <span className="w-28 shrink-0 text-right text-ink tabular-nums">
-            {xDeY(i.valor, total)}
-          </span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /** Heatmap tipo × estado. Grade de magnitude → uma hue sequencial. */
 function MapaTipoEstado({ dados, total }: {
   dados: RespostaIndicadores['tipo_estado']; total: number
@@ -342,9 +291,20 @@ function HistoricoResolvidos({ dias }: { dias: number }) {
 }
 
 export default function ChamadosIndicadores() {
+  // Um filtro só, para TODA a análise da aba. Ele vai para o servidor porque
+  // é lá que as contas são feitas: filtrar a lista no cliente deixaria os
+  // totais falando da fila inteira enquanto os gráficos falam de uma pessoa.
+  const [responsavel, setResponsavel] = useState('')
+
   const { data, isLoading, isError, error } = useQuery<RespostaIndicadores>({
-    queryKey: ['chamados-indicadores'],
-    queryFn: () => apiFetch('/chamados/indicadores'),
+    queryKey: ['chamados-indicadores', responsavel],
+    queryFn: () => apiFetch(
+      `/chamados/indicadores${responsavel
+        ? `?responsavel=${encodeURIComponent(responsavel)}` : ''}`),
+    // Mantém o gráfico anterior na tela enquanto o novo carrega: sem isso, a
+    // aba pisca em branco a cada troca de responsável e perde-se a comparação
+    // que a pessoa estava fazendo.
+    placeholderData: anterior => anterior,
   })
 
   if (isLoading) return <PageSpinner />
@@ -369,6 +329,38 @@ export default function ChamadosIndicadores() {
 
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
+      {/* O filtro que vale para a aba inteira. Fica no topo, e não dentro de
+          um painel, porque ele não pertence a nenhum deles: pertence a todos. */}
+      <div className="lg:col-span-2 flex flex-wrap items-center gap-2">
+        <label htmlFor="filtro-responsavel" className="text-xs text-dim">
+          Responsável
+        </label>
+        <select id="filtro-responsavel" value={responsavel}
+          onChange={e => setResponsavel(e.target.value)}
+          className="bg-canvas border border-edge rounded-md text-xs px-2 py-1
+            text-ink min-w-56">
+          <option value="">todos ({d.total_ativos})</option>
+          {(d.responsaveis ?? []).map(r => (
+            /* O total ao lado do nome: quem analisa escolhe melhor vendo
+               "Fulano (12)" do que uma lista de nomes soltos. */
+            <option key={r.nome} value={r.nome}>{r.nome} ({r.total})</option>
+          ))}
+        </select>
+        {/* O aviso existe porque TODO número da aba muda com o filtro. Sem
+            ele, um print desta tela vira "a fila tem 16 chamados". */}
+        {d.responsavel && (
+          <span className="text-[11px] text-amber-700 dark:text-yellow-400">
+            todos os números abaixo são apenas de {d.responsavel}
+          </span>
+        )}
+        {d.responsavel && (
+          <button type="button" onClick={() => setResponsavel('')}
+            className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline">
+            limpar
+          </button>
+        )}
+      </div>
+
       {/* O painel base (aging, tipo × estado, fluxo, carga) continua servido
           mesmo sem as colunas novas — mas o que falta precisa ser DITO, senão
           os painéis ausentes parecem dados zerados. */}
@@ -381,9 +373,16 @@ export default function ChamadosIndicadores() {
           seguem com os dados de sempre.
         </div>
       )}
+      {/* O denominador aqui é `total_em_fila`, e NÃO `total_ativos`: o aging
+          exclui quem já foi resolvido, porque a pergunta é "tem coisa velha
+          PARADA?" e ela existe para priorizar. Com o total geral, o "x de y"
+          diria "27 de 56" — vinte e sete velhos sobre uma fila que inclui o
+          trabalho já feito. */}
       <Painel titulo="Idade dos chamados na fila"
-        descricao={`Quanto tempo os ${d.total_ativos} chamados abertos estão esperando.`}>
-        <BarrasHorizontais total={d.total_ativos}
+        descricao={`Há quanto tempo os ${d.total_em_fila} chamados ainda não `
+          + `resolvidos estão esperando. Resolvidos ficam de fora: eles não `
+          + `estão parados, estão prontos.`}>
+        <BarrasHorizontais total={d.total_em_fila}
           itens={d.aging.map(a => ({ rotulo: a.faixa, valor: a.total }))} />
       </Painel>
 
