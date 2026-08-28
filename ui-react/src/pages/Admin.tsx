@@ -10,6 +10,7 @@ import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
 import { Tabs } from '../components/ui/Tabs'
 import { queryClient } from '../lib/queryClient'
+import { senhaParaEnviar } from '../lib/servicenowConfig'
 import { renderMarkdown } from '../lib/markdown'
 import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
 import {
@@ -3564,9 +3565,10 @@ function SondaServiceNowTab() {
       proxy: cfgForm.proxy, habilitado: cfgForm.habilitado,
       triagem_habilitada: cfgForm.triagem_habilitada,
       triagem_lote: cfgForm.triagem_lote,
-      // string vazia = manter a senha atual; só envia quando o operador
-      // escolheu trocá-la de fato.
-      senha: trocarSenha ? cfgForm.senha : '',
+      // string vazia = manter a senha atual. A regra e o porquê estão em
+      // `lib/servicenowConfig` — inclusive o caso da PRIMEIRA senha, que sem
+      // ela nunca saía daqui.
+      senha: senhaParaEnviar(cfgForm.senha, trocarSenha, !!cfg?.tem_senha),
     }),
     onSuccess: (d: { mensagem?: string }) => {
       toast.success(d.mensagem ?? 'Configuração salva.')
