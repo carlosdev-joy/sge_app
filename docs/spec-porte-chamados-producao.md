@@ -1,7 +1,8 @@
 # Spec — Porte do módulo ServiceNow desenvolvido em produção
 
 > **Status:** RASCUNHO, aguardando aprovação.
-> **Origem:** foto de produção `18046a8`, preservada na tag local `foto-producao-20260827`
+> **Origem:** foto de produção — `18046a8` (código) e `fe1376b` (schema completo,
+> migrations, nginx e compose). Preservadas na tag local `foto-producao-20260827`
 > e no bundle `/root/backups-orquestra/foto-producao-20260827.bundle`.
 > A branch pública `backup/producao-20260827` foi **removida do GitHub** em 2026-08-27
 > (levava `dump_prod.sql`, `producao_base.rpt` e `prod_info` para um repositório público).
@@ -81,35 +82,60 @@ existem em `tests/` com conteúdo diferente (`test_chamados_api.py`,
 ambiente sem UI legada (`basename` removido, rotas próprias). A `main` já resolveu isso
 por outro caminho, e seu `src` tem 182 arquivos contra os 34 da foto.
 
-## 4. O que o banco precisa — e ainda não sabemos
+## 4. O banco — resolvido na segunda foto (`fe1376b`)
 
-O código usa **9 tabelas que não têm migration em lugar nenhum**:
+O código usa 9 tabelas que não tinham migration em lugar nenhum:
 
 `etl_chamado_anexo` · `etl_chamado_ciclo` · `etl_chamado_nota` · `etl_indicador_meta` ·
 `etl_indicador_snapshot` · `etl_indicador_snapshot_analista` ·
 `etl_indicador_snapshot_grupo` · `etl_servicenow_grupo` · `etl_sn_categoria`
 
-Foram criadas direto no banco de produção. Nenhuma migration nova veio na foto, e o
-`prod_info` que veio junto é um snapshot antigo (33 tabelas, nenhuma delas). **Sem o DDL
-real, o módulo não sobe em ambiente nenhum** — e escrever a migration "deduzindo" tipo,
-nulidade e índice a partir das queries produz um schema parecido, que aceita os `SELECT`
-de hoje e quebra no primeiro dado fora do formato imaginado.
+A segunda foto trouxe **`sql/migrations/000_schema_completo.sql`** — o schema real de
+produção, 81 tabelas em DDL idempotente. **As 9 estão todas lá.** A F0 deixa de estar
+bloqueada.
 
-O DDL sai do próprio banco (comando em §7.1). É o **único bloqueio real** desta spec.
+Vieram também 7 migrations da linhagem de produção: `089_chamados_parent`,
+`093_chamados_atribuido_email`, `094_chamados_nota_anexo`, `095_chamados_anexo`,
+`096_chamado_ciclo`, `097_indicador_snapshot`, `098_sn_grupo_gatilho`.
+
+### 4.1 ⚠️ Duas linhagens de migration, com números que colidem
+
+| Nº | Na `main` | Em produção |
+|---|---|---|
+| 089 | `089_servicenow_proxy.sql` | `089_chamados_parent.sql` |
+| 093 | `093_chamado_triagem.sql` | `093_chamados_atribuido_email.sql` |
+
+Os números batem, o conteúdo não. No porte, as de produção **entram renumeradas a partir
+da 094** — a `main` já vai até a 093. E `dbo.etl_schema_version` rastreia por **nome**, o
+que significa que produção terá as duas listas registradas: as da `main`, aplicadas pelo
+deploy, e as da linhagem local.
+
+### 4.2 A `089_chamados_parent` é migration morta — não portar
+
+Ela adiciona `parent_sys_id` a `etl_chamado`. **Essa coluna não existe no schema de
+produção** (zero ocorrências no `000_schema_completo.sql`): o banco real usa
+`pai_sys_id` / `pai_numero` / `estado_cru`, que são as colunas da **`090` da `main`**.
+
+Ou seja: as duas linhas resolveram o parentesco de formas diferentes, e a que sobreviveu
+no banco foi a nossa. Portar a `089` de produção criaria uma segunda coluna para o mesmo
+fato, com um índice a mais e nenhum leitor — a próxima pessoa que abrir a tabela teria
+que descobrir sozinha qual das duas vale.
 
 ## 5. Fases
 
-### F0 — As 9 tabelas viram migrations `094`+
+### F0 — As 9 tabelas viram migrations `094`+ ✅ **destravada**
 
-Do DDL extraído do banco, uma migration idempotente por assunto, rastreada em
-`dbo.etl_schema_version`.
+Fonte: `000_schema_completo.sql` da segunda foto (§4), conferido contra as 5 migrations
+de produção que descrevem as mesmas tabelas (`094`–`098`). Uma migration idempotente por
+assunto, renumerada a partir da `094`, rastreada em `dbo.etl_schema_version`.
 
+- **Não portar a `089_chamados_parent`** (§4.2): `parent_sys_id` não existe no banco.
 - **Aceite:** `migrate.py --dry-run` num banco limpo aplica tudo sem erro; reaplicar não
   altera nada; `sql/tests` cobre a criação.
 - **Atenção:** índice filtrado (`CREATE INDEX ... WHERE`) falha no `sqlcmd` por
   `QUOTED_IDENTIFIER` e, se criado assim, quebra todo DML da tabela pelo `sqlcmd`
-  enquanto o `pymssql` da DAG segue verde.
-- **Bloqueada por:** DDL de produção (§7.1).
+  enquanto o `pymssql` da DAG segue verde. A `089` de produção usa exatamente esse
+  padrão — ao renumerar as outras, conferir uma a uma.
 
 ### F1 — O motor de sincronização
 
@@ -161,21 +187,47 @@ atuais (a tela da foto foi escrita contra a base de junho).
 - `dist/` rebuildada e commitada.
 - **Aceite:** `tsc` 0 erros, `eslint` idêntico ao baseline, build ok.
 
-### F5 — Reconquistar o card por trabalho
+### F5 — Alinhar o recorte dos indicadores ao da fila
 
-As PRs #327/#328 foram fechadas por decisão do dono do produto (a base do porte é a
-versão de produção). O que elas prendiam **não existe na versão de produção** e volta a
-ser defeito se ninguém reaplicar:
+**Verificado no código de produção: o card duplicado já está resolvido**, por um caminho
+diferente do que as #327/#328 propunham — e o resultado na fila é o mesmo.
 
-- **um card por trabalho** (RITM × SCTASK): a fila mostra 113 registros para ~60
-  trabalhos;
-- **paridade Fila × Indicadores**: sem o mesmo recorte nas agregações, a aba Indicadores
-  diz 113 onde a Fila diz 60 — e as duas parecem certas;
-- os testes de agrupamento (órfã, auto-referência, ciclo `A↔B`, cadeia `A←B←C`) e o
-  anti-drift que varre por AST as queries sem o recorte.
+`Chamados.tsx`, linha 474:
 
-O código está preservado nas branches `feat/chamados-card-por-trabalho` e
-`feat/chamados-indicadores-trabalho`, que **não foram apagadas**.
+```ts
+(resp?.chamados ?? []).filter(c => !(c.tipo === 'task' && c.pai_sys_id))
+```
+
+Esconde a task **que tem pai**; a task **órfã continua card**. É exatamente o
+comportamento que a #327 defendia. O RITM mostra suas tasks dentro do card, buscadas em
+`/chamados/{sys_id}/tasks`. Os contadores da tela (total e colunas do kanban) são
+recalculados sobre esse mesmo recorte, então fila e kanban concordam entre si.
+
+**O que resta é uma divergência silenciosa entre a tela e as contas:**
+
+| Onde | Recorte | Órfã |
+|---|---|---|
+| Fila e kanban (front) | `NOT (tipo='task' AND pai_sys_id)` | **conta** |
+| Indicadores, dashboard, histórico (API) | `tipo != 'task'` | **não conta** |
+
+Enquanto não existir sc_task órfã, os dois dão o mesmo número e tudo parece certo. No dia
+em que existir — task cujo pai saiu do filtro de grupo, ou que chegou antes do pai — a
+fila mostra o card e nenhum indicador o conta. Nada avisa.
+
+Há ainda o campo `total` da resposta de `/chamados`: ele é `len(chamados)`, ou seja, conta
+as tasks com pai também. A tela não o exibe (usa só como `> 0`), mas qualquer outro
+consumidor lê 113 onde a tela mostra ~60.
+
+**Entrega:** trocar `tipo != 'task'` por `NOT (tipo='task' AND pai_sys_id IS NOT NULL)`
+nas agregações, com `NOT EXISTS` — nunca `NOT IN`, que com um NULL na subconsulta devolve
+conjunto vazio e zera a conta inteira sem erro nenhum. Mais o `total` coerente com o
+recorte.
+
+**Aceite:** teste de paridade que prova o mesmo número nos dois lados **com uma órfã
+presente** no cenário — sem ela, o teste passa verde com o defeito intacto. Mais o
+anti-drift que varre as queries sem o recorte (o das branches preservadas
+`feat/chamados-card-por-trabalho` e `feat/chamados-indicadores-trabalho`, que não foram
+apagadas).
 
 ### F6 — Fecho: manual, smoke e aceitação
 
@@ -185,17 +237,46 @@ Manual do usuário, roteiro de smoke (§7.2) e a revisão adversarial única de 
 
 | # | Risco | Mitigação |
 |---|---|---|
-| 1 | DDL deduzido do código gera schema parecido que quebra no primeiro dado real | F0 bloqueada até o DDL sair do banco |
+| 1 | ~~DDL ausente~~ — resolvido pelo `000_schema_completo.sql` da 2ª foto | conferir cada tabela contra as migrations 094–098 antes de renumerar |
 | 2 | Rotas admin sem permissão — **exposição viva hoje** | F3, com teste de 403 |
 | 3 | Front da foto escrito contra base de junho | F4 adapta; `App.tsx`/`nav.ts` não são portados |
 | 4 | Agrupamento RITM × SCTASK perdido ao fechar #327/#328 | F5 explícita, branches preservadas |
 | 5 | Mudança em `dags/utils/` sem restart do worker | task verde com código antigo — o `deploy.sh` avisa desde a #313 |
 | 6 | Testes homônimos sobrescritos na migração | mesclar, nunca substituir |
 | 7 | Produção diverge de novo durante o porte | nenhum deploy até o porte fechar; `api/` é sincronizado **sem perguntar** |
+| 8 | Números de migration colidindo (089, 093) entre as duas linhagens | renumerar a partir da 094; `etl_schema_version` rastreia por nome, então produção fica com as duas listas |
+| 9 | Órfã visível na fila e ausente das contas — silencioso enquanto não houver órfã | F5, com teste que **inclui uma órfã no cenário** |
 
 ## 7. Operação
 
-### 7.1 Extrair o DDL (bloqueia a F0)
+### 7.1 Medir a divergência da F5 no banco de produção
+
+Responde, com dado, se a órfã é hipótese ou fato hoje. `NOT EXISTS`, nunca `NOT IN`.
+
+```sql
+-- 1) tasks ativas sem pai gravado
+SELECT COUNT(*) AS orfas_sem_pai FROM dbo.etl_chamado
+ WHERE ativo = 1 AND tipo = 'task' AND pai_sys_id IS NULL;
+
+-- 2) tasks ativas cujo pai não está na fila ativa
+SELECT COUNT(*) AS orfas_pai_fora FROM dbo.etl_chamado t
+ WHERE t.ativo = 1 AND t.tipo = 'task' AND t.pai_sys_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM dbo.etl_chamado p
+                    WHERE p.sys_id = t.pai_sys_id AND p.ativo = 1);
+
+-- 3) os dois recortes lado a lado: se divergirem, a divergência JÁ existe
+SELECT
+  (SELECT COUNT(*) FROM dbo.etl_chamado
+    WHERE ativo = 1 AND tipo != 'task')                                    AS conta_indicadores,
+  (SELECT COUNT(*) FROM dbo.etl_chamado
+    WHERE ativo = 1 AND NOT (tipo = 'task' AND pai_sys_id IS NOT NULL))    AS conta_fila,
+  (SELECT COUNT(*) FROM dbo.etl_chamado WHERE ativo = 1)                   AS total_espelho;
+```
+
+### 7.2 Extrair o DDL — ✅ **não é mais necessário**
+
+Resolvido pelo `000_schema_completo.sql` da segunda foto. Fica registrado para o caso de
+precisar conferir o banco contra o schema:
 
 ```bash
 cd /opt/airflow
@@ -211,7 +292,7 @@ cur.execute('SELECT t.name,i.name,i.type_desc,i.is_unique,i.is_primary_key,c.nam
 " > /tmp/ddl-chamados.txt 2>&1; cat /tmp/ddl-chamados.txt
 ```
 
-### 7.2 Smoke pós-deploy
+### 7.3 Smoke pós-deploy
 
 1. `/chamados` abre e a fila lista.
 2. Um chamado abre o detalhe; um anexo baixa pelo proxy.
@@ -227,11 +308,16 @@ cur.execute('SELECT t.name,i.name,i.type_desc,i.is_unique,i.is_primary_key,c.nam
    do produto, 2026-08-27). O que elas prendiam vira a F5.
 2. **A branch pública saiu do GitHub** — o material está na tag local e no bundle.
 3. **Nenhum deploy até o porte fechar** — `deploy.sh` sobrescreve `api/` sem perguntar.
+4. **Validar no ambiente dev antes de produção** — o `000_schema_completo.sql` permite
+   levantar um banco idêntico ao de produção, e o dev tem Airflow + SQL Server + API +
+   front (runbook em `docs/ambiente-dev.md`).
 
 ## 9. Pendências
 
-- [ ] **DDL das 9 tabelas (§7.1) — bloqueia a F0.** É a única pendência que trava
-      trabalho.
+- [x] ~~DDL das 9 tabelas — bloqueava a F0~~. Resolvido pelo `000_schema_completo.sql`
+      da segunda foto (`fe1376b`): 81 tabelas idempotentes, as 9 presentes. **Nenhuma
+      pendência trava trabalho agora.**
+- [ ] Rodar a §7.1 no banco de produção para saber se a divergência da F5 já é fato
 - [x] ~~Quem alimenta `etl_indicador_*`~~ — o próprio `servicenow_sync.py` grava os três
       snapshots (`etl_indicador_snapshot`, `_analista`, `_grupo`) no fim do ciclo. Isso
       **acopla F0 e F1**: o motor insere nas tabelas que a F0 cria, então a F1 não fecha
