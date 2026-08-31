@@ -1,108 +1,47 @@
-// Workflow inline da home no DS nativo — reescrita do InlineWorkflow shadcn
-// (F8). Card colapsável com resumo por status, filtros com sub-status,
-// alerta em lote e lista de propostas com ação por status — incluindo o
-// movimento de Emissão (sensitization_monitoring → emission_sent, estado
-// local). Todos os diálogos são os nativos das F3/F7/F8.
+// Workflow inline da home no DS nativo — card colapsável com resumo por
+// status, filtros com sub-status, alerta em lote e lista de propostas com ação
+// por status, incluindo o movimento de Emissão (sensitization_monitoring →
+// emission_sent, estado local). Todos os diálogos são os nativos das F3/F7/F8.
 //
-// A SEQUÊNCIA dos cards segue o desenho aprovado (sequencia_wkf.png): ordem,
-// nomes e o círculo de sinalização. O mock tem 18 propostas: as 17 originais
-// (uma delas convertida de `approved` para `paid`, já que o card de origem
-// saiu do desenho) mais 1 cópia para "Propostas Emitidas".
+// A sequência dos cards, os rótulos e as propostas vêm de `lib/workflow.ts` —
+// a MESMA fonte que o painel do botão "Workflow" (ProposalWorkflowSheet) lê.
+// Antes cada um tinha a sua lista e o seu mock, na mesma tela.
 import { useState } from "react";
 import { ChevronDown, ChevronUp, CircleCheck, Send, TrendingDown, TriangleAlert } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Input";
 import { toast } from "../../components/ui/Toast";
-import ProposalDetailDialog, { type ProposalOrq } from "./ProposalDetailDialog";
+import ProposalDetailDialog from "./ProposalDetailDialog";
 import ResendLinkDialog from "./ResendLinkDialog";
 import DocumentUploadDialog from "./DocumentUploadDialog";
 import DPSLinkDialog from "./DPSLinkDialog";
 import SendAlertDialog from "./SendAlertDialog";
 import PaymentOptionsDialog from "./PaymentOptionsDialog";
 import RefundManagementDialog from "./RefundManagementDialog";
+import {
+  contarPorStatus,
+  propostasWorkflow,
+  FORMA_PAGAMENTO,
+  SEQUENCIA_WORKFLOW,
+  STATUS_COR,
+  STATUS_LABEL_CURTO,
+  SUB_STATUS_ANALISE,
+  SUB_STATUS_DEVOLUCAO,
+  SUB_STATUS_PAGAMENTO,
+  type PropostaWorkflow,
+  type SinalWorkflow,
+  type StatusWorkflow,
+} from "../lib/workflow";
 
-type WorkflowStatus = ProposalOrq["status"];
-
-interface WorkflowProposal extends ProposalOrq {
-  status: WorkflowStatus;
-  region: string;
-  ageRange: string;
-  broker: string;
-  daysInPending: number;
-  documentSubStatus?: "incomplete" | "mismatch" | "no_signature" | "illegible";
-  paymentMethod?: "boleto" | "debit" | "credit";
-  signedSubStatus?: "payment_cycle" | "payment_ended";
-  refundSubStatus?: "scheduled" | "pending_value";
-  policy?: string;
-}
-
-// Mesmo mock do InlineWorkflow original (17 propostas).
-const mockWorkflowProposals: WorkflowProposal[] = [
-  { id: "1", number: "80316460327404", insuredName: "Maria Silva", status: "pending_signature", value: "R$ 2.200,00", product: "Perda de Renda", region: "Sul", ageRange: "45-60", broker: "Mariana", daysInPending: 5, date: "23/10/2025", indicatorId: "106562-2", agency: "316", cpf: "397.750.878-48", phone: "(11) 98765-4321", email: "maria@example.com" },
-  { id: "2", number: "80316460327405", insuredName: "João Santos", status: "paid", value: "R$ 1.800,00", product: "Vida Multipremiado", region: "Sudeste", ageRange: "30-40", broker: "João", daysInPending: 0, date: "22/10/2025", indicatorId: "106563-3", agency: "315", cpf: "123.456.789-00", phone: "(11) 98765-4322", email: "joao@example.com" },
-  { id: "3", number: "80316460327406", insuredName: "Ana Costa", status: "pending_documentation", value: "R$ 3.000,00", product: "Vida Mulher", region: "Sul", ageRange: "50-65", broker: "Ana", daysInPending: 8, date: "21/10/2025", indicatorId: "106564-4", agency: "314", cpf: "234.567.890-11", phone: "(11) 98765-4323", email: "ana@example.com", documentSubStatus: "incomplete" },
-  { id: "4", number: "80316460327407", insuredName: "Carlos Oliveira", status: "pending_signature", value: "R$ 950,00", product: "Vida Conforto", region: "Nordeste", ageRange: "25-35", broker: "Carlos", daysInPending: 6, date: "20/10/2025", indicatorId: "106565-5", agency: "313", cpf: "345.678.901-22", phone: "(11) 98765-4324", email: "carlos@example.com" },
-  { id: "5", number: "80316460327408", insuredName: "Fernanda Lima", status: "refund_scheduled", value: "R$ 2.700,00", product: "Perda de Renda", region: "Centro-Oeste", ageRange: "35-50", broker: "Fernanda", daysInPending: 0, date: "19/10/2025", indicatorId: "106566-6", agency: "312", cpf: "456.789.012-33", phone: "(11) 98765-4325", email: "fernanda@example.com", declineReason: "Renda insuficiente para o valor solicitado. Perfil de risco não compatível com os critérios de aceitação.", refundSubStatus: "scheduled", policy: "34567890" },
-  { id: "6", number: "80316460327409", insuredName: "Rafael Mendes", status: "sensitization_monitoring", value: "R$ 2.500,00", product: "Vida Mulher", region: "Sudeste", ageRange: "28-45", broker: "Rafael", daysInPending: 2, date: "18/10/2025", indicatorId: "106567-7", agency: "311", cpf: "567.890.123-44", phone: "(11) 98765-4326", email: "rafael@example.com" },
-  { id: "7", number: "80316460327410", insuredName: "Paula Rodrigues", status: "refund_scheduled", value: "R$ 1.500,00", product: "Vida Conforto", region: "Norte", ageRange: "40-55", broker: "Paula", daysInPending: 0, date: "17/10/2025", indicatorId: "106568-8", agency: "310", cpf: "678.901.234-55", phone: "(11) 98765-4327", email: "paula@example.com", declineReason: "Histórico de saúde pré-existente incompatível com as condições da apólice. Necessária reavaliação médica.", refundSubStatus: "scheduled", policy: "45678901" },
-  { id: "8", number: "80316460327411", insuredName: "Bruno Alves", status: "sensitization_monitoring", value: "R$ 3.200,00", product: "Perda de Renda", region: "Sul", ageRange: "35-50", broker: "Bruno", daysInPending: 4, date: "16/10/2025", indicatorId: "106569-9", agency: "309", cpf: "789.012.345-66", phone: "(11) 98765-4328", email: "bruno@example.com" },
-  { id: "9", number: "80316460327412", insuredName: "Juliana Costa", status: "pending_documentation", value: "R$ 1.900,00", product: "Vida Conforto", region: "Nordeste", ageRange: "30-45", broker: "Juliana", daysInPending: 10, date: "15/10/2025", indicatorId: "106570-0", agency: "308", cpf: "890.123.456-77", phone: "(11) 98765-4329", email: "juliana@example.com", documentSubStatus: "mismatch" },
-  { id: "10", number: "80316460327413", insuredName: "Roberto Silva", status: "pending_documentation", value: "R$ 2.100,00", product: "Vida Mulher", region: "Sul", ageRange: "40-55", broker: "Roberto", daysInPending: 7, date: "14/10/2025", indicatorId: "106571-1", agency: "307", cpf: "901.234.567-88", phone: "(11) 98765-4330", email: "roberto@example.com", documentSubStatus: "no_signature" },
-  { id: "11", number: "80316460327414", insuredName: "Carla Mendes", status: "pending_documentation", value: "R$ 1.750,00", product: "Perda de Renda", region: "Centro-Oeste", ageRange: "35-50", broker: "Carla", daysInPending: 12, date: "13/10/2025", indicatorId: "106572-2", agency: "306", cpf: "012.345.678-99", phone: "(11) 98765-4331", email: "carla@example.com", documentSubStatus: "illegible" },
-  { id: "12", number: "80316460327415", insuredName: "Pedro Santos", status: "awaiting_payment", value: "R$ 2.400,00", product: "Vida Multipremiado", region: "Sudeste", ageRange: "30-40", broker: "Pedro", daysInPending: 4, date: "12/10/2025", indicatorId: "106573-3", agency: "305", cpf: "123.456.789-10", phone: "(11) 98765-4332", email: "pedro@example.com", paymentMethod: "debit" },
-  { id: "13", number: "80316460327416", insuredName: "Lucia Oliveira", status: "awaiting_payment", value: "R$ 1.650,00", product: "Vida Conforto", region: "Norte", ageRange: "45-60", broker: "Lucia", daysInPending: 6, date: "11/10/2025", indicatorId: "106574-4", agency: "304", cpf: "234.567.890-21", phone: "(11) 98765-4333", email: "lucia@example.com", paymentMethod: "boleto" },
-  { id: "13b", number: "80316460327414", insuredName: "Antonio Souza", status: "awaiting_payment", value: "R$ 1.980,00", product: "Vida Multipremiado", region: "Centro-Oeste", ageRange: "35-50", broker: "Antonio", daysInPending: 3, date: "11/10/2025", indicatorId: "106574-5", agency: "304", cpf: "345.678.901-43", phone: "(11) 98765-4337", email: "antonio@example.com", paymentMethod: "credit" },
-  { id: "14", number: "80316460327417", insuredName: "Marcos Costa", status: "pending_dps", value: "R$ 2.800,00", product: "Vida Mulher", region: "Sul", ageRange: "50-65", broker: "Marcos", daysInPending: 5, date: "10/10/2025", indicatorId: "106575-5", agency: "303", cpf: "345.678.901-32", phone: "(11) 98765-4334", email: "marcos@example.com" },
-  { id: "15", number: "80316460327418", insuredName: "Adriana Lima", status: "signed_proposal", value: "R$ 1.950,00", product: "Perda de Renda", region: "Nordeste", ageRange: "35-50", broker: "Adriana", daysInPending: 0, date: "09/10/2025", indicatorId: "106576-6", agency: "302", cpf: "456.789.012-43", phone: "(11) 98765-4335", email: "adriana@example.com", signedSubStatus: "payment_cycle", policy: "12345678" },
-  { id: "16", number: "80316460327419", insuredName: "Ricardo Santos", status: "refund_scheduled", value: "R$ 2.300,00", product: "Vida Mulher", region: "Sul", ageRange: "40-55", broker: "Ricardo", daysInPending: 7, date: "08/10/2025", indicatorId: "106577-7", agency: "301", cpf: "567.890.123-54", phone: "(11) 98765-4336", email: "ricardo@example.com", declineReason: "Informações inconsistentes na documentação.", refundSubStatus: "pending_value", policy: "23456789" },
-  // ── Simulação de "Propostas Emitidas" ─────────────────────────────────────
-  // O status entrou na sequência sem nenhuma proposta no mock, e card zerado
-  // não deixa ver o layout nem exercitar o filtro. Esta é uma CÓPIA de uma
-  // proposta existente com o status trocado — mesmo formato de número,
-  // agência e produto do resto da base, para não destoar na lista.
-  //
-  // "Propostas Pagas" NÃO precisa de cópia: a proposta que estava em
-  // `approved` ("Ass. e Sensibilizado", card que saiu com o desenho) foi
-  // convertida, em vez de ficar órfã — visível só em "Todas as Propostas".
-  { id: "18", number: "80316460327421", insuredName: "Sergio Barbosa", status: "emission_sent", value: "R$ 1.720,00", product: "Vida Conforto", region: "Sul", ageRange: "40-55", broker: "Sergio", daysInPending: 0, date: "06/10/2025", indicatorId: "106579-9", agency: "299", cpf: "789.012.345-76", phone: "(11) 98765-4339", email: "sergio@example.com", policy: "45678901" },
-];
-
-// ── Sequência do workflow ───────────────────────────────────────────────────
-// A ORDEM e os NOMES abaixo espelham o desenho aprovado (sequencia_wkf.png):
-// é a sequência que a operação segue, não uma lista alfabética nem a ordem em
-// que os status foram implementados.
-//
-// O `sinal` é o ícone à direita de cada card, e diz o que aquele número
-// significa para a operação:
-//   • aviso    (amarelo)  — parada esperando alguém agir;
-//   • perda    (vermelho) — negócio perdido;
-//   • positivo (verde)    — avançou no funil.
-//
 // ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
 // alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
-// branco — a cor vira reforço, não a informação. E o `title`/`aria-label`
-// leva a frase inteira, para quem usa leitor de tela.
+// branco — a cor vira reforço, não a informação. E o `title`/`aria-label` leva
+// a frase inteira, para quem usa leitor de tela.
 //
-// Discretos de propósito (14px, traço fino, tom 500): o número é a
-// informação principal do card; o sinal qualifica, não compete.
-type Sinal = "aviso" | "perda" | "positivo";
-
-const statusInfo: { value: string; label: string; sinal?: Sinal }[] = [
-  { value: "all", label: "Todas as Propostas" },
-  { value: "pending_signature", label: "Aguardando Assinatura", sinal: "aviso" },
-  { value: "signed_proposal", label: "Proposta Assinada", sinal: "positivo" },
-  { value: "awaiting_payment", label: "Aguardando Pagamento", sinal: "aviso" },
-  { value: "paid", label: "Propostas Pagas", sinal: "positivo" },
-  { value: "pending_documentation", label: "Pendência Documental", sinal: "aviso" },
-  { value: "pending_dps", label: "Pendência de DPS", sinal: "aviso" },
-  { value: "emission_sent", label: "Propostas Emitidas", sinal: "positivo" },
-  { value: "refund_scheduled", label: "Propostas Declinadas", sinal: "perda" },
-  { value: "return_in_progress", label: "Devolução em Andamento", sinal: "aviso" },
-  { value: "sensitization_monitoring", label: "Monitoramento de Sensibilização", sinal: "positivo" },
-];
-
-const SINAL_ICONE: Record<Sinal, LucideIcon> = {
+// Discretos de propósito (14px, traço fino, tom 500): o número é a informação
+// principal do card; o sinal qualifica, não compete.
+const SINAL_ICONE: Record<SinalWorkflow, LucideIcon> = {
   aviso:    TriangleAlert,   // atenção: algo esperando
   perda:    TrendingDown,    // negócio que caiu — não é "erro", é perda
   positivo: CircleCheck,     // avançou
@@ -111,57 +50,26 @@ const SINAL_ICONE: Record<Sinal, LucideIcon> = {
 // Tom 500 nos três: forte o bastante para distinguir, fraco o bastante para
 // não brigar com o número ao lado. O dark: mantém o contraste no tema escuro,
 // onde o 500 puro fica apagado.
-const SINAL_CLASSE: Record<Sinal, string> = {
+const SINAL_CLASSE: Record<SinalWorkflow, string> = {
   aviso:    "text-amber-500 dark:text-amber-400",
   perda:    "text-red-500 dark:text-red-400",
   positivo: "text-emerald-500 dark:text-emerald-400",
 };
 
-const SINAL_TEXTO: Record<Sinal, string> = {
+const SINAL_TEXTO: Record<SinalWorkflow, string> = {
   aviso:    "Aviso: propostas paradas aguardando ação",
   perda:    "Perda: negócios que não seguiram adiante",
   positivo: "Ação positiva: propostas que avançaram no funil",
 };
 
-const documentSubStatusLabels: Record<string, string> = {
-  incomplete: "Proposta incompleta",
-  mismatch: "Documento não corresponde a proposta",
-  no_signature: "Proposta sem assinatura",
-  illegible: "Documento Ilegível",
+// Qual campo cada status filtra no segundo Select. Um mapa só, em vez de três
+// blocos repetidos: status novo com sub-status entra aqui e passa a valer no
+// filtro E na contagem, sem depender de alguém lembrar dos dois lugares.
+const SUB_FILTRO: Partial<Record<StatusWorkflow, { campo: keyof PropostaWorkflow; opcoes: Record<string, string> }>> = {
+  awaiting_payment: { campo: "pagamentoSubStatus", opcoes: SUB_STATUS_PAGAMENTO },
+  in_analysis:      { campo: "analiseSubStatus",   opcoes: SUB_STATUS_ANALISE },
+  refund_scheduled: { campo: "refundSubStatus",    opcoes: SUB_STATUS_DEVOLUCAO },
 };
-
-// Cores das vars antigas → fixas (mesma régua das outras telas nativas).
-const STATUS_BADGE: Record<string, string> = {
-  pending_signature: "bg-[#F26B00]",
-  approved: "bg-emerald-600",
-  awaiting_payment: "bg-amber-500",
-  signed_proposal: "bg-emerald-600",
-  pending_documentation: "bg-red-600",
-  pending_dps: "bg-blue-600",
-  sensitization_monitoring: "bg-red-500",
-  return_in_progress: "bg-emerald-600",
-  declined: "bg-amber-500",
-  emission_sent: "bg-blue-600",
-  refund_scheduled: "bg-red-600",
-  paid: "bg-emerald-600",
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  pending_signature: "Aguardando Assinatura",
-  approved: "Assinado e Sensibilizado",
-  awaiting_payment: "Aguardando Pagamento",
-  signed_proposal: "Proposta Assinada",
-  pending_documentation: "Pendência Documental",
-  pending_dps: "Pendência de DPS",
-  sensitization_monitoring: "Monitoramento de Sensibilização",
-  return_in_progress: "Devolução em Andamento",
-  declined: "Rejeitada",
-  emission_sent: "Movimento de Emissão Enviado, Aguardando confirmação",
-  refund_scheduled: "Propostas Declinadas",
-  paid: "Proposta Paga",
-};
-
-const PAYMENT_LABELS: Record<string, string> = { boleto: "Boleto", debit: "Débito em Conta", credit: "Crédito em Conta" };
 
 export default function InlineWorkflow() {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -174,48 +82,21 @@ export default function InlineWorkflow() {
   const [alertDialogOpen, setAlertDialogOpen] = useState(false);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [refundDialogOpen, setRefundDialogOpen] = useState(false);
-  const [selectedProposal, setSelectedProposal] = useState<WorkflowProposal | null>(null);
+  const [selectedProposal, setSelectedProposal] = useState<PropostaWorkflow | null>(null);
   const [proposalStatuses, setProposalStatuses] = useState<Record<string, string>>({});
   const [sendingEmission, setSendingEmission] = useState<string | null>(null);
 
-  const counts: Record<string, number> = {
-    all: mockWorkflowProposals.length,
-    pending_signature: 0,
-    approved: 0,
-    awaiting_payment: 0,
-    signed_proposal: 0,
-    pending_documentation: 0,
-    pending_dps: 0,
-    sensitization_monitoring: 0,
-    return_in_progress: 0,
-    declined: 0,
-    refund_scheduled: 0,
-    // Sem estas duas chaves o `counts[status] !== undefined` abaixo DESCARTA
-    // a proposta em silêncio, e os cards novos nasceriam zerados com dado no
-    // mock — o tipo de defeito que passa por "ainda não tem proposta nesse
-    // status" e ninguém investiga.
-    paid: 0,
-    emission_sent: 0,
-  };
-  mockWorkflowProposals.forEach((proposal) => {
-    const currentStatus = proposalStatuses[proposal.id] || proposal.status;
-    if (counts[currentStatus] !== undefined) counts[currentStatus]++;
-  });
+  const counts = contarPorStatus(propostasWorkflow, proposalStatuses);
+  const subFiltroAtivo = SUB_FILTRO[selectedStatus as StatusWorkflow];
 
-  const filteredProposals = mockWorkflowProposals
-    .filter((proposal) => {
-      const currentStatus = proposalStatuses[proposal.id] || proposal.status;
-      const statusMatch = selectedStatus === "all" || currentStatus === selectedStatus;
-      if (currentStatus === "pending_documentation" && selectedSubStatus !== "all") {
-        return statusMatch && proposal.documentSubStatus === selectedSubStatus;
+  const filteredProposals = propostasWorkflow
+    .filter((proposta) => {
+      const statusAtual = proposalStatuses[proposta.id] || proposta.status;
+      if (selectedStatus !== "all" && statusAtual !== selectedStatus) return false;
+      if (subFiltroAtivo && selectedSubStatus !== "all") {
+        return proposta[subFiltroAtivo.campo] === selectedSubStatus;
       }
-      if (currentStatus === "signed_proposal" && selectedSubStatus !== "all") {
-        return statusMatch && proposal.signedSubStatus === selectedSubStatus;
-      }
-      if (currentStatus === "refund_scheduled" && selectedSubStatus !== "all") {
-        return statusMatch && proposal.refundSubStatus === selectedSubStatus;
-      }
-      return statusMatch;
+      return true;
     })
     .sort((a, b) => b.daysInPending - a.daysInPending);
 
@@ -228,8 +109,8 @@ export default function InlineWorkflow() {
     }, 2000);
   };
 
-  const abrir = (proposal: WorkflowProposal, setter: (v: boolean) => void) => {
-    setSelectedProposal(proposal);
+  const abrir = (proposta: PropostaWorkflow, setter: (v: boolean) => void) => {
+    setSelectedProposal(proposta);
     setter(true);
   };
 
@@ -252,9 +133,9 @@ export default function InlineWorkflow() {
 
         {isExpanded && (
           <div className="p-6 border-t border-edge space-y-4">
-            {/* Cards-resumo por status */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
-              {statusInfo.slice(1).map((status) => (
+            {/* Cards-resumo por status — 4 + 4 nas telas largas */}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+              {SEQUENCIA_WORKFLOW.map((status) => (
                 <button
                   key={status.value}
                   onClick={() => {
@@ -270,14 +151,15 @@ export default function InlineWorkflow() {
                   {/* Sinal no canto INFERIOR direito, FORA do fluxo.
                       Duas razões, nesta ordem:
                       1. no topo ele disputaria espaço com o rótulo, que é o
-                         elemento longo e de altura variável ("Monitoramento
-                         de Sensibilização" ocupa a largura toda); embaixo
-                         convive com o número, que é curto e centralizado;
+                         elemento longo e de altura variável ("Devolução de
+                         Prêmio de Propostas Rejeitadas" ocupa três linhas);
+                         embaixo convive com o número, que é curto e
+                         centralizado;
                       2. tira o ícone do fluxo e devolve ao número o centro
                          do card. Antes os dois eram centralizados JUNTOS, e
                          o número mudava de posição conforme tivesse 1 ou 2
-                         dígitos — numa fileira de dez cards, dançavam. */}
-                  {status.sinal && (() => {
+                         dígitos — numa fileira de cards, dançavam. */}
+                  {(() => {
                     const Icone = SINAL_ICONE[status.sinal];
                     return (
                       <Icone
@@ -310,7 +192,8 @@ export default function InlineWorkflow() {
                   aria-label="Filtrar por status"
                   className="w-full"
                 >
-                  {statusInfo.map((status) => (
+                  <option value="all">Todas as Propostas ({counts.all})</option>
+                  {SEQUENCIA_WORKFLOW.map((status) => (
                     <option key={status.value} value={status.value}>
                       {status.label} ({counts[status.value]})
                     </option>
@@ -318,39 +201,27 @@ export default function InlineWorkflow() {
                 </Select>
               </div>
 
-              {selectedStatus === "pending_documentation" && (
+              {subFiltroAtivo && (
                 <div className="flex-1 min-w-[220px]">
-                  <Select value={selectedSubStatus} onChange={(e) => setSelectedSubStatus(e.target.value)} aria-label="Filtrar por sub-status" className="w-full">
+                  <Select
+                    value={selectedSubStatus}
+                    onChange={(e) => setSelectedSubStatus(e.target.value)}
+                    aria-label="Filtrar por sub-status"
+                    className="w-full"
+                  >
                     <option value="all">Todos os sub-status</option>
-                    <option value="incomplete">Proposta incompleta</option>
-                    <option value="mismatch">Documento não corresponde</option>
-                    <option value="no_signature">Proposta sem assinatura</option>
-                    <option value="illegible">Documento Ilegível</option>
-                  </Select>
-                </div>
-              )}
-              {selectedStatus === "signed_proposal" && (
-                <div className="flex-1 min-w-[220px]">
-                  <Select value={selectedSubStatus} onChange={(e) => setSelectedSubStatus(e.target.value)} aria-label="Filtrar por sub-status" className="w-full">
-                    <option value="all">Todos os sub-status</option>
-                    <option value="payment_cycle">Propostas em fase pagamento</option>
-                    <option value="payment_ended">Propostas com ciclo de pagamento encerrado</option>
-                  </Select>
-                </div>
-              )}
-              {selectedStatus === "refund_scheduled" && (
-                <div className="flex-1 min-w-[220px]">
-                  <Select value={selectedSubStatus} onChange={(e) => setSelectedSubStatus(e.target.value)} aria-label="Filtrar por sub-status" className="w-full">
-                    <option value="all">Todos os sub-status</option>
-                    <option value="scheduled">Devolução Programada</option>
-                    <option value="pending_value">Valor Pendente de Devolução</option>
+                    {Object.entries(subFiltroAtivo.opcoes).map(([valor, rotulo]) => (
+                      <option key={valor} value={valor}>
+                        {rotulo}
+                      </option>
+                    ))}
                   </Select>
                 </div>
               )}
             </div>
 
             {/* Alerta em lote */}
-            {filteredProposals.length > 0 && selectedStatus !== "all" && selectedStatus !== "approved" && (
+            {filteredProposals.length > 0 && selectedStatus !== "all" && (
               <Button variant="primary" onClick={() => setAlertDialogOpen(true)} className="w-full justify-center">
                 Enviar Alertas para Responsáveis
               </Button>
@@ -359,85 +230,90 @@ export default function InlineWorkflow() {
             {/* Lista */}
             <div className="max-h-[400px] overflow-y-auto pr-1">
               <div className="space-y-3">
-                {filteredProposals.map((proposal) => {
-                  const currentStatus = proposalStatuses[proposal.id] || proposal.status;
+                {filteredProposals.map((proposta) => {
+                  const statusAtual = (proposalStatuses[proposta.id] || proposta.status) as StatusWorkflow;
                   return (
                     <div
-                      key={proposal.id}
+                      key={proposta.id}
                       className="bg-canvas border border-edge rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
-                      onClick={() => abrir(proposal, setDetailDialogOpen)}
+                      onClick={() => abrir(proposta, setDetailDialogOpen)}
                       role="button"
                       tabIndex={0}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") abrir(proposal, setDetailDialogOpen);
+                        if (e.key === "Enter") abrir(proposta, setDetailDialogOpen);
                       }}
                     >
                       <div className="flex items-start justify-between gap-4 flex-wrap">
                         <div className="flex-1 min-w-[240px] space-y-2">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-semibold text-ink">{proposal.number}</span>
-                            <span className={`${STATUS_BADGE[currentStatus] ?? "bg-slate-500"} text-white rounded-full px-2 py-0.5 text-xs font-medium`}>
-                              {STATUS_LABELS[currentStatus] ?? currentStatus}
+                            <span className="font-semibold text-ink">{proposta.number}</span>
+                            <span className={`${STATUS_COR[statusAtual] ?? "bg-slate-500"} text-white rounded-full px-2 py-0.5 text-xs font-medium`}>
+                              {STATUS_LABEL_CURTO[statusAtual] ?? statusAtual}
                             </span>
-                            {proposal.daysInPending > 0 && (
+                            {proposta.daysInPending > 0 && (
                               <span className="inline-flex items-center rounded-full border border-[#F26B00] text-[#F26B00] px-2 py-0.5 text-xs font-medium">
-                                {proposal.daysInPending} dias pendente
+                                {proposta.daysInPending} dias pendente
                               </span>
                             )}
                           </div>
                           <div className="text-sm text-dim">
-                            <p className="font-medium text-ink">{proposal.insuredName}</p>
+                            <p className="font-medium text-ink">{proposta.insuredName}</p>
                             <p>
-                              {proposal.product} - {proposal.value}
+                              {proposta.product} - {proposta.value}
                             </p>
                             <p>
-                              Região: {proposal.region} | Faixa: {proposal.ageRange}
+                              Região: {proposta.region} | Faixa: {proposta.ageRange}
                             </p>
-                            {currentStatus === "pending_documentation" && proposal.documentSubStatus && (
+                            {statusAtual === "in_analysis" && proposta.analiseSubStatus && (
                               <p className="text-red-600 dark:text-red-400 font-medium">
-                                {documentSubStatusLabels[proposal.documentSubStatus]}
+                                {SUB_STATUS_ANALISE[proposta.analiseSubStatus]}
                               </p>
                             )}
-                            {currentStatus === "awaiting_payment" && proposal.paymentMethod && (
-                              <p className="font-medium text-ink">Forma de Pagamento: {PAYMENT_LABELS[proposal.paymentMethod]}</p>
+                            {statusAtual === "awaiting_payment" && proposta.paymentMethod && (
+                              <p className="font-medium text-ink">Forma de Pagamento: {FORMA_PAGAMENTO[proposta.paymentMethod]}</p>
                             )}
                           </div>
                         </div>
                         <div className="flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
-                          {currentStatus === "pending_signature" && (
-                            <Button variant="primary" size="sm" onClick={() => abrir(proposal, setResendDialogOpen)}>
+                          {statusAtual === "pending_signature" && (
+                            <Button variant="primary" size="sm" onClick={() => abrir(proposta, setResendDialogOpen)}>
                               <Send className="h-4 w-4" />
                               Enviar
                             </Button>
                           )}
-                          {currentStatus === "pending_documentation" && (
-                            <Button variant="danger" size="sm" onClick={() => abrir(proposal, setUploadDialogOpen)}>
-                              Upload
-                            </Button>
-                          )}
-                          {currentStatus === "pending_dps" && (
-                            <Button variant="primary" size="sm" onClick={() => abrir(proposal, setDpsDialogOpen)}>
-                              Enviar Link DPS
-                            </Button>
-                          )}
-                          {currentStatus === "awaiting_payment" && (
-                            <Button variant="primary" size="sm" onClick={() => abrir(proposal, setPaymentDialogOpen)}>
+                          {/* A DPS virou sub-status da crítica: o botão segue a
+                              pendência da proposta, não mais o card. */}
+                          {statusAtual === "in_analysis" &&
+                            (proposta.analiseSubStatus === "dps" ? (
+                              <Button variant="primary" size="sm" onClick={() => abrir(proposta, setDpsDialogOpen)}>
+                                Enviar Link DPS
+                              </Button>
+                            ) : (
+                              <Button variant="danger" size="sm" onClick={() => abrir(proposta, setUploadDialogOpen)}>
+                                Upload
+                              </Button>
+                            ))}
+                          {statusAtual === "awaiting_payment" && (
+                            <Button variant="primary" size="sm" onClick={() => abrir(proposta, setPaymentDialogOpen)}>
                               Alterar forma de pagamento
                             </Button>
                           )}
-                          {currentStatus === "sensitization_monitoring" && (
+                          {statusAtual === "sensitization_monitoring" && (
                             <Button
                               variant="primary"
                               size="sm"
-                              onClick={() => handleSendEmission(proposal.id)}
-                              disabled={sendingEmission === proposal.id}
-                              loading={sendingEmission === proposal.id}
+                              onClick={() => handleSendEmission(proposta.id)}
+                              disabled={sendingEmission === proposta.id}
+                              loading={sendingEmission === proposta.id}
                             >
-                              {sendingEmission === proposal.id ? "Enviando..." : "Enviar movimento de Emissão"}
+                              {sendingEmission === proposta.id ? "Enviando..." : "Enviar movimento de Emissão"}
                             </Button>
                           )}
-                          {currentStatus === "refund_scheduled" && (
-                            <Button variant="danger" size="sm" onClick={() => abrir(proposal, setRefundDialogOpen)}>
+                          {/* Rejeitada e devolução compartilham o diálogo: na
+                              rejeitada ele INICIA a devolução (o card 6 vira o
+                              7); na devolução, gerencia a que já existe. */}
+                          {(statusAtual === "declined" || statusAtual === "refund_scheduled") && (
+                            <Button variant="danger" size="sm" onClick={() => abrir(proposta, setRefundDialogOpen)}>
                               Gerenciar Devolução
                             </Button>
                           )}
@@ -457,7 +333,7 @@ export default function InlineWorkflow() {
           <ProposalDetailDialog
             proposal={{
               ...selectedProposal,
-              status: (proposalStatuses[selectedProposal.id] || selectedProposal.status) as WorkflowStatus,
+              status: (proposalStatuses[selectedProposal.id] || selectedProposal.status) as StatusWorkflow,
             }}
             open={detailDialogOpen}
             onClose={() => setDetailDialogOpen(false)}

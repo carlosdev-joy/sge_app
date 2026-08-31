@@ -22,6 +22,10 @@ export interface ProposalOrq {
     | "signed_proposal"
     | "pending_documentation"
     | "pending_dps"
+    // Crítica (análise): funde documental + DPS na sequência do Workflow
+    // (lib/workflow.ts). As duas antigas continuam no tipo porque o
+    // Acompanhamento e o Monitoramento ainda as usam.
+    | "in_analysis"
     | "refund_scheduled"
     | "refund_pending"
     | "valores_programados"
@@ -151,8 +155,13 @@ export default function ProposalDetailDialog({ proposal, open, onClose }: Propos
             </div>
           </Secao>
 
-          {/* Motivo de Declínio */}
-          {(proposal.status === "refund_scheduled" || proposal.status === "refund_pending" || proposal.status === "valores_programados") &&
+          {/* Motivo de Declínio — inclui `declined`, o card "Propostas
+              Rejeitadas": a recusa vem ANTES da devolução do prêmio, e é
+              justamente ali que o motivo precisa ser lido. */}
+          {(proposal.status === "declined" ||
+            proposal.status === "refund_scheduled" ||
+            proposal.status === "refund_pending" ||
+            proposal.status === "valores_programados") &&
             proposal.declineReason && (
               <Secao titulo="Motivo do Declínio" tom="vermelho">
                 <div className="bg-red-500/10 p-6 rounded-lg border-2 border-red-500">
