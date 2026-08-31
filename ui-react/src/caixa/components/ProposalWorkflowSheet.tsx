@@ -40,8 +40,8 @@ export default function ProposalWorkflowSheet() {
       </Button>
 
       <Sheet open={aberto} onClose={() => setAberto(false)} title="Workflow de Propostas" widthClass="max-w-2xl">
-        {/* Cards de status (clicáveis: filtram a lista). Duas colunas: os nomes
-            da sequência são longos, e em três eles quebravam em cinco linhas. */}
+        {/* Cards de status (clicáveis: filtram a lista). Duas colunas porque
+            são OITO cards: em três, o último fica sozinho na linha de baixo. */}
         <div className="grid grid-cols-2 gap-2 mb-6">
           {SEQUENCIA_WORKFLOW.map((etapa) => (
             <button

@@ -40,28 +40,32 @@ export interface EtapaWorkflow {
 // (é a régua tipográfica DELE), e o card inline segue o padrão das outras
 // telas nativas. Mesmo texto, cada tela na sua régua — em vez de caixa alta
 // gravada no dado, que forçaria a mesma forma nos dois lugares.
+// Nomes no PLURAL e sem o sujeito repetido ("Proposta…" em oito cards seguidos
+// não distingue nada): o card conta um grupo, e o que o olho precisa achar é o
+// que muda de um para o outro.
 export const SEQUENCIA_WORKFLOW: EtapaWorkflow[] = [
-  { value: "pending_signature",        label: "Proposta Pendente de Assinatura",                sinal: "aviso" },
-  { value: "awaiting_payment",         label: "Proposta Assinada - Pendente de Pagamento",      sinal: "aviso" },
-  { value: "paid",                     label: "Proposta Assinada e Paga",                       sinal: "positivo" },
-  { value: "in_analysis",              label: "Propostas em Crítica (Análise)",                 sinal: "aviso" },
-  { value: "emission_sent",            label: "Propostas Emitidas",                             sinal: "positivo" },
-  { value: "declined",                 label: "Propostas Rejeitadas",                           sinal: "perda" },
-  { value: "refund_scheduled",         label: "Devolução de Prêmio de Propostas Rejeitadas",    sinal: "aviso" },
-  { value: "sensitization_monitoring", label: "Monitoramento de Sensibilização",                sinal: "positivo" },
+  { value: "pending_signature",        label: "Pendentes de Assinatura", sinal: "aviso" },
+  { value: "awaiting_payment",         label: "Pendentes de Pagamento",  sinal: "aviso" },
+  { value: "paid",                     label: "Assinadas e Pagas",       sinal: "positivo" },
+  { value: "in_analysis",              label: "Em Análise",              sinal: "aviso" },
+  { value: "emission_sent",            label: "Emitidas",                sinal: "positivo" },
+  { value: "declined",                 label: "Rejeitadas",              sinal: "perda" },
+  { value: "refund_scheduled",         label: "Devoluções de Prêmio",    sinal: "aviso" },
+  { value: "sensitization_monitoring", label: "Sensibilizações",         sinal: "positivo" },
 ];
 
-// Rótulo do selo na lista de propostas — mais curto que o do card, porque ali
-// ele divide a linha com o número da proposta e o "x dias pendente".
+// Rótulo do selo na lista de propostas: o MESMO nome do card, no singular —
+// ali ele qualifica UMA proposta, e divide a linha com o número dela e o
+// "x dias pendente".
 export const STATUS_LABEL_CURTO: Record<StatusWorkflow, string> = {
   pending_signature: "Pendente de Assinatura",
-  awaiting_payment: "Assinada - Pendente de Pagamento",
+  awaiting_payment: "Pendente de Pagamento",
   paid: "Assinada e Paga",
-  in_analysis: "Em Crítica (Análise)",
+  in_analysis: "Em Análise",
   emission_sent: "Emitida",
   declined: "Rejeitada",
   refund_scheduled: "Devolução de Prêmio",
-  sensitization_monitoring: "Monitoramento de Sensibilização",
+  sensitization_monitoring: "Sensibilização",
 };
 
 // Fundo sólido com texto branco: legível nos dois temas sem par claro/escuro.

@@ -151,8 +151,8 @@ export default function InlineWorkflow() {
                   {/* Sinal no canto INFERIOR direito, FORA do fluxo.
                       Duas razões, nesta ordem:
                       1. no topo ele disputaria espaço com o rótulo, que é o
-                         elemento longo e de altura variável ("Devolução de
-                         Prêmio de Propostas Rejeitadas" ocupa três linhas);
+                         elemento de altura variável ("Pendentes de
+                         Assinatura" quebra em duas linhas, "Emitidas" não);
                          embaixo convive com o número, que é curto e
                          centralizado;
                       2. tira o ícone do fluxo e devolve ao número o centro

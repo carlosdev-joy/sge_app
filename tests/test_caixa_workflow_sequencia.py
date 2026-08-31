@@ -49,14 +49,14 @@ SHEET = CAIXA / "components" / "ProposalWorkflowSheet.tsx"
 #   perda    (vermelho) — negócio perdido
 #   positivo (verde)    — avançou no funil
 SEQUENCIA_PEDIDA = [
-    ("pending_signature",        "Proposta Pendente de Assinatura",             "aviso"),
-    ("awaiting_payment",         "Proposta Assinada - Pendente de Pagamento",   "aviso"),
-    ("paid",                     "Proposta Assinada e Paga",                    "positivo"),
-    ("in_analysis",              "Propostas em Crítica (Análise)",              "aviso"),
-    ("emission_sent",            "Propostas Emitidas",                          "positivo"),
-    ("declined",                 "Propostas Rejeitadas",                        "perda"),
-    ("refund_scheduled",         "Devolução de Prêmio de Propostas Rejeitadas", "aviso"),
-    ("sensitization_monitoring", "Monitoramento de Sensibilização",             "positivo"),
+    ("pending_signature",        "Pendentes de Assinatura", "aviso"),
+    ("awaiting_payment",         "Pendentes de Pagamento",  "aviso"),
+    ("paid",                     "Assinadas e Pagas",       "positivo"),
+    ("in_analysis",              "Em Análise",              "aviso"),
+    ("emission_sent",            "Emitidas",                "positivo"),
+    ("declined",                 "Rejeitadas",              "perda"),
+    ("refund_scheduled",         "Devoluções de Prêmio",    "aviso"),
+    ("sensitization_monitoring", "Sensibilizações",         "positivo"),
 ]
 
 
@@ -173,10 +173,10 @@ def test_o_numero_fica_sozinho_no_centro():
 
 
 def test_o_sinal_nao_invade_a_faixa_do_rotulo():
-    """O rótulo é o elemento longo e de altura variável do card — "Devolução
-    de Prêmio de Propostas Rejeitadas" ocupa três linhas. Sinal no TOPO
-    passaria por baixo dele, sumindo justamente no card cujo nome mais precisa
-    ser lido."""
+    """O rótulo é o elemento de altura variável do card — "Pendentes de
+    Assinatura" quebra em duas linhas, "Emitidas" não. Sinal no TOPO passaria
+    por baixo do rótulo mais longo, sumindo justamente no card cujo nome mais
+    precisa ser lido."""
     assert "absolute top-" not in INLINE.read_text(encoding="utf-8"), (
         "sinal na faixa do rótulo: risco de colisão com os nomes longos")
 
