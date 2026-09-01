@@ -196,3 +196,27 @@ def test_a_importancia_segurada_aparece_no_modal():
     corpo = _sem_comentarios(MODAL_TSX)
     assert "Importância Segurada" in corpo, "o campo sumiu do Resumo do seguro"
     assert "proposal.insuredAmount" in corpo
+
+
+# ═══════════ o card que mostrava a última linha em vez do total ═════════════
+
+def test_o_front_soma_cards_repetidos():
+    """A segunda tranca do defeito de 2026-09-01. Um `new Map(cards.map(...))`
+    sobrescreve a chave repetida e fica com a ÚLTIMA linha — o card "Emitidas"
+    mostrou 11.824 de 771.774, porque a carga grava a PIO_AGG por situação
+    dentro do card. `contagemPorCard` soma; voltar ao Map é reabrir o buraco.
+    """
+    import re
+    fonte = PIO_TS.read_text(encoding="utf-8")
+    corpo = re.search(r"export function contagemPorCard.*?\n\}", fonte, re.S)
+    assert corpo, "contagemPorCard sumiu de lib/pio.ts"
+    assert "+ c.quantidade" in corpo.group(0), (
+        "contagemPorCard parou de SOMAR — card repetido volta a mostrar só o último")
+
+    componentes = [UI / "src" / "caixa" / "components" / nome
+                   for nome in ("InlineWorkflow.tsx", "ProposalWorkflowSheet.tsx")]
+    for arquivo in componentes:
+        texto = arquivo.read_text(encoding="utf-8")
+        assert "contagemPorCard(" in texto, f"{arquivo.name} não usa a soma"
+        assert "new Map(\n      contagens.data.cards.map" not in texto, (
+            f"{arquivo.name} voltou a montar o mapa que descarta repetidos")

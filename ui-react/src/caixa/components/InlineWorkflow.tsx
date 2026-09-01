@@ -36,6 +36,7 @@ import {
 import {
   dataBr,
   propostaDoPio,
+  contagemPorCard,
   useContagensPio,
   usePropostasPio,
   ORIGEM_PIO,
@@ -117,8 +118,7 @@ export default function InlineWorkflow() {
   // Contagem real por card, só para os status que têm origem no PIO.
   const reais: Partial<Record<StatusWorkflow, number>> = {};
   if (contagens.data?.disponivel) {
-    const porCard = new Map(
-      contagens.data.cards.map((c) => [c.card, c.quantidade]));
+    const porCard = contagemPorCard(contagens.data.cards);
     (Object.entries(ORIGEM_PIO) as [StatusWorkflow, string][]).forEach(
       ([status, card]) => {
         // Card SEM linha na carga é zero de verdade — a carga rodou e não achou

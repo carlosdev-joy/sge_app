@@ -238,12 +238,24 @@ def pio_contagens() -> dict:
     try:
         conn = get_db_conn()
         cur = conn.cursor()
+        # SOMA por card, não uma linha por linha da tabela.
+        #
+        # A carga grava a `PIO_AGG` agrupada pela SITUAÇÃO dentro do card, então
+        # um card pode ter várias linhas: em 2026-09-01, EMITIDA veio em quatro
+        # (127 + 715.074 + 44.749 + 11.824 = 771.774) e CRITICA em duas.
+        # Devolver as linhas cruas fazia o front — que monta um mapa
+        # `card → quantidade` — ficar só com a ÚLTIMA: o card mostrava 11.824 de
+        # 771.774, um número plausível, sem erro em lugar nenhum.
+        #
+        # Somar aqui é certo nos dois mundos: se a carga passar a gravar uma
+        # linha por card, a soma de uma linha é ela mesma.
         cur.execute("""
-            SELECT a.COD_CARD, a.DES_CARD, a.QTD_PROPOSTAS,
+            SELECT a.COD_CARD, MAX(a.DES_CARD), SUM(a.QTD_PROPOSTAS),
                    CONVERT(varchar(10), a.DTH_REFERENCIA, 120),
-                   CONVERT(varchar(19), a.DTH_CARGA, 120)
+                   CONVERT(varchar(19), MAX(a.DTH_CARGA), 120)
               FROM dbo.PIO_AGG a
              WHERE a.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM dbo.PIO_AGG)
+             GROUP BY a.COD_CARD, a.DTH_REFERENCIA
              ORDER BY a.COD_CARD
         """)
         linhas = cur.fetchall() or []
