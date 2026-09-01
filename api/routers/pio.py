@@ -1,12 +1,17 @@
 """api/routers/pio.py — propostas do PIO para os cards do Workflow.
 
-  GET /pio/contagens   — uma linha por categoria, para o número dos cards
+  GET /pio/contagens   — uma linha por CARD, para o número dos cards
   GET /pio/propostas   — o drill-down, paginado, para a lista do card
 
-Lê **apenas** `dbo.PIO_PROPOSTA_PENDENTE_AGG` e `_DET`, no próprio banco do
-Orquestra (SQL14_DMDB41). A carga vem de `PRC_PIO_CARGA_PROPOSTA_PENDENTE`,
-que busca no TDDB48 via linked server e roda uma vez por dia às 07:30 — a API
-NUNCA fala com a fonte em runtime. Migration 101 cria as duas tabelas.
+Lê **apenas** o agregado `dbo.PIO_AGG` e as tabelas de detalhe, no próprio banco
+do Orquestra (SQL14_DMDB41). A carga vem de `PRC_PIO_CARGA_DIARIA`, que busca no
+TDDB48 via linked server e roda uma vez por dia às 07:30 — a API NUNCA fala com
+a fonte em runtime. Migration 102 cria as tabelas deste modelo.
+
+⚠️ **Cada DET já vem filtrada pela carga** (PEND_ASSIN = `STA_ASSINATURA='PE'`,
+PEND_PGTO = `'CO'`, ambas com `STA_PAGO='N'`, sem `CA`/`EXP` e só os últimos 30
+dias de venda). A API **não refiltra por status**: repetir o filtro aqui é a
+forma silenciosa de zerar um card se a carga mudar de critério.
 
 ⚠️ Placeholder `?` (pyodbc) — esta é a árvore `api/`. A `dags/` usa `%s`, e
 trocar dá "Incorrect syntax near '?'" com o endpoint aparentemente vivo.
@@ -29,17 +34,15 @@ router = APIRouter()
 
 _require_caixa = require_perm("tela_caixa_seguro")
 
-# STA_ASSINATURA → rótulo, como na carga. Serve para DUAS coisas: traduzir a
-# categoria quando a linha do AGG vier sem DES_CATEGORIA, e ser a lista branca
-# do parâmetro `categoria` — o valor entra numa consulta parametrizada, mas
-# recusar cedo o que não é categoria evita varrer a tabela à toa.
-CATEGORIAS: dict[str, str] = {
-    "PE": "Pendentes de Assinatura",
-    "PP": "Pendentes de Pagamento",
-    "AP": "Assinadas e Pagas",
-    "AN": "Em Análise",
-    "EM": "Emitidas",
-    "RE": "Rejeitadas",
+# COD_CARD → (rótulo, tabela de detalhe).
+#
+# É a lista branca do parâmetro `card` E a origem do nome da tabela. O nome NUNCA
+# vem da requisição: ele é lido deste dicionário depois que a chave é validada —
+# nome de objeto não aceita parâmetro em T-SQL, então esta é a única forma segura
+# de escolher o FROM.
+CARDS: dict[str, tuple[str, str]] = {
+    "PEND_ASSIN": ("Pendentes de Assinatura", "dbo.PIO_PROPOSTA_PENDENTE_DET"),
+    "PEND_PGTO": ("Pendentes de Pagamento", "dbo.PIO_PROPOSTA_PEND_PGTO_DET"),
 }
 
 _LIMITE_PADRAO = 50
@@ -52,32 +55,35 @@ def _so_digitos(texto: str) -> str:
 
 @router.get("/pio/contagens", dependencies=[Depends(_require_caixa)])
 def pio_contagens() -> dict:
-    """Quantidade por categoria na carga mais recente.
+    """Quantidade por card na carga mais recente.
 
     **Degrada em vez de estourar.** Tabela ausente (ambiente sem a migration
-    101) e tabela vazia (carga ainda não rodou) são coisas DIFERENTES e a tela
+    102) e tabela vazia (carga ainda não rodou) são coisas DIFERENTES e a tela
     precisa distinguir: `disponivel=false` diz "não consegui ler", enquanto
     lista vazia com `disponivel=true` diz "li, e não há carga". Sem essa
     distinção, as duas viram um card zerado — e zero é uma resposta que
     ninguém investiga.
+
+    **Por que MAX(DTH_REFERENCIA) e não `= hoje`:** o guia do PIO filtra pela
+    data de hoje, o que está certo enquanto a carga roda. Só que o SQL Agent
+    Job ainda depende do DBA — e no dia em que a carga não rodar, `= hoje` não
+    devolve linha nenhuma e os dois cards mostram zero, que é falso. Com o
+    último snapshot, o número continua verdadeiro e a tela exibe a data dele,
+    que é o que denuncia a carga parada. Como a `PIO_AGG` é TRUNCATE + INSERT,
+    nos dias normais as duas leituras dão exatamente a mesma linha.
     """
-    resposta: dict = {"disponivel": False, "referencia": None, "categorias": []}
+    resposta: dict = {"disponivel": False, "referencia": None, "cards": []}
     conn = None
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        # A carga é TRUNCATE + INSERT, então só existe uma referência; filtrar
-        # pela máxima mesmo assim custa nada e protege de uma carga parcial
-        # deixar duas datas na tabela.
         cur.execute("""
-            SELECT a.STA_CATEGORIA, a.DES_CATEGORIA, a.QTD_PROPOSTAS,
+            SELECT a.COD_CARD, a.DES_CARD, a.QTD_PROPOSTAS,
                    CONVERT(varchar(10), a.DTH_REFERENCIA, 120),
-                   CONVERT(varchar(19), MAX(a.DTH_CARGA), 120)
-              FROM dbo.PIO_PROPOSTA_PENDENTE_AGG a
-             WHERE a.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA)
-                                         FROM dbo.PIO_PROPOSTA_PENDENTE_AGG)
-             GROUP BY a.STA_CATEGORIA, a.DES_CATEGORIA, a.QTD_PROPOSTAS,
-                      a.DTH_REFERENCIA
+                   CONVERT(varchar(19), a.DTH_CARGA, 120)
+              FROM dbo.PIO_AGG a
+             WHERE a.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM dbo.PIO_AGG)
+             ORDER BY a.COD_CARD
         """)
         linhas = cur.fetchall() or []
         cur.close()
@@ -85,11 +91,12 @@ def pio_contagens() -> dict:
         conn = None
 
         resposta["disponivel"] = True
-        for cat, des, qtd, referencia, carga in linhas:
-            codigo = (cat or "").strip().upper()
-            resposta["categorias"].append({
-                "categoria": codigo,
-                "descricao": (des or "").strip() or CATEGORIAS.get(codigo, codigo),
+        for cod, des, qtd, referencia, carga in linhas:
+            codigo = (cod or "").strip().upper()
+            rotulo = CARDS.get(codigo, ("", ""))[0]
+            resposta["cards"].append({
+                "card": codigo,
+                "descricao": (des or "").strip() or rotulo or codigo,
                 "quantidade": int(qtd or 0),
                 "carga": carga,
             })
@@ -106,40 +113,40 @@ def pio_contagens() -> dict:
 
 @router.get("/pio/propostas", dependencies=[Depends(_require_caixa)])
 def pio_propostas(
-    categoria: str = Query("PE", description="STA_ASSINATURA (PE, PP, AP, AN, EM, RE)"),
+    card: str = Query("PEND_ASSIN", description="COD_CARD (PEND_ASSIN, PEND_PGTO)"),
     busca: str = Query("", description="proposta, nome ou CPF"),
     limite: int = Query(_LIMITE_PADRAO, ge=1, le=_LIMITE_MAXIMO),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    """Página da lista de propostas da categoria, mais antigas primeiro.
+    """Página da lista de propostas do card, mais antigas primeiro.
 
-    Paginado de propósito: a primeira carga trouxe **8.706** propostas em `PE`
-    sozinha. Devolver tudo faria a tela montar milhares de cards e o `total` do
-    cabeçalho é o que dá a dimensão real — o que a página mostra é o começo da
-    fila, que é onde está o trabalho atrasado.
+    Paginado de propósito: a carga traz ~8.700 propostas em PEND_ASSIN e
+    ~22.500 em PEND_PGTO. Devolver tudo faria a tela montar milhares de cards;
+    o `total` do cabeçalho é o que dá a dimensão real, e o que a página mostra
+    é o começo da fila — onde está o trabalho mais atrasado.
     """
-    codigo = (categoria or "").strip().upper()
+    codigo = (card or "").strip().upper()
     resposta: dict = {
         "disponivel": False,
-        "categoria": codigo,
+        "card": codigo,
         "referencia": None,
         "total": 0,
         "limite": limite,
         "offset": offset,
         "itens": [],
     }
-    if codigo not in CATEGORIAS:
+    if codigo not in CARDS:
         return resposta
+    tabela = CARDS[codigo][1]
 
     termo = (busca or "").strip()[:100]
     digitos = _so_digitos(termo)
 
-    # O filtro de busca é montado em pedaços, mas TODO valor entra por
-    # parâmetro — o SQL abaixo não concatena entrada de usuário.
-    filtro = ("WHERE d.STA_ASSINATURA = ? "
-              "  AND d.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) "
-              "                            FROM dbo.PIO_PROPOSTA_PENDENTE_DET)")
-    params: list = [codigo]
+    # Sem filtro de status: a DET já é do card. Filtra-se só pela referência
+    # (a carga é TRUNCATE + INSERT, mas uma carga parcial deixaria duas datas
+    # na tabela e a lista misturaria dois dias) e pela busca do usuário.
+    filtro = (f"WHERE d.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM {tabela})")
+    params: list = []
     if termo:
         # CPF e número de proposta vêm com máscara na tela e sem máscara no
         # banco (ou o contrário). Comparar só os dígitos evita a busca que não
@@ -153,8 +160,7 @@ def pio_propostas(
         conn = get_db_conn()
         cur = conn.cursor()
 
-        cur.execute(f"SELECT COUNT(*) FROM dbo.PIO_PROPOSTA_PENDENTE_DET d {filtro}",
-                    params)
+        cur.execute(f"SELECT COUNT(*) FROM {tabela} d {filtro}", params)
         linha = cur.fetchone()
         resposta["total"] = int(linha[0]) if linha else 0
 
@@ -168,7 +174,7 @@ def pio_propostas(
                    d.DES_EMAIL, DATEDIFF(year, d.DTA_NASCIMENTO, CAST(GETDATE() AS DATE)),
                    d.STA_SITUACAO, d.STA_PAGO,
                    CONVERT(varchar(10), d.DTH_REFERENCIA, 120)
-              FROM dbo.PIO_PROPOSTA_PENDENTE_DET d
+              FROM {tabela} d
               {filtro}
              ORDER BY d.DTH_VENDA ASC, d.COD_PROPOSTA ASC
             OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
