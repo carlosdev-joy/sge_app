@@ -46,6 +46,9 @@ export interface ProposalOrq {
    *  PIO). Opcional: as propostas de exemplo não têm renda, e o campo some da
    *  tela em vez de exibir outro número no lugar. */
   individualIncome?: string;
+  /** Importância segurada, já formatada (VLR_IMP_SEGURADA) — o capital coberto
+   *  pela apólice. Opcional pelo mesmo motivo da renda. */
+  insuredAmount?: string;
   declineReason?: string;
 }
 
@@ -157,6 +160,12 @@ export default function ProposalDetailDialog({ proposal, open, onClose }: Propos
                     errado que estava aqui. */}
                 {proposal.individualIncome && (
                   <CampoInfo rotulo="Renda Individual:" valor={proposal.individualIncome} />
+                )}
+                {/* Importância segurada: o capital COBERTO pela apólice. Vinha
+                    do banco, chegava no front e parava aqui — nenhuma tela a
+                    exibia. É o valor que se confere contra a proposta. */}
+                {proposal.insuredAmount && (
+                  <CampoInfo rotulo="Importância Segurada:" valor={proposal.insuredAmount} />
                 )}
               </div>
               <p className="text-xs text-dim mt-4 italic">*conforme registro civil</p>

@@ -148,6 +148,11 @@ export interface PropostaWorkflow {
   /** Renda declarada, já formatada. Só as propostas vindas da carga do PIO a
    *  têm (VLR_RENDA_FORMAL); nas de exemplo o campo some do modal. */
   individualIncome?: string;
+  /** Importância segurada (capital), já formatada — `VLR_IMP_SEGURADA` na
+   *  carga. É o valor COBERTO pela apólice, não o que o cliente paga: quem
+   *  paga é o `value`, o prêmio. Como a renda, só existe nas propostas da
+   *  carga e some do modal quando não vier. */
+  insuredAmount?: string;
   declineReason?: string;
   analiseSubStatus?: SubStatusAnalise;
   pagamentoSubStatus?: SubStatusPagamento;
