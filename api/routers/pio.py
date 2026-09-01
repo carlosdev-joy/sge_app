@@ -52,12 +52,76 @@ CARDS: dict[str, tuple[str, str]] = {
     "ASSINA_PAGA": ("Assinadas e Pagas", "dbo.PIO_PROPOSTA_ASSINA_PAGA_DET"),
 }
 
+# Busca nos TRÊS cards de uma vez. Quem procura uma proposta pelo número não
+# sabe (nem tem por que saber) em qual estado ela está.
+CARD_TODOS = "TODOS"
+
 _LIMITE_PADRAO = 50
 _LIMITE_MAXIMO = 200
+
+# As colunas da lista, com alias, iguais nos três ramos do UNION ALL — o alias
+# é o que permite ordenar do lado de fora. `DTA_VENDA` sai como 'YYYY-MM-DD',
+# que ordena como texto na mesma ordem da data.
+_COLUNAS = """
+    d.COD_PROPOSTA AS COD_PROPOSTA, d.NOM_PESSOA AS NOM_PESSOA,
+    d.COD_CPF AS COD_CPF, d.NUM_AGENCIA AS NUM_AGENCIA,
+    d.NUM_MATRICULA AS NUM_MATRICULA,
+    CONVERT(varchar(10), d.DTH_VENDA, 120) AS DTA_VENDA,
+    DATEDIFF(day, d.DTH_VENDA, CAST(GETDATE() AS DATE)) AS DIAS_PENDENTE,
+    d.NOM_PRODUTO AS NOM_PRODUTO, d.AREA_PRODUTO AS AREA_PRODUTO,
+    d.VLR_PREMIO AS VLR_PREMIO, d.VLR_IMP_SEGURADA AS VLR_IMP_SEGURADA,
+    d.NOM_CIDADE AS NOM_CIDADE, d.NOM_UF AS NOM_UF,
+    d.NUM_DDD_TEL_CEL AS DDD_CEL, d.NUM_TEL_CEL AS TEL_CEL,
+    d.NUM_DDD_TEL_RES AS DDD_RES, d.NUM_TEL_RES AS TEL_RES,
+    d.DES_EMAIL AS DES_EMAIL,
+    DATEDIFF(year, d.DTA_NASCIMENTO, CAST(GETDATE() AS DATE)) AS IDADE,
+    d.STA_SITUACAO AS STA_SITUACAO, d.STA_PAGO AS STA_PAGO,
+    CONVERT(varchar(10), d.DTH_REFERENCIA, 120) AS DTA_REFERENCIA,
+    d.VLR_RENDA_FORMAL AS VLR_RENDA_FORMAL
+"""
+
+_CPF_SEM_MASCARA = "REPLACE(REPLACE(REPLACE(d.COD_CPF, '.', ''), '-', ''), ' ', '')"
 
 
 def _so_digitos(texto: str) -> str:
     return re.sub(r"\D", "", texto or "")
+
+
+def _filtro_da_busca(modo: str, termo: str) -> tuple[str, list]:
+    """O pedaço de SQL (e os parâmetros) que aplica a busca do usuário.
+
+    Cada modo compara o campo que a tela pediu, e todos comparam **dígitos**:
+    a tela mostra `8047413032422-7` e `397.750.878-48`, o banco guarda de outro
+    jeito, e exigir igualdade literal é o que faz a busca "não achar" um número
+    que está bem ali. Nada é concatenado — os valores entram por parâmetro.
+    """
+    termo = (termo or "").strip()[:100]
+    if not termo:
+        return "", []
+    digitos = _so_digitos(termo) or termo
+
+    if modo == "proposta":
+        return (" AND REPLACE(REPLACE(d.COD_PROPOSTA, '-', ''), '.', '') LIKE ?",
+                [f"%{digitos}%"])
+    if modo == "cpf":
+        return (f" AND {_CPF_SEM_MASCARA} LIKE ?", [f"%{digitos}%"])
+    if modo == "agencia":
+        # Agência é igualdade, não "contém": buscar 316 não pode trazer 3160.
+        # O padding zera a diferença entre "0316" e "316", que são a mesma
+        # agência escrita de dois jeitos.
+        return (" AND RIGHT(REPLICATE('0', 12) + REPLACE(d.NUM_AGENCIA, ' ', ''), 12)"
+                " = RIGHT(REPLICATE('0', 12) + ?, 12)", [digitos])
+    if modo == "matricula":
+        # A matrícula CEF vem com dígito verificador que pode ser LETRA
+        # ("0000122795-B"): comparar só os dígitos ignora o verificador em vez
+        # de não achar nada por causa dele.
+        return (" AND REPLACE(REPLACE(d.NUM_MATRICULA, '-', ''), ' ', '') LIKE ?",
+                [f"%{digitos}%"])
+
+    # livre: o que a lista do card usa — nome, proposta ou CPF.
+    return (" AND (d.NOM_PESSOA LIKE ? OR d.COD_PROPOSTA LIKE ?"
+            f"      OR {_CPF_SEM_MASCARA} LIKE ?)",
+            [f"%{termo}%", f"%{termo}%", f"%{digitos}%"])
 
 
 @router.get("/pio/contagens", dependencies=[Depends(_require_caixa)])
@@ -120,12 +184,20 @@ def pio_contagens() -> dict:
 
 @router.get("/pio/propostas", dependencies=[Depends(_require_caixa)])
 def pio_propostas(
-    card: str = Query("PEND_ASSIN", description="COD_CARD (PEND_ASSIN, PEND_PGTO)"),
-    busca: str = Query("", description="proposta, nome ou CPF"),
+    card: str = Query("PEND_ASSIN",
+                      description="COD_CARD (PEND_ASSIN, PEND_PGTO, ASSINA_PAGA) ou TODOS"),
+    busca: str = Query("", description="termo da busca"),
+    modo: str = Query("livre",
+                      description="livre | proposta | cpf | agencia | matricula"),
     limite: int = Query(_LIMITE_PADRAO, ge=1, le=_LIMITE_MAXIMO),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    """Página da lista de propostas do card, mais antigas primeiro.
+    """Página de propostas, mais antigas primeiro.
+
+    Serve a dois usos: a lista de UM card (o drill-down do Workflow) e a busca
+    em **TODOS** os cards (a Consulta de Propostas, que procura pelo número sem
+    saber em que estado a proposta está). Com `card=TODOS`, cada item volta
+    dizendo de qual card veio — é dali que sai o status na tela.
 
     Paginado de propósito: a carga traz ~8.700 propostas em PEND_ASSIN e
     ~22.500 em PEND_PGTO. Devolver tudo faria a tela montar milhares de cards;
@@ -142,49 +214,46 @@ def pio_propostas(
         "offset": offset,
         "itens": [],
     }
-    if codigo not in CARDS:
+    if codigo == CARD_TODOS:
+        alvos = list(CARDS.items())
+    elif codigo in CARDS:
+        alvos = [(codigo, CARDS[codigo])]
+    else:
         return resposta
-    tabela = CARDS[codigo][1]
 
-    termo = (busca or "").strip()[:100]
-    digitos = _so_digitos(termo)
+    filtro_busca, params_busca = _filtro_da_busca((modo or "").strip().lower(),
+                                                 busca)
 
-    # Sem filtro de status: a DET já é do card. Filtra-se só pela referência
-    # (a carga é TRUNCATE + INSERT, mas uma carga parcial deixaria duas datas
-    # na tabela e a lista misturaria dois dias) e pela busca do usuário.
-    filtro = (f"WHERE d.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM {tabela})")
-    params: list = []
-    if termo:
-        # CPF e número de proposta vêm com máscara na tela e sem máscara no
-        # banco (ou o contrário). Comparar só os dígitos evita a busca que não
-        # acha nada e parece "não existe".
-        filtro += (" AND (d.NOM_PESSOA LIKE ? OR d.COD_PROPOSTA LIKE ?"
-                   "      OR REPLACE(REPLACE(REPLACE(d.COD_CPF, '.', ''), '-', ''), ' ', '') LIKE ?)")
-        params.extend([f"%{termo}%", f"%{termo}%", f"%{digitos or termo}%"])
+    # Um ramo por tabela, unidos. Sem filtro de status: a DET já é do card. A
+    # referência é filtrada por tabela (a carga é TRUNCATE + INSERT, mas uma
+    # carga parcial deixaria duas datas e a lista misturaria dois dias).
+    #
+    # `cod` e `tabela` saem do dicionário CARDS, nunca da requisição — nome de
+    # objeto não aceita parâmetro em T-SQL, e a lista branca é o que separa
+    # isto de uma injeção. Os parâmetros da busca se repetem por ramo.
+    ramos, params = [], []
+    for cod, (_rotulo, tabela) in alvos:
+        ramos.append(f"""
+            SELECT {_COLUNAS}, '{cod}' AS COD_CARD
+              FROM {tabela} d
+             WHERE d.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM {tabela})
+             {filtro_busca}
+        """)
+        params.extend(params_busca)
+    corpo = " UNION ALL ".join(ramos)
 
     conn = None
     try:
         conn = get_db_conn()
         cur = conn.cursor()
 
-        cur.execute(f"SELECT COUNT(*) FROM {tabela} d {filtro}", params)
+        cur.execute(f"SELECT COUNT(*) FROM ({corpo}) t", params)
         linha = cur.fetchone()
         resposta["total"] = int(linha[0]) if linha else 0
 
         cur.execute(f"""
-            SELECT d.COD_PROPOSTA, d.NOM_PESSOA, d.COD_CPF, d.NUM_AGENCIA,
-                   d.NUM_MATRICULA, CONVERT(varchar(10), d.DTH_VENDA, 120),
-                   DATEDIFF(day, d.DTH_VENDA, CAST(GETDATE() AS DATE)),
-                   d.NOM_PRODUTO, d.AREA_PRODUTO, d.VLR_PREMIO, d.VLR_IMP_SEGURADA,
-                   d.NOM_CIDADE, d.NOM_UF,
-                   d.NUM_DDD_TEL_CEL, d.NUM_TEL_CEL, d.NUM_DDD_TEL_RES, d.NUM_TEL_RES,
-                   d.DES_EMAIL, DATEDIFF(year, d.DTA_NASCIMENTO, CAST(GETDATE() AS DATE)),
-                   d.STA_SITUACAO, d.STA_PAGO,
-                   CONVERT(varchar(10), d.DTH_REFERENCIA, 120),
-                   d.VLR_RENDA_FORMAL
-              FROM {tabela} d
-              {filtro}
-             ORDER BY d.DTH_VENDA ASC, d.COD_PROPOSTA ASC
+            SELECT t.* FROM ({corpo}) t
+             ORDER BY t.DTA_VENDA ASC, t.COD_PROPOSTA ASC
             OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
         """, params + [offset, limite])
 
@@ -218,6 +287,10 @@ def pio_propostas(
                 "idade": int(r[18]) if r[18] is not None else None,
                 "situacao": (r[19] or "").strip(),
                 "pago": (r[20] or "").strip(),
+                # De qual card a linha veio. Com card=TODOS é o que diz o
+                # status na tela; sem ele, a busca acharia a proposta e não
+                # saberia dizer em que estado ela está.
+                "card": (r[23] or "").strip() if len(r) > 23 else codigo,
             })
             resposta["referencia"] = r[21]
 
