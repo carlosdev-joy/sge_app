@@ -8,9 +8,14 @@ O que estes testes prendem:
      sem propostas pendentes — e ninguém investiga um zero.
   2. **Tabela ausente NÃO derruba o endpoint.** No intervalo normal do deploy
      (API nova, migration 101 ainda não aplicada) a tela precisa abrir.
-  3. **Categoria desconhecida não vira consulta.** O valor entra
-     parametrizado, mas recusar cedo evita varrer 8.700 linhas por um filtro
-     que não existe.
+  3. **Card desconhecido não vira consulta, e o `card` nunca vira SQL.** O
+     COD_CARD escolhe a TABELA de detalhe, e nome de objeto não aceita
+     parâmetro em T-SQL: a lista branca `CARDS` é a única fronteira entre a
+     querystring e o FROM.
+  3b. **Cada card lê a SUA tabela, e a DET não é refiltrada por status.** As
+     duas DET têm estrutura idêntica — trocar uma pela outra devolve propostas
+     erradas com cara de certas; e refiltrar o que a carga já filtrou é como um
+     card zera sozinho quando o critério da carga mudar.
   4. **O mapeamento de campos**, que é onde a lista mente sem dar erro:
      celular preferido ao residencial, prêmio numérico, dias pendentes
      inteiros.
@@ -117,14 +122,26 @@ def banco(monkeypatch):
 # ═══════════ 1 e 2. as duas caras do card zerado ════════════════════════════
 
 def test_contagem_lida_marca_disponivel(cliente, banco):
-    banco["cur"] = CursorFalso([("PE", "Pendentes de Assinatura", 8706,
+    banco["cur"] = CursorFalso([("PEND_ASSIN", "Pendentes de Assinatura", 8706,
                                  "2026-09-01", "2026-09-01 07:30:11")])
     d = cliente.get("/pio/contagens").json()
     assert d["disponivel"] is True
     assert d["referencia"] == "2026-09-01"
-    assert d["categorias"][0] == {
-        "categoria": "PE", "descricao": "Pendentes de Assinatura",
+    assert d["cards"][0] == {
+        "card": "PEND_ASSIN", "descricao": "Pendentes de Assinatura",
         "quantidade": 8706, "carga": "2026-09-01 07:30:11"}
+
+
+def test_os_dois_cards_vem_na_mesma_contagem(cliente, banco):
+    """Uma leitura só alimenta os dois cards — se o segundo sumisse da
+    resposta, o front o trataria como "zero de verdade"."""
+    banco["cur"] = CursorFalso([
+        ("PEND_ASSIN", "Pendentes de Assinatura", 8706, "2026-09-01", "2026-09-01 07:30:11"),
+        ("PEND_PGTO", "Pendentes de Pagamento", 22500, "2026-09-01", "2026-09-01 07:31:02"),
+    ])
+    d = cliente.get("/pio/contagens").json()
+    assert [c["card"] for c in d["cards"]] == ["PEND_ASSIN", "PEND_PGTO"]
+    assert [c["quantidade"] for c in d["cards"]] == [8706, 22500]
 
 
 def test_carga_que_nao_rodou_e_lista_vazia_com_disponivel(cliente, banco):
@@ -132,7 +149,7 @@ def test_carga_que_nao_rodou_e_lista_vazia_com_disponivel(cliente, banco):
     banco["cur"] = CursorFalso([])
     d = cliente.get("/pio/contagens").json()
     assert d["disponivel"] is True
-    assert d["categorias"] == []
+    assert d["cards"] == []
 
 
 def test_tabela_ausente_nao_derruba_e_avisa(cliente, banco):
@@ -146,45 +163,80 @@ def test_tabela_ausente_nao_derruba_e_avisa(cliente, banco):
 
 def test_propostas_com_tabela_ausente_tambem_degrada(cliente, banco):
     banco["cur"] = CursorFalso(estoura=True)
-    d = cliente.get("/pio/propostas?categoria=PE").json()
+    d = cliente.get("/pio/propostas?card=PEND_ASSIN").json()
     assert d["disponivel"] is False
     assert d["itens"] == [] and d["total"] == 0
 
 
 def test_descricao_cai_no_dicionario_quando_a_carga_nao_trouxe(cliente, banco):
-    """`DES_CATEGORIA` vazia não pode virar card sem nome na tela."""
-    banco["cur"] = CursorFalso([("PE", "", 10, "2026-09-01", "2026-09-01 07:30:00")])
+    """`DES_CARD` vazia não pode virar card sem nome na tela."""
+    banco["cur"] = CursorFalso([("PEND_ASSIN", "", 10, "2026-09-01", "2026-09-01 07:30:00")])
     d = cliente.get("/pio/contagens").json()
-    assert d["categorias"][0]["descricao"] == "Pendentes de Assinatura"
+    assert d["cards"][0]["descricao"] == "Pendentes de Assinatura"
 
 
-# ═══════════ 3. categoria fora do catálogo ══════════════════════════════════
+# ═══════════ 3. card fora do catálogo, e a TABELA que ele escolhe ═══════════
+# O `card` da querystring decide de qual tabela a lista sai. Nome de objeto não
+# aceita parâmetro em T-SQL, então ele é interpolado no SQL — e a única coisa
+# que separa isso de uma injeção é a lista branca `CARDS`. Estes testes prendem
+# essa fronteira.
 
-def test_categoria_desconhecida_nao_consulta_o_banco(cliente, banco):
+def test_card_desconhecido_nao_consulta_o_banco(cliente, banco):
     banco["cur"] = CursorFalso([_det()])
-    d = cliente.get("/pio/propostas?categoria=XX").json()
+    d = cliente.get("/pio/propostas?card=XX").json()
     assert d["itens"] == [] and d["total"] == 0
-    assert banco["cur"].sqls == [], "consultou o banco por uma categoria que não existe"
+    assert banco["cur"].sqls == [], "consultou o banco por um card que não existe"
 
 
-@pytest.mark.parametrize("codigo", ["PE", "PP", "AP", "AN", "EM", "RE"])
-def test_as_seis_categorias_da_carga_sao_aceitas(cliente, banco, codigo):
+@pytest.mark.parametrize("injecao", [
+    "PEND_ASSIN; DROP TABLE dbo.PIO_AGG--",
+    "dbo.OUTRA_TABELA",
+    "PEND_ASSIN' OR '1'='1",
+])
+def test_card_malicioso_nunca_chega_ao_sql(cliente, banco, injecao):
+    """O nome da tabela sai do dicionário, nunca da requisição."""
     banco["cur"] = CursorFalso([_det()])
-    d = cliente.get(f"/pio/propostas?categoria={codigo}").json()
+    r = cliente.get("/pio/propostas", params={"card": injecao})
+    assert r.status_code == 200
+    assert banco["cur"].sqls == [], f"a requisição virou SQL: {banco['cur'].sqls}"
+
+
+@pytest.mark.parametrize("codigo,tabela", [
+    ("PEND_ASSIN", "dbo.PIO_PROPOSTA_PENDENTE_DET"),
+    ("PEND_PGTO", "dbo.PIO_PROPOSTA_PEND_PGTO_DET"),
+])
+def test_cada_card_le_a_sua_tabela(cliente, banco, codigo, tabela):
+    """As duas DET têm estrutura idêntica: trocar uma pela outra devolve uma
+    lista plausível de propostas ERRADAS, sem erro nenhum."""
+    banco["cur"] = CursorFalso([_det()])
+    d = cliente.get(f"/pio/propostas?card={codigo}").json()
     assert d["disponivel"] is True
-    assert d["categoria"] == codigo
+    assert d["card"] == codigo
+    for sql in banco["cur"].sqls:
+        assert tabela in sql, f"{codigo} consultou fora da sua tabela: {sql}"
+
+
+def test_a_det_nao_e_refiltrada_por_status(cliente, banco):
+    """A carga já entregou cada DET com o filtro do seu card. Refiltrar por
+    `STA_ASSINATURA` aqui é como um card zera sozinho no dia em que a carga
+    mudar de critério — a tela mostraria 0 com a tabela cheia."""
+    banco["cur"] = CursorFalso([_det()])
+    cliente.get("/pio/propostas?card=PEND_PGTO")
+    for sql in banco["cur"].sqls:
+        assert "STA_ASSINATURA" not in sql, (
+            f"o router refiltra o que a carga já filtrou: {sql}")
 
 
 def test_limite_acima_do_teto_e_recusado(cliente, banco):
-    """Sem teto, uma chamada pede as 8.706 de uma vez."""
-    assert cliente.get("/pio/propostas?categoria=PE&limite=5000").status_code == 422
+    """Sem teto, uma chamada pede as 22.500 de PEND_PGTO de uma vez."""
+    assert cliente.get("/pio/propostas?card=PEND_ASSIN&limite=5000").status_code == 422
 
 
 # ═══════════ 4. o mapeamento de campos ══════════════════════════════════════
 
 def test_campos_da_proposta(cliente, banco):
     banco["cur"] = CursorFalso([_det()], total=8706)
-    d = cliente.get("/pio/propostas?categoria=PE").json()
+    d = cliente.get("/pio/propostas?card=PEND_ASSIN").json()
     item = d["itens"][0]
     assert d["total"] == 8706, "o total é da CONSULTA inteira, não da página"
     assert item["proposta"] == "80316460327404"
@@ -199,13 +251,13 @@ def test_telefone_prefere_o_celular(cliente, banco):
     """Quem opera liga para o celular: com os dois preenchidos, o residencial
     não pode ser o que aparece."""
     banco["cur"] = CursorFalso([_det(ddd_cel="41", cel="998765432")])
-    item = cliente.get("/pio/propostas?categoria=PE").json()["itens"][0]
+    item = cliente.get("/pio/propostas?card=PEND_ASSIN").json()["itens"][0]
     assert item["telefone"] == "(41) 998765432"
 
 
 def test_telefone_cai_no_residencial_sem_celular(cliente, banco):
     banco["cur"] = CursorFalso([_det(ddd_cel="", cel="", ddd_res="41", res="33221100")])
-    item = cliente.get("/pio/propostas?categoria=PE").json()["itens"][0]
+    item = cliente.get("/pio/propostas?card=PEND_ASSIN").json()["itens"][0]
     assert item["telefone"] == "(41) 33221100"
 
 
@@ -213,7 +265,7 @@ def test_sem_telefone_nenhum_o_campo_vem_vazio(cliente, banco):
     """String vazia, não "( ) " — rótulo de telefone com parênteses vazios na
     tela parece dado, e não é."""
     banco["cur"] = CursorFalso([_det(ddd_cel="", cel="", ddd_res="", res="")])
-    item = cliente.get("/pio/propostas?categoria=PE").json()["itens"][0]
+    item = cliente.get("/pio/propostas?card=PEND_ASSIN").json()["itens"][0]
     assert item["telefone"] == ""
 
 
@@ -221,7 +273,7 @@ def test_valores_nulos_nao_viram_zero(cliente, banco):
     """`None` em prêmio é "não sei", e zero é "de graça". A tela precisa poder
     mostrar coisas diferentes."""
     banco["cur"] = CursorFalso([_det(premio=None, imp=None, idade=None)])
-    item = cliente.get("/pio/propostas?categoria=PE").json()["itens"][0]
+    item = cliente.get("/pio/propostas?card=PEND_ASSIN").json()["itens"][0]
     assert item["premio"] is None and item["imp_segurada"] is None
     assert item["idade"] is None
 
@@ -230,7 +282,7 @@ def test_valores_nulos_nao_viram_zero(cliente, banco):
 
 def test_busca_por_cpf_compara_so_digitos(cliente, banco):
     banco["cur"] = CursorFalso([_det()])
-    cliente.get("/pio/propostas?categoria=PE&busca=397.750.878-48")
+    cliente.get("/pio/propostas?card=PEND_ASSIN&busca=397.750.878-48")
     params = banco["cur"].params[0]
     assert "%39775087848%" in params, (
         "a máscara do CPF foi para a consulta — o banco guarda sem ela")
@@ -238,13 +290,13 @@ def test_busca_por_cpf_compara_so_digitos(cliente, banco):
 
 def test_busca_por_nome_vai_inteira(cliente, banco):
     banco["cur"] = CursorFalso([_det()])
-    cliente.get("/pio/propostas?categoria=PE&busca=Maria")
+    cliente.get("/pio/propostas?card=PEND_ASSIN&busca=Maria")
     assert "%Maria%" in banco["cur"].params[0]
 
 
 def test_sem_busca_nao_ha_filtro_de_texto(cliente, banco):
     banco["cur"] = CursorFalso([_det()])
-    cliente.get("/pio/propostas?categoria=PE")
+    cliente.get("/pio/propostas?card=PEND_ASSIN")
     assert "LIKE" not in banco["cur"].sqls[0]
 
 
@@ -280,7 +332,7 @@ def test_a_pagina_tem_order_by(cliente, banco):
     """OFFSET/FETCH sem ORDER BY é erro de sintaxe no SQL Server — e, se
     passasse, a página 2 poderia repetir linha da página 1."""
     banco["cur"] = CursorFalso([_det()])
-    cliente.get("/pio/propostas?categoria=PE&offset=50")
+    cliente.get("/pio/propostas?card=PEND_ASSIN&offset=50")
     pagina = banco["cur"].sqls[1]
     assert "ORDER BY" in pagina and "OFFSET" in pagina
 
@@ -289,11 +341,11 @@ def test_mais_antigas_primeiro(cliente, banco):
     """A fila do card existe para mostrar o atraso: a proposta parada há mais
     tempo é a que precisa aparecer antes."""
     banco["cur"] = CursorFalso([_det()])
-    cliente.get("/pio/propostas?categoria=PE")
+    cliente.get("/pio/propostas?card=PEND_ASSIN")
     assert "ORDER BY d.DTH_VENDA ASC" in banco["cur"].sqls[1]
 
 
-@pytest.mark.parametrize("rota", ["/pio/contagens", "/pio/propostas?categoria=PE"])
+@pytest.mark.parametrize("rota", ["/pio/contagens", "/pio/propostas?card=PEND_ASSIN"])
 def test_exige_a_permissao_da_secao(sem_permissao, rota):
     r = sem_permissao.get(rota)
     assert r.status_code == 403
@@ -331,12 +383,20 @@ def test_ha_pelo_menos_um_card_ligado():
     assert _origem_pio(), "nenhum card lendo do PIO — o leitor quebrou?"
 
 
-def test_toda_categoria_do_front_existe_no_router():
-    from routers.pio import CATEGORIAS
-    desconhecidas = set(_origem_pio().values()) - set(CATEGORIAS)
-    assert not desconhecidas, (
-        f"o front pede categoria que o router recusa: {sorted(desconhecidas)} — "
+def test_todo_card_do_front_existe_no_router():
+    from routers.pio import CARDS
+    desconhecidos = set(_origem_pio().values()) - set(CARDS)
+    assert not desconhecidos, (
+        f"o front pede card que o router recusa: {sorted(desconhecidos)} — "
         f"o card mostraria zero, sem erro nenhum")
+
+
+def test_cada_card_do_router_tem_tabela_propria():
+    """Duas entradas apontando para a mesma DET faria um card mostrar a lista
+    do outro — plausível, e errado."""
+    from routers.pio import CARDS
+    tabelas = [t for _, t in CARDS.values()]
+    assert len(tabelas) == len(set(tabelas)), f"tabela repetida entre cards: {tabelas}"
 
 
 def test_todo_card_ligado_existe_na_sequencia():
@@ -357,24 +417,34 @@ def test_o_exemplo_sai_de_cena_onde_ha_dado_real(arquivo):
         f"{arquivo.name} pode listar proposta de exemplo num card que já lê a carga")
 
 
-def test_nenhum_card_ligado_depende_de_sub_filtro():
-    """Armadilha para a PRÓXIMA ligação, não para esta.
+def test_card_que_le_a_carga_nao_mostra_sub_filtro():
+    """A armadilha que disparou quando `awaiting_payment` foi ligado (2026-09-01).
 
     A lista de um card que lê a carga vem paginada do servidor, e o sub-filtro
-    da tela roda sobre o array local — ou seja, ele não se aplica ali. Hoje
-    isso é inofensivo: o único card ligado (`pending_signature`) não tem
-    sub-status. Ligar `awaiting_payment` ou `in_analysis` sem antes levar o
-    sub-filtro para a consulta faria o Select aparecer na tela e não filtrar
-    nada — mudar a opção, a lista continuar igual, e ninguém entender por quê.
+    da tela roda sobre o array local de exemplo — ele não se aplica ali.
+    `awaiting_payment` tem sub-status de pagamento E agora lê o PIO: sem
+    esconder o Select, o usuário escolheria "Cartão de crédito", a lista
+    continuaria idêntica, e nada na tela explicaria por quê.
+
+    A proteção é anular `subFiltroAtivo` quando o card vem da carga. Quando o
+    sub-status for para dentro de `/pio/propostas`, este teste muda junto.
     """
     import re as _re
     inline = COMPONENTES[0].read_text(encoding="utf-8")
+
     bloco = _re.search(r"const SUB_FILTRO:.*?\n\};", inline, _re.S)
     com_sub_filtro = set(_re.findall(r"(\w+):\s*\{\s*campo:", bloco.group(0)))
     conflito = set(_origem_pio()) & com_sub_filtro
-    assert not conflito, (
-        f"{sorted(conflito)} lê do PIO E tem sub-filtro local: o Select apareceria "
-        f"sem filtrar. Leve o sub-status para /pio/propostas antes de ligar o card.")
+    if not conflito:
+        pytest.skip("nenhum card ligado tem sub-filtro — nada a esconder")
+
+    atribuicao = _re.search(
+        r"const subFiltroAtivo\s*=\s*(.*?);", inline, _re.S)
+    assert atribuicao, "subFiltroAtivo não encontrado no InlineWorkflow"
+    expressao = " ".join(atribuicao.group(1).split())
+    assert expressao.startswith("cardSelecionado ? undefined"), (
+        f"{sorted(conflito)} lê do PIO E tem sub-filtro local, mas o Select não é "
+        f"escondido: `subFiltroAtivo = {expressao}`. Ele apareceria sem filtrar nada.")
 
 
 @pytest.mark.parametrize("arquivo", COMPONENTES, ids=lambda p: p.stem)

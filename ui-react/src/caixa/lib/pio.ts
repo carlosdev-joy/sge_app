@@ -1,28 +1,33 @@
 // Ligação dos cards do Workflow com os dados REAIS do PIO.
 //
-// Fonte: `dbo.PIO_PROPOSTA_PENDENTE_AGG` (o número do card) e `_DET` (a lista),
-// no próprio banco do Orquestra, recarregadas uma vez por dia às 07:30 pela
-// `PRC_PIO_CARGA_PROPOSTA_PENDENTE`. A API expõe as duas em /pio/*.
+// Fonte: `dbo.PIO_AGG` (o número de cada card) e uma tabela de detalhe POR CARD
+// (a lista), no próprio banco do Orquestra, recarregadas uma vez por dia às
+// 07:30 pela `PRC_PIO_CARGA_DIARIA`. A API expõe as duas em /pio/*.
 //
-// Hoje **só o primeiro card** lê daqui — ver `ORIGEM_PIO` abaixo. Os demais
-// seguem no mock até a carga trazer as outras categorias; ligar cada um é
-// acrescentar uma linha naquele mapa, e nada mais.
+// A carga entrega DOIS cards hoje — ver `ORIGEM_PIO` abaixo. Os demais seguem no
+// mock até ela trazer mais; ligar cada um é acrescentar uma linha naquele mapa,
+// e nada mais.
 import { useQuery } from "@tanstack/react-query";
 
 import { apiFetch } from "../../lib/api";
 import type { PropostaWorkflow, StatusWorkflow } from "./workflow";
 
-/** Card → categoria (STA_ASSINATURA) da carga. A ausência aqui é o que mantém
- *  um card no mock; a presença é o que o liga ao dado real. */
+/** Card do Workflow → COD_CARD da carga. A ausência aqui é o que mantém um card
+ *  no mock; a presença é o que o liga ao dado real.
+ *
+ *  ⚠️ O COD_CARD escolhe a TABELA de detalhe do lado da API (PEND_ASSIN →
+ *  PIO_PROPOSTA_PENDENTE_DET, PEND_PGTO → PIO_PROPOSTA_PEND_PGTO_DET). Card novo
+ *  aqui exige o COD_CARD correspondente no dicionário `CARDS` de
+ *  `api/routers/pio.py` — sem isso a API responde vazio, não erro. */
 export const ORIGEM_PIO: Partial<Record<StatusWorkflow, string>> = {
-  pending_signature: "PE",
-  // Quando a carga trouxer as outras categorias:
-  // awaiting_payment: "PP", paid: "AP", in_analysis: "AN",
-  // emission_sent: "EM", declined: "RE",
+  pending_signature: "PEND_ASSIN",
+  awaiting_payment: "PEND_PGTO",
+  // Quando a carga trouxer os demais cards: paid, in_analysis, emission_sent,
+  // declined, refund_scheduled, sensitization_monitoring.
 };
 
 export interface ContagemPio {
-  categoria: string;
+  card: string;
   descricao: string;
   quantidade: number;
   carga: string | null;
@@ -31,7 +36,7 @@ export interface ContagemPio {
 export interface ContagensPio {
   disponivel: boolean;
   referencia: string | null;
-  categorias: ContagemPio[];
+  cards: ContagemPio[];
 }
 
 export interface ItemPio {
@@ -57,7 +62,7 @@ export interface ItemPio {
 
 export interface PaginaPio {
   disponivel: boolean;
-  categoria: string;
+  card: string;
   referencia: string | null;
   total: number;
   limite: number;
@@ -67,7 +72,7 @@ export interface PaginaPio {
 
 export const TAMANHO_PAGINA_PIO = 50;
 
-/** Contagem por categoria da carga mais recente. */
+/** Contagem por card da carga mais recente. */
 export function useContagensPio() {
   return useQuery({
     queryKey: ["pio", "contagens"],
@@ -77,17 +82,17 @@ export function useContagensPio() {
   });
 }
 
-/** Uma página da lista de propostas. `ativo` evita buscar 8.700 registros
+/** Uma página da lista de propostas. `ativo` evita buscar milhares de registros
  *  enquanto o card nem foi aberto. */
-export function usePropostasPio(categoria: string | undefined, ativo: boolean,
+export function usePropostasPio(card: string | undefined, ativo: boolean,
                                 pagina: number, busca: string) {
   return useQuery({
-    queryKey: ["pio", "propostas", categoria, pagina, busca],
-    enabled: Boolean(categoria) && ativo,
+    queryKey: ["pio", "propostas", card, pagina, busca],
+    enabled: Boolean(card) && ativo,
     staleTime: 5 * 60 * 1000,
     queryFn: () => {
       const p = new URLSearchParams({
-        categoria: categoria as string,
+        card: card as string,
         limite: String(TAMANHO_PAGINA_PIO),
         offset: String(pagina * TAMANHO_PAGINA_PIO),
       });

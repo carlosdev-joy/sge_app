@@ -111,30 +111,38 @@ export default function InlineWorkflow() {
 
   // ── A carga do PIO ────────────────────────────────────────────────────────
   const contagens = useContagensPio();
-  const categoriaSelecionada = ORIGEM_PIO[selectedStatus as StatusWorkflow];
-  const paginaPio = usePropostasPio(categoriaSelecionada, isExpanded, pagina, "");
+  const cardSelecionado = ORIGEM_PIO[selectedStatus as StatusWorkflow];
+  const paginaPio = usePropostasPio(cardSelecionado, isExpanded, pagina, "");
 
   // Contagem real por card, só para os status que têm origem no PIO.
   const reais: Partial<Record<StatusWorkflow, number>> = {};
   if (contagens.data?.disponivel) {
-    const porCategoria = new Map(
-      contagens.data.categorias.map((c) => [c.categoria, c.quantidade]));
+    const porCard = new Map(
+      contagens.data.cards.map((c) => [c.card, c.quantidade]));
     (Object.entries(ORIGEM_PIO) as [StatusWorkflow, string][]).forEach(
-      ([status, categoria]) => {
-        // Categoria SEM linha na carga é zero de verdade — a carga rodou e não
-        // achou proposta naquele estado. Diferente de não ter conseguido ler,
-        // que é o `disponivel: false` tratado abaixo.
-        reais[status] = porCategoria.get(categoria) ?? 0;
+      ([status, card]) => {
+        // Card SEM linha na carga é zero de verdade — a carga rodou e não achou
+        // proposta naquele estado. Diferente de não ter conseguido ler, que é o
+        // `disponivel: false` tratado abaixo.
+        reais[status] = porCard.get(card) ?? 0;
       });
   }
 
   const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
-  const subFiltroAtivo = SUB_FILTRO[selectedStatus as StatusWorkflow];
+
+  // Card que lê do PIO NÃO oferece sub-filtro: a carga não traz forma de
+  // pagamento nem motivo de análise, e o filtro roda sobre as propostas de
+  // exemplo. Deixá-lo na tela daria um seletor que não altera coisa alguma —
+  // o usuário escolheria "Cartão de crédito" e continuaria vendo a lista
+  // inteira, achando que aquilo é o recorte pedido.
+  const subFiltroAtivo = cardSelecionado
+    ? undefined
+    : SUB_FILTRO[selectedStatus as StatusWorkflow];
 
   const propostasDoPio = (paginaPio.data?.itens ?? []).map(
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow));
 
-  const filteredProposals = categoriaSelecionada
+  const filteredProposals = cardSelecionado
     ? propostasDoPio   // já vêm ordenadas pela consulta: mais antigas primeiro
     : PROPOSTAS_DE_EXEMPLO
         .filter((proposta) => {
@@ -148,7 +156,7 @@ export default function InlineWorkflow() {
         .sort((a, b) => b.daysInPending - a.daysInPending);
 
   const totalDaPagina = paginaPio.data?.total ?? 0;
-  const temMaisPaginas = categoriaSelecionada
+  const temMaisPaginas = cardSelecionado
     ? (pagina + 1) * TAMANHO_PAGINA_PIO < totalDaPagina
     : false;
 
@@ -292,7 +300,7 @@ export default function InlineWorkflow() {
             {/* Procedência da lista — de onde vieram estas linhas e de quando.
                 Um número sem data de carga não deixa distinguir "a fila
                 esvaziou" de "a carga das 07:30 não rodou". */}
-            {categoriaSelecionada && paginaPio.data?.disponivel && (
+            {cardSelecionado && paginaPio.data?.disponivel && (
               <p className="text-xs text-dim">
                 {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} na carga
                 {paginaPio.data.referencia ? ` de ${dataBr(paginaPio.data.referencia)}` : ""}
@@ -301,10 +309,10 @@ export default function InlineWorkflow() {
                 )}
               </p>
             )}
-            {categoriaSelecionada && paginaPio.isPending && (
+            {cardSelecionado && paginaPio.isPending && (
               <p className="text-xs text-dim">Consultando a carga do PIO…</p>
             )}
-            {categoriaSelecionada && !paginaPio.isPending && !paginaPio.data?.disponivel && (
+            {cardSelecionado && !paginaPio.isPending && !paginaPio.data?.disponivel && (
               <p className="text-xs text-red-600 dark:text-red-400">
                 Não foi possível ler a carga do PIO. A lista não está vazia — ela é desconhecida.
               </p>
@@ -420,7 +428,7 @@ export default function InlineWorkflow() {
             {/* Paginação — navegar, não acumular: são 8.700 propostas em
                 "Pendentes de Assinatura" sozinha, e empilhá-las no DOM
                 travaria a tela para mostrar o que ninguém vai rolar. */}
-            {categoriaSelecionada && (pagina > 0 || temMaisPaginas) && (
+            {cardSelecionado && (pagina > 0 || temMaisPaginas) && (
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <span className="text-xs text-dim">
                   Página {pagina + 1} de {Math.max(1, Math.ceil(totalDaPagina / TAMANHO_PAGINA_PIO)).toLocaleString("pt-BR")}

@@ -39,17 +39,17 @@ export default function ProposalWorkflowSheet() {
   const [pagina, setPagina] = useState(0);
 
   const contagens = useContagensPio();
-  const categoriaSelecionada = ORIGEM_PIO[selectedStatus as StatusWorkflow];
-  // `aberto` no lugar do enabled: a gaveta fechada não consulta 8.700 linhas.
-  const paginaPio = usePropostasPio(categoriaSelecionada, aberto, pagina, "");
+  const cardSelecionado = ORIGEM_PIO[selectedStatus as StatusWorkflow];
+  // `aberto` no lugar do enabled: a gaveta fechada não consulta milhares de linhas.
+  const paginaPio = usePropostasPio(cardSelecionado, aberto, pagina, "");
 
   const reais: Partial<Record<StatusWorkflow, number>> = {};
   if (contagens.data?.disponivel) {
-    const porCategoria = new Map(
-      contagens.data.categorias.map((c) => [c.categoria, c.quantidade]));
+    const porCard = new Map(
+      contagens.data.cards.map((c) => [c.card, c.quantidade]));
     (Object.entries(ORIGEM_PIO) as [StatusWorkflow, string][]).forEach(
-      ([status, categoria]) => {
-        reais[status] = porCategoria.get(categoria) ?? 0;
+      ([status, card]) => {
+        reais[status] = porCard.get(card) ?? 0;
       });
   }
 
@@ -60,7 +60,7 @@ export default function ProposalWorkflowSheet() {
     setPagina(0);
   };
 
-  const filteredProposals = categoriaSelecionada
+  const filteredProposals = cardSelecionado
     ? (paginaPio.data?.itens ?? []).map(
         (item) => propostaDoPio(item, selectedStatus as StatusWorkflow))
     : selectedStatus === "all"
@@ -68,7 +68,7 @@ export default function ProposalWorkflowSheet() {
       : PROPOSTAS_DE_EXEMPLO.filter((p) => p.status === selectedStatus);
 
   const totalDaPagina = paginaPio.data?.total ?? 0;
-  const temMaisPaginas = categoriaSelecionada
+  const temMaisPaginas = cardSelecionado
     ? (pagina + 1) * TAMANHO_PAGINA_PIO < totalDaPagina
     : false;
 
@@ -119,7 +119,7 @@ export default function ProposalWorkflowSheet() {
 
         {/* Procedência: número sem data de carga não distingue "esvaziou" de
             "a carga das 07:30 não rodou". */}
-        {categoriaSelecionada && paginaPio.data?.disponivel && (
+        {cardSelecionado && paginaPio.data?.disponivel && (
           <p className="text-xs text-dim mb-3">
             {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} na carga
             {paginaPio.data.referencia ? ` de ${dataBr(paginaPio.data.referencia)}` : ""}
@@ -128,10 +128,10 @@ export default function ProposalWorkflowSheet() {
             )}
           </p>
         )}
-        {categoriaSelecionada && paginaPio.isPending && (
+        {cardSelecionado && paginaPio.isPending && (
           <p className="text-xs text-dim mb-3">Consultando a carga do PIO…</p>
         )}
-        {categoriaSelecionada && !paginaPio.isPending && !paginaPio.data?.disponivel && (
+        {cardSelecionado && !paginaPio.isPending && !paginaPio.data?.disponivel && (
           <p className="text-xs text-red-600 dark:text-red-400 mb-3">
             Não foi possível ler a carga do PIO. A lista não está vazia — ela é desconhecida.
           </p>
@@ -180,7 +180,7 @@ export default function ProposalWorkflowSheet() {
 
         {/* Paginação — navegar, não acumular: são milhares de propostas por
             categoria, e empilhá-las no DOM travaria a gaveta. */}
-        {categoriaSelecionada && (pagina > 0 || temMaisPaginas) && (
+        {cardSelecionado && (pagina > 0 || temMaisPaginas) && (
           <div className="flex items-center justify-between gap-3 flex-wrap mt-4">
             <span className="text-xs text-dim">
               Página {pagina + 1} de {Math.max(1, Math.ceil(totalDaPagina / TAMANHO_PAGINA_PIO)).toLocaleString("pt-BR")}
