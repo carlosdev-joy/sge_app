@@ -206,6 +206,83 @@ Tabelas de origem no TDDB48: `PV_040_PROPOSTA`, `PV_044_PROPOSTA_PESSOA`,
 `PV_036_PESSOA_FISICA`, `PV_020_ENDERECO`, `PV_038_PRODUTO`, `PV_017_CONTATO`,
 `PV_052_PREMIO_PRODUTO`.
 
+## Que coluna preenche cada campo da tela
+
+Levantado em 2026-09-01 para explicar as diferenças entre a tela e a fonte.
+**Só as propostas vindas da carga** seguem esta tabela; as de exemplo (cards
+ainda não ligados) continuam saindo de `caixa/lib/workflow.ts`.
+
+O caminho é sempre o mesmo: coluna → `api/routers/pio.py` (campo do JSON) →
+`propostaDoPio()` em `caixa/lib/pio.ts` (campo do componente) → tela.
+
+### Card da lista (`InlineWorkflow` e o painel `ProposalWorkflowSheet`)
+
+| Na tela | Campo interno | Coluna da carga |
+|---|---|---|
+| Número da proposta | `number` | `COD_PROPOSTA` |
+| Etiqueta de status | `status` | **nenhuma** — é o card selecionado, não o dado |
+| "N dias pendente" | `daysInPending` | `DATEDIFF(day, DTH_VENDA, hoje)` |
+| Nome | `insuredName` | `NOM_PESSOA` |
+| Produto | `product` | `NOM_PRODUTO` |
+| Valor (ao lado do produto) | `value` | **`VLR_PREMIO`** — é o prêmio, não a renda |
+| Região | `region` | `NOM_UF` → região do IBGE (`caixa/lib/regiao.ts`) |
+| Faixa | `ageRange` | `DATEDIFF(year, DTA_NASCIMENTO, hoje)` + " anos" |
+
+⚠️ **"Faixa" mostra a idade exata, não uma faixa.** As propostas de exemplo
+traziam `"45-60"`; a carga tem a data de nascimento, então o valor real é
+`"45 anos"`. Os dois convivem na mesma linha da tela.
+
+### Modal "Resumo do seguro" (`ProposalDetailDialog`)
+
+| Na tela | Campo interno | Coluna da carga |
+|---|---|---|
+| Linha do tempo | `status` | **nenhuma** — o card selecionado |
+| Data de Venda | `date` | `DTH_VENDA` |
+| Matrícula do Indicador | `indicatorId` | `NUM_MATRICULA` |
+| Agência | `agency` | `NUM_AGENCIA` |
+| **Usuário** | derivado | **nenhuma** — é `"c"` + os 6 primeiros dígitos da matrícula, montado na tela |
+| Nome civil | `insuredName` | `NOM_PESSOA` |
+| CPF | `cpf` | `COD_CPF` |
+| Produto | `product` | `NOM_PRODUTO` |
+| Telefone | `phone` | `NUM_DDD_TEL_CEL` + `NUM_TEL_CEL`; sem celular, cai no `..._RES` |
+| E-mail | `email` | `DES_EMAIL` |
+| Renda Individual | `individualIncome` | **`VLR_RENDA_FORMAL`** |
+| Rodapé (faixa cinza) | vários | repete proposta, CPF, nome, produto, **prêmio**, data, agência e matrícula |
+| Bolinha verde do rodapé | — | **nenhuma** — decorativa, sempre verde |
+
+### O que saiu da tela em 2026-09-01
+
+Todos eram **literais escritos no código**, iguais em toda proposta — a carga
+não traz nenhum deles:
+
+| Campo | O que exibia |
+|---|---|
+| Sexo | `"Masculino"`, em toda proposta |
+| Profissão | `"SUPERV, INSPETOR E AGENTE DE COMPRAS/VENDAS"` |
+| Estado Civil | `"Solteiro"` |
+| Seção **Dados do Beneficiário** inteira | `"Herdeiros Legais"` / `"Herdeiros Legais"` / `"100%"` |
+
+E um que **ficou, mas trocou de fonte**: *Renda Individual* exibia `value`, ou
+seja o **`VLR_PREMIO`** — o rótulo de um dado com o número de outro. Agora lê
+`VLR_RENDA_FORMAL`. Onde a carga não trouxer a renda, o campo some da tela em
+vez de mostrar outro número no lugar.
+
+`tests/test_pio_regiao.py` reprova a volta de qualquer um desses literais e o
+reencontro entre renda e prêmio.
+
+### Colunas da carga que a tela ainda NÃO usa
+
+`AREA_PRODUTO`, `VLR_IMP_SEGURADA` (capital segurado), `COD_PLANO`,
+`NOM_LOGRADOURO`, `NOM_BAIRRO`, `NOM_CIDADE`, `NUM_CEP`, `STA_SITUACAO`,
+`STA_PAGO`, `DTH_ALTERACAO`, `DES_JUST_CANC`.
+
+As quatro primeiras da lista (`area_produto`, `imp_segurada`, `cidade`, `uf`) e
+mais `situacao`/`pago` **já vêm no JSON** de `/pio/propostas` — colocá-las na
+tela é trabalho só de front. As demais exigem mexer no `SELECT` do router.
+
+⚠️ `NOM_CIDADE` deixou de aparecer quando o campo Região passou a mostrar a
+região do IBGE (decisão do usuário em 2026-09-01). O dado continua vindo na API.
+
 ## Conferência da carga (rodar no DMDB41 depois de cada mudança na proc)
 
 Três perguntas que a tela não faz e ninguém percebe se a resposta mudar:

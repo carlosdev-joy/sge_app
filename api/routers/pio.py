@@ -180,7 +180,8 @@ def pio_propostas(
                    d.NUM_DDD_TEL_CEL, d.NUM_TEL_CEL, d.NUM_DDD_TEL_RES, d.NUM_TEL_RES,
                    d.DES_EMAIL, DATEDIFF(year, d.DTA_NASCIMENTO, CAST(GETDATE() AS DATE)),
                    d.STA_SITUACAO, d.STA_PAGO,
-                   CONVERT(varchar(10), d.DTH_REFERENCIA, 120)
+                   CONVERT(varchar(10), d.DTH_REFERENCIA, 120),
+                   d.VLR_RENDA_FORMAL
               FROM {tabela} d
               {filtro}
              ORDER BY d.DTH_VENDA ASC, d.COD_PROPOSTA ASC
@@ -206,6 +207,10 @@ def pio_propostas(
                 "area_produto": (r[8] or "").strip(),
                 "premio": float(r[9]) if r[9] is not None else None,
                 "imp_segurada": float(r[10]) if r[10] is not None else None,
+                # Renda declarada do proponente. NÃO confundir com `premio`: o
+                # modal exibia o prêmio sob o rótulo "Renda Individual" até
+                # 2026-09-01, e era essa a diferença que ninguém explicava.
+                "renda": float(r[22]) if r[22] is not None else None,
                 "cidade": (r[11] or "").strip(),
                 "uf": (r[12] or "").strip(),
                 "telefone": telefone,
