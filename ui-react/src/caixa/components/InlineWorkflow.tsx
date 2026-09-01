@@ -33,6 +33,14 @@ import {
   type SinalWorkflow,
   type StatusWorkflow,
 } from "../lib/workflow";
+import {
+  dataBr,
+  propostaDoPio,
+  useContagensPio,
+  usePropostasPio,
+  ORIGEM_PIO,
+  TAMANHO_PAGINA_PIO,
+} from "../lib/pio";
 
 // ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
 // alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
@@ -71,6 +79,11 @@ const SUB_FILTRO: Partial<Record<StatusWorkflow, { campo: keyof PropostaWorkflow
   refund_scheduled: { campo: "refundSubStatus",    opcoes: SUB_STATUS_DEVOLUCAO },
 };
 
+// As propostas de exemplo dos status que JÁ leem do PIO saem de cena: mock e
+// carga descrevem o mesmo card, e misturar os dois é o jeito mais rápido de
+// alguém ler um número de teste como se fosse produção.
+const PROPOSTAS_DE_EXEMPLO = propostasWorkflow.filter((p) => !ORIGEM_PIO[p.status]);
+
 export default function InlineWorkflow() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState("all");
@@ -85,20 +98,59 @@ export default function InlineWorkflow() {
   const [selectedProposal, setSelectedProposal] = useState<PropostaWorkflow | null>(null);
   const [proposalStatuses, setProposalStatuses] = useState<Record<string, string>>({});
   const [sendingEmission, setSendingEmission] = useState<string | null>(null);
+  const [pagina, setPagina] = useState(0);
 
-  const counts = contarPorStatus(propostasWorkflow, proposalStatuses);
+  /** Trocar de card volta para a primeira página: sem isso, sair de um card
+   *  com 8.700 propostas na página 40 e entrar em outro com 12 deixaria a
+   *  lista vazia, com cara de "não há nada aqui". */
+  const selecionar = (status: string) => {
+    setSelectedStatus(status);
+    setSelectedSubStatus("all");
+    setPagina(0);
+  };
+
+  // ── A carga do PIO ────────────────────────────────────────────────────────
+  const contagens = useContagensPio();
+  const categoriaSelecionada = ORIGEM_PIO[selectedStatus as StatusWorkflow];
+  const paginaPio = usePropostasPio(categoriaSelecionada, isExpanded, pagina, "");
+
+  // Contagem real por card, só para os status que têm origem no PIO.
+  const reais: Partial<Record<StatusWorkflow, number>> = {};
+  if (contagens.data?.disponivel) {
+    const porCategoria = new Map(
+      contagens.data.categorias.map((c) => [c.categoria, c.quantidade]));
+    (Object.entries(ORIGEM_PIO) as [StatusWorkflow, string][]).forEach(
+      ([status, categoria]) => {
+        // Categoria SEM linha na carga é zero de verdade — a carga rodou e não
+        // achou proposta naquele estado. Diferente de não ter conseguido ler,
+        // que é o `disponivel: false` tratado abaixo.
+        reais[status] = porCategoria.get(categoria) ?? 0;
+      });
+  }
+
+  const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
   const subFiltroAtivo = SUB_FILTRO[selectedStatus as StatusWorkflow];
 
-  const filteredProposals = propostasWorkflow
-    .filter((proposta) => {
-      const statusAtual = proposalStatuses[proposta.id] || proposta.status;
-      if (selectedStatus !== "all" && statusAtual !== selectedStatus) return false;
-      if (subFiltroAtivo && selectedSubStatus !== "all") {
-        return proposta[subFiltroAtivo.campo] === selectedSubStatus;
-      }
-      return true;
-    })
-    .sort((a, b) => b.daysInPending - a.daysInPending);
+  const propostasDoPio = (paginaPio.data?.itens ?? []).map(
+    (item) => propostaDoPio(item, selectedStatus as StatusWorkflow));
+
+  const filteredProposals = categoriaSelecionada
+    ? propostasDoPio   // já vêm ordenadas pela consulta: mais antigas primeiro
+    : PROPOSTAS_DE_EXEMPLO
+        .filter((proposta) => {
+          const statusAtual = proposalStatuses[proposta.id] || proposta.status;
+          if (selectedStatus !== "all" && statusAtual !== selectedStatus) return false;
+          if (subFiltroAtivo && selectedSubStatus !== "all") {
+            return proposta[subFiltroAtivo.campo] === selectedSubStatus;
+          }
+          return true;
+        })
+        .sort((a, b) => b.daysInPending - a.daysInPending);
+
+  const totalDaPagina = paginaPio.data?.total ?? 0;
+  const temMaisPaginas = categoriaSelecionada
+    ? (pagina + 1) * TAMANHO_PAGINA_PIO < totalDaPagina
+    : false;
 
   const handleSendEmission = (proposalId: string) => {
     setSendingEmission(proposalId);
@@ -138,10 +190,7 @@ export default function InlineWorkflow() {
               {SEQUENCIA_WORKFLOW.map((status) => (
                 <button
                   key={status.value}
-                  onClick={() => {
-                    setSelectedStatus(status.value);
-                    setSelectedSubStatus("all");
-                  }}
+                  onClick={() => selecionar(status.value)}
                   className={`relative p-2 rounded-lg border-2 transition-all ${
                     selectedStatus === status.value
                       ? "border-[#1A5FA8] bg-[#1A5FA8]/10"
@@ -175,7 +224,23 @@ export default function InlineWorkflow() {
                   {/* Sem folga lateral: com o sinal embaixo, o rótulo usa a
                       largura inteira e quebra em menos linhas. */}
                   <div className="text-xs font-medium text-center text-ink">{status.label}</div>
-                  <div className="text-xl font-bold text-center mt-1 text-ink">{counts[status.value]}</div>
+                  {/* Card com origem no PIO não pode mostrar zero enquanto
+                      carrega nem quando a leitura falha: zero é uma resposta
+                      que ninguém investiga. "…" e "—" são perguntas. */}
+                  <div className="text-xl font-bold text-center mt-1 text-ink">
+                    {ORIGEM_PIO[status.value] && contagens.isPending ? (
+                      <span className="text-dim" title="consultando a carga">…</span>
+                    ) : ORIGEM_PIO[status.value] && !contagens.data?.disponivel ? (
+                      <span
+                        className="text-dim"
+                        title="não foi possível ler a carga do PIO — o número não é zero, é desconhecido"
+                      >
+                        —
+                      </span>
+                    ) : (
+                      counts[status.value].toLocaleString("pt-BR")
+                    )}
+                  </div>
                 </button>
               ))}
             </div>
@@ -185,10 +250,7 @@ export default function InlineWorkflow() {
               <div className="flex-1 min-w-[220px]">
                 <Select
                   value={selectedStatus}
-                  onChange={(e) => {
-                    setSelectedStatus(e.target.value);
-                    setSelectedSubStatus("all");
-                  }}
+                  onChange={(e) => selecionar(e.target.value)}
                   aria-label="Filtrar por status"
                   className="w-full"
                 >
@@ -225,6 +287,35 @@ export default function InlineWorkflow() {
               <Button variant="primary" onClick={() => setAlertDialogOpen(true)} className="w-full justify-center">
                 Enviar Alertas para Responsáveis
               </Button>
+            )}
+
+            {/* Procedência da lista — de onde vieram estas linhas e de quando.
+                Um número sem data de carga não deixa distinguir "a fila
+                esvaziou" de "a carga das 07:30 não rodou". */}
+            {categoriaSelecionada && paginaPio.data?.disponivel && (
+              <p className="text-xs text-dim">
+                {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} na carga
+                {paginaPio.data.referencia ? ` de ${dataBr(paginaPio.data.referencia)}` : ""}
+                {filteredProposals.length > 0 && (
+                  <> · mostrando {filteredProposals.length.toLocaleString("pt-BR")}, as mais antigas primeiro</>
+                )}
+              </p>
+            )}
+            {categoriaSelecionada && paginaPio.isPending && (
+              <p className="text-xs text-dim">Consultando a carga do PIO…</p>
+            )}
+            {categoriaSelecionada && !paginaPio.isPending && !paginaPio.data?.disponivel && (
+              <p className="text-xs text-red-600 dark:text-red-400">
+                Não foi possível ler a carga do PIO. A lista não está vazia — ela é desconhecida.
+              </p>
+            )}
+            {/* Em "Todas as Propostas" a lista mostra só o que não vem da
+                carga: juntar 8.700 linhas reais às de exemplo não caberia na
+                tela nem diria nada. */}
+            {selectedStatus === "all" && Object.keys(ORIGEM_PIO).length > 0 && (
+              <p className="text-xs text-dim">
+                As propostas com dados reais aparecem ao selecionar o card correspondente.
+              </p>
             )}
 
             {/* Lista */}
@@ -322,8 +413,38 @@ export default function InlineWorkflow() {
                     </div>
                   );
                 })}
+
               </div>
             </div>
+
+            {/* Paginação — navegar, não acumular: são 8.700 propostas em
+                "Pendentes de Assinatura" sozinha, e empilhá-las no DOM
+                travaria a tela para mostrar o que ninguém vai rolar. */}
+            {categoriaSelecionada && (pagina > 0 || temMaisPaginas) && (
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-xs text-dim">
+                  Página {pagina + 1} de {Math.max(1, Math.ceil(totalDaPagina / TAMANHO_PAGINA_PIO)).toLocaleString("pt-BR")}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setPagina((p) => Math.max(0, p - 1))}
+                    disabled={pagina === 0 || paginaPio.isFetching}
+                  >
+                    Anterior
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setPagina((p) => p + 1)}
+                    disabled={!temMaisPaginas || paginaPio.isFetching}
+                  >
+                    Próxima
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

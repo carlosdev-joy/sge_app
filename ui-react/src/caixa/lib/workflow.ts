@@ -192,12 +192,19 @@ export const propostasWorkflow: PropostaWorkflow[] = [
 
 /** Contagem por status da sequência, derivada da lista — nunca um dicionário
  *  escrito à mão. Chave esquecida ali fazia a proposta ser DESCARTADA em
- *  silêncio, e o card nascia zerado com dado na base. */
+ *  silêncio, e o card nascia zerado com dado na base.
+ *
+ *  `reais` são as contagens que vêm da carga do PIO. Para o status que tem
+ *  número real, ele SUBSTITUI o do mock (não soma): as duas fontes descrevem o
+ *  mesmo card, e somar daria um total que não existe em lugar nenhum. O `all`
+ *  é a soma do que os cards mostram, para o cabeçalho não contradizer a
+ *  fileira logo abaixo dele. */
 export function contarPorStatus(
   propostas: PropostaWorkflow[],
   sobrescrito: Record<string, string> = {},
+  reais: Partial<Record<StatusWorkflow, number>> = {},
 ): Record<string, number> {
-  const contagem: Record<string, number> = { all: propostas.length };
+  const contagem: Record<string, number> = {};
   SEQUENCIA_WORKFLOW.forEach((etapa) => {
     contagem[etapa.value] = 0;
   });
@@ -205,5 +212,11 @@ export function contarPorStatus(
     const status = sobrescrito[proposta.id] || proposta.status;
     if (contagem[status] !== undefined) contagem[status]++;
   });
+  SEQUENCIA_WORKFLOW.forEach((etapa) => {
+    const real = reais[etapa.value];
+    if (real !== undefined) contagem[etapa.value] = real;
+  });
+  contagem.all = SEQUENCIA_WORKFLOW.reduce(
+    (soma, etapa) => soma + (contagem[etapa.value] || 0), 0);
   return contagem;
 }
