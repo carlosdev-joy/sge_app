@@ -23,8 +23,9 @@ TDDB48 (sql18,1450\staging4)          ← fonte, sistema de propostas
 DMDB41 (sql14,1480)                   ← o PRÓPRIO banco do Orquestra
    ├── PIO_AGG                        1 linha por card, snapshot do dia (TRUNCATE)
    ├── PIO_AGG_HIST                   mesma estrutura, INSERT-only (tendência)
-   ├── PIO_PROPOSTA_PENDENTE_DET      detalhe do card PEND_ASSIN (TRUNCATE)
-   └── PIO_PROPOSTA_PEND_PGTO_DET     detalhe do card PEND_PGTO  (TRUNCATE)
+   ├── PIO_PROPOSTA_PENDENTE_DET      detalhe do card PEND_ASSIN  (TRUNCATE)
+   ├── PIO_PROPOSTA_PEND_PGTO_DET     detalhe do card PEND_PGTO   (TRUNCATE)
+   └── PIO_PROPOSTA_ASSINA_PAGA_DET   detalhe do card ASSINA_PAGA (TRUNCATE)
    │  SELECT direto, via MSSQL_CONN_STR
    ▼
 api/routers/pio.py → /pio/contagens e /pio/propostas
@@ -37,7 +38,7 @@ que já está conectada — o `SQL14_DMDB41` de `dags/utils/conn_resolver.py` é
 mesmo banco do `MSSQL_CONN_STR` da API. Linked server é assunto da carga, uma
 vez por dia.
 
-A ordem da carga importa: as duas DET primeiro, depois a `PIO_AGG` como
+A ordem da carga importa: as três DET primeiro, depois a `PIO_AGG` como
 `UNION ALL` **delas** (não da fonte), e por fim a `PIO_AGG_HIST`, que só insere
 se a `DTH_REFERENCIA` ainda não existir — proteção contra dupla execução.
 
@@ -45,20 +46,36 @@ se a `DTH_REFERENCIA` ainda não existir — proteção contra dupla execução.
 
 | `COD_CARD` | Card do Workflow | Filtro na origem | Tabela de detalhe | Volume |
 |---|---|---|---|---|
-| `PEND_ASSIN` | Pendentes de Assinatura | `STA_ASSINATURA = 'PE'` | `PIO_PROPOSTA_PENDENTE_DET` | ~8.700 |
-| `PEND_PGTO` | Pendentes de Pagamento | `STA_ASSINATURA = 'CO'` | `PIO_PROPOSTA_PEND_PGTO_DET` | ~22.500 |
+| `PEND_ASSIN` | Pendentes de Assinatura | `STA_ASSINATURA='PE'` | `PIO_PROPOSTA_PENDENTE_DET` | ~8.700 |
+| `PEND_PGTO` | Pendentes de Pagamento | `STA_ASSINATURA='CO' AND STA_PAGO='N'` | `PIO_PROPOSTA_PEND_PGTO_DET` | ~22.500 |
+| `ASSINA_PAGA` | Assinadas e Pagas | `STA_ASSINATURA='CO' AND STA_PAGO='S'` | `PIO_PROPOSTA_ASSINA_PAGA_DET` | — |
 
-Os dois recortam ainda `STA_PAGO = 'N'`, `STA_SITUACAO NOT IN ('CA','EXP')` e
-`DTH_VENDA` nos **últimos 30 dias**.
+Os três recortam ainda `STA_SITUACAO NOT IN ('CA','EXP')` e `DTH_VENDA` nos
+**últimos 30 dias**.
+
+⚠️ **Os cards 2 e 3 saem do mesmo `STA_ASSINATURA='CO'` — quem os separa é o
+`STA_PAGO`.** Se a carga do card 2 deixar de filtrar `STA_PAGO='N'`, as duas
+tabelas passam a conter as mesmas propostas pagas: os dois cards contam a mesma
+venda, o total do Workflow infla, e nada acusa. (O passo 02 do fluxo de carga
+no guia descreve o filtro como só `'CO'`; o catálogo e o mapeamento do mesmo
+guia dizem `'CO' AND STA_PAGO='N'`. Vale conferir o texto da proc em produção —
+a consulta de conferência está no fim deste documento.)
+
+⚠️ **`COD_CARD` precisa de pelo menos `VARCHAR(11)`.** O guia especifica
+`VARCHAR(10)`, mas **`'ASSINA_PAGA'` tem 11 caracteres**. Com a coluna em 10, a
+carga ou morre (Msg 2628, `ANSI_WARNINGS ON`) ou grava `'ASSINA_PAG'` em
+silêncio — e aí o front pede `'ASSINA_PAGA'`, não casa, e o card mostra **zero
+para sempre**, sem erro em lugar nenhum. A migration 103 alarga para
+`VARCHAR(20)` na `PIO_AGG` e na `PIO_AGG_HIST`.
 
 ⚠️ **A API não refiltra por status.** Cada DET já contém apenas as propostas do
 seu card — o filtro foi aplicado na carga. Repetir `STA_ASSINATURA` na consulta
 é a forma silenciosa de zerar um card no dia em que a carga mudar de critério:
 tabela cheia, tela mostrando 0.
 
-Os demais cards da sequência (*Assinadas e Pagas*, *Em Análise*, *Emitidas*,
-*Rejeitadas*, *Devoluções de Prêmio*, *Sensibilizações*) **ainda não têm carga**
-e seguem no dado de exemplo.
+Os demais cards da sequência (*Em Análise*, *Emitidas*, *Rejeitadas*,
+*Devoluções de Prêmio*, *Sensibilizações*) **ainda não têm carga** e seguem no
+dado de exemplo.
 
 Códigos de `STA_ASSINATURA` na fonte, para referência: `PE` pendente de
 assinatura · `CO` assinada · `AP` assinada e paga · `AN` em análise · `EM`
@@ -75,6 +92,7 @@ Dois lugares, e os dois têm teste que reprova a divergência:
 export const ORIGEM_PIO: Partial<Record<StatusWorkflow, string>> = {
   pending_signature: "PEND_ASSIN",
   awaiting_payment: "PEND_PGTO",
+  paid: "ASSINA_PAGA",
 };
 ```
 
@@ -106,7 +124,8 @@ nos dias normais as duas leituras devolvem a mesma linha.
 
 | Item | Onde | Situação |
 |---|---|---|
-| `PIO_AGG`, `PIO_AGG_HIST`, as duas `_DET` | DMDB41 | `sql/migrations/102_pio_agg_e_card_pagamento.sql` as cria em ambiente novo (a 101 criou as da primeira versão) |
+| `PIO_AGG`, `PIO_AGG_HIST`, as duas primeiras `_DET` | DMDB41 | `sql/migrations/102_pio_agg_e_card_pagamento.sql` as cria em ambiente novo (a 101 criou as da primeira versão) |
+| `PIO_PROPOSTA_ASSINA_PAGA_DET` e o alargamento de `COD_CARD` | DMDB41 | `sql/migrations/103_pio_card_assinadas_pagas.sql` |
 | `PRC_PIO_CARGA_DIARIA` | DMDB41 | **fora do repo** — ver pendência abaixo |
 | SQL Agent Job da carga | msdb do sql14,1480 | **aguarda o DBA aplicar** — `usr_dstage_prev` não tem permissão no SQL Agent |
 | `PIO_PROPOSTA_PENDENTE_AGG` | DMDB41 | **órfã** desde este modelo: ninguém lê. Não foi dropada — a carga nasceu fora do repo e derrubar tabela que talvez ainda seja escrita lá troca um problema de tela por um de dado |
@@ -130,7 +149,7 @@ distinguir isso de "não consegui ler".
 | Coluna | Tipo | Descrição |
 |---|---|---|
 | `ID` | int IDENTITY | PK |
-| `COD_CARD` | varchar(10) | `PEND_ASSIN` \| `PEND_PGTO` — **o que escolhe a tabela de detalhe** |
+| `COD_CARD` | varchar(20) | `PEND_ASSIN` \| `PEND_PGTO` \| `ASSINA_PAGA` — **o que escolhe a tabela de detalhe**. O guia diz varchar(10) e `'ASSINA_PAGA'` tem 11 caracteres: a migration 103 alarga |
 | `DES_CARD` | varchar(100) | Rótulo legível do card |
 | `STA_CATEGORIA` | varchar(50) | Código do status na fonte (PE, CO, …) |
 | `DES_CATEGORIA` | varchar(100) | Rótulo do status |
@@ -141,15 +160,16 @@ distinguir isso de "não consegui ler".
 Índices: `PK_PIO_AGG (ID)` / `PK_PIO_AGG_HIST (ID)`,
 `IX_PIO_AGG_CARD_REF` e `IX_PIO_AGG_HIST_CARD_REF`, ambos `(COD_CARD, DTH_REFERENCIA)`.
 
-⚠️ Consulta ao histórico **sempre** com `COD_CARD` no filtro: sem ele, os dois
-cards voltam misturados e o gráfico de tendência mostra duas linhas por data.
+⚠️ Consulta ao histórico **sempre** com `COD_CARD` no filtro: sem ele, os três
+cards voltam misturados e o gráfico de tendência soma valores de datas iguais.
 
-### `dbo.PIO_PROPOSTA_PENDENTE_DET` e `dbo.PIO_PROPOSTA_PEND_PGTO_DET`
+### As três `_DET` (`PENDENTE`, `PEND_PGTO`, `ASSINA_PAGA`)
 
-Estrutura **idêntica** nas duas — 31 colunas, na mesma ordem. Só o nome da
+Estrutura **idêntica** nas três — 31 colunas, na mesma ordem. Só o nome da
 tabela muda, e é por isso que a API escolhe o `FROM` por um dicionário fechado:
 trocar uma pela outra devolveria uma lista plausível de propostas erradas, sem
-erro nenhum.
+erro nenhum. Entre a `PEND_PGTO` e a `ASSINA_PAGA` isso é ainda mais traiçoeiro:
+as duas têm `STA_ASSINATURA='CO'`, e só o `STA_PAGO` distingue uma da outra.
 
 | Coluna | Tipo | Descrição |
 |---|---|---|
@@ -185,6 +205,35 @@ cobre a ordenação da lista, que é sempre pela venda mais antiga.
 Tabelas de origem no TDDB48: `PV_040_PROPOSTA`, `PV_044_PROPOSTA_PESSOA`,
 `PV_036_PESSOA_FISICA`, `PV_020_ENDERECO`, `PV_038_PRODUTO`, `PV_017_CONTATO`,
 `PV_052_PREMIO_PRODUTO`.
+
+## Conferência da carga (rodar no DMDB41 depois de cada mudança na proc)
+
+Três perguntas que a tela não faz e ninguém percebe se a resposta mudar:
+
+```sql
+-- 1. Os cards 2 e 3 se sobrepõem? (as três linhas devem dar ZERO)
+SELECT 'card2 com proposta paga'      AS conferencia, COUNT(*) AS qtd
+  FROM dbo.PIO_PROPOSTA_PEND_PGTO_DET   WHERE STA_PAGO = 'S'
+UNION ALL
+SELECT 'card3 com proposta nao paga',  COUNT(*)
+  FROM dbo.PIO_PROPOSTA_ASSINA_PAGA_DET WHERE STA_PAGO <> 'S'
+UNION ALL
+SELECT 'mesma proposta nos dois',      COUNT(*)
+  FROM dbo.PIO_PROPOSTA_PEND_PGTO_DET p
+  JOIN dbo.PIO_PROPOSTA_ASSINA_PAGA_DET a ON a.COD_PROPOSTA = p.COD_PROPOSTA;
+
+-- 2. O COD_CARD coube inteiro? (nenhuma linha deve voltar)
+SELECT DISTINCT COD_CARD FROM dbo.PIO_AGG
+ WHERE COD_CARD NOT IN ('PEND_ASSIN','PEND_PGTO','ASSINA_PAGA');
+
+-- 3. A AGG bate com as DET? (as diferenças devem ser 0)
+SELECT a.COD_CARD, a.QTD_PROPOSTAS,
+       (SELECT COUNT(*) FROM dbo.PIO_PROPOSTA_PENDENTE_DET)    AS det_pend_assin,
+       (SELECT COUNT(*) FROM dbo.PIO_PROPOSTA_PEND_PGTO_DET)   AS det_pend_pgto,
+       (SELECT COUNT(*) FROM dbo.PIO_PROPOSTA_ASSINA_PAGA_DET) AS det_assina_paga
+  FROM dbo.PIO_AGG a
+ WHERE a.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM dbo.PIO_AGG);
+```
 
 ## Backlog
 

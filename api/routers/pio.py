@@ -8,10 +8,16 @@ do Orquestra (SQL14_DMDB41). A carga vem de `PRC_PIO_CARGA_DIARIA`, que busca no
 TDDB48 via linked server e roda uma vez por dia às 07:30 — a API NUNCA fala com
 a fonte em runtime. Migration 102 cria as tabelas deste modelo.
 
-⚠️ **Cada DET já vem filtrada pela carga** (PEND_ASSIN = `STA_ASSINATURA='PE'`,
-PEND_PGTO = `'CO'`, ambas com `STA_PAGO='N'`, sem `CA`/`EXP` e só os últimos 30
-dias de venda). A API **não refiltra por status**: repetir o filtro aqui é a
-forma silenciosa de zerar um card se a carga mudar de critério.
+⚠️ **Cada DET já vem filtrada pela carga**, sem `CA`/`EXP` e só com os últimos
+30 dias de venda:
+
+    PEND_ASSIN    STA_ASSINATURA='PE'                  (pendente de assinatura)
+    PEND_PGTO     STA_ASSINATURA='CO' AND STA_PAGO='N' (assinada, não paga)
+    ASSINA_PAGA   STA_ASSINATURA='CO' AND STA_PAGO='S' (assinada e paga)
+
+Os cards 2 e 3 saem do MESMO `STA_ASSINATURA`: quem os separa é o `STA_PAGO`.
+A API **não refiltra por status**: repetir o filtro aqui é a forma silenciosa de
+zerar um card se a carga mudar de critério.
 
 ⚠️ Placeholder `?` (pyodbc) — esta é a árvore `api/`. A `dags/` usa `%s`, e
 trocar dá "Incorrect syntax near '?'" com o endpoint aparentemente vivo.
@@ -43,6 +49,7 @@ _require_caixa = require_perm("tela_caixa_seguro")
 CARDS: dict[str, tuple[str, str]] = {
     "PEND_ASSIN": ("Pendentes de Assinatura", "dbo.PIO_PROPOSTA_PENDENTE_DET"),
     "PEND_PGTO": ("Pendentes de Pagamento", "dbo.PIO_PROPOSTA_PEND_PGTO_DET"),
+    "ASSINA_PAGA": ("Assinadas e Pagas", "dbo.PIO_PROPOSTA_ASSINA_PAGA_DET"),
 }
 
 _LIMITE_PADRAO = 50

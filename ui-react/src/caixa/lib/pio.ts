@@ -22,7 +22,8 @@ import type { PropostaWorkflow, StatusWorkflow } from "./workflow";
 export const ORIGEM_PIO: Partial<Record<StatusWorkflow, string>> = {
   pending_signature: "PEND_ASSIN",
   awaiting_payment: "PEND_PGTO",
-  // Quando a carga trouxer os demais cards: paid, in_analysis, emission_sent,
+  paid: "ASSINA_PAGA",
+  // Quando a carga trouxer os demais cards: in_analysis, emission_sent,
   // declined, refund_scheduled, sensitization_monitoring.
 };
 
