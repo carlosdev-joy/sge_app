@@ -1,6 +1,7 @@
 // Busca de propostas da home no DS nativo — porte do SearchProposals shadcn
-// (mesmos modos, mock e resultado). Desde a F8 o card "Workflow"
-// (InlineWorkflow) voltou à home, na mesma posição da versão antiga.
+// (mesmos modos, mock e resultado). O card "Workflow" (InlineWorkflow) voltou à
+// home na F8; em 2026-09-01 desceu para DEPOIS do fluxo de busca (ver o
+// comentário no ponto onde ele é renderizado).
 // A classe .search-section marca a área destacada pelo Tutorial.
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -90,9 +91,6 @@ export default function SearchProposals() {
           </p>
         </div>
       )}
-
-      {/* Workflow inline (mesma posição da tela antiga) */}
-      <InlineWorkflow />
 
       {/* Um único campo para TODOS os modos. Antes só "proposta" tinha busca
           ligada — o campo de CPF não tinha value/onChange nem o botão tinha
@@ -221,6 +219,14 @@ export default function SearchProposals() {
           </div>
         </div>
       )}
+
+      {/* Workflow inline. Fica DEPOIS do fluxo de busca inteiro (campo →
+          "nenhuma encontrada" → tabela) desde 2026-09-01, a pedido do usuário:
+          com ele no meio, quem escolhia o modo lá em cima tinha de rolar a
+          página toda para digitar, e rolar de novo para ver o resultado. Antes
+          disso ele reproduzia a posição da tela antiga (F8) — mover foi uma
+          decisão explícita, não arrumação. */}
+      <InlineWorkflow />
 
       {/* Detalhe da proposta */}
       {detalhe && (
