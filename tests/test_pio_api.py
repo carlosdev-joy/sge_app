@@ -52,12 +52,12 @@ def _det(proposta="80316460327404", nome="Maria Silva", cpf="397.750.878-48",
          produto="Vida Conforto", area="Vida", premio=129.90, imp=50000.0,
          cidade="Curitiba", uf="PR", ddd_cel="41", cel="998765432",
          ddd_res="41", res="33221100", email="maria@example.com", idade=45,
-         situacao="AT", pago="N", referencia="2026-09-01"):
+         situacao="AT", pago="N", referencia="2026-09-01", renda=4800.0):
     """Uma linha do SELECT de `_DET`, na ordem exata do router."""
     return (proposta, nome, cpf, agencia, matricula, venda, dias,
             produto, area, premio, imp, cidade, uf,
             ddd_cel, cel, ddd_res, res, email, idade, situacao, pago,
-            referencia)
+            referencia, renda)
 
 
 class CursorFalso:
@@ -249,6 +249,25 @@ def test_campos_da_proposta(cliente, banco):
     assert item["dias_pendente"] == 30 and isinstance(item["dias_pendente"], int)
     assert item["uf"] == "PR" and item["idade"] == 45
     assert d["referencia"] == "2026-09-01"
+
+
+def test_renda_e_premio_sao_campos_DIFERENTES(cliente, banco):
+    """O modal exibia o PRÊMIO sob o rótulo "Renda Individual" até 2026-09-01 —
+    rótulo de um dado com o número de outro, e a diferença que ninguém
+    explicava olhando a tela. Se os dois voltarem a sair da mesma coluna, este
+    teste cai."""
+    banco["cur"] = CursorFalso([_det(premio=129.90, renda=4800.0)])
+    item = cliente.get("/pio/propostas?card=PEND_ASSIN").json()["itens"][0]
+    assert item["premio"] == 129.90, "prêmio veio de VLR_PREMIO"
+    assert item["renda"] == 4800.0, "renda veio de VLR_RENDA_FORMAL"
+    assert item["renda"] != item["premio"]
+
+
+def test_renda_ausente_nao_vira_zero(cliente, banco):
+    """Renda `None` é "a carga não trouxe"; R$ 0,00 seria "não ganha nada"."""
+    banco["cur"] = CursorFalso([_det(renda=None)])
+    item = cliente.get("/pio/propostas?card=PEND_ASSIN").json()["itens"][0]
+    assert item["renda"] is None
 
 
 def test_telefone_prefere_o_celular(cliente, banco):

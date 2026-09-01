@@ -42,6 +42,10 @@ export interface ProposalOrq {
   product: string;
   phone: string;
   email: string;
+  /** Renda declarada do proponente, já formatada (VLR_RENDA_FORMAL na carga do
+   *  PIO). Opcional: as propostas de exemplo não têm renda, e o campo some da
+   *  tela em vez de exibir outro número no lugar. */
+  individualIncome?: string;
   declineReason?: string;
 }
 
@@ -126,7 +130,20 @@ export default function ProposalDetailDialog({ proposal, open, onClose }: Propos
             </div>
           </Secao>
 
-          {/* Dados do Segurado */}
+          {/* Dados do Segurado.
+              Saíram daqui em 2026-09-01, a pedido do usuário: Sexo, Profissão e
+              Estado Civil — os três eram valores ESCRITOS DUROS no código
+              ("Masculino", "SUPERV, INSPETOR…", "Solteiro"), iguais em toda
+              proposta, e a carga do PIO não traz nenhum deles.
+              "Renda Individual" ficou, mas trocou de fonte: mostrava o `value`,
+              que é o PRÊMIO (VLR_PREMIO), sob o rótulo de renda. Agora lê
+              `individualIncome`, que vem de VLR_RENDA_FORMAL. Rótulo de um dado
+              com o número de outro é diferença que ninguém explica olhando a
+              tela — foi o que motivou esta revisão.
+              A seção "Dados do Beneficiário" saiu inteira pelo mesmo motivo dos
+              três primeiros: nome, parentesco e percentual eram fixos
+              ("Herdeiros Legais", "100%"). Se o beneficiário voltar, vem da carga.
+              Ver docs/pio-fonte-de-dados.md → "Que coluna preenche cada campo". */}
           <Secao titulo="Dados do Segurado">
             <div className="bg-canvas p-6 rounded-lg border border-edge">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -135,23 +152,14 @@ export default function ProposalDetailDialog({ proposal, open, onClose }: Propos
                 <CampoInfo rotulo="Produto:" valor={proposal.product} />
                 <CampoInfo rotulo="Telefone:" valor={proposal.phone} />
                 <CampoInfo rotulo="E-mail:" valor={proposal.email} />
-                <CampoInfo rotulo="Sexo*:" valor="Masculino" />
-                <CampoInfo rotulo="Profissão:" valor="SUPERV, INSPETOR E AGENTE DE COMPRAS/VENDAS" />
-                <CampoInfo rotulo="Estado Civil:" valor="Solteiro" />
-                <CampoInfo rotulo="Renda Individual:" valor={proposal.value} />
+                {/* Só aparece quando a carga trouxe a renda. Proposta de
+                    exemplo não tem — e um campo vazio é melhor que o número
+                    errado que estava aqui. */}
+                {proposal.individualIncome && (
+                  <CampoInfo rotulo="Renda Individual:" valor={proposal.individualIncome} />
+                )}
               </div>
               <p className="text-xs text-dim mt-4 italic">*conforme registro civil</p>
-            </div>
-          </Secao>
-
-          {/* Dados do Beneficiário */}
-          <Secao titulo="Dados do Beneficiário">
-            <div className="bg-canvas p-6 rounded-lg border border-edge">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <CampoInfo rotulo="Nome:" valor="Herdeiros Legais" />
-                <CampoInfo rotulo="Parentesco:" valor="Herdeiros Legais" />
-                <CampoInfo rotulo="Percentual:" valor="100%" />
-              </div>
             </div>
           </Secao>
 

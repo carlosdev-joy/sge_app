@@ -136,6 +136,9 @@ export interface PropostaWorkflow {
   ageRange: string;
   broker: string;
   daysInPending: number;
+  /** Renda declarada, já formatada. Só as propostas vindas da carga do PIO a
+   *  têm (VLR_RENDA_FORMAL); nas de exemplo o campo some do modal. */
+  individualIncome?: string;
   declineReason?: string;
   analiseSubStatus?: SubStatusAnalise;
   pagamentoSubStatus?: SubStatusPagamento;

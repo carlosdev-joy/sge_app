@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { apiFetch } from "../../lib/api";
 import type { PropostaWorkflow, StatusWorkflow } from "./workflow";
+import { regiaoDaUf } from "./regiao";
 
 /** Card do Workflow → COD_CARD da carga. A ausência aqui é o que mantém um card
  *  no mock; a presença é o que o liga ao dado real.
@@ -52,6 +53,7 @@ export interface ItemPio {
   area_produto: string;
   premio: number | null;
   imp_segurada: number | null;
+  renda: number | null;
   cidade: string;
   uf: string;
   telefone: string;
@@ -105,6 +107,7 @@ export function usePropostasPio(card: string | undefined, ativo: boolean,
 
 const MOEDA = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 
+
 /** "2026-08-02" → "02/08/2026". Sem `new Date()`: a string vem em ISO e o
  *  construtor a interpretaria como UTC, o que joga a venda para o dia
  *  anterior em qualquer fuso a oeste de Greenwich — o nosso. */
@@ -127,13 +130,16 @@ export function propostaDoPio(item: ItemPio, status: StatusWorkflow): PropostaWo
     date: dataBr(item.data_venda),
     status,
     value: item.premio === null ? "" : MOEDA.format(item.premio),
+    // Renda é do PROPONENTE; `value` é o PRÊMIO do seguro. Eram o mesmo número
+    // no modal até 2026-09-01, com rótulos diferentes.
+    individualIncome: item.renda === null ? "" : MOEDA.format(item.renda),
     indicatorId: item.matricula,
     agency: item.agencia,
     cpf: item.cpf,
     product: item.produto,
     phone: item.telefone,
     email: item.email,
-    region: [item.cidade, item.uf].filter(Boolean).join(" / "),
+    region: regiaoDaUf(item.uf),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
     daysInPending: item.dias_pendente,
