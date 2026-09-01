@@ -132,16 +132,17 @@ def test_contagem_lida_marca_disponivel(cliente, banco):
         "quantidade": 8706, "carga": "2026-09-01 07:30:11"}
 
 
-def test_os_dois_cards_vem_na_mesma_contagem(cliente, banco):
-    """Uma leitura só alimenta os dois cards — se o segundo sumisse da
-    resposta, o front o trataria como "zero de verdade"."""
+def test_todos_os_cards_vem_na_mesma_contagem(cliente, banco):
+    """Uma leitura só alimenta todos os cards — se um sumisse da resposta, o
+    front o trataria como "zero de verdade"."""
     banco["cur"] = CursorFalso([
+        ("ASSINA_PAGA", "Assinadas e Pagas", 5120, "2026-09-01", "2026-09-01 07:32:40"),
         ("PEND_ASSIN", "Pendentes de Assinatura", 8706, "2026-09-01", "2026-09-01 07:30:11"),
         ("PEND_PGTO", "Pendentes de Pagamento", 22500, "2026-09-01", "2026-09-01 07:31:02"),
     ])
     d = cliente.get("/pio/contagens").json()
-    assert [c["card"] for c in d["cards"]] == ["PEND_ASSIN", "PEND_PGTO"]
-    assert [c["quantidade"] for c in d["cards"]] == [8706, 22500]
+    assert [c["card"] for c in d["cards"]] == ["ASSINA_PAGA", "PEND_ASSIN", "PEND_PGTO"]
+    assert [c["quantidade"] for c in d["cards"]] == [5120, 8706, 22500]
 
 
 def test_carga_que_nao_rodou_e_lista_vazia_com_disponivel(cliente, banco):
@@ -204,10 +205,13 @@ def test_card_malicioso_nunca_chega_ao_sql(cliente, banco, injecao):
 @pytest.mark.parametrize("codigo,tabela", [
     ("PEND_ASSIN", "dbo.PIO_PROPOSTA_PENDENTE_DET"),
     ("PEND_PGTO", "dbo.PIO_PROPOSTA_PEND_PGTO_DET"),
+    ("ASSINA_PAGA", "dbo.PIO_PROPOSTA_ASSINA_PAGA_DET"),
 ])
 def test_cada_card_le_a_sua_tabela(cliente, banco, codigo, tabela):
-    """As duas DET têm estrutura idêntica: trocar uma pela outra devolve uma
-    lista plausível de propostas ERRADAS, sem erro nenhum."""
+    """As três DET têm estrutura idêntica: trocar uma pela outra devolve uma
+    lista plausível de propostas ERRADAS, sem erro nenhum. Vale em dobro para
+    PEND_PGTO × ASSINA_PAGA, que saem do mesmo STA_ASSINATURA='CO' e só se
+    distinguem pelo STA_PAGO."""
     banco["cur"] = CursorFalso([_det()])
     d = cliente.get(f"/pio/propostas?card={codigo}").json()
     assert d["disponivel"] is True
