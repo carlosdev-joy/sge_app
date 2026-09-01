@@ -130,9 +130,12 @@ export function propostaDoPio(item: ItemPio, status: StatusWorkflow): PropostaWo
     date: dataBr(item.data_venda),
     status,
     value: item.premio === null ? "" : MOEDA.format(item.premio),
-    // Renda é do PROPONENTE; `value` é o PRÊMIO do seguro. Eram o mesmo número
-    // no modal até 2026-09-01, com rótulos diferentes.
+    // Três valores que a tela precisa manter separados, e que já se
+    // confundiram uma vez: `value` é o PRÊMIO (o que se paga por mês),
+    // `individualIncome` é a renda do PROPONENTE e `insuredAmount` é a
+    // importância segurada (o capital COBERTO pela apólice).
     individualIncome: item.renda === null ? "" : MOEDA.format(item.renda),
+    insuredAmount: item.imp_segurada === null ? "" : MOEDA.format(item.imp_segurada),
     indicatorId: item.matricula,
     agency: item.agencia,
     cpf: item.cpf,

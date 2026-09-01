@@ -158,3 +158,41 @@ def test_a_renda_vem_de_coluna_propria():
     fonte = PIO_TS.read_text(encoding="utf-8")
     assert "individualIncome: item.renda" in fonte, (
         "a renda deixou de vir da carga")
+
+
+# ═══════════ os três valores que a tela não pode confundir ══════════════════
+# `value` = PRÊMIO (o que se paga por mês) · `individualIncome` = RENDA do
+# proponente · `insuredAmount` = IMPORTÂNCIA SEGURADA (o capital coberto).
+# Prêmio e renda já foram o mesmo número na tela uma vez, com rótulos
+# diferentes; estes testes prendem cada um na sua coluna.
+
+@pytest.mark.parametrize("campo,coluna", [
+    ("value", "item.premio"),
+    ("individualIncome", "item.renda"),
+    ("insuredAmount", "item.imp_segurada"),
+])
+def test_cada_valor_vem_da_sua_coluna(campo, coluna):
+    import re
+    fonte = PIO_TS.read_text(encoding="utf-8")
+    m = re.search(rf"^\s*{campo}: (.+?),$", fonte, re.M)
+    assert m, f"`{campo}` não é mais preenchido em propostaDoPio()"
+    assert coluna in m.group(1), (
+        f"`{campo}` passou a ler `{m.group(1).strip()}` em vez de `{coluna}` — "
+        f"prêmio, renda e importância segurada são três valores diferentes")
+
+
+def test_os_tres_valores_tem_rotulo_proprio_no_modal():
+    """Dois rótulos sobre a mesma variável é como o prêmio virou "renda"."""
+    import re
+    fonte = MODAL_TSX.read_text(encoding="utf-8")
+    pares = re.findall(r'rotulo="([^"]*)"\s+valor=\{([^}]*)\}', fonte)
+    variaveis = [v.strip() for _r, v in pares]
+    repetidas = {v for v in variaveis if variaveis.count(v) > 1}
+    assert not repetidas, f"o mesmo valor exibido sob rótulos diferentes: {repetidas}"
+
+
+def test_a_importancia_segurada_aparece_no_modal():
+    """Ela vinha do banco, chegava no front e parava — nenhuma tela a exibia."""
+    corpo = _sem_comentarios(MODAL_TSX)
+    assert "Importância Segurada" in corpo, "o campo sumiu do Resumo do seguro"
+    assert "proposal.insuredAmount" in corpo
