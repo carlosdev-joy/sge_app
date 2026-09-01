@@ -23,6 +23,7 @@ import {
 import {
   dataBr,
   propostaDoPio,
+  contagemPorCard,
   useContagensPio,
   usePropostasPio,
   ORIGEM_PIO,
@@ -45,8 +46,7 @@ export default function ProposalWorkflowSheet() {
 
   const reais: Partial<Record<StatusWorkflow, number>> = {};
   if (contagens.data?.disponivel) {
-    const porCard = new Map(
-      contagens.data.cards.map((c) => [c.card, c.quantidade]));
+    const porCard = contagemPorCard(contagens.data.cards);
     (Object.entries(ORIGEM_PIO) as [StatusWorkflow, string][]).forEach(
       ([status, card]) => {
         reais[status] = porCard.get(card) ?? 0;

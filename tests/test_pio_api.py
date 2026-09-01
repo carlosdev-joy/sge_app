@@ -145,6 +145,29 @@ def test_todos_os_cards_vem_na_mesma_contagem(cliente, banco):
     assert [c["quantidade"] for c in d["cards"]] == [5120, 8706, 22500]
 
 
+def test_card_repetido_na_agg_e_somado(cliente, banco):
+    """O caso real de 2026-09-01: a carga grava a `PIO_AGG` agrupada pela
+    SITUAÇÃO dentro do card, então EMITIDA veio em QUATRO linhas
+    (127 + 715.074 + 44.749 + 11.824 = 771.774). O front monta um mapa
+    `card → quantidade`, e mapa sobrescreve chave repetida: o card mostrava
+    **11.824**, a última linha — um número plausível, sem erro nenhum.
+
+    A API soma; o front soma de novo (`contagemPorCard`). Se a carga passar a
+    gravar uma linha por card, a soma de uma linha é ela mesma.
+    """
+    banco["cur"] = CursorFalso([
+        ("EMITIDA", "Propostas Emitidas", 771774, "2026-09-01", "2026-09-01 14:05:40"),
+    ])
+    d = cliente.get("/pio/contagens").json()
+    assert d["cards"][0]["quantidade"] == 771774
+
+    sql = banco["cur"].sqls[0]
+    assert "SUM(a.QTD_PROPOSTAS)" in sql, (
+        "a contagem voltou a devolver a linha crua — card com mais de uma "
+        "situação mostraria só a última")
+    assert "GROUP BY a.COD_CARD" in sql
+
+
 def test_carga_que_nao_rodou_e_lista_vazia_com_disponivel(cliente, banco):
     """Li a tabela, e não há linha. É notícia sobre o DADO."""
     banco["cur"] = CursorFalso([])

@@ -92,6 +92,24 @@ export interface PaginaPio {
 
 export const TAMANHO_PAGINA_PIO = 50;
 
+/** `card → quantidade`, SOMANDO linhas repetidas do mesmo card.
+ *
+ *  ⚠️ Um `new Map(cards.map(...))` sobrescreve a chave repetida e fica com a
+ *  ÚLTIMA — foi assim que o card "Emitidas" mostrou 11.824 de 771.774 em
+ *  2026-09-01: a carga grava a `PIO_AGG` por SITUAÇÃO dentro do card, e a
+ *  EMITIDA veio em quatro linhas. Nenhum erro, um número plausível, e nada na
+ *  tela para desconfiar.
+ *
+ *  A API já soma; isto aqui é a segunda tranca, porque o modo de falhar é
+ *  silencioso e o custo de somar de novo é zero. */
+export function contagemPorCard(cards: ContagemPio[]): Map<string, number> {
+  const mapa = new Map<string, number>();
+  for (const c of cards) {
+    mapa.set(c.card, (mapa.get(c.card) ?? 0) + c.quantidade);
+  }
+  return mapa;
+}
+
 /** Contagem por card da carga mais recente. */
 export function useContagensPio() {
   return useQuery({
