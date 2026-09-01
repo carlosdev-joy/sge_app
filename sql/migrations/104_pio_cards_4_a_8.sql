@@ -1,0 +1,430 @@
+-- sql/migrations/104_pio_cards_4_a_8.sql
+-- Os cinco últimos cards do PIO: CRITICA, EMITIDA, REJEITADA, DEVOL_PREMIO e
+-- SENSIBILIZACAO. Com eles, os oito cards do Workflow passam a ler dado real.
+--
+-- ⚠️ **Fonte e vocabulário DIFERENTES dos cards 1–3.** Aqueles vêm do TDDB48
+-- por linked server; estes vêm do **DMDB05**, no mesmo servidor (sql14,1480),
+-- por acesso direto — e as colunas mudam de nome:
+--
+--     cards 1–3            cards 4–8
+--     COD_PROPOSTA    →    NUM_PROPOSTA
+--     COD_CPF         →    COD_CPF_CNPJ
+--     NUM_MATRICULA   →    NUM_MATRI_VENDEDOR
+--     AREA_PRODUTO    →    DES_RAMO_PRODUTO
+--     VLR_IMP_SEGURADA →   VLR_IS_VENDA
+--     STA_SITUACAO    →    NOM_SUB_SITUACAO
+--
+-- Quem ler as duas famílias com o mesmo SELECT recebe "Invalid column name".
+-- A API resolve isso com um esquema de colunas por card (`api/routers/pio.py`),
+-- que dá os MESMOS apelidos às colunas de origem diferentes — é o que mantém o
+-- `card=TODOS` da busca funcionando.
+--
+-- ⚠️ **E o período também difere.** Cards 1–3 e 7: últimos 30 dias de venda.
+-- Cards 4, 5, 6 e 8: **ano corrente** (desde 1º de janeiro). A busca alcança o
+-- que a carga traz, e isso não é uniforme entre os cards.
+--
+-- Colunas exclusivas de cada card, além das 20 comuns:
+--     4 e 6  DES_MSG_CRITICA
+--     5      DES_COD_SIT_CONTRATO
+--     7      NOM_FORMA_PAGAMENTO, DES_TIPO_LANC, DES_SIT_PARCELA,
+--            DES_SIT_COBRANCA, DES_RET_COBRANCA
+--     8      DES_TIPO_LANCAMENTO, IND_TIPO_LANCAMENTO, DT_MOVIMENTO
+--
+-- ⚠️ Como nas 101–103, esta migration **não cria a procedure de carga**
+-- (`PRC_PIO_CARGA_DIARIA`, que passa a ter 10 passos). O texto que roda em
+-- produção é a fonte da verdade e não está versionado aqui. Em produção as
+-- tabelas provavelmente já existem e a migration é no-op; em ambiente novo ela
+-- cria as tabelas VAZIAS, que é o caso que a API sabe tratar.
+--
+-- Idempotente: roda 2× sem alterar nada (regra do repo, `tests/test_migrations_*`).
+
+
+-- ── Card 4 — Propostas em Crítica ──
+IF OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PIO_PROPOSTA_CRITICA_DET (
+        ID                    BIGINT IDENTITY(1,1) NOT NULL,
+        NUM_PROPOSTA          VARCHAR(50)    NULL,
+        NUM_AGENCIA           VARCHAR(20)    NULL,
+        NOM_AGENCIA           VARCHAR(200)   NULL,
+        NUM_MATRI_VENDEDOR    VARCHAR(30)    NULL,
+        DTH_VENDA             DATE           NULL,
+        NOM_PESSOA            VARCHAR(200)   NULL,
+        COD_CPF_CNPJ          VARCHAR(20)    NULL,
+        DTH_NASCIMENTO        DATE           NULL,
+        NUM_IDADE             INT            NULL,
+        COD_PRODUTO           VARCHAR(20)    NULL,
+        NOM_PRODUTO           VARCHAR(200)   NULL,
+        DES_RAMO_PRODUTO      VARCHAR(100)   NULL,
+        VLR_IS_VENDA          DECIMAL(18,2)  NULL,
+        VLR_CONTRATO          DECIMAL(18,2)  NULL,
+        NOM_SUB_SITUACAO      VARCHAR(100)   NULL,
+        DES_EMAIL             VARCHAR(200)   NULL,
+        COD_DDD_CELULAR       VARCHAR(5)     NULL,
+        NUM_CELULAR_VISAO360  VARCHAR(20)    NULL,
+        DTH_REFERENCIA        DATE           NOT NULL,
+        DES_MSG_CRITICA       VARCHAR(500)   NULL,
+        DTH_CARGA             DATETIME       NOT NULL CONSTRAINT DF_IX_PIO_CRITICA_DET_CARGA DEFAULT (GETDATE()),
+        CONSTRAINT PK_PIO_PROPOSTA_CRITICA_DET PRIMARY KEY CLUSTERED (ID)
+    );
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_CRITICA_DET_PROPOSTA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_CRITICA_DET_PROPOSTA ON dbo.PIO_PROPOSTA_CRITICA_DET (NUM_PROPOSTA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_CRITICA_DET_REF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_CRITICA_DET_REF ON dbo.PIO_PROPOSTA_CRITICA_DET (DTH_REFERENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_CRITICA_DET_CPF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_CRITICA_DET_CPF ON dbo.PIO_PROPOSTA_CRITICA_DET (COD_CPF_CNPJ);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_CRITICA_DET_AGENCIA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_CRITICA_DET_AGENCIA ON dbo.PIO_PROPOSTA_CRITICA_DET (NUM_AGENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_CRITICA_DET_VENDA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_CRITICA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_CRITICA_DET_VENDA ON dbo.PIO_PROPOSTA_CRITICA_DET (DTH_VENDA, NUM_PROPOSTA);
+END
+GO
+
+
+-- ── Card 5 — Propostas Emitidas ──
+IF OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PIO_PROPOSTA_EMITIDA_DET (
+        ID                    BIGINT IDENTITY(1,1) NOT NULL,
+        NUM_PROPOSTA          VARCHAR(50)    NULL,
+        NUM_AGENCIA           VARCHAR(20)    NULL,
+        NOM_AGENCIA           VARCHAR(200)   NULL,
+        NUM_MATRI_VENDEDOR    VARCHAR(30)    NULL,
+        DTH_VENDA             DATE           NULL,
+        NOM_PESSOA            VARCHAR(200)   NULL,
+        COD_CPF_CNPJ          VARCHAR(20)    NULL,
+        DTH_NASCIMENTO        DATE           NULL,
+        NUM_IDADE             INT            NULL,
+        COD_PRODUTO           VARCHAR(20)    NULL,
+        NOM_PRODUTO           VARCHAR(200)   NULL,
+        DES_RAMO_PRODUTO      VARCHAR(100)   NULL,
+        VLR_IS_VENDA          DECIMAL(18,2)  NULL,
+        VLR_CONTRATO          DECIMAL(18,2)  NULL,
+        NOM_SUB_SITUACAO      VARCHAR(100)   NULL,
+        DES_EMAIL             VARCHAR(200)   NULL,
+        COD_DDD_CELULAR       VARCHAR(5)     NULL,
+        NUM_CELULAR_VISAO360  VARCHAR(20)    NULL,
+        DTH_REFERENCIA        DATE           NOT NULL,
+        DES_COD_SIT_CONTRATO  VARCHAR(100)   NULL,
+        DTH_CARGA             DATETIME       NOT NULL CONSTRAINT DF_IX_PIO_EMITIDA_DET_CARGA DEFAULT (GETDATE()),
+        CONSTRAINT PK_PIO_PROPOSTA_EMITIDA_DET PRIMARY KEY CLUSTERED (ID)
+    );
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_EMITIDA_DET_PROPOSTA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_EMITIDA_DET_PROPOSTA ON dbo.PIO_PROPOSTA_EMITIDA_DET (NUM_PROPOSTA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_EMITIDA_DET_REF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_EMITIDA_DET_REF ON dbo.PIO_PROPOSTA_EMITIDA_DET (DTH_REFERENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_EMITIDA_DET_CPF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_EMITIDA_DET_CPF ON dbo.PIO_PROPOSTA_EMITIDA_DET (COD_CPF_CNPJ);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_EMITIDA_DET_AGENCIA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_EMITIDA_DET_AGENCIA ON dbo.PIO_PROPOSTA_EMITIDA_DET (NUM_AGENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_EMITIDA_DET_VENDA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_EMITIDA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_EMITIDA_DET_VENDA ON dbo.PIO_PROPOSTA_EMITIDA_DET (DTH_VENDA, NUM_PROPOSTA);
+END
+GO
+
+
+-- ── Card 6 — Propostas Rejeitadas ──
+IF OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PIO_PROPOSTA_REJEITADA_DET (
+        ID                    BIGINT IDENTITY(1,1) NOT NULL,
+        NUM_PROPOSTA          VARCHAR(50)    NULL,
+        NUM_AGENCIA           VARCHAR(20)    NULL,
+        NOM_AGENCIA           VARCHAR(200)   NULL,
+        NUM_MATRI_VENDEDOR    VARCHAR(30)    NULL,
+        DTH_VENDA             DATE           NULL,
+        NOM_PESSOA            VARCHAR(200)   NULL,
+        COD_CPF_CNPJ          VARCHAR(20)    NULL,
+        DTH_NASCIMENTO        DATE           NULL,
+        NUM_IDADE             INT            NULL,
+        COD_PRODUTO           VARCHAR(20)    NULL,
+        NOM_PRODUTO           VARCHAR(200)   NULL,
+        DES_RAMO_PRODUTO      VARCHAR(100)   NULL,
+        VLR_IS_VENDA          DECIMAL(18,2)  NULL,
+        VLR_CONTRATO          DECIMAL(18,2)  NULL,
+        NOM_SUB_SITUACAO      VARCHAR(100)   NULL,
+        DES_EMAIL             VARCHAR(200)   NULL,
+        COD_DDD_CELULAR       VARCHAR(5)     NULL,
+        NUM_CELULAR_VISAO360  VARCHAR(20)    NULL,
+        DTH_REFERENCIA        DATE           NOT NULL,
+        DES_MSG_CRITICA       VARCHAR(500)   NULL,
+        DTH_CARGA             DATETIME       NOT NULL CONSTRAINT DF_IX_PIO_REJEIT_DET_CARGA DEFAULT (GETDATE()),
+        CONSTRAINT PK_PIO_PROPOSTA_REJEITADA_DET PRIMARY KEY CLUSTERED (ID)
+    );
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_REJEIT_DET_PROPOSTA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_REJEIT_DET_PROPOSTA ON dbo.PIO_PROPOSTA_REJEITADA_DET (NUM_PROPOSTA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_REJEIT_DET_REF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_REJEIT_DET_REF ON dbo.PIO_PROPOSTA_REJEITADA_DET (DTH_REFERENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_REJEIT_DET_CPF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_REJEIT_DET_CPF ON dbo.PIO_PROPOSTA_REJEITADA_DET (COD_CPF_CNPJ);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_REJEIT_DET_AGENCIA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_REJEIT_DET_AGENCIA ON dbo.PIO_PROPOSTA_REJEITADA_DET (NUM_AGENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_REJEIT_DET_VENDA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_REJEITADA_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_REJEIT_DET_VENDA ON dbo.PIO_PROPOSTA_REJEITADA_DET (DTH_VENDA, NUM_PROPOSTA);
+END
+GO
+
+
+-- ── Card 7 — Devolução de Prêmio ──
+IF OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET (
+        ID                    BIGINT IDENTITY(1,1) NOT NULL,
+        NUM_PROPOSTA          VARCHAR(50)    NULL,
+        NUM_AGENCIA           VARCHAR(20)    NULL,
+        NOM_AGENCIA           VARCHAR(200)   NULL,
+        NUM_MATRI_VENDEDOR    VARCHAR(30)    NULL,
+        DTH_VENDA             DATE           NULL,
+        NOM_PESSOA            VARCHAR(200)   NULL,
+        COD_CPF_CNPJ          VARCHAR(20)    NULL,
+        DTH_NASCIMENTO        DATE           NULL,
+        NUM_IDADE             INT            NULL,
+        COD_PRODUTO           VARCHAR(20)    NULL,
+        NOM_PRODUTO           VARCHAR(200)   NULL,
+        DES_RAMO_PRODUTO      VARCHAR(100)   NULL,
+        VLR_IS_VENDA          DECIMAL(18,2)  NULL,
+        VLR_CONTRATO          DECIMAL(18,2)  NULL,
+        NOM_SUB_SITUACAO      VARCHAR(100)   NULL,
+        DES_EMAIL             VARCHAR(200)   NULL,
+        COD_DDD_CELULAR       VARCHAR(5)     NULL,
+        NUM_CELULAR_VISAO360  VARCHAR(20)    NULL,
+        DTH_REFERENCIA        DATE           NOT NULL,
+        NOM_FORMA_PAGAMENTO   VARCHAR(100)   NULL,
+        DES_TIPO_LANC         VARCHAR(100)   NULL,
+        DES_SIT_PARCELA       VARCHAR(100)   NULL,
+        DES_SIT_COBRANCA      VARCHAR(100)   NULL,
+        DES_RET_COBRANCA      VARCHAR(200)   NULL,
+        DTH_CARGA             DATETIME       NOT NULL CONSTRAINT DF_IX_PIO_DEVOL_DET_CARGA DEFAULT (GETDATE()),
+        CONSTRAINT PK_PIO_PROPOSTA_DEVOL_PREMIO_DET PRIMARY KEY CLUSTERED (ID)
+    );
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_DEVOL_DET_PROPOSTA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_DEVOL_DET_PROPOSTA ON dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET (NUM_PROPOSTA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_DEVOL_DET_REF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_DEVOL_DET_REF ON dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET (DTH_REFERENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_DEVOL_DET_CPF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_DEVOL_DET_CPF ON dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET (COD_CPF_CNPJ);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_DEVOL_DET_AGENCIA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_DEVOL_DET_AGENCIA ON dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET (NUM_AGENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_DEVOL_DET_VENDA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_DEVOL_DET_VENDA ON dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET (DTH_VENDA, NUM_PROPOSTA);
+END
+GO
+
+
+-- ── Card 8 — Monitoramento de Sensibilização ──
+IF OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET (
+        ID                    BIGINT IDENTITY(1,1) NOT NULL,
+        NUM_PROPOSTA          VARCHAR(50)    NULL,
+        NUM_AGENCIA           VARCHAR(20)    NULL,
+        NOM_AGENCIA           VARCHAR(200)   NULL,
+        NUM_MATRI_VENDEDOR    VARCHAR(30)    NULL,
+        DTH_VENDA             DATE           NULL,
+        NOM_PESSOA            VARCHAR(200)   NULL,
+        COD_CPF_CNPJ          VARCHAR(20)    NULL,
+        DTH_NASCIMENTO        DATE           NULL,
+        NUM_IDADE             INT            NULL,
+        COD_PRODUTO           VARCHAR(20)    NULL,
+        NOM_PRODUTO           VARCHAR(200)   NULL,
+        DES_RAMO_PRODUTO      VARCHAR(100)   NULL,
+        VLR_IS_VENDA          DECIMAL(18,2)  NULL,
+        VLR_CONTRATO          DECIMAL(18,2)  NULL,
+        NOM_SUB_SITUACAO      VARCHAR(100)   NULL,
+        DES_EMAIL             VARCHAR(200)   NULL,
+        COD_DDD_CELULAR       VARCHAR(5)     NULL,
+        NUM_CELULAR_VISAO360  VARCHAR(20)    NULL,
+        DTH_REFERENCIA        DATE           NOT NULL,
+        DES_TIPO_LANCAMENTO   VARCHAR(100)   NULL,
+        IND_TIPO_LANCAMENTO   VARCHAR(10)    NULL,
+        DT_MOVIMENTO          DATE           NULL,
+        DTH_CARGA             DATETIME       NOT NULL CONSTRAINT DF_IX_PIO_SENSI_DET_CARGA DEFAULT (GETDATE()),
+        CONSTRAINT PK_PIO_PROPOSTA_SENSIBILIZACAO_DET PRIMARY KEY CLUSTERED (ID)
+    );
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_SENSI_DET_PROPOSTA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_SENSI_DET_PROPOSTA ON dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET (NUM_PROPOSTA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_SENSI_DET_REF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_SENSI_DET_REF ON dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET (DTH_REFERENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_SENSI_DET_CPF'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_SENSI_DET_CPF ON dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET (COD_CPF_CNPJ);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_SENSI_DET_AGENCIA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_SENSI_DET_AGENCIA ON dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET (NUM_AGENCIA);
+END
+GO
+
+IF OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_PIO_SENSI_DET_VENDA'
+                     AND object_id = OBJECT_ID('dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET'))
+BEGIN
+    CREATE INDEX IX_PIO_SENSI_DET_VENDA ON dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET (DTH_VENDA, NUM_PROPOSTA);
+END
+GO

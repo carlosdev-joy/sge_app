@@ -374,13 +374,15 @@ def test_mais_antigas_primeiro(cliente, banco):
 # campo diferente: buscar CPF no campo da proposta não acha nada e parece que a
 # proposta não existe.
 
-def test_card_todos_varre_as_tres_tabelas(cliente, banco):
+def test_card_todos_varre_todas_as_tabelas(cliente, banco):
+    """Uma proposta pode estar em qualquer um dos oito cards. Tabela que ficar
+    de fora do UNION é proposta que a busca nunca acha, sem erro nenhum."""
     banco["cur"] = CursorFalso([_det()])
     d = cliente.get("/pio/propostas?card=TODOS&busca=8031").json()
     assert d["disponivel"] is True
-    for _cod, (_rot, tabela) in _cards_do_router().items():
-        assert all(tabela in sql for sql in banco["cur"].sqls), (
-            f"{tabela} ficou de fora da busca — proposta nesse card não seria achada")
+    for _cod, ficha in _cards_do_router().items():
+        assert all(ficha.tabela in sql for sql in banco["cur"].sqls), (
+            f"{ficha.tabela} ficou de fora da busca — proposta nesse card não seria achada")
 
 
 def test_card_todos_diz_de_onde_cada_linha_veio(cliente, banco):
@@ -418,7 +420,8 @@ def test_agencia_e_igualdade_e_nao_contem(cliente, banco):
     assert "REPLACE(d.NUM_AGENCIA" in sql, "o modo agência não compara a agência"
     assert "d.NUM_AGENCIA, ' ', '') LIKE" not in sql, "agência virou busca por 'contém'"
     assert "REPLICATE('0'" in sql, "sem padding, 316 ≠ 0316"
-    assert banco["cur"].params[0] == ["0316"] * 3, (
+    from routers.pio import CARDS
+    assert banco["cur"].params[0] == ["0316"] * len(CARDS), (
         "o termo entra uma vez por tabela, por parâmetro")
 
 
@@ -486,8 +489,53 @@ def test_cada_card_do_router_tem_tabela_propria():
     """Duas entradas apontando para a mesma DET faria um card mostrar a lista
     do outro — plausível, e errado."""
     from routers.pio import CARDS
-    tabelas = [t for _, t in CARDS.values()]
+    tabelas = [c.tabela for c in CARDS.values()]
     assert len(tabelas) == len(set(tabelas)), f"tabela repetida entre cards: {tabelas}"
+
+
+# ═══════════ 10. as duas famílias de coluna ═════════════════════════════════
+# Cards 1–3 vêm do TDDB48 (COD_PROPOSTA, COD_CPF, NUM_MATRICULA); cards 4–8 vêm
+# do DMDB05 (NUM_PROPOSTA, COD_CPF_CNPJ, NUM_MATRI_VENDEDOR). Ler uma família
+# com o vocabulário da outra dá "Invalid column name" — e no UNION ALL, um
+# apelido faltando em um dos ramos derruba a consulta inteira.
+
+def test_os_dois_esquemas_tem_os_mesmos_apelidos():
+    from routers.pio import ESQUEMA_TDDB48, ESQUEMA_DMDB05, ORDEM_COLUNAS
+    assert set(ESQUEMA_TDDB48) == set(ESQUEMA_DMDB05), (
+        "apelido presente em um esquema e ausente no outro: "
+        f"{set(ESQUEMA_TDDB48) ^ set(ESQUEMA_DMDB05)}")
+    assert set(ORDEM_COLUNAS) == set(ESQUEMA_TDDB48), (
+        "a ordem de leitura não cobre os mesmos apelidos do SELECT")
+
+
+def test_todo_card_aponta_para_um_esquema_conhecido():
+    from routers.pio import CARDS, ESQUEMA_TDDB48, ESQUEMA_DMDB05
+    for cod, ficha in CARDS.items():
+        assert ficha.colunas in (ESQUEMA_TDDB48, ESQUEMA_DMDB05), (
+            f"{cod} usa um esquema de colunas próprio")
+
+
+def test_o_card_do_dmdb05_nao_le_coluna_do_tddb48(cliente, banco):
+    """`COD_PROPOSTA` não existe nas DET dos cards 4–8. Se o esquema errado
+    vazar para lá, o endpoint degrada e o card fica em branco — sem erro na
+    tela, porque a degradação engole a exceção."""
+    banco["cur"] = CursorFalso([_det()])
+    cliente.get("/pio/propostas?card=CRITICA&modo=proposta&busca=1")
+    sql = banco["cur"].sqls[0]
+    assert "d.NUM_PROPOSTA" in sql, "o card do DMDB05 não usou NUM_PROPOSTA"
+    assert "d.COD_PROPOSTA" not in sql, "vazou coluna do TDDB48 para o DMDB05"
+    assert "d.COD_CPF_CNPJ" in sql or "COD_CPF" not in sql.split("FROM")[0]
+
+
+def test_o_que_a_fonte_nao_tem_vira_null_tipado():
+    """Num UNION ALL o tipo vem do primeiro ramo; `NULL` puro deixa o SQL
+    Server escolher, e texto longo é truncado sem aviso."""
+    from routers.pio import ESQUEMA_DMDB05
+    faltantes = [a for a, expr in ESQUEMA_DMDB05.items() if "NULL" in expr.upper()]
+    assert faltantes, "nenhuma coluna ausente — o leitor quebrou?"
+    for alias in faltantes:
+        assert "CAST(NULL AS" in ESQUEMA_DMDB05[alias], (
+            f"{alias} usa NULL sem tipo no ramo do DMDB05")
 
 
 def test_todo_card_ligado_existe_na_sequencia():

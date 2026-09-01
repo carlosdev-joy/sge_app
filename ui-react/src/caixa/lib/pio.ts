@@ -21,11 +21,17 @@ import { regiaoDaUf } from "./regiao";
  *  aqui exige o COD_CARD correspondente no dicionário `CARDS` de
  *  `api/routers/pio.py` — sem isso a API responde vazio, não erro. */
 export const ORIGEM_PIO: Partial<Record<StatusWorkflow, string>> = {
+  // Cards 1–3 — fonte TDDB48, últimos 30 dias de venda.
   pending_signature: "PEND_ASSIN",
   awaiting_payment: "PEND_PGTO",
   paid: "ASSINA_PAGA",
-  // Quando a carga trouxer os demais cards: in_analysis, emission_sent,
-  // declined, refund_scheduled, sensitization_monitoring.
+  // Cards 4–8 — fonte DMDB05, ano corrente (o 7 é de 30 dias). Colunas com
+  // nomes diferentes; quem traduz é o esquema em `api/routers/pio.py`.
+  in_analysis: "CRITICA",
+  emission_sent: "EMITIDA",
+  declined: "REJEITADA",
+  refund_scheduled: "DEVOL_PREMIO",
+  sensitization_monitoring: "SENSIBILIZACAO",
 };
 
 export interface ContagemPio {

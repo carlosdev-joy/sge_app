@@ -29,6 +29,8 @@ from __future__ import annotations
 import logging
 import re
 
+from typing import NamedTuple
+
 from fastapi import APIRouter, Depends, Query
 
 from db import get_db_conn
@@ -40,17 +42,112 @@ router = APIRouter()
 
 _require_caixa = require_perm("tela_caixa_seguro")
 
-# COD_CARD → (rótulo, tabela de detalhe).
+# ── Os dois vocabulários da carga ──────────────────────────────────────────
+#
+# Cards 1–3 vêm do TDDB48; cards 4–8, do DMDB05 — e as colunas MUDAM DE NOME
+# entre as duas famílias. Cada esquema abaixo traduz o mesmo conceito para a
+# coluna que existe naquela tabela; o SELECT usa os mesmos apelidos nos dois, e
+# é isso que permite unir as oito DET num `UNION ALL` sem "Invalid column name".
+#
+# Colunas que uma família não tem viram NULL TIPADO (não `NULL` puro): num UNION
+# ALL o tipo da coluna vem do primeiro ramo, e um NULL sem tipo faz o SQL Server
+# escolher por conta própria — o que trunca texto sem avisar.
+ESQUEMA_TDDB48: dict[str, str] = {
+    "COD_PROPOSTA": "d.COD_PROPOSTA",
+    "NOM_PESSOA": "d.NOM_PESSOA",
+    "COD_CPF": "d.COD_CPF",
+    "NUM_AGENCIA": "d.NUM_AGENCIA",
+    "NUM_MATRICULA": "d.NUM_MATRICULA",
+    "DTA_VENDA": "CONVERT(varchar(10), d.DTH_VENDA, 120)",
+    "DIAS_PENDENTE": "DATEDIFF(day, d.DTH_VENDA, CAST(GETDATE() AS DATE))",
+    "NOM_PRODUTO": "d.NOM_PRODUTO",
+    "AREA_PRODUTO": "d.AREA_PRODUTO",
+    "VLR_PREMIO": "d.VLR_PREMIO",
+    "VLR_IMP_SEGURADA": "d.VLR_IMP_SEGURADA",
+    "NOM_CIDADE": "d.NOM_CIDADE",
+    "NOM_UF": "d.NOM_UF",
+    "DDD_CEL": "d.NUM_DDD_TEL_CEL",
+    "TEL_CEL": "d.NUM_TEL_CEL",
+    "DDD_RES": "d.NUM_DDD_TEL_RES",
+    "TEL_RES": "d.NUM_TEL_RES",
+    "DES_EMAIL": "d.DES_EMAIL",
+    "IDADE": "DATEDIFF(year, d.DTA_NASCIMENTO, CAST(GETDATE() AS DATE))",
+    "STA_SITUACAO": "d.STA_SITUACAO",
+    "STA_PAGO": "d.STA_PAGO",
+    "DTA_REFERENCIA": "CONVERT(varchar(10), d.DTH_REFERENCIA, 120)",
+    "VLR_RENDA_FORMAL": "d.VLR_RENDA_FORMAL",
+}
+
+ESQUEMA_DMDB05: dict[str, str] = {
+    "COD_PROPOSTA": "d.NUM_PROPOSTA",
+    "NOM_PESSOA": "d.NOM_PESSOA",
+    "COD_CPF": "d.COD_CPF_CNPJ",
+    "NUM_AGENCIA": "d.NUM_AGENCIA",
+    "NUM_MATRICULA": "d.NUM_MATRI_VENDEDOR",
+    "DTA_VENDA": "CONVERT(varchar(10), d.DTH_VENDA, 120)",
+    "DIAS_PENDENTE": "DATEDIFF(day, d.DTH_VENDA, CAST(GETDATE() AS DATE))",
+    "NOM_PRODUTO": "d.NOM_PRODUTO",
+    "AREA_PRODUTO": "d.DES_RAMO_PRODUTO",
+    # Não existe prêmio nesta fonte. O valor do contrato ocupa a posição do
+    # prêmio na tela — decisão do usuário em 2026-09-01. `VLR_IS_VENDA` é o
+    # capital, e vai para a importância segurada, onde é o mesmo conceito.
+    "VLR_PREMIO": "d.VLR_CONTRATO",
+    "VLR_IMP_SEGURADA": "d.VLR_IS_VENDA",
+    "NOM_CIDADE": "CAST(NULL AS varchar(100))",
+    "NOM_UF": "CAST(NULL AS varchar(5))",
+    "DDD_CEL": "d.COD_DDD_CELULAR",
+    "TEL_CEL": "d.NUM_CELULAR_VISAO360",
+    "DDD_RES": "CAST(NULL AS varchar(5))",
+    "TEL_RES": "CAST(NULL AS varchar(20))",
+    "DES_EMAIL": "d.DES_EMAIL",
+    # A idade já vem calculada nesta fonte; nos cards 1–3 sai da data de
+    # nascimento.
+    "IDADE": "d.NUM_IDADE",
+    "STA_SITUACAO": "d.NOM_SUB_SITUACAO",
+    "STA_PAGO": "CAST(NULL AS varchar(5))",
+    "DTA_REFERENCIA": "CONVERT(varchar(10), d.DTH_REFERENCIA, 120)",
+    "VLR_RENDA_FORMAL": "CAST(NULL AS decimal(18,2))",
+}
+
+
+class Card(NamedTuple):
+    rotulo: str
+    tabela: str
+    colunas: dict[str, str]
+
+
+# COD_CARD → card.
 #
 # É a lista branca do parâmetro `card` E a origem do nome da tabela. O nome NUNCA
 # vem da requisição: ele é lido deste dicionário depois que a chave é validada —
 # nome de objeto não aceita parâmetro em T-SQL, então esta é a única forma segura
 # de escolher o FROM.
-CARDS: dict[str, tuple[str, str]] = {
-    "PEND_ASSIN": ("Pendentes de Assinatura", "dbo.PIO_PROPOSTA_PENDENTE_DET"),
-    "PEND_PGTO": ("Pendentes de Pagamento", "dbo.PIO_PROPOSTA_PEND_PGTO_DET"),
-    "ASSINA_PAGA": ("Assinadas e Pagas", "dbo.PIO_PROPOSTA_ASSINA_PAGA_DET"),
+#
+# O período de cada card é o que a CARGA traz, e não é uniforme: 1–3 e 7 trazem
+# os últimos 30 dias de venda; 4, 5, 6 e 8, o ano corrente. A busca alcança só
+# isso — e a tela precisa dizer, senão "não encontrada" vira "está quebrado".
+CARDS: dict[str, Card] = {
+    "PEND_ASSIN": Card("Pendentes de Assinatura",
+                       "dbo.PIO_PROPOSTA_PENDENTE_DET", ESQUEMA_TDDB48),
+    "PEND_PGTO": Card("Pendentes de Pagamento",
+                      "dbo.PIO_PROPOSTA_PEND_PGTO_DET", ESQUEMA_TDDB48),
+    "ASSINA_PAGA": Card("Assinadas e Pagas",
+                        "dbo.PIO_PROPOSTA_ASSINA_PAGA_DET", ESQUEMA_TDDB48),
+    "CRITICA": Card("Propostas em Crítica",
+                    "dbo.PIO_PROPOSTA_CRITICA_DET", ESQUEMA_DMDB05),
+    "EMITIDA": Card("Propostas Emitidas",
+                    "dbo.PIO_PROPOSTA_EMITIDA_DET", ESQUEMA_DMDB05),
+    "REJEITADA": Card("Propostas Rejeitadas",
+                      "dbo.PIO_PROPOSTA_REJEITADA_DET", ESQUEMA_DMDB05),
+    "DEVOL_PREMIO": Card("Devolução de Prêmio",
+                         "dbo.PIO_PROPOSTA_DEVOL_PREMIO_DET", ESQUEMA_DMDB05),
+    "SENSIBILIZACAO": Card("Monitoramento de Sensibilização",
+                           "dbo.PIO_PROPOSTA_SENSIBILIZACAO_DET", ESQUEMA_DMDB05),
 }
+
+# A ordem em que as colunas saem do SELECT — e a ordem em que o código as lê de
+# volta. Mudar aqui sem mudar a leitura embaralha os campos da tela em silêncio.
+ORDEM_COLUNAS = list(ESQUEMA_TDDB48)
 
 # Busca nos TRÊS cards de uma vez. Quem procura uma proposta pelo número não
 # sabe (nem tem por que saber) em qual estado ela está.
@@ -59,41 +156,34 @@ CARD_TODOS = "TODOS"
 _LIMITE_PADRAO = 50
 _LIMITE_MAXIMO = 200
 
-# As colunas da lista, com alias, iguais nos três ramos do UNION ALL — o alias
-# é o que permite ordenar do lado de fora. `DTA_VENDA` sai como 'YYYY-MM-DD',
-# que ordena como texto na mesma ordem da data.
-_COLUNAS = """
-    d.COD_PROPOSTA AS COD_PROPOSTA, d.NOM_PESSOA AS NOM_PESSOA,
-    d.COD_CPF AS COD_CPF, d.NUM_AGENCIA AS NUM_AGENCIA,
-    d.NUM_MATRICULA AS NUM_MATRICULA,
-    CONVERT(varchar(10), d.DTH_VENDA, 120) AS DTA_VENDA,
-    DATEDIFF(day, d.DTH_VENDA, CAST(GETDATE() AS DATE)) AS DIAS_PENDENTE,
-    d.NOM_PRODUTO AS NOM_PRODUTO, d.AREA_PRODUTO AS AREA_PRODUTO,
-    d.VLR_PREMIO AS VLR_PREMIO, d.VLR_IMP_SEGURADA AS VLR_IMP_SEGURADA,
-    d.NOM_CIDADE AS NOM_CIDADE, d.NOM_UF AS NOM_UF,
-    d.NUM_DDD_TEL_CEL AS DDD_CEL, d.NUM_TEL_CEL AS TEL_CEL,
-    d.NUM_DDD_TEL_RES AS DDD_RES, d.NUM_TEL_RES AS TEL_RES,
-    d.DES_EMAIL AS DES_EMAIL,
-    DATEDIFF(year, d.DTA_NASCIMENTO, CAST(GETDATE() AS DATE)) AS IDADE,
-    d.STA_SITUACAO AS STA_SITUACAO, d.STA_PAGO AS STA_PAGO,
-    CONVERT(varchar(10), d.DTH_REFERENCIA, 120) AS DTA_REFERENCIA,
-    d.VLR_RENDA_FORMAL AS VLR_RENDA_FORMAL
-"""
+def _select_colunas(colunas: dict[str, str]) -> str:
+    """O SELECT de um ramo: a coluna daquela fonte, com o apelido comum.
 
-_CPF_SEM_MASCARA = "REPLACE(REPLACE(REPLACE(d.COD_CPF, '.', ''), '-', ''), ' ', '')"
+    O apelido é o que permite ordenar do lado de fora do UNION e ler tudo com
+    um só laço. `DTA_VENDA` sai como 'YYYY-MM-DD', que ordena como texto na
+    mesma ordem da data.
+    """
+    return ", ".join(f"{colunas[alias]} AS {alias}" for alias in ORDEM_COLUNAS)
+
+
+def _sem_mascara(coluna: str) -> str:
+    return f"REPLACE(REPLACE(REPLACE({coluna}, '.', ''), '-', ''), ' ', '')"
 
 
 def _so_digitos(texto: str) -> str:
     return re.sub(r"\D", "", texto or "")
 
 
-def _filtro_da_busca(modo: str, termo: str) -> tuple[str, list]:
+def _filtro_da_busca(modo: str, termo: str,
+                     colunas: dict[str, str] = ESQUEMA_TDDB48) -> tuple[str, list]:
     """O pedaço de SQL (e os parâmetros) que aplica a busca do usuário.
 
-    Cada modo compara o campo que a tela pediu, e todos comparam **dígitos**:
-    a tela mostra `8047413032422-7` e `397.750.878-48`, o banco guarda de outro
-    jeito, e exigir igualdade literal é o que faz a busca "não achar" um número
-    que está bem ali. Nada é concatenado — os valores entram por parâmetro.
+    Cada modo compara o campo que a tela pediu, **na coluna que aquela fonte
+    usa** — buscar `COD_PROPOSTA` numa DET do DMDB05 dá "Invalid column name".
+    E todos comparam **dígitos**: a tela mostra `8047413032422-7` e
+    `397.750.878-48`, o banco guarda de outro jeito, e exigir igualdade literal
+    é o que faz a busca "não achar" um número que está bem ali. Nada é
+    concatenado a partir da requisição — os valores entram por parâmetro.
     """
     termo = (termo or "").strip()[:100]
     if not termo:
@@ -101,26 +191,26 @@ def _filtro_da_busca(modo: str, termo: str) -> tuple[str, list]:
     digitos = _so_digitos(termo) or termo
 
     if modo == "proposta":
-        return (" AND REPLACE(REPLACE(d.COD_PROPOSTA, '-', ''), '.', '') LIKE ?",
+        return (f" AND REPLACE(REPLACE({colunas['COD_PROPOSTA']}, '-', ''), '.', '') LIKE ?",
                 [f"%{digitos}%"])
     if modo == "cpf":
-        return (f" AND {_CPF_SEM_MASCARA} LIKE ?", [f"%{digitos}%"])
+        return (f" AND {_sem_mascara(colunas['COD_CPF'])} LIKE ?", [f"%{digitos}%"])
     if modo == "agencia":
         # Agência é igualdade, não "contém": buscar 316 não pode trazer 3160.
         # O padding zera a diferença entre "0316" e "316", que são a mesma
         # agência escrita de dois jeitos.
-        return (" AND RIGHT(REPLICATE('0', 12) + REPLACE(d.NUM_AGENCIA, ' ', ''), 12)"
+        return (f" AND RIGHT(REPLICATE('0', 12) + REPLACE({colunas['NUM_AGENCIA']}, ' ', ''), 12)"
                 " = RIGHT(REPLICATE('0', 12) + ?, 12)", [digitos])
     if modo == "matricula":
         # A matrícula CEF vem com dígito verificador que pode ser LETRA
         # ("0000122795-B"): comparar só os dígitos ignora o verificador em vez
         # de não achar nada por causa dele.
-        return (" AND REPLACE(REPLACE(d.NUM_MATRICULA, '-', ''), ' ', '') LIKE ?",
+        return (f" AND REPLACE(REPLACE({colunas['NUM_MATRICULA']}, '-', ''), ' ', '') LIKE ?",
                 [f"%{digitos}%"])
 
     # livre: o que a lista do card usa — nome, proposta ou CPF.
-    return (" AND (d.NOM_PESSOA LIKE ? OR d.COD_PROPOSTA LIKE ?"
-            f"      OR {_CPF_SEM_MASCARA} LIKE ?)",
+    return (f" AND ({colunas['NOM_PESSOA']} LIKE ? OR {colunas['COD_PROPOSTA']} LIKE ?"
+            f"      OR {_sem_mascara(colunas['COD_CPF'])} LIKE ?)",
             [f"%{termo}%", f"%{termo}%", f"%{digitos}%"])
 
 
@@ -164,7 +254,8 @@ def pio_contagens() -> dict:
         resposta["disponivel"] = True
         for cod, des, qtd, referencia, carga in linhas:
             codigo = (cod or "").strip().upper()
-            rotulo = CARDS.get(codigo, ("", ""))[0]
+            ficha = CARDS.get(codigo)
+            rotulo = ficha.rotulo if ficha else ""
             resposta["cards"].append({
                 "card": codigo,
                 "descricao": (des or "").strip() or rotulo or codigo,
@@ -221,22 +312,26 @@ def pio_propostas(
     else:
         return resposta
 
-    filtro_busca, params_busca = _filtro_da_busca((modo or "").strip().lower(),
-                                                 busca)
+    modo_limpo = (modo or "").strip().lower()
 
-    # Um ramo por tabela, unidos. Sem filtro de status: a DET já é do card. A
-    # referência é filtrada por tabela (a carga é TRUNCATE + INSERT, mas uma
-    # carga parcial deixaria duas datas e a lista misturaria dois dias).
+    # Um ramo por tabela, unidos. Cada ramo usa as COLUNAS DAQUELA FONTE, com
+    # os apelidos comuns: é o que permite unir as oito DET, que descrevem o
+    # mesmo negócio com nomes de coluna diferentes.
+    #
+    # Sem filtro de status: a DET já é do card. A referência é filtrada por
+    # tabela (a carga é TRUNCATE + INSERT, mas uma carga parcial deixaria duas
+    # datas e a lista misturaria dois dias).
     #
     # `cod` e `tabela` saem do dicionário CARDS, nunca da requisição — nome de
     # objeto não aceita parâmetro em T-SQL, e a lista branca é o que separa
     # isto de uma injeção. Os parâmetros da busca se repetem por ramo.
     ramos, params = [], []
-    for cod, (_rotulo, tabela) in alvos:
+    for cod, ficha in alvos:
+        filtro_busca, params_busca = _filtro_da_busca(modo_limpo, busca, ficha.colunas)
         ramos.append(f"""
-            SELECT {_COLUNAS}, '{cod}' AS COD_CARD
-              FROM {tabela} d
-             WHERE d.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM {tabela})
+            SELECT {_select_colunas(ficha.colunas)}, '{cod}' AS COD_CARD
+              FROM {ficha.tabela} d
+             WHERE d.DTH_REFERENCIA = (SELECT MAX(DTH_REFERENCIA) FROM {ficha.tabela})
              {filtro_busca}
         """)
         params.extend(params_busca)
