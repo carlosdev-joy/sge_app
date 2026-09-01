@@ -7,25 +7,33 @@ Este documento existe porque a infra descrita aqui foi criada **direto no
 servidor**, fora deste repositório — sem ele, a origem dos números da tela não
 está escrita em lugar nenhum que acompanhe o código.
 
-> **Modelo vigente desde 2026-09-01** (guia de referência do PIO). Ele substitui
-> o primeiro desenho, em que havia uma `_AGG` única agregada por
-> `STA_CATEGORIA`. O que mudou: o agregado passou a ser **por card**
-> (`COD_CARD`), ganhou histórico, e **cada card tem a sua própria tabela de
-> detalhe**.
+> **Modelo vigente desde 2026-09-01** (guia de referência do PIO). O agregado é
+> **por card** (`COD_CARD`), há histórico, e **cada card tem a sua própria tabela
+> de detalhe**. Os **oito** cards do Workflow leem a carga.
+>
+> ⚠️ **Há DUAS famílias de card, com fontes e vocabulários diferentes.** Cards
+> 1–3 vêm do **TDDB48** (linked server, últimos 30 dias); cards 4–8 vêm do
+> **DMDB05** (acesso direto, mesmo servidor, ano corrente). E as colunas mudam
+> de nome entre elas — ver "Os dois vocabulários", abaixo.
 
 ## O caminho do dado
 
 ```
-TDDB48 (sql18,1450\staging4)          ← fonte, sistema de propostas
-   │  OPENQUERY no linked server SQL18\STAGING4
-   │  PRC_PIO_CARGA_DIARIA — diária, 07:30
+TDDB48 (sql18,1450\staging4)          ← fonte dos cards 1–3 (OPENQUERY)
+DMDB05 (sql14,1480)                   ← fonte dos cards 4–8 (acesso direto)
+   │  PRC_PIO_CARGA_DIARIA — diária, 07:30, 10 passos
    ▼
 DMDB41 (sql14,1480)                   ← o PRÓPRIO banco do Orquestra
    ├── PIO_AGG                        1 linha por card, snapshot do dia (TRUNCATE)
    ├── PIO_AGG_HIST                   mesma estrutura, INSERT-only (tendência)
-   ├── PIO_PROPOSTA_PENDENTE_DET      detalhe do card PEND_ASSIN  (TRUNCATE)
-   ├── PIO_PROPOSTA_PEND_PGTO_DET     detalhe do card PEND_PGTO   (TRUNCATE)
-   └── PIO_PROPOSTA_ASSINA_PAGA_DET   detalhe do card ASSINA_PAGA (TRUNCATE)
+   ├── PIO_PROPOSTA_PENDENTE_DET        card 1 PEND_ASSIN      TDDB48 · 30 dias
+   ├── PIO_PROPOSTA_PEND_PGTO_DET       card 2 PEND_PGTO       TDDB48 · 30 dias
+   ├── PIO_PROPOSTA_ASSINA_PAGA_DET     card 3 ASSINA_PAGA     TDDB48 · 30 dias
+   ├── PIO_PROPOSTA_CRITICA_DET         card 4 CRITICA         DMDB05 · ano
+   ├── PIO_PROPOSTA_EMITIDA_DET         card 5 EMITIDA         DMDB05 · ano
+   ├── PIO_PROPOSTA_REJEITADA_DET       card 6 REJEITADA       DMDB05 · ano
+   ├── PIO_PROPOSTA_DEVOL_PREMIO_DET    card 7 DEVOL_PREMIO    DMDB05 · 30 dias
+   └── PIO_PROPOSTA_SENSIBILIZACAO_DET  card 8 SENSIBILIZACAO  DMDB05 · ano
    │  SELECT direto, via MSSQL_CONN_STR
    ▼
 api/routers/pio.py → /pio/contagens e /pio/propostas
@@ -38,9 +46,10 @@ que já está conectada — o `SQL14_DMDB41` de `dags/utils/conn_resolver.py` é
 mesmo banco do `MSSQL_CONN_STR` da API. Linked server é assunto da carga, uma
 vez por dia.
 
-A ordem da carga importa: as três DET primeiro, depois a `PIO_AGG` como
-`UNION ALL` **delas** (não da fonte), e por fim a `PIO_AGG_HIST`, que só insere
-se a `DTH_REFERENCIA` ainda não existir — proteção contra dupla execução.
+A ordem da carga importa: as **oito** DET primeiro (passos 01–08), depois a
+`PIO_AGG` como `UNION ALL` **delas** (não das fontes), e por fim a
+`PIO_AGG_HIST`, que só insere se a `DTH_REFERENCIA` ainda não existir —
+proteção contra dupla execução.
 
 ## Os cards
 
@@ -52,6 +61,45 @@ se a `DTH_REFERENCIA` ainda não existir — proteção contra dupla execução.
 
 Os três recortam ainda `STA_SITUACAO NOT IN ('CA','EXP')` e `DTH_VENDA` nos
 **últimos 30 dias**.
+
+### Cards 4–8 — fonte DMDB05 (acesso direto, mesmo servidor)
+
+| `COD_CARD` | Card do Workflow | Filtro na origem | Tabela de detalhe | Período |
+|---|---|---|---|---|
+| `CRITICA` | Em Análise | `NOM_SUB_SITUACAO` em *Em Critica*, *Documentacao* · ramo Vida em Grupo | `PIO_PROPOSTA_CRITICA_DET` | ano corrente |
+| `EMITIDA` | Emitidas | *Ativo*, *APÓLICE EMITIDA*, *Cancelado*, *Sinistrado*, *Suspenso* (exclui apólices avulsas) | `PIO_PROPOSTA_EMITIDA_DET` | ano corrente |
+| `REJEITADA` | Rejeitadas | *APOLICE NAO EMITIDA*, *NAO ACEITO*, *PROPOSTA DECLINADA*, *Risco Excluido* (exclui críticas de baixo risco) | `PIO_PROPOSTA_REJEITADA_DET` | ano corrente |
+| `DEVOL_PREMIO` | Devoluções de Prêmio | as rejeitadas **com** movimento de cobrança | `PIO_PROPOSTA_DEVOL_PREMIO_DET` | **30 dias** |
+| `SENSIBILIZACAO` | Sensibilizações | join com `DM_122_PROPOSTA_SENSIBILIZACAO` | `PIO_PROPOSTA_SENSIBILIZACAO_DET` | ano corrente |
+
+⚠️ **O período não é uniforme.** Cards 1–3 e 7 trazem os últimos 30 dias de
+venda; 4, 5, 6 e 8 trazem o ano corrente. A busca alcança só o que a carga tem,
+e é por isso que o estado vazio da tela explica os dois períodos.
+
+## Os dois vocabulários
+
+A mesma informação tem nomes diferentes conforme a fonte. Ler uma família com o
+nome da outra dá **"Invalid column name"** — e como o endpoint degrada em vez de
+estourar, o card apareceria vazio, sem erro na tela.
+
+| Conceito | Cards 1–3 (TDDB48) | Cards 4–8 (DMDB05) |
+|---|---|---|
+| Número da proposta | `COD_PROPOSTA` | `NUM_PROPOSTA` |
+| CPF | `COD_CPF` | `COD_CPF_CNPJ` |
+| Matrícula | `NUM_MATRICULA` | `NUM_MATRI_VENDEDOR` |
+| Ramo/área do produto | `AREA_PRODUTO` | `DES_RAMO_PRODUTO` |
+| Capital segurado | `VLR_IMP_SEGURADA` | `VLR_IS_VENDA` |
+| Situação | `STA_SITUACAO` | `NOM_SUB_SITUACAO` |
+| Idade | calculada de `DTA_NASCIMENTO` | `NUM_IDADE`, já pronta |
+| Valor exibido no card | `VLR_PREMIO` | **`VLR_CONTRATO`** (não há prêmio nesta fonte — decisão do usuário) |
+| Cidade/UF, renda, telefone residencial, flag de pago | existem | **não existem** → campo some da tela |
+| Nome da agência | não existe | `NOM_AGENCIA` — **disponível e ainda não exibido** |
+
+Quem traduz é o **esquema de colunas** em `api/routers/pio.py`
+(`ESQUEMA_TDDB48` e `ESQUEMA_DMDB05`): os dois dão os MESMOS apelidos a colunas
+de origem diferentes, e é isso que permite o `UNION ALL` das oito DET na busca.
+Coluna que uma fonte não tem entra como **`CAST(NULL AS <tipo>)`** — num UNION o
+tipo vem do primeiro ramo, e `NULL` sem tipo trunca texto sem avisar.
 
 ⚠️ **Os cards 2 e 3 saem do mesmo `STA_ASSINATURA='CO'` — quem os separa é o
 `STA_PAGO`.** Se a carga do card 2 deixar de filtrar `STA_PAGO='N'`, as duas
@@ -73,9 +121,10 @@ seu card — o filtro foi aplicado na carga. Repetir `STA_ASSINATURA` na consult
 é a forma silenciosa de zerar um card no dia em que a carga mudar de critério:
 tabela cheia, tela mostrando 0.
 
-Os demais cards da sequência (*Em Análise*, *Emitidas*, *Rejeitadas*,
-*Devoluções de Prêmio*, *Sensibilizações*) **ainda não têm carga** e seguem no
-dado de exemplo.
+**Os oito cards do Workflow leem a carga** desde 2026-09-01. Nenhum card usa
+mais dado de exemplo — o mock de `lib/workflow.ts` continua no repo, mas some da
+tela por completo (`PROPOSTAS_DE_EXEMPLO` fica vazio quando todo status tem
+origem no PIO).
 
 Códigos de `STA_ASSINATURA` na fonte, para referência: `PE` pendente de
 assinatura · `CO` assinada · `AP` assinada e paga · `AN` em análise · `EM`
@@ -90,9 +139,10 @@ Dois lugares, e os dois têm teste que reprova a divergência:
 
 ```ts
 export const ORIGEM_PIO: Partial<Record<StatusWorkflow, string>> = {
-  pending_signature: "PEND_ASSIN",
-  awaiting_payment: "PEND_PGTO",
-  paid: "ASSINA_PAGA",
+  pending_signature: "PEND_ASSIN",   awaiting_payment: "PEND_PGTO",
+  paid: "ASSINA_PAGA",               in_analysis: "CRITICA",
+  emission_sent: "EMITIDA",          declined: "REJEITADA",
+  refund_scheduled: "DEVOL_PREMIO",  sensitization_monitoring: "SENSIBILIZACAO",
 };
 ```
 
@@ -126,6 +176,7 @@ nos dias normais as duas leituras devolvem a mesma linha.
 |---|---|---|
 | `PIO_AGG`, `PIO_AGG_HIST`, as duas primeiras `_DET` | DMDB41 | `sql/migrations/102_pio_agg_e_card_pagamento.sql` as cria em ambiente novo (a 101 criou as da primeira versão) |
 | `PIO_PROPOSTA_ASSINA_PAGA_DET` e o alargamento de `COD_CARD` | DMDB41 | `sql/migrations/103_pio_card_assinadas_pagas.sql` |
+| As cinco DET dos cards 4–8 | DMDB41 | `sql/migrations/104_pio_cards_4_a_8.sql` |
 | `PRC_PIO_CARGA_DIARIA` | DMDB41 | **fora do repo** — ver pendência abaixo |
 | SQL Agent Job da carga | msdb do sql14,1480 | **aguarda o DBA aplicar** — `usr_dstage_prev` não tem permissão no SQL Agent |
 | `PIO_PROPOSTA_PENDENTE_AGG` | DMDB41 | **órfã** desde este modelo: ninguém lê. Não foi dropada — a carga nasceu fora do repo e derrubar tabela que talvez ainda seja escrita lá troca um problema de tela por um de dado |
@@ -269,6 +320,20 @@ vez de mostrar outro número no lugar.
 
 `tests/test_pio_regiao.py` reprova a volta de qualquer um desses literais e o
 reencontro entre renda e prêmio.
+
+### Nos cards 4–8, o que a tela deixa de mostrar
+
+A fonte DMDB05 não tem tudo o que a TDDB48 tem. Nesses cinco cards ficam vazios,
+por ausência de dado e não por defeito:
+
+| Campo da tela | Por quê |
+|---|---|
+| Região | não há UF na fonte |
+| Renda Individual | não há renda |
+| Telefone | só se houver celular — não há telefone residencial de reserva |
+
+E há um campo **a mais** disponível, ainda não exibido: `NOM_AGENCIA`, o nome da
+agência. Hoje a tela mostra só o número.
 
 ### Colunas da carga que a tela ainda NÃO usa
 

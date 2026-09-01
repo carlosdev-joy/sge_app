@@ -166,9 +166,12 @@ export default function SearchProposals() {
             Confira o {opcaoAtual?.campo.toLowerCase()} digitado ou tente outro modo de pesquisa.
           </p>
           <p className="text-xs text-dim max-w-lg mx-auto">
-            A busca cobre as propostas da carga do PIO — pendentes de assinatura,
-            pendentes de pagamento e assinadas e pagas —, dos últimos 30 dias de venda
-            {busca.data?.referencia ? `, na carga de ${dataBr(busca.data.referencia)}` : ""}.
+            A busca cobre as propostas da carga do PIO, e o período muda com o
+            estado da proposta: pendentes de assinatura, pendentes de pagamento,
+            assinadas e pagas e devoluções de prêmio saem dos <strong>últimos 30
+            dias de venda</strong>; em crítica, emitidas, rejeitadas e
+            sensibilizadas, do <strong>ano corrente</strong>
+            {busca.data?.referencia ? `. Carga de ${dataBr(busca.data.referencia)}` : ""}.
           </p>
         </div>
       )}
