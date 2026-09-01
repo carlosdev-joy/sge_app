@@ -307,3 +307,25 @@ def test_o_movimento_de_status_so_aponta_para_card_da_sequencia():
     com_card = {v for v, _l, _s in _cards()}
     fora = destinos - com_card
     assert not fora, f"movimento para status sem card: {sorted(fora)}"
+
+
+def test_o_valor_do_card_e_um_premio_mensal():
+    """O valor ao lado do produto é o PRÊMIO (a mensalidade) — é `VLR_PREMIO`
+    nas propostas da carga, e a coluna da busca já se chama "Prêmio".
+
+    As propostas de exemplo traziam valores na casa dos milhares (R$ 1.750,00
+    para um seguro de vida), que são ordem de grandeza de renda ou de capital
+    segurado. Resultado: a mesma tela mostrava mensalidade de verdade num card
+    e valor de renda no card ao lado, sem nada indicando a diferença.
+
+    O teto de R$ 1.000 é generoso de propósito: não existe prêmio mensal de
+    seguro de vida em quatro dígitos nesta carteira, e o que se quer barrar é a
+    volta dos milhares, não afinar centavos.
+    """
+    valores = re.findall(r'value: "R\$ ([\d.,]+)"', FONTE.read_text(encoding="utf-8"))
+    assert valores, "nenhuma proposta de exemplo com valor — o leitor quebrou?"
+    altos = [v for v in valores
+             if float(v.replace(".", "").replace(",", ".")) >= 1000]
+    assert not altos, (
+        f"{len(altos)} proposta(s) de exemplo com valor de renda/capital no lugar "
+        f"do prêmio: {altos[:5]}")
