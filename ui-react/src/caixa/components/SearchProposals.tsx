@@ -19,12 +19,19 @@ import {
   TableCell,
 } from "../../components/ui/Table";
 import ProposalDetailDialog, { type ProposalOrq } from "./ProposalDetailDialog";
+import { type ModoBusca } from "../lib/propostas";
 import {
-  buscarPropostas,
-  ROTULO_STATUS,
-  type ModoBusca,
-  type Proposta,
-} from "../lib/propostas";
+  dataBr,
+  propostaDoPio,
+  useBuscaPio,
+  STATUS_POR_CARD,
+} from "../lib/pio";
+import {
+  STATUS_COR,
+  STATUS_LABEL_CURTO,
+  type PropostaWorkflow,
+  type StatusWorkflow,
+} from "../lib/workflow";
 
 const searchOptions: { value: ModoBusca; label: string; campo: string; placeholder: string }[] = [
   { value: "proposta", label: "Nº da Proposta", campo: "Nº da Proposta", placeholder: "80474130324227 ou 8047413032422-7" },
@@ -38,24 +45,30 @@ export default function SearchProposals() {
   const navigate = useNavigate();
   const [selectedMode, setSelectedMode] = useState<ModoBusca | "">("");
   const [searchValue, setSearchValue] = useState<string>("");
-  const [isSearching, setIsSearching] = useState(false);
-  // null = ainda não pesquisou nesta sessão; [] = pesquisou e não achou. Os dois
-  // casos precisam de telas diferentes — antes, busca sem resultado não dizia
-  // absolutamente nada e parecia que o botão estava quebrado.
-  const [searchResults, setSearchResults] = useState<Proposta[] | null>(null);
-  const [detalhe, setDetalhe] = useState<Proposta | null>(null);
+  // O que foi de fato pesquisado — só muda no clique/Enter. Separado do que
+  // está sendo digitado: sem isso a lista se refaria a cada tecla, e o "nenhuma
+  // encontrada" piscaria no meio do CPF sendo digitado.
+  const [consulta, setConsulta] = useState<{ modo: ModoBusca; termo: string } | null>(null);
+  const [detalhe, setDetalhe] = useState<PropostaWorkflow | null>(null);
 
   const opcaoAtual = searchOptions.find((o) => o.value === selectedMode);
 
+  // A busca lê a carga do PIO, nas TRÊS tabelas de detalhe. Era um filtro sobre
+  // 20 propostas de exemplo em memória até 2026-09-01: a lógica estava certa
+  // (comparava dígitos, ignorava máscara) mas a fonte tinha 20 linhas, então
+  // nenhum número real aparecia e a busca parecia quebrada.
+  const busca = useBuscaPio(consulta?.modo ?? "", consulta?.termo ?? "", true);
+  const isSearching = busca.isFetching;
+
+  const itens = busca.data?.itens ?? [];
+  const searchResults: PropostaWorkflow[] | null = !consulta || busca.isPending
+    ? null
+    : itens.map((item) =>
+        propostaDoPio(item, STATUS_POR_CARD[item.card ?? ""] ?? "pending_signature"));
+
   const handleSearch = () => {
     if (!selectedMode || !searchValue.trim() || isSearching) return;
-    setIsSearching(true);
-    setSearchResults(null);
-    // Atraso curto só para a POC parecer uma consulta de verdade.
-    setTimeout(() => {
-      setSearchResults(buscarPropostas(selectedMode, searchValue));
-      setIsSearching(false);
-    }, 600);
+    setConsulta({ modo: selectedMode, termo: searchValue.trim() });
   };
 
   // Trocar o modo zera o que estava na tela: manter o resultado de um CPF
@@ -63,7 +76,7 @@ export default function SearchProposals() {
   const handleModeChange = (modo: string) => {
     setSelectedMode(modo as ModoBusca);
     setSearchValue("");
-    setSearchResults(null);
+    setConsulta(null);
   };
 
   return (
@@ -129,13 +142,33 @@ export default function SearchProposals() {
         </div>
       )}
 
-      {/* Nada encontrado: dizer isso é o mínimo — o silêncio de antes fazia a
-          tela parecer quebrada. */}
-      {searchResults?.length === 0 && (
+      {/* A carga não conseguiu ser lida: nem "achou" nem "não achou" — a lista
+          é DESCONHECIDA, e dizer isso evita concluir que a proposta não existe. */}
+      {consulta && !busca.isPending && !busca.data?.disponivel && (
         <div className="bg-panel border border-edge rounded-lg py-8 px-8 text-center space-y-1">
+          <p className="text-red-600 dark:text-red-400 font-medium">
+            Não foi possível ler a carga do PIO.
+          </p>
+          <p className="text-sm text-dim">
+            O resultado não está vazio — ele é desconhecido. Tente novamente em instantes.
+          </p>
+        </div>
+      )}
+
+      {/* Nada encontrado. Além de dizer isso, a tela precisa dizer o QUE ela
+          procurou: a carga só tem os três cards e os últimos 30 dias de venda,
+          então uma proposta emitida, rejeitada ou mais antiga não está aqui —
+          e sem essa frase quem procura conclui que a busca está quebrada. */}
+      {searchResults?.length === 0 && busca.data?.disponivel && (
+        <div className="bg-panel border border-edge rounded-lg py-8 px-8 text-center space-y-2">
           <p className="text-ink font-medium">Nenhuma proposta encontrada.</p>
           <p className="text-sm text-dim">
             Confira o {opcaoAtual?.campo.toLowerCase()} digitado ou tente outro modo de pesquisa.
+          </p>
+          <p className="text-xs text-dim max-w-lg mx-auto">
+            A busca cobre as propostas da carga do PIO — pendentes de assinatura,
+            pendentes de pagamento e assinadas e pagas —, dos últimos 30 dias de venda
+            {busca.data?.referencia ? `, na carga de ${dataBr(busca.data.referencia)}` : ""}.
           </p>
         </div>
       )}
@@ -183,13 +216,17 @@ export default function SearchProposals() {
                     <TableCell>{p.agency}</TableCell>
                     <TableCell>{p.indicatorId}</TableCell>
                     <TableCell>
-                      {/* Chip laranja CAIXA para "Aguardando assinatura" (acento da POC) */}
+                      {/* O status é o CARD de onde a linha veio — é a única
+                          informação de estado que a carga tem. Cor e rótulo
+                          saem de `lib/workflow.ts`, os mesmos do card
+                          correspondente: a mesma proposta não pode ter uma cor
+                          na busca e outra no Workflow. */}
                       <span
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white whitespace-nowrap ${
-                          p.status === "pending_signature" ? "bg-[#F26B00]" : "bg-emerald-600"
+                          STATUS_COR[p.status as StatusWorkflow] ?? "bg-slate-500"
                         }`}
                       >
-                        {ROTULO_STATUS[p.status]}
+                        {STATUS_LABEL_CURTO[p.status as StatusWorkflow] ?? p.status}
                       </span>
                     </TableCell>
                     <TableCell>

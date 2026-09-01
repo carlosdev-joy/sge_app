@@ -42,6 +42,9 @@ export interface ContagensPio {
 }
 
 export interface ItemPio {
+  /** COD_CARD de onde a linha veio. Numa busca em todos os cards, é o que diz
+   *  em que estado a proposta está. */
+  card?: string;
   proposta: string;
   nome: string;
   cpf: string;
@@ -62,6 +65,14 @@ export interface ItemPio {
   situacao: string;
   pago: string;
 }
+
+/** Card do Workflow de cada COD_CARD — o inverso de `ORIGEM_PIO`, derivado
+ *  dele para não virar uma segunda lista à mão que diverge da primeira.
+ *  A busca em todos os cards precisa disto: a proposta vem da carga sabendo só
+ *  de qual card saiu, e é o card que diz o status na tela. */
+export const STATUS_POR_CARD: Record<string, StatusWorkflow> = Object.fromEntries(
+  Object.entries(ORIGEM_PIO).map(([status, card]) => [card, status as StatusWorkflow]),
+);
 
 export interface PaginaPio {
   disponivel: boolean;
@@ -100,6 +111,40 @@ export function usePropostasPio(card: string | undefined, ativo: boolean,
         offset: String(pagina * TAMANHO_PAGINA_PIO),
       });
       if (busca.trim()) p.set("busca", busca.trim());
+      return apiFetch<PaginaPio>(`/pio/propostas?${p.toString()}`);
+    },
+  });
+}
+
+/** Modos da Consulta de Propostas → o campo que a API compara.
+ *
+ *  ⚠️ SEV e SR caem os DOIS em `matricula`: a carga tem uma coluna só
+ *  (`NUM_MATRICULA`) e não distingue um do outro. Os dois modos devolvem o
+ *  mesmo resultado, e isso é sabido — decisão do usuário em 2026-09-01. */
+export const MODO_BUSCA_PIO: Record<string, string> = {
+  proposta: "proposta",
+  cpf: "cpf",
+  agencia: "agencia",
+  sev: "matricula",
+  sr: "matricula",
+};
+
+/** Busca em TODOS os cards da carga. Diferente de `usePropostasPio`, que lista
+ *  um card: aqui quem procura tem o número na mão e não sabe (nem precisa
+ *  saber) em que estado a proposta está. */
+export function useBuscaPio(modo: string, termo: string, ativo: boolean) {
+  const campo = MODO_BUSCA_PIO[modo] ?? "livre";
+  return useQuery({
+    queryKey: ["pio", "busca", campo, termo],
+    enabled: ativo && Boolean(termo.trim()),
+    staleTime: 5 * 60 * 1000,
+    queryFn: () => {
+      const p = new URLSearchParams({
+        card: "TODOS",
+        modo: campo,
+        busca: termo.trim(),
+        limite: String(TAMANHO_PAGINA_PIO),
+      });
       return apiFetch<PaginaPio>(`/pio/propostas?${p.toString()}`);
     },
   });

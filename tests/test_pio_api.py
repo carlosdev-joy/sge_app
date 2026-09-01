@@ -365,7 +365,75 @@ def test_mais_antigas_primeiro(cliente, banco):
     tempo é a que precisa aparecer antes."""
     banco["cur"] = CursorFalso([_det()])
     cliente.get("/pio/propostas?card=PEND_ASSIN")
-    assert "ORDER BY d.DTH_VENDA ASC" in banco["cur"].sqls[1]
+    assert "ORDER BY t.DTA_VENDA ASC" in banco["cur"].sqls[1]
+
+
+# ═══════════ 8. a busca da Consulta de Propostas ════════════════════════════
+# A tela de busca procura pelo NÚMERO sem saber em que estado a proposta está —
+# por isso `card=TODOS`, que une as três DET. E cada modo da tela compara um
+# campo diferente: buscar CPF no campo da proposta não acha nada e parece que a
+# proposta não existe.
+
+def test_card_todos_varre_as_tres_tabelas(cliente, banco):
+    banco["cur"] = CursorFalso([_det()])
+    d = cliente.get("/pio/propostas?card=TODOS&busca=8031").json()
+    assert d["disponivel"] is True
+    for _cod, (_rot, tabela) in _cards_do_router().items():
+        assert all(tabela in sql for sql in banco["cur"].sqls), (
+            f"{tabela} ficou de fora da busca — proposta nesse card não seria achada")
+
+
+def test_card_todos_diz_de_onde_cada_linha_veio(cliente, banco):
+    """Sem o card de origem a tela acha a proposta e não sabe o status dela."""
+    banco["cur"] = CursorFalso([_det() + ("PEND_PGTO",)])
+    item = cliente.get("/pio/propostas?card=TODOS").json()["itens"][0]
+    assert item["card"] == "PEND_PGTO"
+
+
+def _cards_do_router():
+    from routers.pio import CARDS
+    return CARDS
+
+
+@pytest.mark.parametrize("modo,campo", [
+    ("proposta", "COD_PROPOSTA"),
+    ("cpf", "COD_CPF"),
+    ("agencia", "NUM_AGENCIA"),
+    ("matricula", "NUM_MATRICULA"),
+])
+def test_cada_modo_compara_o_seu_campo(cliente, banco, modo, campo):
+    banco["cur"] = CursorFalso([_det()])
+    cliente.get(f"/pio/propostas?card=TODOS&modo={modo}&busca=12345")
+    sql = banco["cur"].sqls[0]
+    assert campo in sql, f"modo {modo} não compara {campo}"
+
+
+def test_agencia_e_igualdade_e_nao_contem(cliente, banco):
+    """Agência 316 não pode trazer a 3160: o modo compara por igualdade, não
+    por "contém". O zero à esquerda é resolvido no SQL, com padding dos dois
+    lados — "0316" e "316" são a mesma agência escrita de dois jeitos."""
+    banco["cur"] = CursorFalso([_det()])
+    cliente.get("/pio/propostas?card=TODOS&modo=agencia&busca=0316")
+    sql = banco["cur"].sqls[0]
+    assert "REPLACE(d.NUM_AGENCIA" in sql, "o modo agência não compara a agência"
+    assert "d.NUM_AGENCIA, ' ', '') LIKE" not in sql, "agência virou busca por 'contém'"
+    assert "REPLICATE('0'" in sql, "sem padding, 316 ≠ 0316"
+    assert banco["cur"].params[0] == ["0316"] * 3, (
+        "o termo entra uma vez por tabela, por parâmetro")
+
+
+@pytest.mark.parametrize("modo,termo,esperado", [
+    ("proposta", "8047413032422-7", "%80474130324227%"),
+    ("cpf", "397.750.878-48", "%39775087848%"),
+    ("matricula", "0000122795-B", "%0000122795%"),
+])
+def test_a_mascara_digitada_nao_impede_a_busca(cliente, banco, modo, termo, esperado):
+    """O usuário digita como a tela mostra. Exigir igualdade literal é o que
+    fazia a busca "não funcionar" com o número certo na mão — e no caso da
+    matrícula o dígito verificador é LETRA, que só os dígitos ignoram."""
+    banco["cur"] = CursorFalso([_det()])
+    cliente.get("/pio/propostas", params={"card": "TODOS", "modo": modo, "busca": termo})
+    assert esperado in banco["cur"].params[0]
 
 
 @pytest.mark.parametrize("rota", ["/pio/contagens", "/pio/propostas?card=PEND_ASSIN"])
@@ -478,3 +546,52 @@ def test_card_com_origem_real_nao_mostra_zero_sem_saber(arquivo):
     assert "contagens.isPending" in fonte, f"{arquivo.name}: sem estado de leitura"
     assert "contagens.data?.disponivel" in fonte, (
         f"{arquivo.name}: não distingue carga ilegível de carga vazia")
+
+
+# ═══════════ 9. a busca da tela × os modos da API ═══════════════════════════
+# `searchOptions` (a lista de botões da tela) e `MODO_BUSCA_PIO` (o de-para para
+# a API) são duas listas escritas à mão. Modo novo na tela sem entrada no mapa
+# cai em "livre" — a busca por agência viraria busca por nome, achando outra
+# coisa ou nada, sem erro nenhum.
+
+BUSCA_TSX = CAIXA / "components" / "SearchProposals.tsx"
+
+
+def _modos_da_tela() -> set[str]:
+    import re as _re
+    bloco = _re.search(r"const searchOptions.*?\n\];",
+                       BUSCA_TSX.read_text(encoding="utf-8"), _re.S)
+    assert bloco, "searchOptions não encontrado em SearchProposals.tsx"
+    return set(_re.findall(r'value: "(\w+)"', bloco.group(0)))
+
+
+def _modos_mapeados() -> dict[str, str]:
+    import re as _re
+    bloco = _re.search(r"export const MODO_BUSCA_PIO.*?\n\};",
+                       PIO_TS.read_text(encoding="utf-8"), _re.S)
+    assert bloco, "MODO_BUSCA_PIO não encontrado em lib/pio.ts"
+    ativos = [l for l in bloco.group(0).splitlines() if not l.strip().startswith("//")]
+    return dict(_re.findall(r'(\w+):\s*"(\w+)"', "\n".join(ativos)))
+
+
+def test_todo_modo_da_tela_tem_campo_na_api():
+    faltando = _modos_da_tela() - set(_modos_mapeados())
+    assert not faltando, (
+        f"modo(s) da tela sem campo na API: {sorted(faltando)} — a busca cairia "
+        f"no modo livre e procuraria no campo errado, sem erro nenhum")
+
+
+def test_todo_campo_mapeado_existe_no_router():
+    from routers.pio import _filtro_da_busca
+    for modo, campo in _modos_mapeados().items():
+        sql, params = _filtro_da_busca(campo, "12345")
+        assert sql and params, f"o campo `{campo}` (modo {modo}) não filtra nada"
+
+
+def test_a_busca_da_tela_nao_le_mais_o_mock():
+    """A lógica do `buscarPropostas` estava certa — comparava dígitos e ignorava
+    máscara. O problema era a FONTE: 20 propostas em memória, onde nenhum número
+    real existia. Voltar a ela é voltar a "a busca não funciona"."""
+    fonte = BUSCA_TSX.read_text(encoding="utf-8")
+    assert "buscarPropostas" not in fonte, "a busca voltou a filtrar o mock"
+    assert "useBuscaPio" in fonte, "a busca deixou de consultar a carga"

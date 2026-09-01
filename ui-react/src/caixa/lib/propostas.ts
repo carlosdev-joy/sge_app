@@ -70,34 +70,15 @@ export function somenteDigitos(valor: string): string {
 
 export type ModoBusca = "proposta" | "cpf" | "agencia" | "sev" | "sr";
 
-/**
- * Busca na base compartilhada. Devolve [] quando não acha — quem chama decide
- * a mensagem.
- *
- * Compara por dígitos, não por texto: o usuário digita CPF com pontuação, o
- * mock guarda com pontuação e o número da proposta às vezes vem sem o hífen.
- * Exigir igualdade literal era o que fazia a busca "não funcionar" mesmo com o
- * número certo na mão.
- */
-export function buscarPropostas(modo: ModoBusca, termo: string): Proposta[] {
-  const alvo = somenteDigitos(termo);
-  if (!alvo) return [];
-
-  return PROPOSTAS.filter((p) => {
-    switch (modo) {
-      case "proposta":
-        return somenteDigitos(p.number).includes(alvo);
-      case "cpf":
-        return somenteDigitos(p.cpf).includes(alvo);
-      case "agencia":
-        return somenteDigitos(p.agency) === alvo;
-      // SEV e SR são identificados pela matrícula do indicador no mock.
-      case "sev":
-      case "sr":
-        return somenteDigitos(p.indicatorId).includes(alvo);
-    }
-  });
-}
+// A função `buscarPropostas` vivia aqui e foi REMOVIDA em 2026-09-01. Ela
+// filtrava as 20 propostas acima — a lógica estava certa (comparava dígitos,
+// ignorava máscara), mas a fonte tinha 20 linhas, então nenhum número real
+// aparecia e a Consulta de Propostas parecia quebrada.
+//
+// A busca agora é `useBuscaPio()`, em `lib/pio.ts`: consulta a carga do PIO nas
+// três tabelas de detalhe, com um modo por campo (proposta, CPF, agência,
+// matrícula). Não recriar a versão local aqui — a lista acima continua servindo
+// ao Monitoramento Tático, e só a ele.
 
 /** Rótulo do status para a tabela de resultado. */
 export const ROTULO_STATUS: Record<PropostaStatus, string> = {
