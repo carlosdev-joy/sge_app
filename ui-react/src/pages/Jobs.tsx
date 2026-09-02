@@ -7,6 +7,8 @@ import { Button } from '../components/ui/Button'
 import { Input, Select, Textarea } from '../components/ui/Input'
 import { PlaceholderPicker } from '../components/ui/PlaceholderPicker'
 import { Autocomplete } from '../components/ui/Autocomplete'
+import { AlcaColuna } from '../components/ui/AlcaColuna'
+import { useColunasRedimensionaveis } from '../components/ui/useColunasRedimensionaveis'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { toast } from '../components/ui/Toast'
@@ -26,6 +28,14 @@ import { ConferenciaDsJob } from '../components/console/ConferenciaDsJob'
 import { conferirNomeDs, sugestoesDs, useDsJobs, usePipelineProject } from '../lib/dsJobs'
 
 // ── constants ──────────────────────────────────────────────────────────────
+
+// Largura inicial de cada coluna da Lista, em px. O usuário arrasta e a tela
+// lembra (localStorage `orq.etapas.lista.colunas`); duplo clique na alça
+// devolve a coluna a estes valores.
+const LARGURAS_PADRAO: Record<string, number> = {
+  num: 48, pipeline: 220, etapa: 280, ordem: 96,
+  tipo: 120, comando: 300, log: 72, acoes: 160,
+}
 
 const JOB_TYPES = ['datastage', 'shell', 'python', 'storedproc', 'http', 'decisao', 'notificacao'] as const
 type JobType = typeof JOB_TYPES[number]
@@ -726,15 +736,18 @@ export default function Jobs() {
   if (nameFilter) qs.set('filter_job_name', nameFilter)
   if (typeFilter) qs.set('filter_job_type', typeFilter)
 
-  // Pipeline é opcional: pode-se buscar por pipeline, por nome do job, por tipo,
-  // ou qualquer combinação. Pelo menos um filtro é exigido.
-  const hasFilter = !!searched || !!nameFilter || !!typeFilter
-
+  // TODO filtro é opcional — inclusive todos eles. Buscar sem preencher nada
+  // lista as etapas de TODOS os pipelines, paginado de 50 em 50; o backend já
+  // tratava filtro vazio (o WHERE simplesmente não entra), era a tela que
+  // travava o botão e exigia digitar alguma coisa para ver qualquer coisa.
   const { data, isLoading } = useQuery<{ total: number; pages: number; data: Job[] }>({
     queryKey: ['jobs', searched, nameFilter, typeFilter, page],
     queryFn: () => apiFetch(`/jobs?${qs}`),
-    enabled: hasSearched && hasFilter,
+    enabled: hasSearched,
   })
+
+  // Larguras da tabela da Lista, arrastáveis e lembradas entre visitas.
+  const cols = useColunasRedimensionaveis('etapas.lista', LARGURAS_PADRAO)
 
   // Sort client-side
   const jobs = useMemo(() => {
@@ -829,10 +842,8 @@ export default function Jobs() {
   })
 
   function doSearch() {
-    if (!pipelineInput.trim() && !nameFilter.trim() && !typeFilter) {
-      toast.error('Informe ao menos um filtro: pipeline, nome da etapa ou tipo.')
-      return
-    }
+    // Sem filtro nenhum = todas as etapas de todos os pipelines. Antes isto era
+    // recusado com um toast, e a tela ficava vazia até alguém digitar algo.
     const pipe = pipelineInput.trim()
     setSearched(pipe)
     setHasSearched(true)
@@ -915,8 +926,11 @@ export default function Jobs() {
           </Select>
           <div className="flex gap-2 ml-auto items-end">
             <Button variant="secondary" size="sm" onClick={doClear}>× Limpar</Button>
-            <Button size="sm" onClick={doSearch} disabled={!pipelineInput.trim() && !nameFilter.trim() && !typeFilter}>
-              Buscar etapas
+            {/* Sempre habilitado: sem filtro, busca TODAS as etapas. */}
+            <Button size="sm" onClick={doSearch}>
+              {(!pipelineInput.trim() && !nameFilter.trim() && !typeFilter)
+                ? 'Buscar todas as etapas'
+                : 'Buscar etapas'}
             </Button>
           </div>
         </div>
@@ -924,9 +938,10 @@ export default function Jobs() {
         <div className="mt-3 flex items-start gap-2 text-xs text-dim bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg px-3 py-2">
           <span className="text-blue-400 shrink-0">ℹ</span>
           <span>
-            O <strong className="text-ink">pipeline é opcional</strong>: você pode filtrar por <strong className="text-ink">nome da etapa</strong> ou
-            <strong className="text-ink"> tipo</strong> isoladamente (busca em todos os pipelines).
-            Para ver <strong className="text-ink">todas as etapas de um pipeline</strong>, preencha o campo <strong className="text-ink">Pipeline</strong>.
+            <strong className="text-ink">Todos os filtros são opcionais.</strong> Buscar sem preencher nada lista
+            as etapas de <strong className="text-ink">todos os pipelines</strong>. Filtre por <strong className="text-ink">nome
+            da etapa</strong> ou <strong className="text-ink">tipo</strong> isoladamente, ou preencha
+            o <strong className="text-ink">Pipeline</strong> para ver as etapas dele no canvas.
           </span>
         </div>
       </div>
@@ -936,7 +951,7 @@ export default function Jobs() {
         <div className="bg-panel border border-edge rounded-xl py-16 flex flex-col items-center gap-2 text-dim">
           <span className="text-4xl">⬡</span>
           <p className="text-sm font-medium">Nenhuma etapa carregada</p>
-          <p className="text-xs">Preencha um pipeline (para ver todas as etapas dele) <strong className="text-ink">ou</strong> filtre por nome/tipo, e clique em Buscar etapas.</p>
+          <p className="text-xs">Clique em <strong className="text-ink">Buscar todas as etapas</strong> para ver tudo, ou filtre antes por pipeline, nome ou tipo.</p>
         </div>
       )}
 
@@ -1045,16 +1060,28 @@ export default function Jobs() {
           ) : (
             <div className="bg-panel border border-edge rounded-xl overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                {/* `table-fixed` + colgroup: são as larguras salvas que mandam,
+                    e o wrapper acima rola na horizontal quando a soma passa da
+                    tela. Sem isso o navegador redistribui tudo sozinho e o
+                    arrasto não gruda. */}
+                <table className="text-sm table-fixed" style={{ width: cols.total, minWidth: '100%' }}>
+                  {cols.colgroup}
                   <thead>
                     <tr className="text-xs border-b border-edge bg-canvas">
-                      <th className="px-3 py-2 text-left w-8 text-dim">#</th>
-                      <th className="px-3 py-2 text-left"><SortBtn col="pipeline_name" label="Pipeline" /></th>
-                      <th className="px-3 py-2 text-left"><SortBtn col="job_name" label="Etapa" /></th>
-                      <th className="px-3 py-2 text-center w-24"><SortBtn col="execution_order" label="Ordem" /></th>
-                      <th className="px-3 py-2 text-left"><SortBtn col="job_type" label="Tipo" /></th>
-                      <th className="px-3 py-2 text-left">Comando</th>
-                      <th className="px-3 py-2 text-left">Log</th>
+                      <th className="px-3 py-2 text-left text-dim relative">#
+                        <AlcaColuna chave="num" cols={cols} rotulo="#" /></th>
+                      <th className="px-3 py-2 text-left relative"><SortBtn col="pipeline_name" label="Pipeline" />
+                        <AlcaColuna chave="pipeline" cols={cols} rotulo="Pipeline" /></th>
+                      <th className="px-3 py-2 text-left relative"><SortBtn col="job_name" label="Etapa" />
+                        <AlcaColuna chave="etapa" cols={cols} rotulo="Etapa" /></th>
+                      <th className="px-3 py-2 text-center relative"><SortBtn col="execution_order" label="Ordem" />
+                        <AlcaColuna chave="ordem" cols={cols} rotulo="Ordem" /></th>
+                      <th className="px-3 py-2 text-left relative"><SortBtn col="job_type" label="Tipo" />
+                        <AlcaColuna chave="tipo" cols={cols} rotulo="Tipo" /></th>
+                      <th className="px-3 py-2 text-left relative">Comando
+                        <AlcaColuna chave="comando" cols={cols} rotulo="Comando" /></th>
+                      <th className="px-3 py-2 text-left relative">Log
+                        <AlcaColuna chave="log" cols={cols} rotulo="Log" /></th>
                       {!isViewer && <th className="px-3 py-2 text-right">Ações</th>}
                     </tr>
                   </thead>
@@ -1065,15 +1092,35 @@ export default function Jobs() {
                       return (
                         <tr key={j.job_name} className="border-b border-edge/40 hover:bg-edge/20 transition-colors group">
                           <td className="px-3 py-2 text-dim text-xs">{(page * LIMIT) + i + 1}</td>
-                          <td className="px-3 py-2 text-dim text-xs font-mono truncate max-w-[160px]"
-                            title={j.pipeline_name}>{j.pipeline_name}</td>
+                          {/* Pipeline ganhou o mesmo botão de copiar que a Etapa
+                              já tinha: o nome costuma passar da coluna, e ler no
+                              `title` não dá para colar em lugar nenhum. O botão
+                              não encolhe (`shrink-0`) — quem some é o texto. */}
                           <td className="px-3 py-2">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-mono text-xs text-ink font-medium">{j.job_name}</span>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-dim text-xs font-mono truncate" title={j.pipeline_name}>
+                                {j.pipeline_name}
+                              </span>
+                              <button
+                                onClick={() => copyText(j.pipeline_name)}
+                                className="text-dim hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                title="Copiar nome do pipeline"
+                                aria-label={`Copiar o nome do pipeline ${j.pipeline_name}`}
+                              >
+                                <Copy size={11} />
+                              </button>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-mono text-xs text-ink font-medium truncate" title={j.job_name}>
+                                {j.job_name}
+                              </span>
                               <button
                                 onClick={() => copyText(j.job_name)}
-                                className="text-dim hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="text-dim hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                                 title="Copiar nome"
+                                aria-label={`Copiar o nome da etapa ${j.job_name}`}
                               >
                                 <Copy size={11} />
                               </button>
