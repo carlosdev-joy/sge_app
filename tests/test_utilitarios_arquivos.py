@@ -290,9 +290,17 @@ class FakeSftp:
     servidor. Pastas em `ilegiveis` recusam `listdir` (EACCES)."""
 
     def __init__(self, arvore: dict, ilegiveis=(), *, sem_posix_rename=False, falhar_rename=False,
-                 falhar_escrita=False, falhar_posix_rename=False, falhar_chmod=False, modos=None):
+                 falhar_escrita=False, falhar_posix_rename=False, falhar_chmod=False, modos=None,
+                 somente_leitura=(), sem_espaco=(), sem_statvfs=False):
         self.arvore = dict(arvore)
         self.ilegiveis = set(ilegiveis)
+        # Pastas cujo sistema de arquivos está montado somente leitura ou sem
+        # espaço: o SFTP responde `Failure` SEM errno (é assim no OpenSSH) e a
+        # extensão statvfs é o que conta a causa — `sem_statvfs` simula um
+        # servidor sem ela.
+        self.somente_leitura = set(somente_leitura)
+        self.sem_espaco = set(sem_espaco)
+        self.sem_statvfs = sem_statvfs
         # Botões de sabotagem da gravação (F4): servidor sem a extensão
         # posix-rename, rename que falha, escrita recusada, SÓ o posix_rename
         # falhando (é o que prova o rollback do backup), chmod recusado.
@@ -378,9 +386,32 @@ class FakeSftp:
             raise OSError(errno.ENOTDIR, "Not a directory")
         return real_pai, nome
 
+    def _request(self, cmd, nome, caminho):
+        """Só a extensão statvfs@openssh.com, no formato que o paramiko lê (11 uint64)."""
+        if self.sem_statvfs or nome != "statvfs@openssh.com":
+            raise OSError("Operation unsupported")
+        real = self._resolver(caminho)
+        campos = [4096, 4096, 1000, 500, 500, 100, 50, 50, 1, 0, 255]
+        if real in self.somente_leitura:
+            campos[9] = 0x1
+        if real in self.sem_espaco:
+            campos[3] = campos[4] = 0
+
+        class _Msg:
+            def __init__(self, valores):
+                self._v = list(valores)
+
+            def get_int64(self):
+                return self._v.pop(0)
+
+        return 201, _Msg(campos)
+
     def _abrir_para_escrita(self, caminho):
         if self.falhar_escrita:
             raise OSError(errno.EACCES, "Permission denied")
+        real_pai_bruto = self._resolver(posixpath.dirname(caminho))
+        if real_pai_bruto in self.somente_leitura or real_pai_bruto in self.sem_espaco:
+            raise OSError("Failure")  # como o paramiko: sem errno
         real_pai, nome = self._pai_e_nome(caminho)
         destino = posixpath.join(real_pai, nome)
         arvore = self.arvore
@@ -847,7 +878,44 @@ class TestGravarArquivo:
         with pytest.raises(svc.ArquivoError) as exc:
             self._gravar(fake, "/dados/bi/2026/novo.txt")
         assert exc.value.status == 403
+        assert exc.value.detail == "O usuário SSH não tem permissão para gravar em /dados/bi/2026/novo.txt."
         assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_pasta_somente_leitura_diz_a_causa_na_tela(self):
+        # Caso real do DEV: montagem `:ro` → o SFTP responde `Failure` sem errno;
+        # o statvfs conta que o sistema de arquivos é somente leitura.
+        fake = FakeSftp(ARVORE, somente_leitura={"/dados/bi/2026"})
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/2026/novo.txt")
+        assert exc.value.status == 502
+        assert exc.value.detail == ("O servidor recusou gravar em /dados/bi/2026/novo.txt: o sistema de "
+                                    "arquivos está montado somente leitura.")
+        assert "Failure" in (exc.value.interno or "")
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_disco_cheio_diz_a_causa(self):
+        fake = FakeSftp(ARVORE, sem_espaco={"/dados/bi/2026"})
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/2026/novo.txt")
+        assert exc.value.status == 502
+        assert exc.value.detail.endswith(": não há espaço livre no disco.")
+
+    def test_servidor_sem_statvfs_lista_as_causas_comuns(self):
+        fake = FakeSftp(ARVORE, somente_leitura={"/dados/bi/2026"}, sem_statvfs=True)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/2026/novo.txt")
+        assert exc.value.status == 502
+        assert exc.value.detail.startswith("O servidor recusou gravar em /dados/bi/2026/novo.txt: causas comuns: "
+                                           "sistema de arquivos somente leitura, disco cheio")
+
+    def test_erro_servidor_mapeia_erofs_e_enospc(self):
+        e = svc._erro_servidor(OSError(errno.EROFS, "Read-only file system"), "/dados/bi/x.txt", acao="gravar em")
+        assert e.status == 403 and "somente leitura" in e.detail
+        e = svc._erro_servidor(OSError(errno.ENOSPC, "No space left"), "/dados/bi/x.txt", acao="gravar em")
+        assert e.status == 507 and "sem espaço" in e.detail
+        e = svc._erro_servidor(OSError("Failure"), "/dados/bi/x.txt")
+        assert e.status == 502 and e.detail.startswith("O servidor recusou acessar /dados/bi/x.txt: causas comuns")
+        assert svc.diagnostico_pasta(object(), "/dados/bi") is None
 
 
 class TestTestarRaiz:

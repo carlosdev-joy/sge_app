@@ -109,6 +109,27 @@ def test_formulario_comeca_desligado_com_a_primeira_extensao_e_utf8(cen):
 
 def test_nome_com_extensao_colada_separa(cen):
     assert cen["form"]["nomeComExtensao"] == {"nome": "consulta", "extensao": "sql"}
+    assert cen["form"]["nomeComExtensaoMaiuscula"] == {"nome": "CONSULTA", "extensao": "sql"}
+
+
+def test_enter_num_campo_nao_grava(cen):
+    # Submissão implícita do <form> (Enter em Pasta/Nome): NÃO cria arquivo.
+    assert cen["form"]["enterNoCampo"] == 0
+
+
+def test_sujo_vive_na_pagina_e_sobrevive_a_primeira_gravacao(cen):
+    f = cen["form"]
+    assert f["botaoGravar"] == 2                                 # Ctrl+Enter e o botão
+    assert f["aposGravar"] == {"contador": "2 linhas · 29 bytes (utf-8)", "sujoPagina": False}   # "ação" 6 + "€" 3 bytes
+    assert f["aposGravarDigitou"]["sujoPagina"] is True
+    assert f["aposGravarDigitou"]["contador"].endswith("· não gravado")
+    assert f["aposGravarDigitou"]["avisos"][-1] is True and f["aposGravarDigitou"]["avisos"].count(True) >= 2
+
+
+def test_extensoes_que_chegam_depois_entram_sem_estado_preso(cen):
+    e = cen["extensoesTarde"]
+    assert e["antes"] == {"extensao": "", "gravar": True, "aviso": ["sem-extensoes"]}
+    assert e["depois"] == {"extensao": "txt", "gravar": False, "aviso": []}   # `txt` é o padrão quando liberada
 
 
 def test_carregar_existente_preenche_e_troca_a_codificacao(cen):
@@ -168,3 +189,14 @@ def test_pagina_tem_as_duas_abas_e_o_fluxo_de_gravar():
 def test_formulario_grava_por_ctrl_enter_e_nao_por_enter():
     fonte = _sem_comentarios(FORM.read_text(encoding="utf-8"))
     assert "e.ctrlKey || e.metaKey) && e.key === 'Enter'" in fonte
+    assert 'type="submit"' not in fonte, "Enter num campo submeteria o form e gravaria um arquivo vazio"
+    assert "useState(false)" not in fonte, "`sujo` é da página (prop), não estado espelhado no formulário"
+
+
+def test_pagina_ve_o_gravado_pelo_caminho_digitado_e_nao_reseta_a_mutation():
+    pagina = _sem_comentarios(PAGINA.read_text(encoding="utf-8"))
+    assert "nomeArquivoCompleto(pedidoG.nome, pedidoG.extensao)" in pagina, "Ver arquivo usa o pedido lexical (raiz symlink)"
+    assert "gravacao.reset()" not in pagina, "fechar o modal não pode religar o Gravar com pedido em voo"
+    assert "refetchOnWindowFocus: false" in pagina
+    assert "config-desatualizada" in pagina, "refetch que falha vira aviso, não página de erro"
+    assert "sujo={sujo}" in pagina

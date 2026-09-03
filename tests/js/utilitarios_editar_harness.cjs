@@ -157,15 +157,31 @@ saida.puras = {
 
 // ── 2. formulário ──────────────────────────────────────────────────────────
 const SERVIDORES = [{ id: 'datastage', label: 'Servidor DataStage', configurado: true }]
+// O formulário é controlado pela página em `sujo` (e recebe `extensoes` do
+// config, que pode chegar DEPOIS). Este container faz o papel da página: guarda
+// os dois em estado e expõe os setters — é assim que a bancada simula "a
+// gravação respondeu" (sujo=false) e "o admin cadastrou extensões".
+function Container({ form, chamadas, pagina }) {
+  const [sujo, setSujo] = mini.hooks.useState(false)
+  const [extensoes, setExtensoes] = mini.hooks.useState(form.extensoes)
+  pagina.sujo = sujo
+  pagina.setSujo = setSujo
+  pagina.setExtensoes = setExtensoes
+  return el(FormEditarArquivo, Object.assign({}, form, {
+    extensoes, sujo, onSujo: (v) => { chamadas.sujo.push(v); setSujo(v) },
+  }))
+}
 function montarForm(props) {
-  const chamadas = { gravar: [], carregar: [] }
-  const tela = mini.montar(el(FormEditarArquivo, Object.assign({
+  const chamadas = { gravar: [], carregar: [], sujo: [] }
+  const pagina = {}
+  const form = Object.assign({
     servidores: SERVIDORES, raizesPorServidor: { datastage: RAIZES }, extensoes: EXT, podeGravar: true,
     gravando: false, carregando: false,
     onCarregar: async (p) => { chamadas.carregar.push(p); return { conteudo: 'DESCRICAO=ação\n', codificacao: 'latin-1' } },
     onGravar: (p) => chamadas.gravar.push(p),
-  }, props)))
-  return { tela, chamadas }
+  }, props)
+  const tela = mini.montar(el(Container, { form, chamadas, pagina }))
+  return { tela, chamadas, pagina }
 }
 const campoPasta = (tela) => inputs(tela).find(n => n.props.placeholder && (n.props.placeholder.endsWith('/…') || n.props.placeholder === '/caminho/da/pasta'))
 const campoNome = (tela) => inputs(tela).find(n => n.props.placeholder === 'parametros_carga')
@@ -175,20 +191,26 @@ const selectCod = (tela) => porCampo(tela, 'codificacao')
 const formEditar = (tela) => porAttr(tela, 'data-form').find(n => n.props['data-form'] === 'editar-arquivo')
 
 async function formulario() {
-  const { tela, chamadas } = montarForm({})
+  const { tela, chamadas, pagina } = montarForm({})
   const botao = () => porAcao(tela, 'gravar')[0]
   const carregarBtn = () => porAcao(tela, 'carregar')[0]
+  const contador = () => textoDe(porAttr(tela, 'data-contador')[0])
   const r = {
     inicio: { gravar: !!botao().props.disabled, carregar: !!carregarBtn().props.disabled,
               extensao: selectExt(tela).props.value, codificacao: selectCod(tela).props.value,
-              contador: textoDe(porAttr(tela, 'data-contador')[0]) },
+              contador: contador() },
   }
   digitar(tela, campoPasta(tela), '/dados/param')
   digitar(tela, campoNome(tela), 'parametros')
   r.semConteudo = { gravar: !!botao().props.disabled, carregar: !!carregarBtn().props.disabled }
-  // Nome com extensão colada ("x.sql") separa e escolhe a extensão da lista.
+  // Enter num campo de texto submete o <form>: NÃO pode gravar (criaria um arquivo vazio).
+  tela.disparar(formEditar(tela), 'onSubmit', { preventDefault() {} })
+  r.enterNoCampo = chamadas.gravar.length
+  // Nome com extensão colada ("x.sql", em qualquer caixa) separa e escolhe a extensão da lista.
   digitar(tela, campoNome(tela), 'consulta.sql')
   r.nomeComExtensao = { nome: campoNome(tela).props.value, extensao: selectExt(tela).props.value }
+  digitar(tela, campoNome(tela), 'CONSULTA.SQL')
+  r.nomeComExtensaoMaiuscula = { nome: campoNome(tela).props.value, extensao: selectExt(tela).props.value }
   digitar(tela, campoNome(tela), 'parametros')
   digitar(tela, selectExt(tela), 'param')
   // Carregar existente: preenche e troca a codificação para a detectada.
@@ -208,10 +230,29 @@ async function formulario() {
   // Enter sem Ctrl NÃO grava.
   tela.disparar(editor(tela), 'onKeyDown', { key: 'Enter', ctrlKey: false })
   r.enterSozinho = chamadas.gravar.length
+  // O botão Gravar grava (é type=button: não passa pelo submit do form).
+  tela.clicar(botao())
+  r.botaoGravar = chamadas.gravar.length
+  // A gravação respondeu: a página zera `sujo`; o contador obedece e a
+  // PRÓXIMA digitação suja de novo (era aqui que o estado espelhado morria).
+  pagina.setSujo(false); tela.sincronizar()
+  r.aposGravar = { contador: contador(), sujoPagina: pagina.sujo }
+  digitar(tela, editor(tela), 'DESCRICAO=ação\nVALOR=10€\nMAIS=1\n')
+  r.aposGravarDigitou = { contador: contador(), sujoPagina: pagina.sujo, avisos: chamadas.sujo.slice() }
   // Extensão fora da lista desliga.
   digitar(tela, selectExt(tela), 'sh')
   r.extRuim = { gravar: !!botao().props.disabled }
   saida.form = r
+
+  // Extensões que chegam DEPOIS da montagem (refetch após o admin cadastrar):
+  // o select passa a mostrar o padrão e Gravar liga — sem estado preso em ''.
+  const tarde = montarForm({ extensoes: [] })
+  digitar(tarde.tela, campoPasta(tarde.tela), '/dados/bi'); digitar(tarde.tela, campoNome(tarde.tela), 'x'); digitar(tarde.tela, editor(tarde.tela), 'a')
+  const antes = { extensao: selectExt(tarde.tela).props.value, gravar: !!porAcao(tarde.tela, 'gravar')[0].props.disabled,
+                  aviso: porAttr(tarde.tela, 'data-aviso').map(n => n.props['data-aviso']) }
+  tarde.pagina.setExtensoes(['cfg', 'txt']); tarde.tela.sincronizar()
+  saida.extensoesTarde = { antes, depois: { extensao: selectExt(tarde.tela).props.value, gravar: !!porAcao(tarde.tela, 'gravar')[0].props.disabled,
+                                            aviso: porAttr(tarde.tela, 'data-aviso').map(n => n.props['data-aviso']) } }
 
   // Sem permissão: tudo desabilitado e o aviso no lugar.
   const semPerm = montarForm({ podeGravar: false }).tela

@@ -5,15 +5,20 @@
 //
 // Quem não pode gravar (operador) vê o editor DESABILITADO com a explicação —
 // não um 403 surpresa depois de digitar. Ctrl+Enter grava (mesmo gesto do
-// editor de fluxo).
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
+// editor de fluxo); Enter num campo de texto NÃO grava — gravar cria arquivo no
+// servidor, e o gesto tem de ser o botão ou o atalho.
+//
+// `sujo` (texto ainda não gravado) é da PÁGINA: ela zera quando a gravação
+// responde e é ela quem segura a troca de aba. Um estado espelhado aqui
+// dessincronizava depois da primeira gravação (revisão da F5).
+import { useState, type KeyboardEvent } from 'react'
 import { Save, FolderOpen, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Input, Select, Textarea } from '../ui/Input'
 import type { ServidorUtil } from '../../lib/utilitariosAdmin'
 import { avisoPasta } from '../../lib/utilitariosArquivo'
 import {
-  CODIFICACOES_OPCOES, avisoNomeBase, codificacaoValida, contarBytes, contarLinhas, ehCodificacao,
+  CODIFICACOES_OPCOES, avisoNomeBase, codificacaoValida, contarBytes, contarLinhas, ehCodificacao, extensaoPadrao,
   extensaoValida, foraDoLatin1, gravacaoPronta, nomeArquivoCompleto, separarNomeExtensao,
   type Codificacao, type PedidoGravacao,
 } from '../../lib/utilitariosGravacao'
@@ -30,27 +35,29 @@ export interface FormEditarArquivoProps {
   podeGravar: boolean
   gravando: boolean
   carregando: boolean
+  /** Há texto no editor que ainda não foi gravado (estado da página). */
+  sujo: boolean
+  onSujo: (sujo: boolean) => void
   /** Lê o arquivo (nome completo) e devolve conteúdo + codificação detectada; null se falhou. */
   onCarregar: (pedido: { servidor: string; diretorio: string; nome: string }) => Promise<CarregadoExistente | null>
   onGravar: (pedido: PedidoGravacao) => void
-  /** Há texto no editor que ainda não foi gravado. */
-  onSujo?: (sujo: boolean) => void
   /** Preenchimento inicial (ex.: vindo do "Ver arquivo"). */
   inicial?: { diretorio?: string; nome?: string; extensao?: string }
 }
 
 export function FormEditarArquivo({
-  servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, onCarregar, onGravar, onSujo, inicial,
+  servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, sujo, onSujo, onCarregar, onGravar, inicial,
 }: FormEditarArquivoProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
   const [diretorio, setDiretorio] = useState(inicial?.diretorio ?? '')
   const [nome, setNome] = useState(inicial?.nome ?? '')
-  const [extensao, setExtensao] = useState(inicial?.extensao ?? extensoes[0] ?? '')
+  // Só o que o usuário ESCOLHEU; enquanto não escolhe, vale o padrão da lista —
+  // derivado a cada render, então extensões que chegam depois (refetch após o
+  // admin cadastrar) entram sem efeito nem estado preso em ''.
+  const [extensaoEscolhida, setExtensaoEscolhida] = useState(inicial?.extensao ?? '')
+  const extensao = extensaoEscolhida || extensaoPadrao(extensoes)
   const [codificacao, setCodificacao] = useState<Codificacao>('utf-8')
   const [conteudo, setConteudo] = useState('')
-  const [sujo, setSujo] = useState(false)
-
-  useEffect(() => { onSujo?.(sujo) }, [sujo, onSujo])
 
   const raizes = raizesPorServidor[servidor] ?? []
   const avPasta = avisoPasta(diretorio, raizes)
@@ -66,14 +73,13 @@ export function FormEditarArquivo({
   const bytes = contarBytes(conteudo, codificacao)
   const linhas = contarLinhas(conteudo)
 
-  const mudarConteudo = (v: string) => { setConteudo(v); setSujo(true) }
+  const mudarConteudo = (v: string) => { setConteudo(v); onSujo(true) }
 
   const gravar = () => {
     if (!pronto) return
     onGravar({ servidor, diretorio: diretorio.trim(), nome: nome.trim(), extensao: extensao.trim().toLowerCase(),
                conteudo, codificacao, sobrescrever: false })
   }
-  const submeter = (e: FormEvent) => { e.preventDefault(); gravar() }
   const teclas = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); gravar() }
   }
@@ -85,20 +91,21 @@ export function FormEditarArquivo({
     setConteudo(r.conteudo)
     // A codificação passa a ser a detectada: gravar de volta mantém os bytes.
     setCodificacao(codificacaoValida(r.codificacao))
-    setSujo(false)
+    onSujo(false)
   }
 
-  // Mudar o nome pelo campo aceita "carga.txt" e separa a extensão, se ela estiver na lista.
+  // Mudar o nome pelo campo aceita "carga.txt" (em qualquer caixa) e separa a
+  // extensão, se ela estiver na lista.
   const mudarNome = (v: string) => {
     const { nome: n, extensao: e } = separarNomeExtensao(v)
-    if (e && extensoes.includes(e) && v.trim().endsWith(`.${e}`)) { setNome(n); setExtensao(e) }
+    if (e && extensoes.includes(e) && v.trim().toLowerCase().endsWith(`.${e}`)) { setNome(n); setExtensaoEscolhida(e) }
     else setNome(v)
   }
 
   const desabilitado = !podeGravar
 
   return (
-    <form onSubmit={submeter} className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3"
+    <form onSubmit={e => e.preventDefault()} className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3"
       data-form="editar-arquivo">
       {desabilitado && (
         <p className="text-xs text-amber-700 dark:text-amber-300 inline-flex items-center gap-1.5" data-aviso="sem-permissao">
@@ -133,7 +140,7 @@ export function FormEditarArquivo({
         <Input label="Nome do arquivo (sem a extensão)" value={nome} onChange={e => mudarNome(e.target.value)}
           placeholder="parametros_carga" autoComplete="off" spellCheck={false} disabled={desabilitado}
           error={avNome ?? undefined} />
-        <Select label="Extensão" value={extensao} onChange={e => setExtensao(e.target.value)}
+        <Select label="Extensão" value={extensao} onChange={e => setExtensaoEscolhida(e.target.value)}
           disabled={desabilitado || semExtensoes} data-campo="extensao"
           error={!semExtensoes && extensao && !extOk ? 'Extensão não liberada.' : undefined}>
           {extensoes.map(x => <option key={x} value={x}>.{x}</option>)}
@@ -162,7 +169,7 @@ export function FormEditarArquivo({
           <span data-contador>{`${linhas} ${linhas === 1 ? 'linha' : 'linhas'} · ${bytes} bytes (${codificacao})${sujo ? ' · não gravado' : ''}`}</span>
           <span className="inline-flex items-center gap-2">
             {gravando && <RefreshCw size={12} className="animate-spin" />}
-            <Button type="submit" size="sm" disabled={!pronto} loading={gravando} data-acao="gravar">
+            <Button type="button" size="sm" onClick={gravar} disabled={!pronto} loading={gravando} data-acao="gravar">
               <Save size={13} /> Gravar
             </Button>
           </span>

@@ -153,6 +153,14 @@ sem retrabalho.
     nele quebraria) e `posix_rename` por cima (um job que leia o arquivo no meio vê o
     antigo ou o novo, nunca metade) → `sha256` → auditoria. Falha no meio: o original volta
     ao lugar e o `.tmp` some.
+  - **Erro de gravação com causa na tela**: o SFTP esconde o errno de quase tudo — pasta
+    somente leitura, disco cheio e cota chegam como um `Failure` sem número. Quando isso
+    acontece, a API pergunta ao OpenSSH (extensão `statvfs@openssh.com`, melhor esforço)
+    e responde "O servidor recusou gravar em X: o sistema de arquivos está montado somente
+    leitura" / "não há espaço livre no disco"; servidor sem a extensão recebe a frase com as
+    causas comuns. `EACCES` diz "sem permissão para gravar em X". Nada de "detalhe no log"
+    para quem está na tela (achado do teste em DEV com a montagem `:ro` de
+    `DEV_SSHD_PASTA_EXTRA`).
   - ⚠️ Dois efeitos que a tela e o manual dizem: (1) o **dono** do arquivo sobrescrito
     passa a ser o usuário SSH da API (SFTP não muda dono; as permissões são preservadas);
     (2) com backup ligado, entre mover o original para `.bak` e pôr o novo no lugar há um

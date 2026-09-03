@@ -379,9 +379,15 @@ def _mtime_iso(st) -> str | None:
 
 # ── Acesso ao servidor (cliente injetável) ───────────────────────────────────
 
-def _erro_servidor(e: Exception, caminho: str) -> ArquivoError:
-    """Traduz o erro do SFTP. Só ENOENT/EACCES revelam o caminho (que já está
-    dentro da raiz); o resto vai ao log/auditoria, não à resposta."""
+def _erro_servidor(e: Exception, caminho: str, *, acao: str = "acessar",
+                   diagnostico: str | None = None) -> ArquivoError:
+    """Traduz o erro do SFTP. O caminho já está dentro da raiz, então pode
+    aparecer; o `repr` do erro vai ao log/auditoria, não à resposta.
+
+    O protocolo SFTP esconde o errno de quase tudo: pasta somente leitura,
+    disco cheio e cota estourada chegam como um `Failure` sem número. Por isso
+    a frase genérica nomeia as causas comuns e, quando quem chama conseguiu
+    um `diagnostico` (ver `diagnostico_pasta`), usa a causa exata."""
     if isinstance(e, UnicodeDecodeError):
         return ArquivoError(
             422, "O servidor devolveu um nome de arquivo ou pasta fora do UTF-8 nesse "
@@ -390,10 +396,37 @@ def _erro_servidor(e: Exception, caminho: str) -> ArquivoError:
     if num == errno.ENOENT:
         return ArquivoError(404, f"Arquivo não encontrado: {caminho}")
     if num in (errno.EACCES, errno.EPERM):
-        return ArquivoError(403, f"O usuário SSH não tem permissão para acessar {caminho}.")
+        return ArquivoError(403, f"O usuário SSH não tem permissão para {acao} {caminho}.")
+    if num == errno.EROFS:
+        return ArquivoError(403, f"Não dá para {acao} {caminho}: o sistema de arquivos está montado somente leitura.")
+    if num in (errno.ENOSPC, errno.EDQUOT):
+        return ArquivoError(507, f"Não dá para {acao} {caminho}: sem espaço livre (ou cota estourada) no servidor.")
+    causa = diagnostico or ("causas comuns: sistema de arquivos somente leitura, disco cheio ou cota "
+                            "estourada — confira no servidor")
     return ArquivoError(
-        502, "Falha ao acessar o arquivo no servidor — detalhe registrado no log da API.",
+        502, f"O servidor recusou {acao} {caminho}: {causa}.",
         interno=f"{caminho}: {e!r}")
+
+
+def diagnostico_pasta(sftp, pasta: str) -> str | None:
+    """Pergunta ao OpenSSH (extensão `statvfs@openssh.com`) POR QUE uma gravação
+    falhou: sistema de arquivos somente leitura ou sem espaço. Melhor esforço —
+    o paramiko não expõe a extensão, então o pedido vai pela requisição bruta;
+    servidor sem a extensão (ou qualquer tropeço) devolve None e a mensagem
+    fica com as causas comuns."""
+    try:
+        # 200 = SSH_FXP_EXTENDED (paramiko.sftp.CMD_EXTENDED); a constante fica
+        # aqui para o serviço não depender do paramiko fora da conexão.
+        _tipo, msg = sftp._request(200, "statvfs@openssh.com", pasta)  # noqa: SLF001
+        # f_bsize, f_frsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree, f_favail, f_fsid, f_flag, f_namemax
+        campos = [int(msg.get_int64()) for _ in range(11)]
+    except Exception:
+        return None
+    if campos[9] & 0x1:  # SSH2_FXE_STATVFS_ST_RDONLY
+        return "o sistema de arquivos está montado somente leitura"
+    if campos[4] == 0:
+        return "não há espaço livre no disco"
+    return None
 
 
 def _normalize(sftp, caminho: str) -> str:
@@ -701,6 +734,16 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
         except Exception:
             pass
 
+    def _erro_gravacao(e: Exception) -> ArquivoError:
+        # Sem errno (o `Failure` genérico do SFTP), vale perguntar ao servidor
+        # se a pasta é somente leitura ou está sem espaço — é o que o usuário
+        # precisa ler na tela, não "detalhe no log".
+        if isinstance(e, (OSError, UnicodeDecodeError)):
+            diag = diagnostico_pasta(sftp, real_pasta) if getattr(e, "errno", None) is None else None
+            return _erro_servidor(e, real, acao="gravar em", diagnostico=diag)
+        return ArquivoError(502, "Falha ao gravar no servidor — detalhe registrado no log da API.",
+                            interno=f"{real}: {e!r}")
+
     try:
         with sftp.open(tmp, "wb") as f:
             f.write(dados)
@@ -712,10 +755,7 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
             sftp.chmod(tmp, modo_antigo)
     except Exception as e:
         _apagar_tmp()
-        if isinstance(e, (OSError, UnicodeDecodeError)):
-            raise _erro_servidor(e, real) from e
-        raise ArquivoError(502, "Falha ao gravar no servidor — detalhe registrado no log da API.",
-                           interno=f"{real}: {e!r}") from e
+        raise _erro_gravacao(e) from e
 
     backup_criado: str | None = None
     try:
@@ -743,10 +783,7 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
             _substituir(sftp, tmp, real)
     except Exception as e:
         _apagar_tmp()
-        if isinstance(e, (OSError, UnicodeDecodeError)):
-            raise _erro_servidor(e, real) from e
-        raise ArquivoError(502, "Falha ao gravar no servidor — detalhe registrado no log da API.",
-                           interno=f"{real}: {e!r}") from e
+        raise _erro_gravacao(e) from e
 
     return {
         "caminho": real,

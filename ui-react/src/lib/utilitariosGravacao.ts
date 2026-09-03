@@ -139,6 +139,12 @@ export function gravacaoPronta(c: CamposGravacao, raizes: string[], extensoes: s
 }
 
 /** Erro do `apiFetch` na gravação: o 409 vem com `detail = {mensagem, existente}`. */
+/** Extensão pré-selecionada: `txt` quando liberada (é a que menos surpreende),
+ *  senão a primeira da lista, senão nada. */
+export function extensaoPadrao(extensoes: string[]): string {
+  return extensoes.includes('txt') ? 'txt' : (extensoes[0] ?? '')
+}
+
 export function erroGravacao(e: unknown): ErroGravacao {
   const err = e as { status?: number; detail?: unknown } | null
   const detail = err?.detail

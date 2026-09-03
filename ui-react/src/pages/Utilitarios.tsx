@@ -22,7 +22,7 @@ import { ModalGravacaoArquivo, type EstadoGravacao } from '../components/utilita
 import { mensagemErro, migrationPendente, type ConfigUtil } from '../lib/utilitariosAdmin'
 import { erroLeitura, type ConteudoArquivo, type ErroLeitura, type PedidoLeitura } from '../lib/utilitariosArquivo'
 import {
-  erroGravacao, pastaENomeDoCaminho,
+  erroGravacao, nomeArquivoCompleto,
   type ErroGravacao, type PedidoGravacao, type ResultadoGravacao,
 } from '../lib/utilitariosGravacao'
 
@@ -55,7 +55,12 @@ export default function Utilitarios() {
   // observer, os callbacks do nível do hook continuariam rodando.
   const serie = useRef(0)
 
-  const config = useQuery<ConfigUtil>({ queryKey: ['utilitarios-config'], queryFn: () => apiFetch('/utilitarios/config') })
+  // Sem refetch ao focar a janela: um refetch que falha (API reiniciando) NÃO
+  // pode desmontar o editor com texto por gravar — e abaixo o erro só derruba
+  // a página quando não há dado nenhum.
+  const config = useQuery<ConfigUtil>({
+    queryKey: ['utilitarios-config'], queryFn: () => apiFetch('/utilitarios/config'), refetchOnWindowFocus: false,
+  })
 
   const leitura = useMutation({
     mutationFn: (p: PedidoLeitura) =>
@@ -102,9 +107,12 @@ export default function Utilitarios() {
   }
   // Saída do 409: o MESMO pedido, agora com sobrescrever.
   const sobrescrever = () => { if (pedidoG) gravar({ ...pedidoG, sobrescrever: true }) }
+  // Fechar o modal NÃO reseta a mutation: `gravando` segue verdadeiro até o
+  // pedido em voo responder, senão o Gravar religava e um segundo pedido podia
+  // aterrissar antes do primeiro (que então gravaria por cima, sem backup).
   const fecharGravacao = () => {
     serieG.current++
-    setPedidoG(null); setResultadoG(null); setErroG(null); gravacao.reset()
+    setPedidoG(null); setResultadoG(null); setErroG(null)
   }
   const estadoG: EstadoGravacao = gravacao.isPending ? 'gravando'
     : erroG?.status === 409 ? 'existe' : erroG ? 'erro' : resultadoG ? 'pronto' : 'gravando'
@@ -114,21 +122,30 @@ export default function Utilitarios() {
     setCarregando(true)
     try {
       const r = await apiFetch<ConteudoArquivo>('/utilitarios/arquivo/ler', { method: 'POST', body: JSON.stringify(p) })
-      if (r.truncado) toast.info('O arquivo veio truncado (acima do teto): o editor tem só o fim dele.')
       return { conteudo: r.conteudo, codificacao: r.codificacao }
     } catch (e) {
-      toast.error(erroLeitura(e).mensagem)
+      const erro = erroLeitura(e)
+      // Acima do teto o `ler` sugere "últimas N linhas", que não existe aqui:
+      // um arquivo desse tamanho não se edita pelo Orquestra.
+      toast.error(erro.status === 413
+        ? `O arquivo passa do teto de ${config.data?.tamanho_max_kb ?? '?'} KB e não dá para editá-lo por aqui.`
+        : erro.mensagem)
       return null
     } finally {
       setCarregando(false)
     }
   }
-  // "Ver arquivo" do resultado da gravação: abre o modal de conteúdo no que foi gravado.
-  const verGravado = (caminho: string) => {
-    const { diretorio, nome } = pastaENomeDoCaminho(caminho)
-    const servidor = pedidoG?.servidor ?? 'datastage'
+  // "Ver arquivo" do resultado da gravação: abre o modal de conteúdo no que foi
+  // gravado — pelo caminho que o usuário digitou (lexical), não pelo real que a
+  // API devolve: com raiz que é symlink, o real cai fora das raízes e o `ler`
+  // responderia 403.
+  const verGravado = () => {
+    if (!pedidoG) return
+    const pedidoLeitura: PedidoLeitura = {
+      servidor: pedidoG.servidor, diretorio: pedidoG.diretorio, nome: nomeArquivoCompleto(pedidoG.nome, pedidoG.extensao),
+    }
     fecharGravacao()
-    iniciar({ servidor, diretorio, nome })
+    iniciar(pedidoLeitura)
   }
 
   // Troca de aba com texto não gravado no editor: pergunta antes de descartar.
@@ -140,7 +157,7 @@ export default function Utilitarios() {
   const confirmarTroca = () => { if (abaPendente) { setSujo(false); setAba(abaPendente) } ; setAbaPendente(null) }
 
   if (config.isLoading) return <PageSpinner />
-  if (config.error && migrationPendente(config.error)) {
+  if (config.error && !config.data && migrationPendente(config.error)) {
     return (
       <div className="flex flex-col gap-4">
         <Cabecalho />
@@ -151,7 +168,7 @@ export default function Utilitarios() {
       </div>
     )
   }
-  if (config.error || !config.data) {
+  if (!config.data) {
     return (
       <div className="flex flex-col gap-4">
         <Cabecalho />
@@ -191,6 +208,13 @@ export default function Utilitarios() {
         </div>
       )}
 
+      {config.isError && (
+        <p className="text-xs text-amber-700 dark:text-amber-300 inline-flex items-center gap-1.5" data-aviso="config-desatualizada">
+          <AlertTriangle size={12} /> Não foi possível atualizar a configuração dos Utilitários
+          ({mensagemErro(config.error, 'erro desconhecido')}); usando a última carregada.
+        </p>
+      )}
+
       {semServidor && (
         <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800"
           data-aviso="sem-servidor">
@@ -221,9 +245,10 @@ export default function Utilitarios() {
           podeGravar={cfg.pode_gravar}
           gravando={gravacao.isPending}
           carregando={carregando}
+          sujo={sujo}
+          onSujo={setSujo}
           onCarregar={carregar}
           onGravar={gravar}
-          onSujo={setSujo}
         />
       )}
 
