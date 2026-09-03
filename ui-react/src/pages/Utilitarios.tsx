@@ -1,6 +1,8 @@
 // Utilitários — ferramentas sobre arquivos do servidor do DataStage por SFTP
-// (spec docs/spec-utilitarios-arquivos.md). F3: a aba Ver arquivo. A aba
-// Criar/editar chega na F5 — até lá ela não existe (mais honesto que "em breve").
+// (spec docs/spec-utilitarios-arquivos.md). Hoje: a aba Ver arquivo. A aba
+// Criar/editar é de uma fase posterior da spec e, até existir, não aparece —
+// nem como "em breve" desabilitada (texto de plano de obra na tela ensina a
+// não acreditar no que a tela diz).
 //
 // A página é o container: carrega `GET /utilitarios/config` (servidores, raízes
 // ativas, teto), chama `POST /utilitarios/arquivo/ler` e passa estado para os
