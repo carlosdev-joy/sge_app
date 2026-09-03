@@ -13,6 +13,7 @@ import { queryClient } from '../lib/queryClient'
 import { senhaParaEnviar } from '../lib/servicenowConfig'
 import { renderMarkdown } from '../lib/markdown'
 import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
+import { UtilitariosTab } from '../components/admin/UtilitariosTab'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
   CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List, RefreshCw, Database,
@@ -3811,6 +3812,7 @@ const ADMIN_GROUPS = [
   { id: 'sistema', label: 'Sistema', tabs: [
     { id: 'config', label: 'Configurações' },
     { id: 'conexoes', label: 'Conexões de Dados' },
+    { id: 'utilitarios', label: 'Utilitários' },
     { id: 'tipos', label: 'Tipos de Job' },
     { id: 'projetos', label: 'Projetos' },
     { id: 'versoes', label: 'Versões' },
@@ -4089,6 +4091,7 @@ export default function Admin() {
       <div>
         {tab === 'config' && <ConfigTab />}
         {tab === 'conexoes' && <ConexoesTab />}
+        {tab === 'utilitarios' && <UtilitariosTab />}
         {tab === 'backlog' && <BacklogTab />}
         {tab === 'servidor' && <ServidorTab />}
         {tab === 'dags' && <DagsInventarioTab />}
