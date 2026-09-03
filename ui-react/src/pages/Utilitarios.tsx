@@ -1,30 +1,51 @@
 // Utilitários — ferramentas sobre arquivos do servidor do DataStage por SFTP
-// (spec docs/spec-utilitarios-arquivos.md). Hoje: a aba Ver arquivo. A aba
-// Criar/editar é de uma fase posterior da spec e, até existir, não aparece —
-// nem como "em breve" desabilitada (texto de plano de obra na tela ensina a
-// não acreditar no que a tela diz).
-//
-// A página é o container: carrega `GET /utilitarios/config` (servidores, raízes
-// ativas, teto), chama `POST /utilitarios/arquivo/ler` e passa estado para os
-// componentes de apresentação (FormVerArquivo, ModalConteudoArquivo).
+// (spec docs/spec-utilitarios-arquivos.md). Duas abas: Ver arquivo e
+// Criar/editar arquivo. A página é o container: carrega `GET /utilitarios/config`
+// (servidores, raízes ativas, extensões, teto, pode_gravar), chama
+// `POST /utilitarios/arquivo/ler` e `POST /utilitarios/arquivo/gravar`, e passa
+// estado para os componentes de apresentação.
 import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Wrench, AlertTriangle } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import { Tabs } from '../components/ui/Tabs'
+import { Modal } from '../components/ui/Modal'
+import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
 import { InfoBanner } from '../components/ui/InfoBanner'
+import { toast } from '../components/ui/Toast'
 import { FormVerArquivo } from '../components/utilitarios/FormVerArquivo'
 import { ModalConteudoArquivo, type EstadoLeitura } from '../components/utilitarios/ModalConteudoArquivo'
+import { FormEditarArquivo, type CarregadoExistente } from '../components/utilitarios/FormEditarArquivo'
+import { ModalGravacaoArquivo, type EstadoGravacao } from '../components/utilitarios/ModalGravacaoArquivo'
 import { mensagemErro, migrationPendente, type ConfigUtil } from '../lib/utilitariosAdmin'
 import { erroLeitura, type ConteudoArquivo, type ErroLeitura, type PedidoLeitura } from '../lib/utilitariosArquivo'
+import {
+  erroGravacao, pastaENomeDoCaminho,
+  type ErroGravacao, type PedidoGravacao, type ResultadoGravacao,
+} from '../lib/utilitariosGravacao'
 
-const TABS = [{ id: 'ver', label: 'Ver arquivo' }]
+const TABS = [
+  { id: 'ver', label: 'Ver arquivo' },
+  { id: 'editar', label: 'Criar/editar arquivo' },
+]
+const ABA_CHAVE = 'orq.utilitarios.aba'
 
 export default function Utilitarios() {
   const isAdmin = useAuthStore(s => s.isAdmin)
-  const [aba, setAba] = useState('ver')
+  // Aba lembrada por navegador (`localStorage` LANÇA em janela privada: try/catch dos dois lados).
+  const [aba, setAbaEstado] = useState(() => {
+    try { return localStorage.getItem(ABA_CHAVE) === 'editar' ? 'editar' : 'ver' } catch { return 'ver' }
+  })
+  const setAba = (id: string) => {
+    setAbaEstado(id)
+    try { localStorage.setItem(ABA_CHAVE, id) } catch { /* sem memória, sem drama */ }
+  }
+  const [abaPendente, setAbaPendente] = useState<string | null>(null)
+  const [sujo, setSujo] = useState(false)
+
+  // ── leitura ────────────────────────────────────────────────────────────────
   const [pedido, setPedido] = useState<PedidoLeitura | null>(null)
   const [resultado, setResultado] = useState<ConteudoArquivo | null>(null)
   const [erro, setErro] = useState<ErroLeitura | null>(null)
@@ -57,8 +78,66 @@ export default function Utilitarios() {
     serie.current++
     setPedido(null); setResultado(null); setErro(null); leitura.reset()
   }
-
   const estado: EstadoLeitura = leitura.isPending ? 'buscando' : erro ? 'erro' : resultado ? 'pronto' : 'buscando'
+
+  // ── gravação ───────────────────────────────────────────────────────────────
+  const [pedidoG, setPedidoG] = useState<PedidoGravacao | null>(null)
+  const [resultadoG, setResultadoG] = useState<ResultadoGravacao | null>(null)
+  const [erroG, setErroG] = useState<ErroGravacao | null>(null)
+  const [carregando, setCarregando] = useState(false)
+  const serieG = useRef(0)
+
+  const gravacao = useMutation({
+    mutationFn: (p: PedidoGravacao) =>
+      apiFetch<ResultadoGravacao>('/utilitarios/arquivo/gravar', { method: 'POST', body: JSON.stringify(p) }),
+  })
+
+  const gravar = (p: PedidoGravacao) => {
+    const minha = ++serieG.current
+    setPedidoG(p); setResultadoG(null); setErroG(null)
+    gravacao.mutate(p, {
+      onSuccess: r => { if (serieG.current === minha) { setResultadoG(r); setErroG(null); setSujo(false) } },
+      onError: e => { if (serieG.current === minha) { setResultadoG(null); setErroG(erroGravacao(e)) } },
+    })
+  }
+  // Saída do 409: o MESMO pedido, agora com sobrescrever.
+  const sobrescrever = () => { if (pedidoG) gravar({ ...pedidoG, sobrescrever: true }) }
+  const fecharGravacao = () => {
+    serieG.current++
+    setPedidoG(null); setResultadoG(null); setErroG(null); gravacao.reset()
+  }
+  const estadoG: EstadoGravacao = gravacao.isPending ? 'gravando'
+    : erroG?.status === 409 ? 'existe' : erroG ? 'erro' : resultadoG ? 'pronto' : 'gravando'
+
+  // "Carregar existente": lê pelo mesmo endpoint da aba Ver arquivo.
+  const carregar = async (p: { servidor: string; diretorio: string; nome: string }): Promise<CarregadoExistente | null> => {
+    setCarregando(true)
+    try {
+      const r = await apiFetch<ConteudoArquivo>('/utilitarios/arquivo/ler', { method: 'POST', body: JSON.stringify(p) })
+      if (r.truncado) toast.info('O arquivo veio truncado (acima do teto): o editor tem só o fim dele.')
+      return { conteudo: r.conteudo, codificacao: r.codificacao }
+    } catch (e) {
+      toast.error(erroLeitura(e).mensagem)
+      return null
+    } finally {
+      setCarregando(false)
+    }
+  }
+  // "Ver arquivo" do resultado da gravação: abre o modal de conteúdo no que foi gravado.
+  const verGravado = (caminho: string) => {
+    const { diretorio, nome } = pastaENomeDoCaminho(caminho)
+    const servidor = pedidoG?.servidor ?? 'datastage'
+    fecharGravacao()
+    iniciar({ servidor, diretorio, nome })
+  }
+
+  // Troca de aba com texto não gravado no editor: pergunta antes de descartar.
+  const mudarAba = (id: string) => {
+    if (id === aba) return
+    if (aba === 'editar' && sujo) { setAbaPendente(id); return }
+    setAba(id)
+  }
+  const confirmarTroca = () => { if (abaPendente) { setSujo(false); setAba(abaPendente) } ; setAbaPendente(null) }
 
   if (config.isLoading) return <PageSpinner />
   if (config.error && migrationPendente(config.error)) {
@@ -93,10 +172,11 @@ export default function Utilitarios() {
     <div className="flex flex-col gap-4">
       <Cabecalho />
 
-      <InfoBanner storageKey="utilitarios_ver_v1">
-        Informe a <strong>pasta</strong> e o <strong>nome do arquivo</strong> no servidor e clique em
-        <strong> Iniciar</strong>: o conteúdo abre num modal, com botão para copiar. Só pastas abaixo dos
-        diretórios liberados pelo admin podem ser abertas; toda leitura fica registrada.
+      <InfoBanner storageKey="utilitarios_ver_v2">
+        <strong>Ver arquivo</strong>: informe a pasta e o nome e clique em Iniciar — o conteúdo abre num modal, com
+        botão para copiar. <strong>Criar/editar arquivo</strong>: escreva no editor, escolha a extensão e a pasta e
+        grave; para alterar um arquivo que já existe, use "Carregar existente". Só pastas abaixo dos diretórios
+        liberados pelo admin; toda leitura e gravação fica registrada.
       </InfoBanner>
 
       {semRaiz && (
@@ -116,13 +196,13 @@ export default function Utilitarios() {
           data-aviso="sem-servidor">
           <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
           <p className="text-sm text-amber-800 dark:text-amber-200">
-            O servidor não está configurado nesta instância da API (DS_SSH_HOST/DS_SSH_USER). A leitura vai
-            responder "servidor não configurado" até isso ser definido no ambiente.
+            O servidor não está configurado nesta instância da API (DS_SSH_HOST/DS_SSH_USER). A leitura e a gravação
+            vão responder "servidor não configurado" até isso ser definido no ambiente.
           </p>
         </div>
       )}
 
-      <Tabs tabs={TABS} active={aba} onChange={setAba} size="md" />
+      <Tabs tabs={TABS} active={aba} onChange={mudarAba} size="md" />
 
       {aba === 'ver' && (
         <FormVerArquivo
@@ -130,6 +210,20 @@ export default function Utilitarios() {
           raizesPorServidor={raizesPorServidor}
           iniciando={leitura.isPending}
           onIniciar={iniciar}
+        />
+      )}
+
+      {aba === 'editar' && (
+        <FormEditarArquivo
+          servidores={cfg.servidores}
+          raizesPorServidor={raizesPorServidor}
+          extensoes={cfg.extensoes}
+          podeGravar={cfg.pode_gravar}
+          gravando={gravacao.isPending}
+          carregando={carregando}
+          onCarregar={carregar}
+          onGravar={gravar}
+          onSujo={setSujo}
         />
       )}
 
@@ -142,6 +236,29 @@ export default function Utilitarios() {
         onFechar={fechar}
         onRetentar={retentar}
       />
+
+      <ModalGravacaoArquivo
+        aberto={pedidoG !== null}
+        pedido={pedidoG}
+        estado={estadoG}
+        resultado={resultadoG}
+        erro={erroG}
+        onFechar={fecharGravacao}
+        onSobrescrever={sobrescrever}
+        onVerArquivo={verGravado}
+      />
+
+      <Modal open={abaPendente !== null} onClose={() => setAbaPendente(null)} title="Alterações não gravadas" size="sm">
+        <div className="flex flex-col gap-5">
+          <p className="text-sm text-ink">
+            Há texto no editor que ainda não foi gravado. Trocar de aba descarta o que foi digitado.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setAbaPendente(null)} data-acao="ficar">Ficar no editor</Button>
+            <Button variant="danger" size="sm" onClick={confirmarTroca} data-acao="descartar">Descartar e trocar</Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

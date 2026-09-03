@@ -129,6 +129,11 @@ export function tetoValido(texto: string): number | null {
 export function mensagemErro(e: unknown, padrao: string): string {
   const err = e as { message?: unknown; detail?: unknown; status?: number } | null
   const detail = err?.detail
+  // `detail` dict com `mensagem` (ex.: o 409 da gravação leva `existente` junto).
+  if (detail && typeof detail === 'object' && !Array.isArray(detail) && 'mensagem' in detail) {
+    const m = (detail as { mensagem: unknown }).mensagem
+    if (typeof m === 'string' && m.trim()) return m
+  }
   if (Array.isArray(detail)) {
     const msgs = detail
       .map(d => (d && typeof d === 'object' && 'msg' in d) ? String((d as { msg: unknown }).msg) : '')
