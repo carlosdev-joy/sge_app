@@ -75,6 +75,11 @@ services:
       USER_PASSWORD: "${DEV_SSHD_PASSWORD:-orquestra-amostra}"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dev/sshd-amostra/10-amostra.sh:/custom-cont-init.d/10-amostra.sh:ro
+      # Uma pasta REAL da VPS visível pelo mesmo caminho dentro do sshd, para
+      # testar a tela com arquivos de verdade (DEV_SSHD_PASTA_EXTRA no .env.dev;
+      # sem ela, monta a pasta do próprio harness num caminho inofensivo).
+      # Só leitura: a gravação se prova em /dados, que é do usuário do sshd.
+      - ${DEV_SSHD_PASTA_EXTRA:-./dev/sshd-amostra}:${DEV_SSHD_PASTA_EXTRA:-/mnt/extra}:ro
     restart: unless-stopped
 
   # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────
