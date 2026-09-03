@@ -85,7 +85,11 @@ def test_extensao_normaliza_como_o_servidor(cen):
 
 
 def test_tom_do_teste(cen):
-    assert cen["puras"]["tomDoTeste"] == {"naoExiste": "error", "arquivo": "error", "ilegivel": "warning", "ok": "success"}
+    assert cen["puras"]["tomDoTeste"] == {
+        "naoExiste": "error", "arquivo": "error", "ilegivel": "warning",
+        "semPermissao": "warning",   # eh_pasta=None (403 no realpath) não é "arquivo"
+        "ok": "success",
+    }
 
 
 def test_teto_valido(cen):
@@ -137,6 +141,11 @@ def test_incluir_raiz_envia_o_caminho_como_digitado_e_limpa_o_campo(cen):
     assert r["campo"] == ""
 
 
+def test_servidor_recusou_a_raiz_o_campo_mantem_o_texto(cen):
+    """409 "já cadastrada" não pode apagar o que o admin digitou."""
+    assert cen["raizes"]["falhaMantemCampo"] == "/dados/bi"
+
+
 def test_resultado_do_testar_aparece_na_linha_com_o_tom(cen):
     linhas = cen["raizesTeste"]["linhas"]
     assert [l["id"] for l in linhas] == [1, 2]
@@ -176,6 +185,10 @@ def test_sh_pede_confirmacao_a_mais(cen):
     assert cen["extensoesVazio"] == ["extensoes"]
 
 
+def test_servidor_recusou_a_extensao_o_campo_mantem_o_texto(cen):
+    assert cen["extensoes"]["falhaMantemCampo"] == "csv"
+
+
 # ═══════════ 4. limites ════════════════════════════════════════════════════
 
 def test_salvar_limites_so_com_mudanca_valida(cen):
@@ -205,6 +218,18 @@ def test_container_chama_os_endpoints_da_f1():
                  "/utilitarios/admin/config", "/testar`"):
         assert rota in fonte, rota
     assert "method: 'PATCH'" in fonte and "method: 'DELETE'" in fonte and "method: 'PUT'" in fonte
+
+
+def test_container_ressincroniza_em_erro_e_nao_desmonta_no_refetch():
+    """Achados da revisão adversarial da F2: 404/409 = lista defasada (invalidar
+    também no erro); refetch falho com dados na tela avisa sem desmontar os
+    formulários (o admin pode estar no meio de um caminho digitado)."""
+    fonte = TAB.read_text(encoding="utf-8")
+    assert fonte.count("onSettled: invalidar") == 5, "toda mutation ressincroniza em onSettled"
+    assert "data-aviso=\"refetch\"" in fonte
+    assert "const semDados" in fonte and "if (semDados" in fonte
+    # O ramo de erro que troca a aba inteira só existe SEM dados.
+    assert "if (erro || !config.data" not in fonte
 
 
 def _tupla_py(nome: str) -> list[str]:

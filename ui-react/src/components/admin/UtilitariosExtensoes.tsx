@@ -11,7 +11,8 @@ import { extensaoPedeConfirmacao, normalizarExtensao } from '../../lib/utilitari
 export interface UtilitariosExtensoesProps {
   extensoes: string[]
   incluindo: boolean
-  onIncluir: (extensao: string) => void
+  /** Devolve true quando o servidor aceitou — só então o campo é limpo. */
+  onIncluir: (extensao: string) => Promise<boolean> | boolean
   onExcluir: (extensao: string) => void
 }
 
@@ -21,15 +22,20 @@ export function UtilitariosExtensoes({ extensoes, incluindo, onIncluir, onExclui
   const [confirmarScript, setConfirmarScript] = useState<string | null>(null)
   const [confirmarExclusao, setConfirmarExclusao] = useState<string | null>(null)
 
-  const incluir = (e: FormEvent) => {
+  const incluir = async (e: FormEvent) => {
     e.preventDefault()
     const r = normalizarExtensao(nova)
     if (!r.ok) { setErro(r.erro); return }
     setErro(null)
     if (extensoes.includes(r.valor)) { setErro(`'${r.valor}' já está na lista.`); return }
     if (extensaoPedeConfirmacao(r.valor)) { setConfirmarScript(r.valor); return }
-    onIncluir(r.valor)
-    setNova('')
+    if (await onIncluir(r.valor)) setNova('')
+  }
+
+  const confirmarIncluirScript = async () => {
+    const ext = confirmarScript
+    setConfirmarScript(null)
+    if (ext && await onIncluir(ext)) setNova('')
   }
 
   return (
@@ -104,8 +110,7 @@ export function UtilitariosExtensoes({ extensoes, incluindo, onIncluir, onExclui
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={() => setConfirmarScript(null)}>Cancelar</Button>
-            <Button size="sm" data-acao="confirmar-script"
-              onClick={() => { if (confirmarScript) onIncluir(confirmarScript); setConfirmarScript(null); setNova('') }}>
+            <Button size="sm" data-acao="confirmar-script" onClick={confirmarIncluirScript}>
               Incluir
             </Button>
           </div>

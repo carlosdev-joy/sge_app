@@ -36,18 +36,22 @@ export function UtilitariosTab() {
     qc.invalidateQueries({ queryKey: Q_EXTENSOES })
   }
 
+  // `onSettled` (não só `onSuccess`): um 404/409 quer dizer que a lista da tela
+  // está defasada (outro admin mexeu) — ressincroniza também no erro.
   const incluirRaiz = useMutation({
     mutationFn: (v: { servidor: string; caminho: string }) =>
       apiFetch<{ id: number; caminho: string }>('/utilitarios/admin/raizes', { method: 'POST', body: JSON.stringify(v) }),
-    onSuccess: d => { toast.success(`Raiz ${d.caminho} cadastrada`); invalidar() },
+    onSuccess: d => toast.success(`Raiz ${d.caminho} cadastrada`),
     onError: e => toast.error(mensagemErro(e, 'Falha ao cadastrar a raiz')),
+    onSettled: invalidar,
   })
 
   const ativarRaiz = useMutation({
     mutationFn: (v: { id: number; ativo: boolean }) =>
       apiFetch(`/utilitarios/admin/raizes/${v.id}`, { method: 'PATCH', body: JSON.stringify({ ativo: v.ativo }) }),
-    onSuccess: (_d, v) => { toast.success(v.ativo ? 'Raiz reativada' : 'Raiz desativada'); invalidar() },
+    onSuccess: (_d, v) => toast.success(v.ativo ? 'Raiz reativada' : 'Raiz desativada'),
     onError: e => toast.error(mensagemErro(e, 'Falha ao alterar a raiz')),
+    onSettled: invalidar,
   })
 
   const testarRaiz = async (id: number) => {
@@ -65,25 +69,29 @@ export function UtilitariosTab() {
   const incluirExtensao = useMutation({
     mutationFn: (extensao: string) =>
       apiFetch<{ extensao: string }>('/utilitarios/admin/extensoes', { method: 'POST', body: JSON.stringify({ extensao }) }),
-    onSuccess: d => { toast.success(`Extensão .${d.extensao} incluída`); invalidar() },
+    onSuccess: d => toast.success(`Extensão .${d.extensao} incluída`),
     onError: e => toast.error(mensagemErro(e, 'Falha ao incluir a extensão')),
+    onSettled: invalidar,
   })
 
   const excluirExtensao = useMutation({
     mutationFn: (extensao: string) =>
       apiFetch(`/utilitarios/admin/extensoes/${encodeURIComponent(extensao)}`, { method: 'DELETE' }),
-    onSuccess: (_d, ext) => { toast.success(`Extensão .${ext} excluída`); invalidar() },
+    onSuccess: (_d, ext) => toast.success(`Extensão .${ext} excluída`),
     onError: e => toast.error(mensagemErro(e, 'Falha ao excluir a extensão')),
+    onSettled: invalidar,
   })
 
   const salvarLimites = useMutation({
     mutationFn: (v: { tamanho_max_kb: number; backup_ao_sobrescrever: boolean }) =>
       apiFetch('/utilitarios/admin/config', { method: 'PUT', body: JSON.stringify(v) }),
-    onSuccess: () => { toast.success('Limites salvos'); invalidar() },
+    onSuccess: () => toast.success('Limites salvos'),
     onError: e => toast.error(mensagemErro(e, 'Falha ao salvar os limites')),
+    onSettled: invalidar,
   })
 
   const erro = config.error ?? raizes.error ?? extensoes.error
+  const semDados = !config.data || !raizes.data || !extensoes.data
   if (erro && migrationPendente(erro)) {
     return (
       <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 text-sm text-amber-800 dark:text-amber-200"
@@ -93,8 +101,8 @@ export function UtilitariosTab() {
       </div>
     )
   }
-  if (config.isLoading || raizes.isLoading || extensoes.isLoading) return <PageSpinner />
-  if (erro || !config.data || !raizes.data || !extensoes.data) {
+  if (semDados && (config.isLoading || raizes.isLoading || extensoes.isLoading)) return <PageSpinner />
+  if (semDados || !config.data || !raizes.data || !extensoes.data) {
     return (
       <p className="text-sm text-red-600 dark:text-red-400" data-estado="erro">
         Falha ao carregar os Utilitários: {mensagemErro(erro, 'erro desconhecido')}
@@ -113,6 +121,15 @@ export function UtilitariosTab() {
         dizem o que pode ser <strong>gravado</strong>. Toda leitura e gravação fica na auditoria.
       </InfoBanner>
 
+      {/* Refetch que falhou com dados na tela: avisa, mas NÃO desmonta os
+          formulários — o admin pode estar no meio de um caminho digitado. */}
+      {erro && (
+        <p className="text-xs text-amber-700 dark:text-amber-300" data-aviso="refetch">
+          Não consegui atualizar os dados agora ({mensagemErro(erro, 'erro de rede')}); o que está
+          na tela pode estar defasado.
+        </p>
+      )}
+
       {semServidor && (
         <p className="text-xs text-amber-700 dark:text-amber-300" data-aviso="sem-servidor">
           Nenhum servidor está configurado nesta instância da API (DS_SSH_HOST/DS_SSH_USER). O cadastro funciona,
@@ -126,7 +143,7 @@ export function UtilitariosTab() {
         testes={testes}
         testandoId={testandoId}
         incluindo={incluirRaiz.isPending}
-        onIncluir={(servidor, caminho) => incluirRaiz.mutate({ servidor, caminho })}
+        onIncluir={(servidor, caminho) => incluirRaiz.mutateAsync({ servidor, caminho }).then(() => true, () => false)}
         onTestar={testarRaiz}
         onAtivar={(id, ativo) => ativarRaiz.mutate({ id, ativo })}
       />
@@ -134,7 +151,7 @@ export function UtilitariosTab() {
       <UtilitariosExtensoes
         extensoes={extensoes.data.map(e => e.extensao)}
         incluindo={incluirExtensao.isPending}
-        onIncluir={ext => incluirExtensao.mutate(ext)}
+        onIncluir={ext => incluirExtensao.mutateAsync(ext).then(() => true, () => false)}
         onExcluir={ext => excluirExtensao.mutate(ext)}
       />
 

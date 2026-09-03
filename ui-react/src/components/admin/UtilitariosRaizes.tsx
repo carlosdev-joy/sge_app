@@ -19,7 +19,9 @@ export interface UtilitariosRaizesProps {
   testes: Record<number, TesteRaiz | undefined>
   testandoId: number | null
   incluindo: boolean
-  onIncluir: (servidor: string, caminho: string) => void
+  /** Devolve true quando o servidor aceitou — só então o campo é limpo (um 409
+   *  "já cadastrada" mantém o que o admin digitou). */
+  onIncluir: (servidor: string, caminho: string) => Promise<boolean> | boolean
   onTestar: (id: number) => void
   onAtivar: (id: number, ativo: boolean) => void
 }
@@ -38,11 +40,11 @@ export function UtilitariosRaizes({
   const aviso = avisoRaiz(caminho)
   const podeIncluir = caminho.trim().length > 0 && aviso === null && !incluindo
 
-  const incluir = (e: FormEvent) => {
+  const incluir = async (e: FormEvent) => {
     e.preventDefault()
     if (!podeIncluir) return
-    onIncluir(servidor, caminho.trim())
-    setCaminho('')
+    const ok = await onIncluir(servidor, caminho.trim())
+    if (ok) setCaminho('')
   }
 
   const servidorAtual = servidores.find(s => s.id === servidor)
