@@ -122,7 +122,7 @@ export function UtilitariosTab() {
     )
   }
   if (semDados && (config.isLoading || raizes.isLoading || extensoes.isLoading)) return <PageSpinner />
-  if (semDados || !config.data || !raizes.data || !extensoes.data) {
+  if (!config.data || !raizes.data || !extensoes.data) {
     return (
       <p className="text-sm text-red-600 dark:text-red-400" data-estado="erro">
         Falha ao carregar os Utilitários: {mensagemErro(erro, 'erro desconhecido')}
@@ -136,7 +136,7 @@ export function UtilitariosTab() {
   return (
     <div className="flex flex-col gap-4" data-aba="utilitarios">
       <InfoBanner storageKey="admin_utilitarios_v1">
-        A tela Utilitários lê (e, em breve, grava) arquivos do servidor do DataStage por SFTP.
+        A tela Utilitários lê e grava arquivos do servidor do DataStage por SFTP.
         Só o que está <strong>abaixo de uma raiz ativa</strong> pode ser aberto; as extensões
         dizem o que pode ser <strong>gravado</strong>. Toda leitura e gravação fica na auditoria.
       </InfoBanner>

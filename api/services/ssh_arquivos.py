@@ -647,11 +647,16 @@ def codificar_conteudo(texto: str, cod: str) -> bytes:
 RESERVA_SUFIXOS_BYTES = 40
 
 
+# A régua de extensão é uma só (cadastro no Admin e gravação): o router reutiliza.
+EXTENSAO_RE = re.compile(r"^[a-z0-9]{1,15}$")
+MSG_EXTENSAO_INVALIDA = "Extensão inválida: só letras minúsculas e números, sem ponto, até 15 caracteres."
+
+
 def validar_extensao_gravacao(bruta, permitidas) -> str:
     """Minúsculas, sem ponto, regex do servidor; e tem de estar na lista do admin."""
     s = str(bruta or "").strip().lower().lstrip(".")
-    if not s or not re.match(r"^[a-z0-9]{1,15}$", s):
-        raise ArquivoError(422, "Extensão inválida: só letras minúsculas e números, sem ponto, até 15 caracteres.")
+    if not EXTENSAO_RE.match(s):
+        raise ArquivoError(422, MSG_EXTENSAO_INVALIDA)
     if s not in set(permitidas or ()):
         raise ArquivoError(
             422, f"Extensão '{s}' não liberada — o admin inclui em Admin › Utilitários.")
@@ -677,7 +682,7 @@ def preparar_gravacao(diretorio, nome, extensao, raizes, extensoes) -> tuple[str
     admin. 422 em entrada inválida; 403 (`negado`) fora das raízes."""
     base = validar_nome(nome)
     ext = validar_extensao_gravacao(extensao, extensoes)
-    completo = validar_nome(f"{base}.{ext}")
+    completo = f"{base}.{ext}"
     if len(completo.encode("utf-8")) > LIMITE_NOME_BYTES - RESERVA_SUFIXOS_BYTES:
         raise ArquivoError(
             422,

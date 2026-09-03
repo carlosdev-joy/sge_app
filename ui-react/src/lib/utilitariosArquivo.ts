@@ -6,7 +6,7 @@
 // ⚠️ O servidor é a AUTORIDADE (realpath no servidor, auditoria). O que está
 // aqui só evita uma ida à API que o usuário já sabe que vai falhar e diz, no
 // campo, o que o servidor diria.
-import { normalizarCaminhoLexical, utf16Len } from './utilitariosAdmin'
+import { normalizarCaminhoLexical, utf16Len, mensagensDoDetail } from './utilitariosAdmin'
 
 export interface PedidoLeitura {
   servidor: string
@@ -120,12 +120,8 @@ export function erroLeitura(e: unknown): ErroLeitura {
   const status = typeof err?.status === 'number' ? err.status : null
   const detail = err?.detail
   if (typeof detail === 'string' && detail.trim()) return { status, mensagem: detail }
-  if (Array.isArray(detail)) {
-    const msgs = detail
-      .map(d => (d && typeof d === 'object' && 'msg' in d) ? String((d as { msg: unknown }).msg) : '')
-      .filter(Boolean)
-    if (msgs.length) return { status, mensagem: msgs.join('; ') }
-  }
+  const lista = mensagensDoDetail(detail)
+  if (lista) return { status, mensagem: lista }
   if (status !== null && POR_STATUS[status]) return { status, mensagem: POR_STATUS[status] }
   // Só com status HTTP: sem ele é falha de rede, e o `message` do fetch vem em
   // inglês do navegador ("Failed to fetch") — não é frase para o usuário.

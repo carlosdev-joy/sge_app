@@ -31,7 +31,6 @@ ADMIN = RAIZ / "ui-react" / "src" / "pages" / "Admin.tsx"
 TAB = RAIZ / "ui-react" / "src" / "components" / "admin" / "UtilitariosTab.tsx"
 PURAS_TS = RAIZ / "ui-react" / "src" / "lib" / "utilitariosAdmin.ts"
 SERVICO_PY = RAIZ / "api" / "services" / "ssh_arquivos.py"
-ROUTER_PY = RAIZ / "api" / "routers" / "utilitarios.py"
 
 
 def _node() -> str | None:
@@ -272,5 +271,4 @@ def test_constantes_do_front_espelham_o_backend():
     ts = PURAS_TS.read_text(encoding="utf-8")
     assert re.search(r"LIMITE_RAIZ\s*=\s*800", py) and re.search(r"LIMITE_RAIZ\s*=\s*800", ts)
     assert re.search(r"TETO_MAX_KB\s*=\s*16384", py) and re.search(r"TETO_MAX_KB\s*=\s*16384", ts)
-    rt = ROUTER_PY.read_text(encoding="utf-8")
-    assert 'r"^[a-z0-9]{1,15}$"' in rt and "/^[a-z0-9]{1,15}$/" in ts
+    assert 'r"^[a-z0-9]{1,15}$"' in py and "/^[a-z0-9]{1,15}$/" in ts

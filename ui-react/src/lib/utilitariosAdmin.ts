@@ -4,7 +4,7 @@
 // de node prova e o que os componentes só consomem.
 //
 // ⚠️ O servidor é a AUTORIDADE. Tudo aqui espelha `api/services/ssh_arquivos.py`
-// (normalizar_raiz, RAIZES_PROIBIDAS, _EXT_RE) para o usuário ver o erro no campo
+// (normalizar_raiz, RAIZES_PROIBIDAS, EXTENSAO_RE) para o usuário ver o erro no campo
 // em vez de num toast, não para substituir a validação de lá.
 
 export interface ServidorUtil {
@@ -125,6 +125,15 @@ export function tetoValido(texto: string): number | null {
   return n
 }
 
+/** `detail` em lista (validação do FastAPI): junta os `msg`; null se não for lista. */
+export function mensagensDoDetail(detail: unknown): string | null {
+  if (!Array.isArray(detail)) return null
+  const msgs = detail
+    .map(d => (d && typeof d === 'object' && 'msg' in d) ? String((d as { msg: unknown }).msg) : '')
+    .filter(Boolean)
+  return msgs.length ? msgs.join('; ') : null
+}
+
 /** Mensagem legível de um erro do `apiFetch` (string, 422 estruturado ou nada). */
 export function mensagemErro(e: unknown, padrao: string): string {
   const err = e as { message?: unknown; detail?: unknown; status?: number } | null
@@ -134,12 +143,8 @@ export function mensagemErro(e: unknown, padrao: string): string {
     const m = (detail as { mensagem: unknown }).mensagem
     if (typeof m === 'string' && m.trim()) return m
   }
-  if (Array.isArray(detail)) {
-    const msgs = detail
-      .map(d => (d && typeof d === 'object' && 'msg' in d) ? String((d as { msg: unknown }).msg) : '')
-      .filter(Boolean)
-    if (msgs.length) return msgs.join('; ')
-  }
+  const lista = mensagensDoDetail(detail)
+  if (lista) return lista
   if (typeof detail === 'string' && detail.trim()) return detail
   if (typeof err?.message === 'string' && err.message.trim() && !/^\d{3} /.test(err.message)) return err.message
   return padrao

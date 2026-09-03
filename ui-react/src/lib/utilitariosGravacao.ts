@@ -46,8 +46,6 @@ export interface ErroGravacao extends ErroLeitura {
 // NAME_MAX (255) menos o que o servidor reserva para o `.tmp` e o `.bak`.
 export const LIMITE_NOME_GRAVACAO_BYTES = 215
 
-const CODIFICACOES: Codificacao[] = ['utf-8', 'latin-1']
-
 export function codificacaoValida(v: unknown): Codificacao {
   return v === 'latin-1' ? 'latin-1' : 'utf-8'
 }
@@ -138,13 +136,13 @@ export function gravacaoPronta(c: CamposGravacao, raizes: string[], extensoes: s
   return true
 }
 
-/** Erro do `apiFetch` na gravação: o 409 vem com `detail = {mensagem, existente}`. */
 /** Extensão pré-selecionada: `txt` quando liberada (é a que menos surpreende),
  *  senão a primeira da lista, senão nada. */
 export function extensaoPadrao(extensoes: string[]): string {
   return extensoes.includes('txt') ? 'txt' : (extensoes[0] ?? '')
 }
 
+/** Erro do `apiFetch` na gravação: o 409 vem com `detail = {mensagem, existente}`. */
 export function erroGravacao(e: unknown): ErroGravacao {
   const err = e as { status?: number; detail?: unknown } | null
   const detail = err?.detail
@@ -186,5 +184,5 @@ export const CODIFICACOES_OPCOES: { valor: Codificacao; rotulo: string }[] = [
 ]
 
 export function ehCodificacao(v: string): v is Codificacao {
-  return (CODIFICACOES as string[]).includes(v)
+  return CODIFICACOES_OPCOES.some(o => o.valor === v)
 }
