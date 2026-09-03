@@ -106,8 +106,10 @@ const POR_STATUS: Record<number, string> = {
   413: 'Arquivo acima do teto — peça só as últimas N linhas.',
   415: 'O arquivo não é texto (parece binário).',
   422: 'Pedido inválido.',
-  502: 'Falha ao falar com o servidor por SSH — detalhe no log da API.',
-  503: 'Servidor não configurado nesta instância da API.',
+  // 502/503 da PRÓPRIA API sempre vêm com `detail` (SSH, servidor não
+  // configurado); sem `detail` é o nginx respondendo por uma API fora do ar.
+  502: 'A API do Orquestra não respondeu — tente de novo em instantes.',
+  503: 'A API do Orquestra não respondeu — tente de novo em instantes.',
   504: 'O servidor não respondeu a tempo.',
 }
 

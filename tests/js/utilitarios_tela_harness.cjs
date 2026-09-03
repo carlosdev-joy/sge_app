@@ -165,6 +165,9 @@ saida.puras = {
     detail: puras.erroLeitura({ status: 403, message: 'Fora dos diretórios liberados.', detail: 'Fora dos diretórios liberados.' }),
     lista: puras.erroLeitura({ status: 422, message: '422 Unprocessable', detail: [{ msg: "'ultimas_linhas' precisa ser um inteiro." }] }),
     semDetail413: puras.erroLeitura({ status: 413, message: '413 Payload Too Large' }),
+    nginx502: puras.erroLeitura({ status: 502, message: '502 Bad Gateway' }),
+    apiSsh502: puras.erroLeitura({ status: 502, message: 'Falha ao conectar ao servidor por SSH — detalhe registrado no log da API.',
+      detail: 'Falha ao conectar ao servidor por SSH — detalhe registrado no log da API.' }),
     rede: puras.erroLeitura(new TypeError('Failed to fetch')),
     nada: puras.erroLeitura(null),
   },
@@ -281,7 +284,8 @@ async function modal() {
   }
   {
     const { tela } = montarModal({ estado: 'pronto', resultado: Object.assign({}, RESULTADO, { truncado: true, conteudo: '' }) })
-    r.truncadoVazio = { badge: tela.texto.includes('truncado'), vazio: tela.texto.includes('(arquivo vazio)') }
+    r.truncadoVazio = { badge: tela.texto.includes('truncado'), vazio: tela.texto.includes('(arquivo vazio)'),
+                        copiarDesligado: !!porAcao(tela, 'copiar')[0].props.disabled }
   }
   {
     // 413: mensagem + formulário "últimas N linhas" com 200 por padrão.

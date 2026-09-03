@@ -90,6 +90,9 @@ def test_erro_de_leitura_e_resumo(cen):
     assert e["detail"] == {"status": 403, "mensagem": "Fora dos diretórios liberados."}
     assert e["lista"]["status"] == 422 and "ultimas_linhas" in e["lista"]["mensagem"]
     assert e["semDetail413"]["status"] == 413 and "últimas N linhas" in e["semDetail413"]["mensagem"]
+    # 502 SEM detail é o nginx por uma API fora do ar; COM detail é a própria API (SSH).
+    assert "API do Orquestra não respondeu" in e["nginx502"]["mensagem"]
+    assert "SSH" in e["apiSsh502"]["mensagem"]
     assert e["rede"] == {"status": None, "mensagem": "Não foi possível falar com a API."}
     assert e["nada"]["status"] is None
     assert cen["puras"]["formatarTamanho"] == ["512 B", "1,5 KB", "4,8 MB"]
@@ -143,12 +146,16 @@ def test_modal_pronto_mostra_conteudo_e_rodape(cen):
     assert p["texto"] == "SELECT 1 AS x;"
     assert p["resumo"] == "15 B 1 linha codificação utf-8 modificado em 2026-09-03 00:57:23 0,2 s"
     assert p["truncadoBadge"] is False and p["spinner"] == 0
-    assert cen["modal"]["truncadoVazio"] == {"badge": True, "vazio": True}
+    # Arquivo vazio: badge de truncado, placeholder, e NADA a copiar (senão o
+    # fallback selecionaria o próprio placeholder "(arquivo vazio)").
+    assert cen["modal"]["truncadoVazio"] == {"badge": True, "vazio": True, "copiarDesligado": True}
 
 
-def test_copiar_diz_o_que_aconteceu(cen):
+def test_copiar_leva_o_conteudo_inteiro_e_diz_o_que_aconteceu(cen):
     ok = cen["modal"]["copiarOk"]
-    assert ok["escritos"] == ["SELECT 1 AS x;"]        # o conteúdo inteiro (trim do helper)
+    # COM o `\n` final: copiar conteúdo de arquivo não pode alterar o dado
+    # (o `trim` do helper é para número de chamado, não para arquivo).
+    assert ok["escritos"] == ["SELECT 1 AS x;\n"]
     assert ok["aviso"] == ["copiado"] and ok["check"] == 1
     assert cen["modal"]["copiarSemApi"]["aviso"] == ["use Ctrl+C"]
 
@@ -190,5 +197,11 @@ def test_pagina_chama_os_endpoints_e_copia_pelo_helper():
     assert "from '../../lib/copiar'" in modal
     assert "navigator.clipboard" not in _sem_comentarios(modal), \
         "clipboard direto não existe em HTTP — use lib/copiar"
-    # A aba Criar/editar é F5: até lá não existe nem como "em breve" desabilitada.
+    # A aba Criar/editar é de outra fase: até lá não existe nem como "em breve" desabilitada.
     assert "Criar/editar" not in pagina and "em breve" not in pagina
+    # Achado da revisão adversarial: os callbacks vão POR CHAMADA (`mutate(p, {...})`)
+    # e conferem o número de série — a resposta de um pedido fechado não pode
+    # sobrescrever o modal do pedido atual.
+    assert "leitura.mutate(p, {" in pagina and "serie.current === minha" in pagina
+    modal_codigo = _sem_comentarios(modal)
+    assert "{ bruto: true }" in modal_codigo, "copiar conteúdo de arquivo não pode passar por trim"

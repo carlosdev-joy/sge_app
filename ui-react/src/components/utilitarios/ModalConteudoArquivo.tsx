@@ -107,7 +107,8 @@ function BlocoConteudo({ resultado }: { resultado: ConteudoArquivo }) {
   const relogio = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const copiar = async () => {
-    const r = await copiarTexto(resultado.conteudo)
+    // `bruto`: o conteúdo INTEIRO, com o `\n` final e os espaços que o arquivo tem.
+    const r = await copiarTexto(resultado.conteudo, { bruto: true })
     if (r !== 'copiado' && alvo.current) {
       try { globalThis.getSelection?.()?.selectAllChildren(alvo.current) } catch { /* resgate, não erro */ }
     }
@@ -124,15 +125,17 @@ function BlocoConteudo({ resultado }: { resultado: ConteudoArquivo }) {
           {resultado.truncado && <li><Badge value="warning">truncado</Badge></li>}
         </ul>
         <span className="inline-flex items-center gap-2">
-          {aviso && (
-            <span data-aviso aria-live="polite"
-              className={`text-xs ${aviso === 'copiado'
-                ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
-              {AVISO_COPIA[aviso]}
-            </span>
-          )}
+          {/* A região `aria-live` existe SEMPRE e só o texto muda: leitor de tela
+              não anuncia região que nasce junto com o conteúdo. */}
+          <span data-aviso aria-live="polite"
+            className={`text-xs ${aviso === 'copiado'
+              ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+            {aviso ? AVISO_COPIA[aviso] : ''}
+          </span>
           <Button size="sm" variant="secondary" onClick={copiar} data-acao="copiar"
-            title="Copiar o conteúdo inteiro do arquivo" aria-label="Copiar conteúdo">
+            disabled={!resultado.conteudo}
+            title={resultado.conteudo ? 'Copiar o conteúdo inteiro do arquivo' : 'Arquivo vazio: nada a copiar'}
+            aria-label="Copiar conteúdo">
             {aviso === 'copiado'
               ? <Check size={13} className="text-emerald-600 dark:text-emerald-400" />
               : <Copy size={13} />}

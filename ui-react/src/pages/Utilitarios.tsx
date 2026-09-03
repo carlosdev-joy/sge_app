@@ -7,7 +7,7 @@
 // A página é o container: carrega `GET /utilitarios/config` (servidores, raízes
 // ativas, teto), chama `POST /utilitarios/arquivo/ler` e passa estado para os
 // componentes de apresentação (FormVerArquivo, ModalConteudoArquivo).
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Wrench, AlertTriangle } from 'lucide-react'
 import { apiFetch } from '../lib/api'
@@ -28,27 +28,37 @@ export default function Utilitarios() {
   const [pedido, setPedido] = useState<PedidoLeitura | null>(null)
   const [resultado, setResultado] = useState<ConteudoArquivo | null>(null)
   const [erro, setErro] = useState<ErroLeitura | null>(null)
+  // Número de série do pedido em curso. A resposta de um pedido que o usuário
+  // já fechou (ou substituiu por "últimas N linhas") chega depois e NÃO pode
+  // sobrescrever o modal do pedido atual: `reset()` do TanStack só desliga o
+  // observer, os callbacks do nível do hook continuariam rodando.
+  const serie = useRef(0)
 
   const config = useQuery<ConfigUtil>({ queryKey: ['utilitarios-config'], queryFn: () => apiFetch('/utilitarios/config') })
 
   const leitura = useMutation({
     mutationFn: (p: PedidoLeitura) =>
       apiFetch<ConteudoArquivo>('/utilitarios/arquivo/ler', { method: 'POST', body: JSON.stringify(p) }),
-    onSuccess: r => { setResultado(r); setErro(null) },
-    onError: e => { setResultado(null); setErro(erroLeitura(e)) },
   })
 
   const iniciar = (p: PedidoLeitura) => {
+    const minha = ++serie.current
     setPedido(p); setResultado(null); setErro(null)
-    leitura.mutate(p)
+    leitura.mutate(p, {
+      onSuccess: r => { if (serie.current === minha) { setResultado(r); setErro(null) } },
+      onError: e => { if (serie.current === minha) { setResultado(null); setErro(erroLeitura(e)) } },
+    })
   }
   const retentar = (ultimas: number) => {
     if (!pedido) return
     iniciar({ ...pedido, ultimas_linhas: ultimas })
   }
-  const fechar = () => { setPedido(null); setResultado(null); setErro(null); leitura.reset() }
+  const fechar = () => {
+    serie.current++
+    setPedido(null); setResultado(null); setErro(null); leitura.reset()
+  }
 
-  const estado: EstadoLeitura = leitura.isPending ? 'buscando' : erro ? 'erro' : 'pronto'
+  const estado: EstadoLeitura = leitura.isPending ? 'buscando' : erro ? 'erro' : resultado ? 'pronto' : 'buscando'
 
   if (config.isLoading) return <PageSpinner />
   if (config.error && migrationPendente(config.error)) {
