@@ -54,6 +54,18 @@ export function UtilitariosTab() {
     onSettled: invalidar,
   })
 
+  const editarRaiz = useMutation({
+    mutationFn: (v: { id: number; caminho: string }) =>
+      apiFetch<{ caminho: string }>(`/utilitarios/admin/raizes/${v.id}`, { method: 'PATCH', body: JSON.stringify({ caminho: v.caminho }) }),
+    onSuccess: (d, v) => {
+      toast.success(`Raiz alterada para ${d.caminho}`)
+      // O resultado do Testar era do caminho antigo.
+      setTestes(t => ({ ...t, [v.id]: undefined }))
+    },
+    onError: e => toast.error(mensagemErro(e, 'Falha ao alterar o caminho da raiz')),
+    onSettled: invalidar,
+  })
+
   const testarRaiz = async (id: number) => {
     setTestandoId(id)
     try {
@@ -146,6 +158,7 @@ export function UtilitariosTab() {
         onIncluir={(servidor, caminho) => incluirRaiz.mutateAsync({ servidor, caminho }).then(() => true, () => false)}
         onTestar={testarRaiz}
         onAtivar={(id, ativo) => ativarRaiz.mutate({ id, ativo })}
+        onEditar={(id, caminho) => editarRaiz.mutateAsync({ id, caminho }).then(() => true, () => false)}
       />
 
       <UtilitariosExtensoes

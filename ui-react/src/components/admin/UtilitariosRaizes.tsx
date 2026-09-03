@@ -1,12 +1,14 @@
-// Admin › Utilitários › Diretórios-raiz — cadastro e teste das raízes que a
-// tela Utilitários pode abrir. Componente de APRESENTAÇÃO: recebe dados e
+// Admin › Utilitários › Diretórios-raiz — cadastro, edição e teste das raízes
+// que a tela Utilitários pode abrir. Componente de APRESENTAÇÃO: recebe dados e
 // callbacks por props (a rede fica no UtilitariosTab), o que é o que permite a
 // bancada de node renderizar e clicar nele sem react-query.
 //
 // Raiz se DESATIVA, não se apaga (a auditoria referencia caminhos abaixo dela) —
 // por isso não há botão Excluir aqui, e as inativas ficam visíveis, esmaecidas.
-import { useState, type FormEvent } from 'react'
-import { Zap, RefreshCw, Power, PowerOff, Plus, FolderTree, AlertTriangle } from 'lucide-react'
+// O caminho pode ser EDITADO na linha (lápis): um erro de digitação não obriga a
+// desativar e recadastrar.
+import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { Zap, RefreshCw, Power, PowerOff, Plus, FolderTree, AlertTriangle, Pencil, Check, X } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Input, Select } from '../ui/Input'
 import { Badge } from '../ui/Badge'
@@ -24,6 +26,9 @@ export interface UtilitariosRaizesProps {
   onIncluir: (servidor: string, caminho: string) => Promise<boolean> | boolean
   onTestar: (id: number) => void
   onAtivar: (id: number, ativo: boolean) => void
+  /** Troca o caminho de uma raiz. Devolve true quando o servidor aceitou — só
+   *  então a linha sai do modo de edição (409/422 mantêm o que foi digitado). */
+  onEditar: (id: number, caminho: string) => Promise<boolean> | boolean
 }
 
 const TOM_TESTE = {
@@ -33,7 +38,7 @@ const TOM_TESTE = {
 } as const
 
 export function UtilitariosRaizes({
-  servidores, raizes, testes, testandoId, incluindo, onIncluir, onTestar, onAtivar,
+  servidores, raizes, testes, testandoId, incluindo, onIncluir, onTestar, onAtivar, onEditar,
 }: UtilitariosRaizesProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
   const [caminho, setCaminho] = useState('')
@@ -84,7 +89,7 @@ export function UtilitariosRaizes({
               <th className="px-4 py-2.5 text-left font-semibold">Caminho</th>
               <th className="px-4 py-2.5 text-left font-semibold">Estado</th>
               <th className="px-4 py-2.5 text-left font-semibold">Cadastro</th>
-              <th className="px-4 py-2.5 w-24"></th>
+              <th className="px-4 py-2.5 w-28"></th>
             </tr>
           </thead>
           <tbody>
@@ -96,7 +101,7 @@ export function UtilitariosRaizes({
                 <RaizLinhas key={r.id} raiz={r} resumo={resumo} teste={teste} testando={testando}
                   bloqueado={testandoId !== null}
                   servidorLabel={servidores.find(s => s.id === r.servidor)?.label ?? r.servidor}
-                  onTestar={onTestar} onAtivar={onAtivar} />
+                  onTestar={onTestar} onAtivar={onAtivar} onEditar={onEditar} />
               )
             })}
             {raizes.length === 0 && (
@@ -113,7 +118,7 @@ export function UtilitariosRaizes({
   )
 }
 
-function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, onTestar, onAtivar }: {
+function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, onTestar, onAtivar, onEditar }: {
   raiz: RaizUtil
   resumo: { tom: 'success' | 'warning' | 'error'; texto: string } | null
   teste: TesteRaiz | undefined
@@ -122,40 +127,98 @@ function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, o
   servidorLabel: string
   onTestar: (id: number) => void
   onAtivar: (id: number, ativo: boolean) => void
+  onEditar: (id: number, caminho: string) => Promise<boolean> | boolean
 }) {
   const inativa = !raiz.ativo
+  const [editando, setEditando] = useState(false)
+  const [novo, setNovo] = useState(raiz.caminho)
+  const [salvando, setSalvando] = useState(false)
+  const avisoNovo = avisoRaiz(novo)
+  const mudou = novo.trim() !== raiz.caminho
+  const podeSalvar = editando && novo.trim().length > 0 && avisoNovo === null && mudou && !salvando
+
+  const abrirEdicao = () => { setNovo(raiz.caminho); setEditando(true) }
+  const cancelar = () => { setEditando(false); setNovo(raiz.caminho) }
+  const salvar = async () => {
+    if (!podeSalvar) return
+    setSalvando(true)
+    try {
+      const ok = await onEditar(raiz.id, novo.trim())
+      if (ok) setEditando(false)
+    } finally {
+      setSalvando(false)
+    }
+  }
+  const teclas = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') { e.preventDefault(); void salvar() }
+    if (e.key === 'Escape') { e.preventDefault(); cancelar() }
+  }
+
   return (
     <>
       <tr className={`border-b border-edge/50 hover:bg-canvas/50 transition-colors ${inativa ? 'opacity-60' : ''}`}
-        data-raiz={raiz.id} data-inativa={inativa ? '1' : undefined}>
+        data-raiz={raiz.id} data-inativa={inativa ? '1' : undefined} data-editando={editando ? '1' : undefined}>
         <td className="px-4 py-2 text-xs text-ink">{servidorLabel}</td>
-        <td className="px-4 py-2"><span className="font-mono text-xs text-[#1A5FA8] dark:text-blue-400 break-all">{raiz.caminho}</span></td>
+        <td className="px-4 py-2">
+          {editando ? (
+            <div className="flex flex-col gap-1 min-w-64">
+              <Input value={novo} onChange={e => setNovo(e.target.value)} onKeyDown={teclas}
+                autoFocus autoComplete="off" spellCheck={false} className="font-mono text-xs"
+                aria-label="Novo caminho da raiz" data-campo="caminho"
+                error={avisoNovo ?? undefined} />
+            </div>
+          ) : (
+            <span className="font-mono text-xs text-[#1A5FA8] dark:text-blue-400 break-all">{raiz.caminho}</span>
+          )}
+        </td>
         <td className="px-4 py-2"><Badge value={inativa ? 'inativo' : 'ativo'}>{inativa ? 'inativa' : 'ativa'}</Badge></td>
         <td className="px-4 py-2 text-xs text-dim">{raiz.criado_por || '—'}{raiz.criado_em ? ` · ${raiz.criado_em}` : ''}</td>
         <td className="px-4 py-2">
           <div className="flex items-center gap-1 justify-end">
-            <button type="button" onClick={() => onTestar(raiz.id)} disabled={bloqueado}
-              className="text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 p-1 rounded disabled:opacity-40"
-              title="Testar no servidor: a pasta existe e o usuário SSH consegue listá-la?" data-acao="testar">
-              {testando ? <RefreshCw size={13} className="animate-spin" /> : <Zap size={13} />}
-            </button>
-            {inativa ? (
-              <button type="button" onClick={() => onAtivar(raiz.id, true)}
-                className="text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 p-1 rounded"
-                title="Reativar: volta a liberar tudo abaixo desta pasta" data-acao="reativar">
-                <Power size={13} />
-              </button>
+            {editando ? (
+              <>
+                <button type="button" onClick={() => void salvar()} disabled={!podeSalvar}
+                  className="text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 p-1 rounded disabled:opacity-40"
+                  title={mudou ? 'Salvar o novo caminho (Enter)' : 'Nada mudou'} data-acao="salvar-caminho">
+                  {salvando ? <RefreshCw size={13} className="animate-spin" /> : <Check size={13} />}
+                </button>
+                <button type="button" onClick={cancelar} disabled={salvando}
+                  className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded disabled:opacity-40"
+                  title="Cancelar (Esc)" data-acao="cancelar-caminho">
+                  <X size={13} />
+                </button>
+              </>
             ) : (
-              <button type="button" onClick={() => onAtivar(raiz.id, false)}
-                className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded"
-                title="Desativar: nada abaixo desta pasta pode mais ser aberto (o histórico fica)" data-acao="desativar">
-                <PowerOff size={13} />
-              </button>
+              <>
+                <button type="button" onClick={abrirEdicao}
+                  className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded"
+                  title="Editar o caminho desta raiz" data-acao="editar">
+                  <Pencil size={13} />
+                </button>
+                <button type="button" onClick={() => onTestar(raiz.id)} disabled={bloqueado}
+                  className="text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 p-1 rounded disabled:opacity-40"
+                  title="Testar no servidor: a pasta existe e o usuário SSH consegue listá-la?" data-acao="testar">
+                  {testando ? <RefreshCw size={13} className="animate-spin" /> : <Zap size={13} />}
+                </button>
+                {inativa ? (
+                  <button type="button" onClick={() => onAtivar(raiz.id, true)}
+                    className="text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 p-1 rounded"
+                    title="Reativar: volta a liberar tudo abaixo desta pasta" data-acao="reativar">
+                    <Power size={13} />
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => onAtivar(raiz.id, false)}
+                    className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded"
+                    title="Desativar: nada abaixo desta pasta pode mais ser aberto (o histórico fica)" data-acao="desativar">
+                    <PowerOff size={13} />
+                  </button>
+                )}
+              </>
             )}
           </div>
         </td>
       </tr>
-      {resumo && teste && (
+      {resumo && teste && !editando && (
         <tr className="border-b border-edge/50 bg-canvas/30" data-teste={raiz.id} data-tom={resumo.tom}>
           <td colSpan={5} className={`px-4 py-1.5 text-xs ${TOM_TESTE[resumo.tom]}`}>
             <span className="inline-flex items-center gap-1.5">
