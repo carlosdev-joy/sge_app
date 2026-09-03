@@ -794,6 +794,114 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
     }
 
 
+# ── Listagem de pasta (F6 — navegador) ──────────────────────────────────────
+
+LISTAGEM_MAX = 2000
+# Links resolvidos por listagem (cada um custa uma ida ao servidor); os demais
+# aparecem como link sem alvo, e o clique neles diz o que são.
+LINKS_RESOLVIDOS_MAX = 200
+
+
+def preparar_pasta(diretorio, raizes) -> tuple[str, str]:
+    """Valida e confere LEXICALMENTE uma pasta, antes de qualquer SSH. (caminho, raiz)."""
+    caminho = normalizar_diretorio(diretorio)
+    raiz = raiz_de(caminho, raizes)
+    if raiz is None:
+        raise ArquivoError(403, "Fora dos diretórios liberados.", resultado="negado")
+    return caminho, raiz
+
+
+def tipo_de_modo(st_mode: int) -> str:
+    if statmod.S_ISLNK(st_mode):
+        return "link"
+    if statmod.S_ISDIR(st_mode):
+        return "pasta"
+    if statmod.S_ISREG(st_mode):
+        return "arquivo"
+    return "outro"
+
+
+def ordenar_entradas(entradas: list[dict]) -> list[dict]:
+    """Pastas primeiro (link para pasta conta como pasta), depois por nome sem
+    diferenciar caixa — a ordem que o olho espera num navegador de arquivos."""
+    def chave(e: dict):
+        eh_pasta = e["tipo"] == "pasta" or (e["tipo"] == "link" and e.get("alvo") == "pasta")
+        return (0 if eh_pasta else 1, str(e["nome"]).casefold(), str(e["nome"]))
+    return sorted(entradas, key=chave)
+
+
+def listar_pasta(sftp, caminho: str, raizes, *, mostrar_ocultos: bool = False,
+                 limite: int = LISTAGEM_MAX) -> dict:
+    """Entradas de uma pasta abaixo de uma raiz (já conferida por `preparar_pasta`).
+
+    Ocultos (`.`) ficam de fora por padrão e são contados; links são mostrados e só
+    ganham `alvo` ('pasta' | 'arquivo') quando apontam para DENTRO das raízes —
+    é o `alvo` que autoriza o navegador a descer. `pai` nunca sobe acima da raiz."""
+    real = resolver_real(sftp, caminho, raizes)
+    st = _stat(sftp, real)
+    if not statmod.S_ISDIR(getattr(st, "st_mode", 0) or 0):
+        raise ArquivoError(422, f"{real} é um arquivo, não uma pasta.")
+    try:
+        brutos = list(sftp.listdir_attr(real))
+    except (OSError, UnicodeDecodeError) as e:
+        raise _erro_servidor(e, real) from e
+
+    reais = raizes_no_servidor(sftp, raizes)
+    raiz = raiz_de(real, reais)
+    entradas: list[dict] = []
+    ocultos = 0
+    links_resolvidos = 0
+    for a in brutos:
+        nome = str(getattr(a, "filename", "") or "")
+        if nome in ("", ".", ".."):
+            continue
+        if nome.startswith(".") and not mostrar_ocultos:
+            ocultos += 1
+            continue
+        modo = int(getattr(a, "st_mode", 0) or 0)
+        tipo = tipo_de_modo(modo)
+        e: dict = {
+            "nome": nome,
+            "tipo": tipo,
+            "tamanho_bytes": int(getattr(a, "st_size", 0) or 0) if tipo == "arquivo" else None,
+            "modificado_em": _mtime_iso(a),
+        }
+        if tipo == "link":
+            e["alvo"] = None
+            if links_resolvidos < LINKS_RESOLVIDOS_MAX:
+                links_resolvidos += 1
+                try:
+                    alvo = _normalize(sftp, posixpath.join(real, nome))
+                    if raiz_de(alvo, reais) is not None:
+                        st_a = _stat(sftp, alvo)
+                        tipo_alvo = tipo_de_modo(int(getattr(st_a, "st_mode", 0) or 0))
+                        if tipo_alvo in ("pasta", "arquivo"):
+                            e["alvo"] = tipo_alvo
+                            if tipo_alvo == "arquivo":
+                                e["tamanho_bytes"] = int(getattr(st_a, "st_size", 0) or 0)
+                except ArquivoError:
+                    pass  # quebrado, sem permissão ou fora: fica como link sem alvo
+        entradas.append(e)
+
+    entradas = ordenar_entradas(entradas)
+    truncado = len(entradas) > limite
+    if truncado:
+        entradas = entradas[:limite]
+    pai = None
+    if raiz is not None and real != raiz:
+        candidato = posixpath.dirname(real)
+        if raiz_de(candidato, reais) is not None:
+            pai = candidato
+    return {
+        "caminho_real": real,
+        "raiz": raiz,
+        "pai": pai,
+        "entradas": entradas,
+        "ocultos_omitidos": ocultos,
+        "truncado": truncado,
+    }
+
+
 def _known_hosts() -> str | None:
     """DS_SSH_KNOWN_HOSTS: quando definida, só host key conhecida entra (RejectPolicy).
     Ausente = paridade com o Console (AutoAddPolicy). Arquivo ilegível é erro de

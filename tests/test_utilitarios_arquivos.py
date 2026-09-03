@@ -368,6 +368,28 @@ class FakeSftp:
         pref = real.rstrip("/") + "/"
         return sorted({p[len(pref):].split("/")[0] for p in self.arvore if p.startswith(pref)})
 
+    def listdir_attr(self, caminho):
+        """Como o READDIR do SFTP: atributos de lstat (link aparece como link),
+        em ordem arbitrária — é o serviço que ordena."""
+        real = self._resolver(caminho)
+        if real in self.ilegiveis:
+            raise OSError(errno.EACCES, "Permission denied")
+        pref = real.rstrip("/") + "/"
+        nomes = {p[len(pref):].split("/")[0] for p in self.arvore if p.startswith(pref)}
+        saida = []
+        for nome in reversed(sorted(nomes)):
+            alvo = posixpath.join(real, nome)
+            v = self.arvore[alvo]
+            if isinstance(v, tuple) and v[0] == "link":
+                a = _Attrs(statmod.S_IFLNK | 0o777)
+            elif v is None:
+                a = _Attrs(statmod.S_IFDIR | 0o755)
+            else:
+                a = _Attrs(statmod.S_IFREG | self.modos.get(alvo, 0o644), st_size=len(v))
+            a.filename = nome
+            saida.append(a)
+        return saida
+
     def open(self, caminho, modo="rb"):
         if "w" in modo:
             return self._abrir_para_escrita(caminho)
@@ -918,6 +940,87 @@ class TestGravarArquivo:
         assert svc.diagnostico_pasta(object(), "/dados/bi") is None
 
 
+class TestListarPasta:
+    def test_ordena_pastas_primeiro_sem_caixa(self):
+        entradas = [
+            {"nome": "zeta.txt", "tipo": "arquivo"}, {"nome": "Beta", "tipo": "pasta"},
+            {"nome": "alfa", "tipo": "pasta"}, {"nome": "Alfa.txt", "tipo": "arquivo"},
+            {"nome": "atalho", "tipo": "link", "alvo": "pasta"}, {"nome": "link.txt", "tipo": "link", "alvo": None},
+        ]
+        assert [e["nome"] for e in svc.ordenar_entradas(entradas)] == ["alfa", "atalho", "Beta", "Alfa.txt", "link.txt", "zeta.txt"]
+
+    def test_lista_a_raiz_com_pastas_primeiro_e_ocultos_omitidos(self, sftp):
+        r = svc.listar_pasta(sftp, "/dados/bi", RAIZES)
+        assert r["caminho_real"] == "/dados/bi" and r["raiz"] == "/dados/bi" and r["pai"] is None
+        nomes = [(e["nome"], e["tipo"]) for e in r["entradas"]]
+        assert nomes[:2] == [("2026", "pasta"), ("logs", "pasta")]
+        assert ("consulta.sql", "arquivo") in nomes and ("imagem.bin", "arquivo") in nomes
+        assert ("link_fora", "link") in nomes
+        assert r["ocultos_omitidos"] == 0 or ".oculto.txt" not in [n for n, _ in nomes]
+        assert r["truncado"] is False
+        consulta = next(e for e in r["entradas"] if e["nome"] == "consulta.sql")
+        assert consulta["tamanho_bytes"] == 10 and consulta["modificado_em"]
+        pasta = next(e for e in r["entradas"] if e["nome"] == "logs")
+        assert pasta["tamanho_bytes"] is None
+
+    def test_ocultos_contados_e_mostrados_sob_demanda(self):
+        arvore = dict(ARVORE)
+        arvore["/dados/bi/.oculto.txt"] = b"segredo\n"
+        fake = FakeSftp(arvore)
+        r = svc.listar_pasta(fake, "/dados/bi", RAIZES)
+        assert r["ocultos_omitidos"] == 1 and ".oculto.txt" not in [e["nome"] for e in r["entradas"]]
+        r2 = svc.listar_pasta(fake, "/dados/bi", RAIZES, mostrar_ocultos=True)
+        assert r2["ocultos_omitidos"] == 0 and ".oculto.txt" in [e["nome"] for e in r2["entradas"]]
+
+    def test_link_para_fora_sem_alvo_e_link_para_dentro_com_alvo(self, sftp):
+        r = svc.listar_pasta(sftp, "/dados/bi", RAIZES)
+        fora = next(e for e in r["entradas"] if e["nome"] == "link_fora")
+        assert fora["tipo"] == "link" and fora["alvo"] is None
+        r2 = svc.listar_pasta(sftp, "/dados/bi/2026", RAIZES)
+        dentro = next(e for e in r2["entradas"] if e["nome"] == "link_outra_raiz")
+        assert dentro["tipo"] == "link" and dentro["alvo"] == "pasta"
+        assert r2["pai"] == "/dados/bi" and r2["raiz"] == "/dados/bi"
+        assert [e["nome"] for e in r2["entradas"]][:2] == ["cargas", "link_outra_raiz"]  # link p/ pasta ordena como pasta
+
+    def test_link_para_arquivo_dentro_traz_o_tamanho(self):
+        arvore = dict(ARVORE)
+        arvore["/dados/bi/atalho.param"] = ("link", "/dados/param/parametros_latin1.param")
+        r = svc.listar_pasta(FakeSftp(arvore), "/dados/bi", RAIZES)
+        e = next(x for x in r["entradas"] if x["nome"] == "atalho.param")
+        assert e["tipo"] == "link" and e["alvo"] == "arquivo" and e["tamanho_bytes"] == 15
+
+    def test_pai_nunca_sobe_acima_da_raiz(self, sftp):
+        r = svc.listar_pasta(sftp, "/dados/bi/2026/cargas", RAIZES)
+        assert r["pai"] == "/dados/bi/2026"
+        r = svc.listar_pasta(sftp, "/dados/bi", RAIZES)
+        assert r["pai"] is None
+
+    def test_truncado_no_limite(self, sftp):
+        r = svc.listar_pasta(sftp, "/dados/bi", RAIZES, limite=2)
+        assert r["truncado"] is True and len(r["entradas"]) == 2
+        assert [e["tipo"] for e in r["entradas"]] == ["pasta", "pasta"]  # as primeiras da ordem, não aleatórias
+
+    def test_arquivo_422_inexistente_404_fora_403_ilegivel_403(self, sftp):
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.listar_pasta(sftp, "/dados/bi/consulta.sql", RAIZES)
+        assert exc.value.status == 422
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.listar_pasta(sftp, "/dados/bi/nao_existe", RAIZES)
+        assert exc.value.status == 404
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.listar_pasta(sftp, "/dados/bi/link_fora", RAIZES)
+        assert exc.value.status == 403 and exc.value.resultado == "negado"
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.listar_pasta(sftp, "/dados/param/sem_acesso", RAIZES)
+        assert exc.value.status == 403
+
+    def test_preparar_pasta_lexical(self):
+        assert svc.preparar_pasta("/dados//bi/2026/", RAIZES) == ("/dados/bi/2026", "/dados/bi")
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.preparar_pasta("/dados/bi/../../etc", RAIZES)
+        assert exc.value.status == 403 and exc.value.resultado == "negado"
+
+
 class TestTestarRaiz:
     def test_pasta_legivel(self, sftp):
         r = svc.testar_raiz(sftp, "/dados/bi/")
@@ -1318,6 +1421,88 @@ class TestLerEndpoint:
         cur = _CursorSemLog(REGRAS_CONFIG)
         r = _post_ler(client, cur, {"diretorio": "/dados/bi", "nome": "consulta.sql"})
         assert r.status_code == 200
+
+
+def _get_listar(client, cur, params):
+    with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+        return client.get("/utilitarios/pasta/listar", params=params)
+
+
+class TestListarEndpoint:
+    def test_nivel_zero_devolve_as_raizes_sem_ssh(self, client, auth_operador, monkeypatch):
+        chamou = []
+
+        @contextmanager
+        def _cm(servidor):
+            chamou.append(servidor)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _get_listar(client, cur, {})
+        assert r.status_code == 200, r.text
+        assert r.json()["entradas"] == [
+            {"nome": "/dados/bi", "tipo": "raiz", "tamanho_bytes": None, "modificado_em": None},
+            {"nome": "/dados/param", "tipo": "raiz", "tamanho_bytes": None, "modificado_em": None},
+        ]
+        assert r.json()["caminho_real"] is None and r.json()["pai"] is None
+        assert chamou == [] and cur.auditoria == []
+
+    def test_lista_pasta_e_audita(self, client, auth_operador, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _get_listar(client, cur, {"caminho": "/dados/bi/2026"})
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["caminho_real"] == "/dados/bi/2026" and j["pai"] == "/dados/bi" and j["raiz"] == "/dados/bi"
+        assert [e["nome"] for e in j["entradas"]] == ["cargas", "link_outra_raiz"]
+        assert isinstance(j["duracao_ms"], int)
+        assert cur.auditoria[0][2] == "listar" and cur.auditoria[0][6] == "ok"
+        assert cur.auditoria[0][3] == "/dados/bi/2026" and "2 entradas" in cur.auditoria[0][7]
+
+    def test_ocultos_por_parametro(self, client, auth_operador, monkeypatch):
+        arvore = dict(ARVORE)
+        arvore["/dados/bi/.oculto.txt"] = b"x\n"
+
+        @contextmanager
+        def _cm(servidor):
+            yield FakeSftp(arvore)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _get_listar(client, cur, {"caminho": "/dados/bi"})
+        assert r.json()["ocultos_omitidos"] == 1 and "1 ocultos omitidos" in cur.auditoria[0][7]
+        r = _get_listar(client, cur, {"caminho": "/dados/bi", "mostrar_ocultos": "true"})
+        assert r.json()["ocultos_omitidos"] == 0
+
+    def test_fora_das_raizes_403_negado_sem_ssh(self, client, auth_operador, monkeypatch):
+        chamou = []
+
+        @contextmanager
+        def _cm(servidor):
+            chamou.append(servidor)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _get_listar(client, cur, {"caminho": "/etc"})
+        assert r.status_code == 403 and chamou == []
+        assert cur.auditoria[0][2] == "listar" and cur.auditoria[0][6] == "negado"
+
+    def test_symlink_para_fora_403_e_arquivo_422_e_inexistente_404(self, client, auth_operador, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _get_listar(client, cur, {"caminho": "/dados/bi/link_fora"}).status_code == 403
+        assert _get_listar(client, cur, {"caminho": "/dados/bi/consulta.sql"}).status_code == 422
+        assert _get_listar(client, cur, {"caminho": "/dados/bi/nao_existe"}).status_code == 404
+        assert [a[6] for a in cur.auditoria] == ["negado", "erro", "erro"]
+
+    def test_sem_raiz_403_e_servidor_invalido_422(self, client, auth_operador, sftp_falso):
+        regras = [("FROM dbo.etl_utilitario_raiz WHERE ativo = 1", [])] + REGRAS_CONFIG[1:]
+        cur = _Cursor(regras)
+        assert _get_listar(client, cur, {"caminho": "/dados/bi"}).status_code == 403
+        assert _get_listar(client, cur, {}).json()["entradas"] == []
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _get_listar(client, cur, {"servidor": "outro", "caminho": "/dados/bi"}).status_code == 422
+
+    def test_consulta_nao_lista(self, client, auth_consulta):
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _get_listar(client, cur, {"caminho": "/dados/bi"}).status_code == 403
 
 
 def _post_gravar(client, cur, body):

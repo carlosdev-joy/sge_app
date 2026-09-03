@@ -5,6 +5,7 @@ Spec: docs/spec-utilitarios-arquivos.md (F1 = leitura + cadastro do admin).
   GET  /utilitarios/config                    — servidores, raízes ativas, extensões, teto, pode_gravar
   POST /utilitarios/arquivo/ler               — {servidor, diretorio, nome, ultimas_linhas?, codificacao?}
   POST /utilitarios/arquivo/gravar            — {servidor, diretorio, nome, extensao, conteudo, codificacao?, sobrescrever?}  [+ acao_editar]
+  GET  /utilitarios/pasta/listar              — ?servidor&caminho?&mostrar_ocultos → entradas da pasta (sem caminho: as raízes)
   GET  /utilitarios/admin/raizes              — todas (inclusive inativas)            [admin]
   POST /utilitarios/admin/raizes              — {servidor, caminho} → {id}            [admin]
   PATCH /utilitarios/admin/raizes/{id}        — {ativo?, caminho?}                     [admin]
@@ -42,7 +43,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 
 from db import get_db_conn
 from deps import PERM_EDITAR, get_admin_user, require_tela_utilitarios
@@ -298,6 +299,72 @@ async def utilitarios_ler_arquivo(body: dict = Body(...),
     _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=resultado["caminho"],
              resultado="ok", tamanho=resultado["tamanho_bytes"], detalhe=detalhe,
              duracao_ms=resultado["duracao_ms"])
+    return resultado
+
+
+# ── listar pasta (F6 — navegador) ────────────────────────────────────────────
+
+def _listar_sync(servidor: str, caminho: str, raizes: list[str], mostrar_ocultos: bool) -> dict:
+    with svc.conexao_sftp(servidor) as sftp:
+        return svc.listar_pasta(sftp, caminho, raizes, mostrar_ocultos=mostrar_ocultos)
+
+
+@router.get("/utilitarios/pasta/listar")
+async def utilitarios_listar_pasta(servidor: str = Query("datastage"),
+                                   caminho: str | None = Query(None),
+                                   mostrar_ocultos: bool = Query(False),
+                                   user: dict = Depends(require_tela_utilitarios)):
+    """Nível zero (sem `caminho`) = as raízes ativas do servidor, sem tocar o SSH.
+    Com `caminho`, as entradas da pasta (abaixo de uma raiz), auditadas como
+    `listar` — quem navega deixa rastro como quem lê."""
+    t0 = time.time()
+    usuario = str(user.get("matricula") or "?")
+    try:
+        servidor = svc.servidor_valido(servidor)
+    except svc.ArquivoError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    cfg = _config_do_banco()
+    raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
+
+    if caminho is None or not str(caminho).strip():
+        return {
+            "caminho_real": None, "raiz": None, "pai": None,
+            "entradas": [{"nome": r, "tipo": "raiz", "tamanho_bytes": None, "modificado_em": None} for r in raizes],
+            "ocultos_omitidos": 0, "truncado": False,
+        }
+    if not raizes:
+        _auditar(usuario=usuario, servidor=servidor, acao="listar", caminho=str(caminho),
+                 resultado="negado", detalhe="nenhum diretório-raiz ativo para o servidor",
+                 duracao_ms=_ms(t0))
+        raise HTTPException(
+            status_code=403,
+            detail="Nenhum diretório liberado para este servidor — cadastre uma raiz em "
+                   "Admin › Utilitários.")
+    try:
+        pasta, _raiz = svc.preparar_pasta(caminho, raizes)
+    except svc.ArquivoError as e:
+        _auditar(usuario=usuario, servidor=servidor, acao="listar", caminho=str(caminho),
+                 resultado=e.resultado, detalhe=e.interno or e.detail, duracao_ms=_ms(t0))
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    try:
+        resultado = await _no_servidor(_listar_sync, servidor, pasta, raizes, bool(mostrar_ocultos))
+    except svc.ArquivoError as e:
+        _auditar(usuario=usuario, servidor=servidor, acao="listar", caminho=pasta,
+                 resultado=e.resultado, detalhe=e.interno or e.detail, duracao_ms=_ms(t0))
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    except Exception as e:
+        log.exception("Utilitários: falha inesperada ao listar %s", pasta)
+        _auditar(usuario=usuario, servidor=servidor, acao="listar", caminho=pasta,
+                 resultado="erro", detalhe=f"inesperado: {e!r}", duracao_ms=_ms(t0))
+        raise HTTPException(status_code=502, detail="Falha ao listar a pasta — detalhe registrado no log da API.")
+    detalhe = f"{len(resultado['entradas'])} entradas"
+    if resultado["truncado"]:
+        detalhe += " (lista truncada)"
+    if resultado["ocultos_omitidos"]:
+        detalhe += f", {resultado['ocultos_omitidos']} ocultos omitidos"
+    _auditar(usuario=usuario, servidor=servidor, acao="listar", caminho=resultado["caminho_real"],
+             resultado="ok", detalhe=detalhe, duracao_ms=_ms(t0))
+    resultado["duracao_ms"] = _ms(t0)
     return resultado
 
 
