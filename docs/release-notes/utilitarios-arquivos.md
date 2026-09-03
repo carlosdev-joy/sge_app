@@ -80,8 +80,15 @@ Admin › Sistema › Utilitários            Utilitários (Operação)
 2. `api/` (imagem da API) e `ui-react/dist`. Sem `dags/`, sem wheel nova.
 3. No `.env` da API: as mesmas variáveis do Console DataStage (`DS_SSH_HOST`,
    `DS_SSH_USER`, `DS_SSH_PASSWORD` ou `DS_SSH_KEY_FILE`). **Recomendado**
-   `DS_SSH_KNOWN_HOSTS=/caminho/known_hosts` — com ela, só a host key conhecida
-   do servidor entra.
+   `DS_SSH_KNOWN_HOSTS` — com ela, só a host key conhecida do servidor entra.
+   O arquivo precisa estar **dentro do container da API**: o compose só monta
+   `dags/` e `dsx/` (`/opt/airflow/dags`, `/opt/airflow/dsx`). Gere e aponte:
+   ```bash
+   ssh-keyscan -p "${DS_SSH_PORT:-22}" "$DS_SSH_HOST" > dsx/known_hosts   # no host, em /opt/airflow
+   # .env: DS_SSH_KNOWN_HOSTS=/opt/airflow/dsx/known_hosts
+   ```
+   Caminho do host que o container não enxerga = 503 "aponta para um arquivo
+   que a API não consegue ler" em toda a tela.
 4. **Relogin**: a permissão `tela_utilitarios` só aparece depois de sair e
    entrar de novo (as permissões vivem no navegador até o próximo login).
 5. Admin › Sistema › Utilitários: cadastrar as raízes de produção e clicar

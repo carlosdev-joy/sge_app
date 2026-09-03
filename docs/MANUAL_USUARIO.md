@@ -143,8 +143,8 @@ tela avisa "Nenhum diretório liberado ainda" enquanto não houver nenhum.
 
 No modal: o conteúdo inteiro em fonte mono, rodapé com **linhas, tamanho,
 codificação** (`utf-8` ou `latin-1`, detectada) e a data de modificação, e o
-botão **Copiar** — que diz *copiado* ou *falhou*; se falhar, selecione o texto
-e copie com Ctrl+C.
+botão **Copiar conteúdo** — que diz *copiado*, *use Ctrl+C* (o texto já fica
+selecionado: basta teclar Ctrl+C) ou *não copiou*.
 
 **Navegar…** (ao lado do campo Pasta) abre o navegador de pastas: a primeira
 tela lista as raízes liberadas (com uma só, já abre nela); clique numa pasta
@@ -163,7 +163,7 @@ Mensagens que você pode ver e o que fazem:
 | **Arquivo não encontrado: /…** | O caminho não existe no servidor. Confira maiúsculas e minúsculas — o servidor distingue. |
 | **O usuário SSH não tem permissão para acessar /…** | A conta que o Orquestra usa no servidor não lê essa pasta ou arquivo. |
 | **O arquivo não é texto (parece binário) — os Utilitários só abrem texto.** | Imagem, zip, executável: a tela não mostra. |
-| **Arquivo de X, acima do teto de Y.** | Maior que o teto configurado pelo administrador. O modal oferece o campo **últimas N linhas** — informe (ex.: 200) e clique em Tentar de novo para ver só o fim. |
+| **Arquivo de X, acima do teto de Y.** | Maior que o teto configurado pelo administrador. O modal oferece o campo **últimas N linhas** — informe (ex.: 200) e clique em **Ver o fim do arquivo**. |
 | **O servidor não respondeu em 90 s.** / **Servidor não configurado nesta instância da API…** | O servidor demorou demais ou a API não tem as credenciais SSH; acione a sustentação. |
 
 > Toda leitura, listagem e gravação fica registrada com sua matrícula, o
@@ -465,7 +465,7 @@ administrador gravam. Só abaixo dos diretórios liberados e só com as
    arquivo preenche os dois.
 3. **Codificação**: `UTF-8` ou `Latin-1` (o servidor do DataStage costuma usar
    Latin-1). Em Latin-1, um caractere que não existe nela (ex.: `€`, emoji)
-   desliga o Gravar e diz a linha e a posição.
+   desliga o Gravar e diz a linha e o caractere.
 4. **Carregar existente**: traz o conteúdo do arquivo que já existe e troca a
    codificação para a detectada — gravar de volta mantém os bytes.
 5. **Conteúdo**: editor em fonte mono com contador de linhas e bytes; *não
@@ -565,8 +565,9 @@ Na linha de cada raiz:
 
 **Extensões graváveis.** A lista do que a aba Criar/editar pode gravar
 (`txt`, `sql`, `param`, `cfg`, `conf`, `properties`, `csv`, `json`, `yml`…);
-ler não depende dela. Incluir uma extensão de **script** (`sh`, `bat`, `py`,
-`ksh`…) pede confirmação: permite gravar scripts que um job pode executar.
+ler não depende dela. Incluir uma extensão de **script** (`sh`, `bash`, `ksh`,
+`csh`, `zsh`, `py`, `pl`) pede confirmação: permite gravar scripts que um job
+pode executar.
 Excluir pede confirmação e vale na hora — quem já está com o editor aberto
 recebe "extensão não liberada" ao gravar.
 
@@ -586,14 +587,18 @@ permissão só aparece para o usuário depois de **sair e entrar de novo**.
 tamanho, hash SHA-256, resultado (`ok`, `negado`, `erro`), detalhe e duração.
 Sem conteúdo de arquivo. Consulta útil:
 ```sql
-SELECT TOP 50 criado_em, usuario, acao, resultado, caminho, LEFT(detalhe, 120) AS detalhe
+SELECT TOP 50 executado_em, usuario, acao, resultado, caminho, LEFT(detalhe, 120) AS detalhe
 FROM dbo.etl_utilitario_arquivo_log ORDER BY id DESC
 ```
 
 **Ambiente.** A API usa as mesmas variáveis SSH do Console DataStage
 (`DS_SSH_HOST`, `DS_SSH_USER`, `DS_SSH_PASSWORD` ou `DS_SSH_KEY_FILE`). Com
 `DS_SSH_KNOWN_HOSTS` definida, só a host key conhecida do servidor entra
-(recomendado em produção).
+(recomendado em produção). O caminho é lido **de dentro do container da API**:
+guarde o arquivo em `dsx/` (montado como `/opt/airflow/dsx`) e aponte
+`DS_SSH_KNOWN_HOSTS=/opt/airflow/dsx/known_hosts` — um caminho do host que o
+container não enxerga deixa a tela inteira em "arquivo que a API não consegue
+ler".
 
 ---
 

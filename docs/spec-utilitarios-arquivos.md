@@ -540,12 +540,14 @@ mostra o aviso e nada quebra no resto do Orquestra.
 
 ## 7. Smoke pós-deploy
 
-> **Script**: `scripts/smoke_utilitarios.sh` executa pela API tudo que não exige o
-> navegador (c, d, e, g, h, i, j, k, l, m, o, p) e compara com o servidor quando tem
-> acesso a ele (`wc -lc`, `cat`, `od`, `.bak`). Uso em produção: `ORQ_URL`, `ORQ_USER`,
-> `ORQ_PASS`, `RAIZ`, `PASTA`, `ARQ`, `LATIN1` no ambiente. **Resultado no DEV
-> (2026-09-03, F7): 37 conferências ok, 0 falhas**; a, b, f, n e a parte visual de j são
-> manuais (marcados "UI" na saída).
+> **Script**: `scripts/smoke_utilitarios.sh` executa pela API o que não exige o navegador
+> (c, d, e, g, h, j, k, l, m, p) e, **com acesso ao servidor de arquivos** (`docker exec` no
+> DEV), também i e o, comparando com `wc -lc`, `cat`, `od` e o `.bak`. Sem esse acesso, i e
+> o ficam para fazer à mão e o script avisa no fim o que sobrou para apagar
+> (`smoke_orquestra.txt` e o `.bak`). Só mexe nas extensões que estão na lista e repõe o que
+> excluiu mesmo se for interrompido. Uso em produção: `ORQ_URL`, `ORQ_USER`, `ORQ_PASS`,
+> `RAIZ`, `PASTA`, `ARQ`, `LATIN1` no ambiente. **Resultado no DEV (2026-09-03, F7): 38
+> conferências ok, 0 falhas**; a, b, f, n e a parte visual de j são manuais (marcados "UI").
 
 a) Sair e entrar de novo (permissão vive no `localStorage`). Com `admin`, `desenvolvedor` e
    `operador`, o menu Operação mostra **Utilitários**; com `consulta`, não mostra e
