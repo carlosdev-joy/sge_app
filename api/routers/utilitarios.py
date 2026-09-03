@@ -4,6 +4,7 @@ Spec: docs/spec-utilitarios-arquivos.md (F1 = leitura + cadastro do admin).
 
   GET  /utilitarios/config                    — servidores, raízes ativas, extensões, teto, pode_gravar
   POST /utilitarios/arquivo/ler               — {servidor, diretorio, nome, ultimas_linhas?, codificacao?}
+  POST /utilitarios/arquivo/gravar            — {servidor, diretorio, nome, extensao, conteudo, codificacao?, sobrescrever?}  [+ acao_editar]
   GET  /utilitarios/admin/raizes              — todas (inclusive inativas)            [admin]
   POST /utilitarios/admin/raizes              — {servidor, caminho} → {id}            [admin]
   PATCH /utilitarios/admin/raizes/{id}        — {ativo}                                [admin]
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -292,6 +294,104 @@ async def utilitarios_ler_arquivo(body: dict = Body(...),
     _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=resultado["caminho"],
              resultado="ok", tamanho=resultado["tamanho_bytes"], detalhe=detalhe,
              duracao_ms=resultado["duracao_ms"])
+    return resultado
+
+
+# ── gravar arquivo (F4) ──────────────────────────────────────────────────────
+
+def _gravar_sync(servidor: str, caminho: str, raizes: list[str], dados: bytes,
+                 sobrescrever: bool, backup: bool, marca: str) -> dict:
+    with svc.conexao_sftp(servidor) as sftp:
+        return svc.gravar_arquivo(sftp, caminho, raizes, dados, sobrescrever=sobrescrever,
+                                  backup=backup, marca=marca)
+
+
+def _detalhe_http(e: svc.ArquivoError):
+    """`detail` string, ou dict {mensagem, ...extra} quando a resposta leva dados
+    além da frase (o 409 da gravação diz o que já existe)."""
+    if e.extra:
+        return {"mensagem": e.detail, **e.extra}
+    return e.detail
+
+
+@router.post("/utilitarios/arquivo/gravar")
+async def utilitarios_gravar_arquivo(body: dict = Body(...),
+                                     user: dict = Depends(require_tela_utilitarios)):
+    """Cria ou sobrescreve um arquivo de texto abaixo de uma raiz. Exige a tela
+    E `acao_editar` (operador só lê). Extensão da lista do admin; conteúdo em
+    UTF-8 ou Latin-1 com CRLF→LF e `\\n` final; 409 sem `sobrescrever`; cópia
+    de segurança e escrita atômica ficam no serviço."""
+    t0 = time.time()
+    usuario = str(user.get("matricula") or "?")
+    servidor = str(body.get("servidor") or "datastage")
+    diretorio, nome, extensao = body.get("diretorio"), body.get("nome"), body.get("extensao")
+    pedido_bruto = f"{str(diretorio or '').rstrip('/')}/{str(nome or '')}.{str(extensao or '')}"
+
+    def negar(status: int, detalhe: str, resultado: str = "erro", caminho: str = pedido_bruto,
+              detail=None):
+        _auditar(usuario=usuario, servidor=servidor, acao="gravar", caminho=caminho,
+                 resultado=resultado, detalhe=detalhe, duracao_ms=_ms(t0))
+        raise HTTPException(status_code=status, detail=detail if detail is not None else detalhe)
+
+    if PERM_EDITAR not in user.get("permissoes", []):
+        negar(403, "Gravar exige a permissão de cadastrar/editar (acao_editar).", "negado")
+
+    # Validação do pedido (auditada, como na leitura).
+    try:
+        servidor = svc.servidor_valido(body.get("servidor"))
+        cod = svc.codificacao_valida(body.get("codificacao")) or "utf-8"
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado)
+    conteudo = body.get("conteudo")
+    if not isinstance(conteudo, str):
+        negar(422, "'conteudo' precisa ser texto.")
+    sobrescrever = body.get("sobrescrever", False)
+    if not isinstance(sobrescrever, bool):
+        negar(422, "'sobrescrever' precisa ser true ou false.")
+
+    cfg = _config_do_banco()
+    raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
+    if not raizes:
+        negar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
+                   "Admin › Utilitários.", "negado")
+    try:
+        caminho, _raiz = svc.preparar_gravacao(diretorio, nome, extensao, raizes, cfg["extensoes"])
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado)
+
+    texto = svc.normalizar_conteudo(conteudo)
+    if "\0" in texto:
+        negar(415, "O conteúdo tem bytes nulos — os Utilitários só gravam texto.", caminho=caminho)
+    try:
+        dados = svc.codificar_conteudo(texto, cod)
+    except svc.ArquivoError as e:
+        negar(e.status, e.detail, caminho=caminho)
+    teto_bytes = cfg["tamanho_max_kb"] * 1024
+    if len(dados) > teto_bytes:
+        negar(413, f"Conteúdo de {svc.formatar_tamanho(len(dados))}, acima do teto de "
+                   f"{svc.formatar_tamanho(teto_bytes)}.", caminho=caminho)
+
+    marca = f"{os.getpid()}-{int(t0 * 1000)}"
+    try:
+        resultado = await _no_servidor(
+            _gravar_sync, servidor, caminho, raizes, dados, sobrescrever,
+            cfg["backup_ao_sobrescrever"], marca)
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado, caminho=caminho, detail=_detalhe_http(e))
+    except Exception as e:
+        log.exception("Utilitários: falha inesperada ao gravar %s", caminho)
+        negar(502, f"inesperado: {e!r}", caminho=caminho,
+              detail="Falha ao gravar o arquivo — detalhe registrado no log da API.")
+
+    resultado["codificacao"] = cod
+    resultado["linhas"] = svc.contar_linhas(texto)
+    resultado["duracao_ms"] = _ms(t0)
+    partes = ["criado" if resultado["criado"] else "sobrescrito"]
+    if resultado["backup"]:
+        partes.append(f"backup {resultado['backup']}")
+    _auditar(usuario=usuario, servidor=servidor, acao="gravar", caminho=resultado["caminho"],
+             resultado="ok", tamanho=resultado["tamanho_bytes"], sha256=resultado["sha256"],
+             detalhe="; ".join(partes), duracao_ms=resultado["duracao_ms"])
     return resultado
 
 

@@ -39,9 +39,11 @@ API inteira por até 120 s; não repetir.
 from __future__ import annotations
 
 import errno
+import hashlib
 import logging
 import os
 import posixpath
+import re
 import stat as statmod
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -88,12 +90,15 @@ class ArquivoError(Exception):
     paramiko)."""
 
     def __init__(self, status: int, detail: str, *, resultado: str = "erro",
-                 interno: str | None = None):
+                 interno: str | None = None, extra: dict | None = None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         self.resultado = resultado
         self.interno = interno
+        # Dados que a resposta leva além da frase (ex.: o 409 da gravação diz o
+        # tamanho e a data do arquivo que já existe).
+        self.extra = extra
 
 
 # ── Servidores ───────────────────────────────────────────────────────────────
@@ -538,6 +543,173 @@ def testar_raiz(sftp, caminho: str) -> dict:
         legivel, detalhe = False, "existe, mas o usuário SSH não consegue listar a pasta"
     return {"existe": True, "eh_pasta": True, "legivel": legivel,
             "caminho_real": real, "detalhe": link + detalhe}
+
+
+# ── Gravação (F4) ────────────────────────────────────────────────────────────
+
+def normalizar_conteudo(texto: str) -> str:
+    """CRLF/CR → LF e `\\n` final (arquivo não vazio): o que o Windows cola no
+    editor não pode virar `\\r` no servidor Unix."""
+    t = str(texto or "").replace("\r\n", "\n").replace("\r", "\n")
+    if t and not t.endswith("\n"):
+        t += "\n"
+    return t
+
+
+def codificar_conteudo(texto: str, cod: str) -> bytes:
+    """Bytes na codificação escolhida. Caractere que não existe em Latin-1 é
+    recusado NOMEANDO a posição — gravar `?` no lugar seria corromper o dado."""
+    try:
+        return texto.encode(cod)
+    except UnicodeEncodeError as e:
+        linha = texto.count("\n", 0, e.start) + 1
+        return _levantar(ArquivoError(
+            422,
+            f"O texto tem um caractere que não existe em {cod} na linha {linha} "
+            f"(posição {e.start}: {texto[e.start]!r}). Grave em utf-8 ou troque o caractere."))
+
+
+def _levantar(e: Exception):
+    raise e
+
+
+def validar_extensao_gravacao(bruta, permitidas) -> str:
+    """Minúsculas, sem ponto, regex do servidor; e tem de estar na lista do admin."""
+    s = str(bruta or "").strip().lower().lstrip(".")
+    if not s or not re.match(r"^[a-z0-9]{1,15}$", s):
+        raise ArquivoError(422, "Extensão inválida: só letras minúsculas e números, sem ponto, até 15 caracteres.")
+    if s not in set(permitidas or ()):
+        raise ArquivoError(
+            422, f"Extensão '{s}' não liberada — o admin inclui em Admin › Utilitários.")
+    return s
+
+
+def nome_backup(caminho: str, agora: datetime | None = None) -> str:
+    return f"{caminho}.bak-{(agora or datetime.now()):%Y%m%d%H%M%S}"
+
+
+def nome_temporario(caminho: str, marca: str) -> str:
+    pasta, nome = posixpath.split(caminho)
+    return posixpath.join(pasta, f".{nome}.tmp-{marca}")
+
+
+def preparar_gravacao(diretorio, nome, extensao, raizes, extensoes) -> tuple[str, str]:
+    """Valida e confere LEXICALMENTE antes do SSH. Devolve (caminho, raiz).
+
+    O nome final é `<nome>.<extensao>`; a extensão precisa estar na lista do
+    admin. 422 em entrada inválida; 403 (`negado`) fora das raízes."""
+    base = validar_nome(nome)
+    ext = validar_extensao_gravacao(extensao, extensoes)
+    completo = validar_nome(f"{base}.{ext}")
+    caminho = montar_caminho(normalizar_diretorio(diretorio), completo)
+    raiz = raiz_de(caminho, raizes)
+    if raiz is None:
+        raise ArquivoError(403, "Fora dos diretórios liberados.", resultado="negado")
+    return caminho, raiz
+
+
+def _substituir(sftp, tmp: str, destino: str) -> None:
+    """`tmp` vira `destino` de uma vez. `posix_rename` (extensão do OpenSSH)
+    sobrescreve atomicamente; sem ela, remove e renomeia (janela mínima)."""
+    posix = getattr(sftp, "posix_rename", None)
+    if callable(posix):
+        posix(tmp, destino)
+        return
+    try:
+        sftp.remove(destino)
+    except OSError as e:
+        if getattr(e, "errno", None) != errno.ENOENT:
+            raise
+    sftp.rename(tmp, destino)
+
+
+def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bool,
+                   backup: bool, marca: str, agora: datetime | None = None) -> dict:
+    """Grava `dados` em `caminho` (já validado por `preparar_gravacao`).
+
+    Ordem: pasta resolvida de cima para baixo (symlink para fora barra aqui) →
+    destino existe? (409 sem `sobrescrever`; symlink de destino também é
+    conferido) → escreve num `.tmp` na MESMA pasta → cópia de segurança do
+    original (rename) → `tmp` vira o destino de uma vez. Quem lê o arquivo no
+    meio vê o antigo ou o novo, nunca metade. Falha no meio: o original volta,
+    o `.tmp` some."""
+    pasta, nome = posixpath.split(caminho)
+    real_pasta = resolver_real(sftp, pasta, raizes)
+    st_pasta = _stat(sftp, real_pasta)
+    if not statmod.S_ISDIR(getattr(st_pasta, "st_mode", 0) or 0):
+        raise ArquivoError(422, f"{real_pasta} não é uma pasta.")
+    real = posixpath.join(real_pasta, nome)
+
+    existente: dict | None = None
+    try:
+        st = sftp.lstat(real)
+    except (OSError, UnicodeDecodeError) as e:
+        if getattr(e, "errno", None) == errno.ENOENT:
+            st = None
+        else:
+            raise _erro_servidor(e, real) from e
+    if st is not None:
+        modo = getattr(st, "st_mode", 0) or 0
+        if statmod.S_ISDIR(modo):
+            raise ArquivoError(422, f"Já existe uma PASTA chamada {nome} aí.")
+        if statmod.S_ISLNK(modo):
+            # Gravar por cima de um link substitui o LINK; mesmo assim o alvo
+            # tem de estar dentro das raízes — link para fora é negado.
+            alvo = _normalize(sftp, real)
+            if raiz_de(alvo, raizes_no_servidor(sftp, raizes)) is None:
+                raise ArquivoError(
+                    403, "Fora dos diretórios liberados (o arquivo é um link para fora da raiz).",
+                    resultado="negado")
+        existente = {"tamanho_bytes": int(getattr(st, "st_size", 0) or 0),
+                     "modificado_em": _mtime_iso(st)}
+        if not sobrescrever:
+            raise ArquivoError(
+                409, "O arquivo já existe. Confirme para gravar por cima.",
+                extra={"existente": existente})
+
+    tmp = nome_temporario(real, marca)
+    try:
+        with sftp.open(tmp, "wb") as f:
+            f.write(dados)
+    except (OSError, UnicodeDecodeError) as e:
+        try:
+            sftp.remove(tmp)
+        except Exception:
+            pass
+        raise _erro_servidor(e, real) from e
+
+    backup_criado: str | None = None
+    try:
+        if existente is not None and backup:
+            bak = nome_backup(real, agora)
+            sftp.rename(real, bak)
+            backup_criado = bak
+            try:
+                _substituir(sftp, tmp, real)
+            except Exception:
+                # Devolve o original antes de propagar: sem isto o arquivo
+                # sumiria do lugar e ficaria só como `.bak`.
+                try:
+                    sftp.rename(bak, real)
+                except Exception:
+                    pass
+                raise
+        else:
+            _substituir(sftp, tmp, real)
+    except (OSError, UnicodeDecodeError) as e:
+        try:
+            sftp.remove(tmp)
+        except Exception:
+            pass
+        raise _erro_servidor(e, real) from e
+
+    return {
+        "caminho": real,
+        "tamanho_bytes": len(dados),
+        "sha256": hashlib.sha256(dados).hexdigest(),
+        "criado": existente is None,
+        "backup": backup_criado,
+    }
 
 
 def _known_hosts() -> str | None:
