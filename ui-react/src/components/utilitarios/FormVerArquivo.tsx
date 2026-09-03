@@ -5,15 +5,20 @@
 // O campo Pasta diz a que raiz o caminho pertence ("abaixo de /dados/bi") ou
 // que está fora das raízes — ANTES de chamar a API. O servidor continua a
 // autoridade (realpath + auditoria); o aviso só poupa uma ida que vai falhar.
+// Navegar… (F6) abre o navegador de pastas; a listagem entra por `onListar`.
 import { useState, type FormEvent } from 'react'
 import { Play } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Input, Select } from '../ui/Input'
+import { CampoPasta } from './CampoPasta'
+import { NavegadorPastas } from './NavegadorPastas'
+import { useNavegadorPastas, type ListarPasta } from './useNavegadorPastas'
 import type { ServidorUtil } from '../../lib/utilitariosAdmin'
 import {
-  ULTIMAS_LINHAS_MAX, avisoNome, avisoPasta, pedidoPronto, ultimasLinhas,
+  ULTIMAS_LINHAS_MAX, avisoNome, pedidoPronto, ultimasLinhas,
   type PedidoLeitura,
 } from '../../lib/utilitariosArquivo'
+import { inicioNavegacao } from '../../lib/utilitariosNavegador'
 
 export interface FormVerArquivoProps {
   servidores: ServidorUtil[]
@@ -21,16 +26,18 @@ export interface FormVerArquivoProps {
   raizesPorServidor: Record<string, string[]>
   iniciando: boolean
   onIniciar: (pedido: PedidoLeitura) => void
+  /** Lista pastas para o navegador; sem ele o botão Navegar… não aparece. */
+  onListar?: ListarPasta
 }
 
-export function FormVerArquivo({ servidores, raizesPorServidor, iniciando, onIniciar }: FormVerArquivoProps) {
+export function FormVerArquivo({ servidores, raizesPorServidor, iniciando, onIniciar, onListar }: FormVerArquivoProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
   const [diretorio, setDiretorio] = useState('')
   const [nome, setNome] = useState('')
   const [ultimas, setUltimas] = useState('')
+  const nav = useNavegadorPastas(servidor, onListar)
 
   const raizes = raizesPorServidor[servidor] ?? []
-  const avPasta = avisoPasta(diretorio, raizes)
   const avNome = avisoNome(nome)
   const avUltimas = ultimasLinhas(ultimas) === 'invalido'
     ? `Inteiro entre 1 e ${ULTIMAS_LINHAS_MAX}.` : undefined
@@ -56,15 +63,8 @@ export function FormVerArquivo({ servidores, raizesPorServidor, iniciando, onIni
             <option key={s.id} value={s.id}>{s.label}{s.configurado ? '' : ' (não configurado)'}</option>
           ))}
         </Select>
-        <div className="flex flex-col gap-1">
-          <Input label="Pasta" value={diretorio} onChange={e => setDiretorio(e.target.value)}
-            placeholder={raizes[0] ? `${raizes[0]}/…` : '/caminho/da/pasta'} autoComplete="off" spellCheck={false}
-            error={avPasta?.tom === 'erro' ? avPasta.texto : undefined}
-            ajuda="Caminho absoluto no servidor, abaixo de uma raiz liberada." />
-          {avPasta?.tom === 'neutro' && (
-            <span className="text-[11px] text-dim" data-raiz-de>{avPasta.texto}</span>
-          )}
-        </div>
+        <CampoPasta value={diretorio} onChange={setDiretorio} raizes={raizes}
+          onNavegar={nav.disponivel ? () => nav.abrir(inicioNavegacao(diretorio, raizes)) : undefined} />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-[1fr_180px_auto] gap-3 items-start">
         <Input label="Nome do arquivo" value={nome} onChange={e => setNome(e.target.value)}
@@ -80,6 +80,17 @@ export function FormVerArquivo({ servidores, raizesPorServidor, iniciando, onIni
           </Button>
         </div>
       </div>
+
+      {nav.disponivel && (
+        <NavegadorPastas
+          aberto={nav.aberto} listagem={nav.listagem} carregando={nav.carregando} erro={nav.erro}
+          mostrarOcultos={nav.ocultos} filtro={nav.filtro} onFiltro={nav.mudarFiltro}
+          onNavegar={nav.navegar} onMostrarOcultos={nav.mudarOcultos}
+          onUsarPasta={c => { setDiretorio(c); nav.fechar() }}
+          onEscolherArquivo={(p, n) => { setDiretorio(p); setNome(n); nav.fechar() }}
+          onFechar={nav.fechar}
+        />
+      )}
     </form>
   )
 }

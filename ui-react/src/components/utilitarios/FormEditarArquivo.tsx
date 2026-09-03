@@ -15,8 +15,12 @@ import { useState, type KeyboardEvent } from 'react'
 import { Save, FolderOpen, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Input, Select, Textarea } from '../ui/Input'
+import { CampoPasta } from './CampoPasta'
+import { NavegadorPastas } from './NavegadorPastas'
+import { useNavegadorPastas, type ListarPasta } from './useNavegadorPastas'
 import type { ServidorUtil } from '../../lib/utilitariosAdmin'
 import { avisoPasta } from '../../lib/utilitariosArquivo'
+import { inicioNavegacao } from '../../lib/utilitariosNavegador'
 import {
   CODIFICACOES_OPCOES, avisoNomeBase, codificacaoValida, contarBytes, contarLinhas, ehCodificacao, extensaoPadrao,
   extensaoValida, foraDoLatin1, gravacaoPronta, nomeArquivoCompleto, separarNomeExtensao,
@@ -41,12 +45,15 @@ export interface FormEditarArquivoProps {
   /** Lê o arquivo (nome completo) e devolve conteúdo + codificação detectada; null se falhou. */
   onCarregar: (pedido: { servidor: string; diretorio: string; nome: string }) => Promise<CarregadoExistente | null>
   onGravar: (pedido: PedidoGravacao) => void
+  /** Lista pastas para o navegador; sem ele o botão Navegar… não aparece. */
+  onListar?: ListarPasta
   /** Preenchimento inicial (ex.: vindo do "Ver arquivo"). */
   inicial?: { diretorio?: string; nome?: string; extensao?: string }
 }
 
 export function FormEditarArquivo({
-  servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, sujo, onSujo, onCarregar, onGravar, inicial,
+  servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, sujo, onSujo, onCarregar, onGravar,
+  onListar, inicial,
 }: FormEditarArquivoProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
   const [diretorio, setDiretorio] = useState(inicial?.diretorio ?? '')
@@ -58,6 +65,10 @@ export function FormEditarArquivo({
   const extensao = extensaoEscolhida || extensaoPadrao(extensoes)
   const [codificacao, setCodificacao] = useState<Codificacao>('utf-8')
   const [conteudo, setConteudo] = useState('')
+  // Arquivo do navegador que este formulário não representa (extensão em
+  // maiúscula, sem extensão, espaço nas pontas): avisa em vez de deformar o nome.
+  const [avisoEscolha, setAvisoEscolha] = useState<string | null>(null)
+  const nav = useNavegadorPastas(servidor, onListar)
 
   const raizes = raizesPorServidor[servidor] ?? []
   const avPasta = avisoPasta(diretorio, raizes)
@@ -97,9 +108,28 @@ export function FormEditarArquivo({
   // Mudar o nome pelo campo aceita "carga.txt" (em qualquer caixa) e separa a
   // extensão, se ela estiver na lista.
   const mudarNome = (v: string) => {
+    setAvisoEscolha(null)
     const { nome: n, extensao: e } = separarNomeExtensao(v)
     if (e && extensoes.includes(e) && v.trim().toLowerCase().endsWith(`.${e}`)) { setNome(n); setExtensaoEscolhida(e) }
     else setNome(v)
+  }
+  // Arquivo escolhido no navegador: pasta + nome separado da extensão. Extensão
+  // fora da lista fica marcada "(não liberada)" — o Carregar existente funciona
+  // (leitura não depende da lista), o Gravar fica desligado e diz por quê.
+  // O formulário só sabe pedir `nome.extensão` em minúscula: um `RELATORIO.TXT`,
+  // um `README` ou um nome com espaço na ponta viraria OUTRO arquivo (o servidor
+  // distingue caixa) — nesse caso preenche só a pasta e avisa.
+  const escolherArquivo = (pasta: string, completo: string) => {
+    setDiretorio(pasta)
+    nav.fechar()
+    const { nome: n, extensao: e } = separarNomeExtensao(completo)
+    const extensaoReal = completo.slice(completo.lastIndexOf('.') + 1)
+    if (e && extensaoReal === e && completo === completo.trim()) {
+      setNome(n); setExtensaoEscolhida(e); setAvisoEscolha(null)
+      return
+    }
+    setAvisoEscolha(`"${completo}" não segue o padrão nome + extensão em minúscula que este editor grava: `
+      + 'para ver o conteúdo use a aba Ver arquivo; para editar, renomeie no servidor.')
   }
 
   const desabilitado = !podeGravar
@@ -125,15 +155,9 @@ export function FormEditarArquivo({
             <option key={s.id} value={s.id}>{s.label}{s.configurado ? '' : ' (não configurado)'}</option>
           ))}
         </Select>
-        <div className="flex flex-col gap-1">
-          <Input label="Pasta" value={diretorio} onChange={e => setDiretorio(e.target.value)} disabled={desabilitado}
-            placeholder={raizes[0] ? `${raizes[0]}/…` : '/caminho/da/pasta'} autoComplete="off" spellCheck={false}
-            error={avPasta?.tom === 'erro' ? avPasta.texto : undefined}
-            ajuda="Caminho absoluto no servidor, abaixo de uma raiz liberada. A pasta precisa existir." />
-          {avPasta?.tom === 'neutro' && (
-            <span className="text-[11px] text-dim" data-raiz-de>{avPasta.texto}</span>
-          )}
-        </div>
+        <CampoPasta value={diretorio} onChange={setDiretorio} raizes={raizes} disabled={desabilitado}
+          ajuda="Caminho absoluto no servidor, abaixo de uma raiz liberada. A pasta precisa existir."
+          onNavegar={nav.disponivel ? () => nav.abrir(inicioNavegacao(diretorio, raizes)) : undefined} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-[1fr_160px_200px_auto] gap-3 items-start">
@@ -158,6 +182,11 @@ export function FormEditarArquivo({
           </Button>
         </div>
       </div>
+      {avisoEscolha && (
+        <p className="text-xs text-amber-700 dark:text-amber-300 inline-flex items-start gap-1.5" data-aviso="arquivo-escolhido">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0" /> <span>{avisoEscolha}</span>
+        </p>
+      )}
 
       <div className="flex flex-col gap-1">
         <Textarea label="Conteúdo" value={conteudo} onChange={e => mudarConteudo(e.target.value)} onKeyDown={teclas}
@@ -175,6 +204,17 @@ export function FormEditarArquivo({
           </span>
         </div>
       </div>
+
+      {nav.disponivel && (
+        <NavegadorPastas
+          aberto={nav.aberto} listagem={nav.listagem} carregando={nav.carregando} erro={nav.erro}
+          mostrarOcultos={nav.ocultos} filtro={nav.filtro} onFiltro={nav.mudarFiltro}
+          onNavegar={nav.navegar} onMostrarOcultos={nav.mudarOcultos}
+          onUsarPasta={c => { setDiretorio(c); nav.fechar() }}
+          onEscolherArquivo={escolherArquivo}
+          onFechar={nav.fechar}
+        />
+      )}
     </form>
   )
 }

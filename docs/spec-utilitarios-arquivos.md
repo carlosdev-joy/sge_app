@@ -479,6 +479,22 @@ mostra o aviso e nada quebra no resto do Orquestra.
   preenche nome e, na aba de edição, extensão), `CampoPasta` ganha o botão; testes de
   listagem (ordem, ocultos, truncado, raiz inativa, symlink para fora aparece como `link`
   mas não desce); `npm run build` commitado.
+- Como ficou: o navegador vive DENTRO de cada formulário (hook
+  `components/utilitarios/useNavegadorPastas.ts`: abrir, descer, subir, ocultos, número
+  de série contra resposta atrasada, pasta digitada inválida → erro na tela + volta às
+  raízes); a página só passa `onListar` (o `apiFetch` de `GET /utilitarios/pasta/listar`).
+  Assim os formulários continuam apresentação pura e a bancada de node prova o fluxo
+  inteiro (Navegar… → raiz → pasta → arquivo → campos preenchidos) sem rede. Links só
+  ganham `alvo` (e só descem) quando apontam para dentro das raízes; o servidor resolve
+  no máximo 200 links por listagem, na ordem da tela (os demais ficam "não verificados" e
+  o clique tenta); no máximo 20 mil entradas brutas são lidas (`truncado`).
+- **A resposta da listagem é LEXICAL**: `caminho`, `raiz` e `pai` são o que o usuário
+  pediu (normalizado), e é por eles que o navegador desce, sobe e preenche os campos —
+  o `ler`/`gravar` conferem lexicalmente, e com raiz que é symlink o caminho real cairia
+  fora (403 falso, achado das duas revisões da F6). `caminho_real` vai junto, como nota
+  ("→ /u01/…") na trilha. O Modal da casa renderiza DENTRO do `<form>` do formulário:
+  todo botão do navegador é `type="button"` e Enter no filtro é prevenido — senão Fechar
+  disparava uma leitura (Iniciar) na aba Ver arquivo.
 - Critérios de aceite:
   - dado duas raízes ativas, quando abrir Navegar…, então a primeira tela lista as duas e
     nada mais; com uma só, abre direto nela;
@@ -610,3 +626,25 @@ Ainda em aberto:
     em volume. Junto com o item 7.
 11. **413 cedo**: o teto é aplicado depois de ler o corpo inteiro (o nginx aceita 64 MB); um
     `Content-Length` acima do teto poderia ser recusado antes de ler. Backlog.
+12. **Fila do executor sem teto** (auditoria da F6): as 4 threads dos Utilitários (por
+    worker) atendem ler/gravar/listar/testar; 8 listagens de 50 mil entradas em paralelo
+    fizeram uma listagem pequena esperar ~10 s (o resto da API não sofre — o executor é
+    dedicado). Teto na fila com 503 "ocupado" ou semáforo por usuário. Backlog; o corte de
+    20 mil entradas brutas (`LISTAGEM_BRUTA_MAX`) já limita o pior caso.
+13. **Oráculo residual para quem PLANTA o link** (auditoria da F6): link para
+    `/naoexiste/x` responde 404 e link para `/etc/naoexiste` responde 403, porque o
+    `realpath` do OpenSSH tolera só o último componente ausente — revela se a pasta-mãe do
+    alvo existe. Só quem cria o link (shell no servidor) escolhe o alvo, e esse já lê o
+    servidor direto. Fechável mapeando o 404 num componente-link para 403 (um `lstat` por
+    nível); não vale o custo agora.
+14. **Nomes que o editor não representa** (revisão da F6): a aba Criar/editar só sabe pedir
+    `nome.extensão` em minúscula (a lista de extensões é minúscula e o servidor distingue
+    caixa). `RELATORIO.TXT`, `README` (sem extensão) e nomes com espaço nas pontas não podem
+    ser carregados nem gravados por ela — o navegador preenche só a pasta e avisa; a aba Ver
+    arquivo lê qualquer nome. Suportar nome completo no editor (campo único + extensão
+    inferida) fica como melhoria.
+15. **Raiz cadastrada que aponta para pasta do sistema** (auditoria da F6, corrigido): a
+    régua `RAIZES_PROIBIDAS` vale para o caminho REAL — raiz que no servidor é link para
+    `/etc` não lista, não lê, não grava, e o Testar do Admin diz "pasta do sistema — esta
+    raiz NÃO vale". Quem escreve na pasta-mãe de uma raiz (ou uma raiz cadastrada e ausente
+    no servidor) não transforma mais a conta SSH da API em leitor de `/etc`.

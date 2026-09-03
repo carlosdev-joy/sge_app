@@ -25,6 +25,16 @@ import {
   erroGravacao, nomeArquivoCompleto,
   type ErroGravacao, type PedidoGravacao, type ResultadoGravacao,
 } from '../lib/utilitariosGravacao'
+import type { Listagem } from '../lib/utilitariosNavegador'
+import type { ListarPasta } from '../components/utilitarios/useNavegadorPastas'
+
+// Navegador de pastas (F6): a listagem vem daqui; os formulários cuidam do resto.
+const listarPasta: ListarPasta = (servidor, caminho, mostrarOcultos) => {
+  const q = new URLSearchParams({ servidor })
+  if (caminho) q.set('caminho', caminho)
+  if (mostrarOcultos) q.set('mostrar_ocultos', 'true')
+  return apiFetch<Listagem>(`/utilitarios/pasta/listar?${q.toString()}`)
+}
 
 const TABS = [
   { id: 'ver', label: 'Ver arquivo' },
@@ -234,6 +244,7 @@ export default function Utilitarios() {
           raizesPorServidor={raizesPorServidor}
           iniciando={leitura.isPending}
           onIniciar={iniciar}
+          onListar={listarPasta}
         />
       )}
 
@@ -249,6 +260,7 @@ export default function Utilitarios() {
           onSujo={setSujo}
           onCarregar={carregar}
           onGravar={gravar}
+          onListar={listarPasta}
         />
       )}
 
