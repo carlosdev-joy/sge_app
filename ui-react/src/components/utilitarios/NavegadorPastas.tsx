@@ -1,18 +1,26 @@
 // Utilitários — navegador de pastas (F6): desce das raízes cadastradas até a
 // pasta desejada e devolve a pasta (Usar esta pasta) ou o arquivo clicado.
-// Apresentação pura: a listagem vem por props (a página chama a API); daqui
-// saem só gestos. É o que permite a bancada de node renderizar e clicar.
+// Apresentação pura: a listagem (e o filtro) vêm por props — o estado vive no
+// hook useNavegadorPastas, no formulário; daqui saem só gestos. É o que permite
+// a bancada de node renderizar e clicar.
 //
-// Nunca sobe acima da raiz: o "Subir" segue o `pai` que a API devolve (null na
-// raiz) e o nível zero é a lista de raízes. Ocultos ficam escondidos por
-// padrão — `.ssh`, `.bash_history` e afins não aparecem por acidente.
-import { useState, type KeyboardEvent } from 'react'
+// Navega pelo caminho LEXICAL da resposta (`listagem.caminho`), não pelo real:
+// o `ler`/`gravar` conferem lexicalmente e, com raiz que é symlink, o real
+// cairia fora. Nunca sobe acima da raiz: o "Subir" segue o `pai` que a API
+// devolve (null na raiz) e o nível zero é a lista de raízes. Ocultos ficam
+// escondidos por padrão — `.ssh`, `.bash_history` e afins não aparecem por
+// acidente.
+//
+// ⚠️ O Modal da casa renderiza inline, DENTRO do <form> do formulário que o
+// abriu: todo botão aqui é type="button" e Enter no filtro não pode chegar ao
+// form — senão Fechar dispararia uma leitura (achado da revisão da F6).
+import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { Folder, FolderOpen, FileText, Link2, ArrowUp, RefreshCw, AlertTriangle, Check, EyeOff, Eye } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Switch } from '../ui/Switch'
 import {
-  caminhoDaEntrada, descricaoEntrada, ehArquivo, migalhas, podeDescer,
+  caminhoDaEntrada, descricaoEntrada, ehArquivo, migalhas, podeDescer, podeTentar,
   type EntradaPasta, type Listagem,
 } from '../../lib/utilitariosNavegador'
 
@@ -23,25 +31,39 @@ export interface NavegadorPastasProps {
   carregando: boolean
   erro: string | null
   mostrarOcultos: boolean
+  /** Filtro por nome (o hook zera ao abrir e ao descer). */
+  filtro: string
+  onFiltro: (v: string) => void
   /** null = voltar ao nível zero. */
   onNavegar: (caminho: string | null) => void
   onMostrarOcultos: (v: boolean) => void
   onUsarPasta: (caminho: string) => void
-  /** Clique num arquivo: pasta real + nome. */
+  /** Clique num arquivo: pasta (lexical) + nome. */
   onEscolherArquivo: (pasta: string, nome: string) => void
   onFechar: () => void
 }
 
 export function NavegadorPastas({
-  aberto, listagem, carregando, erro, mostrarOcultos,
+  aberto, listagem, carregando, erro, mostrarOcultos, filtro, onFiltro,
   onNavegar, onMostrarOcultos, onUsarPasta, onEscolherArquivo, onFechar,
 }: NavegadorPastasProps) {
-  const [filtro, setFiltro] = useState('')
-  const atual = listagem?.caminho_real ?? null
+  const painel = useRef<HTMLDivElement>(null)
+  const atual = listagem?.caminho ?? null
   const trilha = migalhas(atual, listagem?.raiz ?? null)
   const nivelZero = atual === null
+  const real = listagem?.caminho_real ?? null
   const entradas = (listagem?.entradas ?? []).filter(e =>
     !filtro.trim() || e.nome.toLowerCase().includes(filtro.trim().toLowerCase()))
+
+  // Ao terminar de listar, a lista antiga (e o botão clicado) já não existe e o
+  // foco cai no <body> — o Backspace não chegaria ao painel. Devolve o foco.
+  useEffect(() => {
+    if (!aberto || carregando) return
+    const el = painel.current
+    if (!el) return
+    const ativo = document.activeElement
+    if (!ativo || ativo === document.body || !el.contains(ativo)) el.focus()
+  }, [aberto, carregando, listagem])
 
   const subir = () => {
     if (!listagem) return
@@ -49,21 +71,22 @@ export function NavegadorPastas({
     else if (!nivelZero) onNavegar(null)
   }
   const teclas = (e: KeyboardEvent<HTMLDivElement>) => {
+    const alvo = e.target as HTMLElement
+    const emCampo = alvo.tagName === 'INPUT' || alvo.tagName === 'TEXTAREA'
+    // Enter no filtro: o <form> de fora faria a submissão implícita (Iniciar).
+    if (e.key === 'Enter' && emCampo) { e.preventDefault(); return }
     // Backspace fora de um campo de texto sobe um nível (nunca acima da raiz:
     // na raiz volta ao nível zero, no nível zero não faz nada).
-    const alvo = e.target as HTMLElement
-    if (e.key === 'Backspace' && alvo.tagName !== 'INPUT' && alvo.tagName !== 'TEXTAREA') {
-      e.preventDefault(); subir()
-    }
+    if (e.key === 'Backspace' && !emCampo) { e.preventDefault(); subir() }
   }
   const abrir = (e: EntradaPasta) => {
-    if (podeDescer(e)) { setFiltro(''); onNavegar(caminhoDaEntrada(atual, e)) }
+    if (podeDescer(e) || podeTentar(e)) { onFiltro(''); onNavegar(caminhoDaEntrada(atual, e)) }
     else if (ehArquivo(e) && atual) onEscolherArquivo(atual, e.nome)
   }
 
   return (
     <Modal open={aberto} onClose={onFechar} title="Navegar pelas pastas" size="lg">
-      <div className="flex flex-col gap-3" onKeyDown={teclas} data-navegador>
+      <div ref={painel} tabIndex={-1} className="flex flex-col gap-3 outline-none" onKeyDown={teclas} data-navegador>
         {/* migalhas */}
         <nav className="flex flex-wrap items-center gap-1 text-xs" aria-label="Caminho" data-migalhas>
           <button type="button" onClick={() => onNavegar(null)}
@@ -77,6 +100,11 @@ export function NavegadorPastas({
                 data-migalha={m.caminho}>{m.rotulo}</button>
             </span>
           ))}
+          {real && atual && real !== atual && (
+            <span className="text-[11px] text-dim font-mono ml-1" data-real title="Caminho real no servidor (a raiz é um link)">
+              → {real}
+            </span>
+          )}
         </nav>
 
         <div className="flex items-center gap-2 flex-wrap">
@@ -84,7 +112,7 @@ export function NavegadorPastas({
             title="Subir um nível (Backspace)" data-acao="subir">
             <ArrowUp size={13} /> Subir
           </Button>
-          <input value={filtro} onChange={e => setFiltro(e.target.value)} placeholder="filtrar por nome"
+          <input value={filtro} onChange={e => onFiltro(e.target.value)} placeholder="filtrar por nome"
             aria-label="Filtrar por nome" autoComplete="off" spellCheck={false} data-campo="filtro"
             className="bg-panel border border-edge text-ink rounded-md px-2 py-1 text-xs placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 w-44" />
           <span className="ml-auto">
@@ -111,12 +139,15 @@ export function NavegadorPastas({
               {entradas.map(e => {
                 const desce = podeDescer(e)
                 const arquivo = ehArquivo(e)
-                const inerte = !desce && !arquivo
+                const tentar = podeTentar(e)
+                const inerte = !desce && !arquivo && !tentar
                 return (
                   <li key={e.nome} data-entrada={e.nome} data-tipo={e.tipo} data-alvo={e.alvo ?? undefined}>
                     <button type="button" onClick={() => abrir(e)} disabled={inerte}
                       className="w-full flex items-center gap-3 px-3 py-1.5 text-left hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed"
-                      title={inerte ? 'Fora dos diretórios liberados ou link quebrado' : desce ? 'Entrar (Enter)' : 'Escolher este arquivo'}>
+                      title={inerte ? 'Fora dos diretórios liberados ou link quebrado'
+                        : tentar ? 'Link não verificado: clique para tentar abrir'
+                          : desce ? 'Entrar (Enter)' : 'Escolher este arquivo'}>
                       {e.tipo === 'link'
                         ? <Link2 size={14} className="text-slate-400 shrink-0" />
                         : desce
@@ -141,14 +172,17 @@ export function NavegadorPastas({
         <div className="flex items-center justify-between gap-3 flex-wrap text-[11px] text-dim">
           <span data-rodape>
             {listagem?.truncado && <span className="text-amber-700 dark:text-amber-300">Lista truncada em {listagem.entradas.length} entradas. </span>}
+            {!!listagem?.links_nao_resolvidos && (
+              <span className="text-amber-700 dark:text-amber-300">{listagem.links_nao_resolvidos} links não verificados. </span>
+            )}
             {listagem && listagem.ocultos_omitidos > 0 && !mostrarOcultos && (
               <span className="inline-flex items-center gap-1"><EyeOff size={11} /> {listagem.ocultos_omitidos} ocultos escondidos</span>
             )}
             {listagem && mostrarOcultos && !nivelZero && <span className="inline-flex items-center gap-1"><Eye size={11} /> ocultos visíveis</span>}
           </span>
           <span className="inline-flex gap-2">
-            <Button variant="secondary" size="sm" onClick={onFechar} data-acao="fechar">Fechar</Button>
-            <Button size="sm" onClick={() => atual && onUsarPasta(atual)} disabled={nivelZero || carregando}
+            <Button type="button" variant="secondary" size="sm" onClick={onFechar} data-acao="fechar">Fechar</Button>
+            <Button type="button" size="sm" onClick={() => atual && onUsarPasta(atual)} disabled={nivelZero || carregando}
               title={nivelZero ? 'Entre numa raiz primeiro' : 'Preenche o campo Pasta com esta pasta'} data-acao="usar-pasta">
               {nivelZero ? <FolderOpen size={13} /> : <Check size={13} />} Usar esta pasta
             </Button>

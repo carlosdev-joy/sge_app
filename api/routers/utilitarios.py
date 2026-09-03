@@ -322,15 +322,17 @@ async def utilitarios_listar_pasta(servidor: str = Query("datastage"),
     try:
         servidor = svc.servidor_valido(servidor)
     except svc.ArquivoError as e:
+        _auditar(usuario=usuario, servidor=str(servidor)[:50], acao="listar", caminho=str(caminho or ""),
+                 resultado="erro", detalhe=e.detail, duracao_ms=_ms(t0))
         raise HTTPException(status_code=e.status, detail=e.detail)
     cfg = _config_do_banco()
     raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
 
     if caminho is None or not str(caminho).strip():
         return {
-            "caminho_real": None, "raiz": None, "pai": None,
+            "caminho": None, "caminho_real": None, "raiz": None, "pai": None,
             "entradas": [{"nome": r, "tipo": "raiz", "tamanho_bytes": None, "modificado_em": None} for r in raizes],
-            "ocultos_omitidos": 0, "truncado": False,
+            "ocultos_omitidos": 0, "truncado": False, "links_nao_resolvidos": 0,
         }
     if not raizes:
         _auditar(usuario=usuario, servidor=servidor, acao="listar", caminho=str(caminho),
@@ -362,6 +364,9 @@ async def utilitarios_listar_pasta(servidor: str = Query("datastage"),
         detalhe += " (lista truncada)"
     if resultado["ocultos_omitidos"]:
         detalhe += f", {resultado['ocultos_omitidos']} ocultos omitidos"
+    if resultado["caminho_real"] != resultado["caminho"]:
+        # O rastro guarda o real; o link que o usuário atravessou fica no detalhe.
+        detalhe += f", pedido: {resultado['caminho']}"
     _auditar(usuario=usuario, servidor=servidor, acao="listar", caminho=resultado["caminho_real"],
              resultado="ok", detalhe=detalhe, duracao_ms=_ms(t0))
     resultado["duracao_ms"] = _ms(t0)

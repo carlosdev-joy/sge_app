@@ -10,24 +10,35 @@ export interface EntradaPasta {
   tipo: TipoEntrada
   tamanho_bytes: number | null
   modificado_em: string | null
-  /** Só em links: 'pasta' | 'arquivo' quando o alvo está dentro das raízes; null = fora ou quebrado. */
-  alvo?: 'pasta' | 'arquivo' | null
+  /** Só em links: 'pasta' | 'arquivo' quando o alvo está dentro das raízes;
+   *  'desconhecido' quando o servidor não chegou a resolver (acima do teto de
+   *  links por listagem) — o clique tenta; null = fora ou quebrado. */
+  alvo?: 'pasta' | 'arquivo' | 'desconhecido' | null
 }
 
 export interface Listagem {
-  /** null no nível zero (a lista das raízes). */
+  /** Caminho LEXICAL pedido (normalizado) — é por ele que se navega e se preenche
+   *  o formulário, porque o `ler`/`gravar` conferem lexicalmente. null no nível zero. */
+  caminho: string | null
+  /** O que o servidor diz que o caminho é (raiz-symlink resolvida); informativo. */
   caminho_real: string | null
   raiz: string | null
   pai: string | null
   entradas: EntradaPasta[]
   ocultos_omitidos: number
   truncado: boolean
+  links_nao_resolvidos?: number
   duracao_ms?: number
 }
 
 /** Dá para entrar? Raiz, pasta, ou link cujo alvo é pasta dentro das raízes. */
 export function podeDescer(e: EntradaPasta): boolean {
   return e.tipo === 'raiz' || e.tipo === 'pasta' || (e.tipo === 'link' && e.alvo === 'pasta')
+}
+
+/** Link que o servidor não verificou: o clique tenta listar (o servidor decide). */
+export function podeTentar(e: EntradaPasta): boolean {
+  return e.tipo === 'link' && e.alvo === 'desconhecido'
 }
 
 /** É um arquivo que dá para escolher? Arquivo, ou link cujo alvo é arquivo dentro das raízes. */
@@ -66,6 +77,7 @@ export function descricaoEntrada(e: EntradaPasta): string {
     case 'link':
       if (e.alvo === 'pasta') return 'link → pasta'
       if (e.alvo === 'arquivo') return e.tamanho_bytes != null ? `link → arquivo · ${formatarTamanho(e.tamanho_bytes)}` : 'link → arquivo'
+      if (e.alvo === 'desconhecido') return 'link (não verificado — clique para tentar)'
       return 'link (fora dos diretórios liberados ou quebrado)'
     default: return 'outro'
   }

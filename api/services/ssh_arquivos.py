@@ -202,7 +202,21 @@ def normalizar_diretorio(bruto) -> str:
     s = posixpath.normpath("/" + s.lstrip("/"))
     if utf16_len(s) > LIMITE_CAMINHO:
         raise ArquivoError(422, f"Caminho longo demais (máximo {LIMITE_CAMINHO} caracteres).")
+    # Componente maior que NAME_MAX não existe em lugar nenhum: recusar aqui
+    # poupa uma conexão SSH que terminaria num `Failure` sem explicação.
+    for parte in s.split("/"):
+        if len(parte.encode("utf-8")) > LIMITE_NOME_BYTES:
+            raise ArquivoError(
+                422, f"Um nome de pasta no caminho passa de {LIMITE_NOME_BYTES} bytes.")
     return s
+
+
+def raiz_proibida(caminho: str) -> str | None:
+    """A pasta do sistema que `caminho` é (ou está dentro), ou None."""
+    for proibida in RAIZES_PROIBIDAS:
+        if caminho == proibida or caminho.startswith(proibida + "/"):
+            return proibida
+    return None
 
 
 def normalizar_raiz(bruto) -> str:
@@ -212,10 +226,10 @@ def normalizar_raiz(bruto) -> str:
         raise ArquivoError(422, "A raiz não pode ser a barra (/): escolha uma pasta.")
     if utf16_len(s) > LIMITE_RAIZ:
         raise ArquivoError(422, f"Raiz longa demais (máximo {LIMITE_RAIZ} caracteres).")
-    for proibida in RAIZES_PROIBIDAS:
-        if s == proibida or s.startswith(proibida + "/"):
-            raise ArquivoError(
-                422, f"{proibida} é pasta do sistema e não pode ser raiz dos Utilitários.")
+    proibida = raiz_proibida(s)
+    if proibida:
+        raise ArquivoError(
+            422, f"{proibida} é pasta do sistema e não pode ser raiz dos Utilitários.")
     return s
 
 
@@ -401,6 +415,12 @@ def _erro_servidor(e: Exception, caminho: str, *, acao: str = "acessar",
         return ArquivoError(403, f"Não dá para {acao} {caminho}: o sistema de arquivos está montado somente leitura.")
     if num in (errno.ENOSPC, errno.EDQUOT):
         return ArquivoError(507, f"Não dá para {acao} {caminho}: sem espaço livre (ou cota estourada) no servidor.")
+    if acao == "acessar" and diagnostico is None:
+        # Leitura/listagem: as causas de escrita não se aplicam, e o texto cru do
+        # paramiko (pode trazer host:porta) fica no log, não na resposta.
+        return ArquivoError(
+            502, f"O servidor recusou acessar {caminho} — detalhe registrado no log da API.",
+            interno=f"{caminho}: {e!r}")
     causa = diagnostico or ("causas comuns: sistema de arquivos somente leitura, disco cheio ou cota "
                             "estourada — confira no servidor")
     return ArquivoError(
@@ -445,14 +465,19 @@ def _stat(sftp, caminho: str):
 
 def raizes_no_servidor(sftp, raizes) -> list[str]:
     """As raízes lexicais MAIS o que o servidor diz que elas são (uma raiz pode ser
-    symlink: `/dados → /u01/dados`). Raiz que o servidor não resolve não soma nada."""
+    symlink: `/dados → /u01/dados`). Raiz que o servidor não resolve não soma nada.
+
+    A régua das pastas do sistema vale para o caminho REAL também: uma raiz
+    cadastrada que no servidor é link para `/etc` não soma `/etc` — e por isso
+    `resolver_real` recusa tudo que passe por ela (a régua só no texto cadastrado
+    era contornável por quem escreve na pasta-mãe da raiz)."""
     reais = [posixpath.normpath("/" + str(r).lstrip("/")) for r in raizes]
     for r in list(reais):
         try:
             real = _normalize(sftp, r)
         except ArquivoError:
             continue
-        if real != "/" and real not in reais:
+        if real != "/" and raiz_proibida(real) is None and real not in reais:
             reais.append(real)
     return reais
 
@@ -469,6 +494,11 @@ def resolver_real(sftp, caminho: str, raizes) -> str:
 
     atual = raiz
     real = _normalize(sftp, atual)
+    proibida = raiz_proibida(real)
+    if proibida:
+        raise ArquivoError(
+            403, f"A raiz {raiz} aponta no servidor para {proibida}, pasta do sistema — "
+                 "não vale como raiz dos Utilitários.", resultado="negado")
     if raiz_de(real, reais) is None:
         raise fora
     resto = caminho[len(raiz):].strip("/")
@@ -573,6 +603,11 @@ def testar_raiz(sftp, caminho: str) -> dict:
     if not eh_pasta:
         return {"existe": True, "eh_pasta": False, "legivel": False, "caminho_real": real,
                 "detalhe": link + "o caminho existe, mas é um arquivo — uma raiz precisa ser pasta"}
+    proibida = raiz_proibida(real)
+    if proibida:
+        return {"existe": True, "eh_pasta": True, "legivel": False, "caminho_real": real,
+                "detalhe": link + f"{proibida} é pasta do sistema — esta raiz NÃO vale: o Orquestra "
+                                  "recusa listar, ler e gravar por ela"}
     try:
         sftp.listdir(real)
         legivel, detalhe = True, "existe e é legível pelo usuário SSH"
@@ -797,8 +832,11 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
 # ── Listagem de pasta (F6 — navegador) ──────────────────────────────────────
 
 LISTAGEM_MAX = 2000
-# Links resolvidos por listagem (cada um custa uma ida ao servidor); os demais
-# aparecem como link sem alvo, e o clique neles diz o que são.
+# Entradas BRUTAS lidas do servidor antes de cortar: `listdir_iter` para de ler
+# aqui (uma pasta de 100 mil arquivos não carrega inteira no executor).
+LISTAGEM_BRUTA_MAX = 20_000
+# Links resolvidos por listagem (cada um custa uma ida ao servidor), na ordem em
+# que aparecem na tela; os demais ficam `alvo: 'desconhecido'` e o clique tenta.
 LINKS_RESOLVIDOS_MAX = 200
 
 
@@ -831,26 +869,40 @@ def ordenar_entradas(entradas: list[dict]) -> list[dict]:
 
 
 def listar_pasta(sftp, caminho: str, raizes, *, mostrar_ocultos: bool = False,
-                 limite: int = LISTAGEM_MAX) -> dict:
-    """Entradas de uma pasta abaixo de uma raiz (já conferida por `preparar_pasta`).
+                 limite: int = LISTAGEM_MAX, limite_bruto: int = LISTAGEM_BRUTA_MAX,
+                 max_links: int = LINKS_RESOLVIDOS_MAX) -> dict:
+    """Entradas de uma pasta abaixo de uma raiz.
+
+    `caminho`, `raiz` e `pai` da resposta são LEXICAIS (o que o usuário pediu,
+    normalizado): é por eles que o navegador desce, sobe e preenche os campos —
+    o `ler`/`gravar` conferem lexicalmente, e uma raiz que é symlink devolveria
+    caminhos reais que a conferência recusa. `caminho_real` vai junto, informativo.
 
     Ocultos (`.`) ficam de fora por padrão e são contados; links são mostrados e só
     ganham `alvo` ('pasta' | 'arquivo') quando apontam para DENTRO das raízes —
-    é o `alvo` que autoriza o navegador a descer. `pai` nunca sobe acima da raiz."""
+    é o `alvo` que autoriza o navegador a descer; acima de `max_links` ficam
+    'desconhecido' (o clique tenta). `pai` nunca sobe acima da raiz."""
+    caminho, raiz = preparar_pasta(caminho, raizes)
     real = resolver_real(sftp, caminho, raizes)
     st = _stat(sftp, real)
     if not statmod.S_ISDIR(getattr(st, "st_mode", 0) or 0):
-        raise ArquivoError(422, f"{real} é um arquivo, não uma pasta.")
+        raise ArquivoError(422, f"{caminho} é um arquivo, não uma pasta.")
+    brutos: list = []
+    truncado = False
     try:
-        brutos = list(sftp.listdir_attr(real))
+        iterador = sftp.listdir_iter(real) if callable(getattr(sftp, "listdir_iter", None)) \
+            else sftp.listdir_attr(real)
+        for a in iterador:
+            brutos.append(a)
+            if len(brutos) >= limite_bruto:
+                truncado = True
+                break
     except (OSError, UnicodeDecodeError) as e:
         raise _erro_servidor(e, real) from e
 
     reais = raizes_no_servidor(sftp, raizes)
-    raiz = raiz_de(real, reais)
     entradas: list[dict] = []
     ocultos = 0
-    links_resolvidos = 0
     for a in brutos:
         nome = str(getattr(a, "filename", "") or "")
         if nome in ("", ".", ".."):
@@ -867,38 +919,48 @@ def listar_pasta(sftp, caminho: str, raizes, *, mostrar_ocultos: bool = False,
             "modificado_em": _mtime_iso(a),
         }
         if tipo == "link":
-            e["alvo"] = None
-            if links_resolvidos < LINKS_RESOLVIDOS_MAX:
-                links_resolvidos += 1
-                try:
-                    alvo = _normalize(sftp, posixpath.join(real, nome))
-                    if raiz_de(alvo, reais) is not None:
-                        st_a = _stat(sftp, alvo)
-                        tipo_alvo = tipo_de_modo(int(getattr(st_a, "st_mode", 0) or 0))
-                        if tipo_alvo in ("pasta", "arquivo"):
-                            e["alvo"] = tipo_alvo
-                            if tipo_alvo == "arquivo":
-                                e["tamanho_bytes"] = int(getattr(st_a, "st_size", 0) or 0)
-                except ArquivoError:
-                    pass  # quebrado, sem permissão ou fora: fica como link sem alvo
+            e["alvo"] = "desconhecido"
         entradas.append(e)
 
+    # Links: resolvidos na ordem da TELA (por nome), até `max_links`; o alvo
+    # decide se é pasta (sobe para o bloco das pastas) ou arquivo.
     entradas = ordenar_entradas(entradas)
-    truncado = len(entradas) > limite
-    if truncado:
+    resolvidos = 0
+    nao_resolvidos = 0
+    for e in entradas:
+        if e["tipo"] != "link":
+            continue
+        if resolvidos >= max_links:
+            nao_resolvidos += 1
+            continue
+        resolvidos += 1
+        e["alvo"] = None
+        try:
+            alvo = _normalize(sftp, posixpath.join(real, e["nome"]))
+            if raiz_de(alvo, reais) is not None:
+                st_a = _stat(sftp, alvo)
+                tipo_alvo = tipo_de_modo(int(getattr(st_a, "st_mode", 0) or 0))
+                if tipo_alvo in ("pasta", "arquivo"):
+                    e["alvo"] = tipo_alvo
+                    if tipo_alvo == "arquivo":
+                        e["tamanho_bytes"] = int(getattr(st_a, "st_size", 0) or 0)
+        except ArquivoError:
+            pass  # quebrado, sem permissão ou fora: fica como link sem alvo
+    entradas = ordenar_entradas(entradas)
+
+    if len(entradas) > limite:
+        truncado = True
         entradas = entradas[:limite]
-    pai = None
-    if raiz is not None and real != raiz:
-        candidato = posixpath.dirname(real)
-        if raiz_de(candidato, reais) is not None:
-            pai = candidato
+    pai = posixpath.dirname(caminho) if caminho != raiz else None
     return {
+        "caminho": caminho,
         "caminho_real": real,
         "raiz": raiz,
         "pai": pai,
         "entradas": entradas,
         "ocultos_omitidos": ocultos,
         "truncado": truncado,
+        "links_nao_resolvidos": nao_resolvidos,
     }
 
 

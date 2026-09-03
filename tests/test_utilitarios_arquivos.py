@@ -132,19 +132,23 @@ class TestCaminho:
         assert svc.normalizar_raiz(raiz) == raiz
 
     def test_raiz_longa_422_no_limite_do_indice(self):
-        assert svc.normalizar_raiz("/" + "a" * 799) == "/" + "a" * 799
+        # Componentes de até 255 bytes (NAME_MAX): 4 × 199 + barras = 800 exatos.
+        no_limite = "/" + "/".join(["a" * 199] * 4)
+        assert svc.utf16_len(no_limite) == 800
+        assert svc.normalizar_raiz(no_limite) == no_limite
         with pytest.raises(svc.ArquivoError) as exc:
-            svc.normalizar_raiz("/" + "a" * 801)
-        assert exc.value.status == 422
+            svc.normalizar_raiz("/" + "/".join(["a" * 200] * 4))   # 804
+        assert exc.value.status == 422 and "Raiz longa" in exc.value.detail
 
     def test_comprimento_conta_unidades_utf16(self):
-        # 600 emojis = 610 code points, mas 1.210 unidades UTF-16 (o que NVARCHAR conta).
+        # 60 emojis por componente = 240 bytes (cabe no NAME_MAX) e 120 unidades UTF-16
+        # (o que NVARCHAR conta): 9 componentes = 1.089 unidades > 1.000; 8 = 968.
         assert svc.utf16_len("😀") == 2
         assert svc.utf16_len("abc") == 3
         with pytest.raises(svc.ArquivoError) as exc:
-            svc.normalizar_diretorio("/" + "😀" * 500)  # 1 + 1.000 unidades > 1.000
-        assert exc.value.status == 422
-        assert svc.normalizar_diretorio("/" + "😀" * 499)
+            svc.normalizar_diretorio("/" + "/".join(["😀" * 60] * 9))
+        assert exc.value.status == 422 and "longo demais" in exc.value.detail
+        assert svc.normalizar_diretorio("/" + "/".join(["😀" * 60] * 8))
 
     def test_cortar_utf16_nao_parte_emoji(self):
         assert svc.cortar_utf16("a😀b", 2) == "a"
@@ -367,6 +371,9 @@ class FakeSftp:
             raise OSError(errno.EACCES, "Permission denied")
         pref = real.rstrip("/") + "/"
         return sorted({p[len(pref):].split("/")[0] for p in self.arvore if p.startswith(pref)})
+
+    def listdir_iter(self, caminho):
+        return iter(self.listdir_attr(caminho))
 
     def listdir_attr(self, caminho):
         """Como o READDIR do SFTP: atributos de lstat (link aparece como link),
@@ -936,7 +943,7 @@ class TestGravarArquivo:
         e = svc._erro_servidor(OSError(errno.ENOSPC, "No space left"), "/dados/bi/x.txt", acao="gravar em")
         assert e.status == 507 and "sem espaço" in e.detail
         e = svc._erro_servidor(OSError("Failure"), "/dados/bi/x.txt")
-        assert e.status == 502 and e.detail.startswith("O servidor recusou acessar /dados/bi/x.txt: causas comuns")
+        assert e.status == 502 and e.detail == "O servidor recusou acessar /dados/bi/x.txt — detalhe registrado no log da API."
         assert svc.diagnostico_pasta(object(), "/dados/bi") is None
 
 
@@ -950,8 +957,9 @@ class TestListarPasta:
         assert [e["nome"] for e in svc.ordenar_entradas(entradas)] == ["alfa", "atalho", "Beta", "Alfa.txt", "link.txt", "zeta.txt"]
 
     def test_lista_a_raiz_com_pastas_primeiro_e_ocultos_omitidos(self, sftp):
-        r = svc.listar_pasta(sftp, "/dados/bi", RAIZES)
-        assert r["caminho_real"] == "/dados/bi" and r["raiz"] == "/dados/bi" and r["pai"] is None
+        r = svc.listar_pasta(sftp, "/dados/bi/", RAIZES)
+        assert r["caminho"] == "/dados/bi" and r["caminho_real"] == "/dados/bi"
+        assert r["raiz"] == "/dados/bi" and r["pai"] is None and r["links_nao_resolvidos"] == 0
         nomes = [(e["nome"], e["tipo"]) for e in r["entradas"]]
         assert nomes[:2] == [("2026", "pasta"), ("logs", "pasta")]
         assert ("consulta.sql", "arquivo") in nomes and ("imagem.bin", "arquivo") in nomes
@@ -1019,6 +1027,66 @@ class TestListarPasta:
         with pytest.raises(svc.ArquivoError) as exc:
             svc.preparar_pasta("/dados/bi/../../etc", RAIZES)
         assert exc.value.status == 403 and exc.value.resultado == "negado"
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.normalizar_diretorio("/dados/bi/" + "a" * 300)   # NAME_MAX: 422 sem SSH
+        assert exc.value.status == 422 and "255 bytes" in exc.value.detail
+
+    def test_raiz_symlink_o_navegador_anda_pelo_caminho_lexical(self, sftp):
+        # Admin cadastrou /dados/link_raiz (link para /dados/param, que NÃO é raiz).
+        # A resposta é lexical: o que o navegador manda de volta o ler/listar aceitam.
+        raizes = ["/dados/link_raiz"]
+        r = svc.listar_pasta(sftp, "/dados/link_raiz", raizes)
+        assert r["caminho"] == "/dados/link_raiz" and r["caminho_real"] == "/dados/param"
+        assert r["raiz"] == "/dados/link_raiz" and r["pai"] is None
+        nomes = [e["nome"] for e in r["entradas"]]
+        assert nomes == ["sem_acesso", "parametros_latin1.param"]
+        # o clique no arquivo: pasta lexical + nome → ler aceita
+        lido = svc.ler_arquivo(sftp, posixpath.join(r["caminho"], "parametros_latin1.param"), raizes, teto_bytes=TETO)
+        assert lido["caminho"] == "/dados/param/parametros_latin1.param"
+        # e descer numa subpasta pelo caminho lexical também passa na guarda
+        assert svc.preparar_pasta(posixpath.join(r["caminho"], "sem_acesso"), raizes)[1] == "/dados/link_raiz"
+        with pytest.raises(svc.ArquivoError) as exc:   # o REAL, se alguém mandar, continua fora
+            svc.preparar_pasta("/dados/param/sem_acesso", raizes)
+        assert exc.value.status == 403
+
+    def test_raiz_que_e_link_para_pasta_do_sistema_nao_vale(self):
+        arvore = dict(ARVORE)
+        arvore["/etc/passwd"] = b"root:x:0:0\n"
+        arvore["/etc/ssh"] = None
+        arvore["/dados/link_etc"] = ("link", "/etc")
+        fake = FakeSftp(arvore)
+        raizes = ["/dados/link_etc"]
+        assert svc.raizes_no_servidor(fake, raizes) == ["/dados/link_etc"]   # /etc não soma
+        for chamada in (lambda: svc.listar_pasta(fake, "/dados/link_etc", raizes),
+                        lambda: svc.listar_pasta(fake, "/dados/link_etc/ssh", raizes),
+                        lambda: svc.ler_arquivo(fake, "/dados/link_etc/passwd", raizes, teto_bytes=TETO)):
+            with pytest.raises(svc.ArquivoError) as exc:
+                chamada()
+            assert exc.value.status == 403 and exc.value.resultado == "negado"
+            assert "pasta do sistema" in exc.value.detail
+        t = svc.testar_raiz(fake, "/dados/link_etc")
+        assert t["existe"] and t["eh_pasta"] and t["legivel"] is False
+        assert "é um link para /etc" in t["detalhe"] and "pasta do sistema" in t["detalhe"]
+
+    def test_links_acima_do_teto_ficam_desconhecidos_na_ordem_da_tela(self):
+        arvore = dict(ARVORE)
+        for i in range(5):
+            arvore[f"/dados/bi/2026/cargas/l_{i}.sql"] = ("link", "/dados/bi/consulta.sql")
+        r = svc.listar_pasta(FakeSftp(arvore), "/dados/bi/2026/cargas", RAIZES, max_links=3)
+        links = [(e["nome"], e["alvo"]) for e in r["entradas"] if e["tipo"] == "link"]
+        assert links == [("l_0.sql", "arquivo"), ("l_1.sql", "arquivo"), ("l_2.sql", "arquivo"),
+                         ("l_3.sql", "desconhecido"), ("l_4.sql", "desconhecido")]
+        assert r["links_nao_resolvidos"] == 2
+
+    def test_teto_bruto_para_de_ler_e_marca_truncado(self):
+        arvore = dict(ARVORE)
+        for i in range(6):
+            arvore[f"/dados/bi/2026/cargas/f_{i}.txt"] = b"x\n"
+        fake = FakeSftp(arvore)
+        r = svc.listar_pasta(fake, "/dados/bi/2026/cargas", RAIZES, limite_bruto=4)
+        assert r["truncado"] is True and len(r["entradas"]) <= 4
+        r = svc.listar_pasta(fake, "/dados/bi/2026/cargas", RAIZES)
+        assert r["truncado"] is False and len(r["entradas"]) == 7
 
 
 class TestTestarRaiz:

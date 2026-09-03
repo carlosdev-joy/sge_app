@@ -84,7 +84,8 @@ export function FormVerArquivo({ servidores, raizesPorServidor, iniciando, onIni
       {nav.disponivel && (
         <NavegadorPastas
           aberto={nav.aberto} listagem={nav.listagem} carregando={nav.carregando} erro={nav.erro}
-          mostrarOcultos={nav.ocultos} onNavegar={nav.navegar} onMostrarOcultos={nav.mudarOcultos}
+          mostrarOcultos={nav.ocultos} filtro={nav.filtro} onFiltro={nav.mudarFiltro}
+          onNavegar={nav.navegar} onMostrarOcultos={nav.mudarOcultos}
           onUsarPasta={c => { setDiretorio(c); nav.fechar() }}
           onEscolherArquivo={(p, n) => { setDiretorio(p); setNome(n); nav.fechar() }}
           onFechar={nav.fechar}

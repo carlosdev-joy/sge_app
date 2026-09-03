@@ -129,7 +129,7 @@ saida.puras = {
   descricao: [puras.descricaoEntrada(E('r', 'raiz')), puras.descricaoEntrada(E('p', 'pasta')),
               puras.descricaoEntrada(E('a', 'arquivo', { tamanho_bytes: 1536 })),
               puras.descricaoEntrada(E('l', 'link', { alvo: 'pasta' })), puras.descricaoEntrada(E('l', 'link', { alvo: 'arquivo', tamanho_bytes: 15 })),
-              puras.descricaoEntrada(E('l', 'link', { alvo: null }))],
+              puras.descricaoEntrada(E('l', 'link', { alvo: null })), puras.descricaoEntrada(E('l', 'link', { alvo: 'desconhecido' }))],
   erro: [puras.erroListagem({ status: 403, detail: 'Fora dos diretórios liberados.' }), puras.erroListagem({ status: 404 }),
          puras.erroListagem(new TypeError('Failed to fetch'))],
   inicio: [puras.inicioNavegacao('', ['/dados/bi', '/dados/param']), puras.inicioNavegacao('', ['/dados/bi/']),
@@ -138,23 +138,33 @@ saida.puras = {
 }
 
 // ── 2. o navegador ─────────────────────────────────────────────────────────
-const NIVEL_ZERO = { caminho_real: null, raiz: null, pai: null, ocultos_omitidos: 0, truncado: false,
+const NIVEL_ZERO = { caminho: null, caminho_real: null, raiz: null, pai: null, ocultos_omitidos: 0, truncado: false,
   entradas: [E('/dados/bi', 'raiz'), E('/dados/param', 'raiz')] }
-const BI = { caminho_real: '/dados/bi', raiz: '/dados/bi', pai: null, ocultos_omitidos: 1, truncado: false,
+const BI = { caminho: '/dados/bi', caminho_real: '/dados/bi', raiz: '/dados/bi', pai: null, ocultos_omitidos: 1, truncado: false,
+  links_nao_resolvidos: 1,
   entradas: [E('2026', 'pasta', { modificado_em: '2026-09-03 00:57:23' }), E('logs', 'pasta'),
              E('consulta.sql', 'arquivo', { tamanho_bytes: 15 }), E('imagem.bin', 'arquivo', { tamanho_bytes: 4102 }),
-             E('link_fora', 'link', { alvo: null }), E('atalho.param', 'link', { alvo: 'arquivo', tamanho_bytes: 15 })] }
-const CARGAS = { caminho_real: '/dados/bi/2026/cargas', raiz: '/dados/bi', pai: '/dados/bi/2026', ocultos_omitidos: 0, truncado: true,
-  entradas: [E('carga_utf8.txt', 'arquivo', { tamanho_bytes: 75 })] }
+             E('link_fora', 'link', { alvo: null }), E('atalho.param', 'link', { alvo: 'arquivo', tamanho_bytes: 15 }),
+             E('l_desconhecido', 'link', { alvo: 'desconhecido' }), E('RELATORIO.TXT', 'arquivo', { tamanho_bytes: 3 }),
+             E('README', 'arquivo', { tamanho_bytes: 2 })] }
+// Raiz que é symlink: o caminho lexical é o que se navega; o real só aparece como nota.
+const CARGAS = { caminho: '/dados/bi/2026/cargas', caminho_real: '/u01/dados/bi/2026/cargas', raiz: '/dados/bi', pai: '/dados/bi/2026',
+  ocultos_omitidos: 0, truncado: true, entradas: [E('carga_utf8.txt', 'arquivo', { tamanho_bytes: 75 })] }
 
+// O filtro é controlado (na página vive no hook useNavegadorPastas, que o zera ao
+// abrir); esta caixa faz o papel do hook.
+function Caixa({ props }) {
+  const [filtro, setFiltro] = mini.hooks.useState('')
+  return el(NavegadorPastas, Object.assign({}, props, { filtro, onFiltro: setFiltro }))
+}
 function montar(props) {
   const chamadas = { navegar: [], ocultos: [], usar: [], arquivo: [], fechar: 0 }
-  const tela = mini.montar(el(NavegadorPastas, Object.assign({
+  const tela = mini.montar(el(Caixa, { props: Object.assign({
     aberto: true, listagem: NIVEL_ZERO, carregando: false, erro: null, mostrarOcultos: false,
     onNavegar: (c) => chamadas.navegar.push(c), onMostrarOcultos: (v) => chamadas.ocultos.push(v),
     onUsarPasta: (c) => chamadas.usar.push(c), onEscolherArquivo: (p, n) => chamadas.arquivo.push([p, n]),
     onFechar: () => { chamadas.fechar++ },
-  }, props)))
+  }, props) }))
   return { tela, chamadas }
 }
 
@@ -176,16 +186,25 @@ function montar(props) {
               entradas: porAttr(tela, 'data-entrada').map(n => [n.props['data-entrada'], n.props['data-tipo'], n.props['data-alvo'] ?? null]),
               linkForaInerte: !!botaoDaEntrada(tela, 'link_fora').props.disabled,
               atalhoAtivo: !botaoDaEntrada(tela, 'atalho.param').props.disabled,
+              desconhecidoAtivo: !botaoDaEntrada(tela, 'l_desconhecido').props.disabled,
               subirDesligado: !!porAcao(tela, 'subir')[0].props.disabled,
               rodape: textoDe(porAttr(tela, 'data-rodape')[0]),
-              textoConsulta: textoDe(botaoDaEntrada(tela, 'consulta.sql')) }
+              textoConsulta: textoDe(botaoDaEntrada(tela, 'consulta.sql')),
+              real: porAttr(tela, 'data-real').length,
+              // dentro de um <form>, qualquer botão sem type="button" submeteria o formulário
+              todosTypeButton: tela.achar(n => n.tag === 'button').every(b => b.props.type === 'button') }
   tela.clicar(botaoDaEntrada(tela, '2026'))
+  tela.clicar(botaoDaEntrada(tela, 'l_desconhecido'))
   tela.clicar(botaoDaEntrada(tela, 'consulta.sql'))
   tela.clicar(botaoDaEntrada(tela, 'atalho.param'))
   tela.clicar(porAcao(tela, 'usar-pasta')[0])
   tela.clicar(porAcao(tela, 'subir')[0])          // na raiz: volta ao nível zero
   tela.disparar(porAttr(tela, 'data-navegador')[0], 'onKeyDown', { key: 'Backspace', target: { tagName: 'DIV' } })
   tela.disparar(porAttr(tela, 'data-navegador')[0], 'onKeyDown', { key: 'Backspace', target: { tagName: 'INPUT' } })
+  // Enter no filtro: prevenido (senão o <form> de fora submeteria)
+  let prevenido = 0
+  tela.disparar(porAttr(tela, 'data-navegador')[0], 'onKeyDown', { key: 'Enter', target: { tagName: 'INPUT' }, preventDefault: () => { prevenido++ } })
+  r.enterNoFiltroPrevenido = prevenido
   tela.disparar(porAttr(tela, 'data-campo').find(n => n.props['data-campo'] === 'ocultos'), 'onChange', { target: { checked: true } })
   tela.clicar(porAttr(tela, 'data-migalha').find(n => n.props['data-migalha'] === 'raizes'))
   r.chamadas = chamadas
@@ -199,7 +218,8 @@ function montar(props) {
 {
   const { tela, chamadas } = montar({ listagem: CARGAS })
   const r = { migalhas: porAttr(tela, 'data-migalha').map(n => n.props['data-migalha']),
-              rodape: textoDe(porAttr(tela, 'data-rodape')[0]) }
+              rodape: textoDe(porAttr(tela, 'data-rodape')[0]),
+              real: textoDe(porAttr(tela, 'data-real')[0]) }
   tela.clicar(porAcao(tela, 'subir')[0])
   tela.clicar(porAttr(tela, 'data-migalha').find(n => n.props['data-migalha'] === '/dados/bi'))
   r.navegou = chamadas.navegar.slice()
@@ -254,12 +274,19 @@ async function formularios() {
     tela.clicar(botaoDaEntrada(tela, 'consulta.sql')); await esperar(tela)
     r.escolheuArquivo = { pasta: campoPasta(tela).props.value, nome: campoNome(tela, 'carga_20260903.txt').props.value,
                           aberto: navegadorAberto(tela) }
-    // Pasta digitada válida: o navegador abre nela; "Usar esta pasta" devolve o caminho real.
+    // Pasta digitada válida: o navegador abre nela; "Usar esta pasta" devolve o caminho LEXICAL
+    // (a listagem CARGAS tem caminho_real diferente — raiz-symlink — e é o lexical que o ler aceita).
     digitar(tela, campoPasta(tela), '/dados/bi/2026/cargas/')
     tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
     r.abriuNaDigitada = { ultimoPedido: pedidos[pedidos.length - 1], entradas: entradas(tela) }
+    // Filtro digitado some ao fechar: reabrir mostra a lista inteira.
+    digitar(tela, porAttr(tela, 'data-campo').find(n => n.props['data-campo'] === 'filtro'), 'zzz')
+    r.filtrouTudo = entradas(tela).length
     tela.clicar(porAcao(tela, 'usar-pasta')[0]); await esperar(tela)
     r.usouPasta = { pasta: campoPasta(tela).props.value, aberto: navegadorAberto(tela) }
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    r.reabriuSemFiltro = { entradas: entradas(tela).length, filtro: porAttr(tela, 'data-campo').find(n => n.props['data-campo'] === 'filtro').props.value }
+    tela.clicar(porAcao(tela, 'fechar')[0]); await esperar(tela)
     // Pasta digitada que não existe: erro na tela e a lista cai nas raízes.
     digitar(tela, campoPasta(tela), '/dados/bi/nao_existe')
     tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
@@ -300,6 +327,17 @@ async function formularios() {
     r.bin = { nome: campoNome(tela, 'parametros_carga').props.value, extensao: porCampo(tela, 'extensao').props.value,
               gravar: !!porAcao(tela, 'gravar')[0].props.disabled, aviso: tela.texto.includes('Extensão não liberada') }
     r.abriuNaPastaDoCampo = pedidos[pedidos.length - 1]
+    // Nome que o editor não representa (RELATORIO.TXT em maiúscula, README sem extensão):
+    // não deforma o nome — preenche só a pasta e avisa.
+    const avisoEscolha = () => porAttr(tela, 'data-aviso').filter(n => n.props['data-aviso'] === 'arquivo-escolhido').length
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    tela.clicar(botaoDaEntrada(tela, 'RELATORIO.TXT')); await esperar(tela)
+    r.maiuscula = { nome: campoNome(tela, 'parametros_carga').props.value, aviso: avisoEscolha(), cita: tela.texto.includes('"RELATORIO.TXT"') }
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    tela.clicar(botaoDaEntrada(tela, 'README')); await esperar(tela)
+    r.semExtensao = { nome: campoNome(tela, 'parametros_carga').props.value, aviso: avisoEscolha() }
+    digitar(tela, campoNome(tela, 'parametros_carga'), 'outro')
+    r.avisoSomeAoDigitar = avisoEscolha()
     saida.formEditar = r
     // Operador (não grava): Navegar… desligado junto com o resto.
     const op = mini.montar(el(FormEditarArquivo, { servidores: SERVIDORES, raizesPorServidor: { datastage: RAIZES },

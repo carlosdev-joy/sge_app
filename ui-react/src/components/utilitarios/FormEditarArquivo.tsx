@@ -65,6 +65,9 @@ export function FormEditarArquivo({
   const extensao = extensaoEscolhida || extensaoPadrao(extensoes)
   const [codificacao, setCodificacao] = useState<Codificacao>('utf-8')
   const [conteudo, setConteudo] = useState('')
+  // Arquivo do navegador que este formulário não representa (extensão em
+  // maiúscula, sem extensão, espaço nas pontas): avisa em vez de deformar o nome.
+  const [avisoEscolha, setAvisoEscolha] = useState<string | null>(null)
   const nav = useNavegadorPastas(servidor, onListar)
 
   const raizes = raizesPorServidor[servidor] ?? []
@@ -105,6 +108,7 @@ export function FormEditarArquivo({
   // Mudar o nome pelo campo aceita "carga.txt" (em qualquer caixa) e separa a
   // extensão, se ela estiver na lista.
   const mudarNome = (v: string) => {
+    setAvisoEscolha(null)
     const { nome: n, extensao: e } = separarNomeExtensao(v)
     if (e && extensoes.includes(e) && v.trim().toLowerCase().endsWith(`.${e}`)) { setNome(n); setExtensaoEscolhida(e) }
     else setNome(v)
@@ -112,11 +116,20 @@ export function FormEditarArquivo({
   // Arquivo escolhido no navegador: pasta + nome separado da extensão. Extensão
   // fora da lista fica marcada "(não liberada)" — o Carregar existente funciona
   // (leitura não depende da lista), o Gravar fica desligado e diz por quê.
+  // O formulário só sabe pedir `nome.extensão` em minúscula: um `RELATORIO.TXT`,
+  // um `README` ou um nome com espaço na ponta viraria OUTRO arquivo (o servidor
+  // distingue caixa) — nesse caso preenche só a pasta e avisa.
   const escolherArquivo = (pasta: string, completo: string) => {
     setDiretorio(pasta)
-    const { nome: n, extensao: e } = separarNomeExtensao(completo)
-    if (e) { setNome(n); setExtensaoEscolhida(e) } else setNome(completo)
     nav.fechar()
+    const { nome: n, extensao: e } = separarNomeExtensao(completo)
+    const extensaoReal = completo.slice(completo.lastIndexOf('.') + 1)
+    if (e && extensaoReal === e && completo === completo.trim()) {
+      setNome(n); setExtensaoEscolhida(e); setAvisoEscolha(null)
+      return
+    }
+    setAvisoEscolha(`"${completo}" não segue o padrão nome + extensão em minúscula que este editor grava: `
+      + 'para ver o conteúdo use a aba Ver arquivo; para editar, renomeie no servidor.')
   }
 
   const desabilitado = !podeGravar
@@ -169,6 +182,11 @@ export function FormEditarArquivo({
           </Button>
         </div>
       </div>
+      {avisoEscolha && (
+        <p className="text-xs text-amber-700 dark:text-amber-300 inline-flex items-start gap-1.5" data-aviso="arquivo-escolhido">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0" /> <span>{avisoEscolha}</span>
+        </p>
+      )}
 
       <div className="flex flex-col gap-1">
         <Textarea label="Conteúdo" value={conteudo} onChange={e => mudarConteudo(e.target.value)} onKeyDown={teclas}
@@ -190,7 +208,8 @@ export function FormEditarArquivo({
       {nav.disponivel && (
         <NavegadorPastas
           aberto={nav.aberto} listagem={nav.listagem} carregando={nav.carregando} erro={nav.erro}
-          mostrarOcultos={nav.ocultos} onNavegar={nav.navegar} onMostrarOcultos={nav.mudarOcultos}
+          mostrarOcultos={nav.ocultos} filtro={nav.filtro} onFiltro={nav.mudarFiltro}
+          onNavegar={nav.navegar} onMostrarOcultos={nav.mudarOcultos}
           onUsarPasta={c => { setDiretorio(c); nav.fechar() }}
           onEscolherArquivo={escolherArquivo}
           onFechar={nav.fechar}

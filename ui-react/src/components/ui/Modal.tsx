@@ -34,7 +34,7 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
         {title && (
           <div className="flex items-center justify-between px-5 py-4 border-b border-edge">
             <h2 className="text-base font-semibold text-ink">{title}</h2>
-            <button onClick={onClose} aria-label="Fechar" className="text-dim hover:text-white transition-colors">
+            <button type="button" onClick={onClose} aria-label="Fechar" className="text-dim hover:text-white transition-colors">
               <X size={18} />
             </button>
           </div>

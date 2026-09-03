@@ -73,7 +73,8 @@ def test_migalhas_da_raiz_ate_a_pasta(cen):
 
 def test_descricao_e_erro(cen):
     assert cen["puras"]["descricao"] == ["raiz liberada", "pasta", "arquivo · 1,5 KB", "link → pasta",
-                                         "link → arquivo · 15 B", "link (fora dos diretórios liberados ou quebrado)"]
+                                         "link → arquivo · 15 B", "link (fora dos diretórios liberados ou quebrado)",
+                                         "link (não verificado — clique para tentar)"]
     assert cen["puras"]["erro"] == ["Fora dos diretórios liberados.", "Pasta não encontrada.", "Não foi possível listar a pasta."]
 
 
@@ -98,13 +99,18 @@ def test_dentro_da_raiz_pastas_arquivos_links_e_gestos(cen):
     r = cen["raiz"]
     assert r["migalhas"] == ["raizes", "/dados/bi"]
     assert r["entradas"] == [["2026", "pasta", None], ["logs", "pasta", None], ["consulta.sql", "arquivo", None],
-                             ["imagem.bin", "arquivo", None], ["link_fora", "link", None], ["atalho.param", "link", "arquivo"]]
-    assert r["linkForaInerte"] is True and r["atalhoAtivo"] is True
+                             ["imagem.bin", "arquivo", None], ["link_fora", "link", None], ["atalho.param", "link", "arquivo"],
+                             ["l_desconhecido", "link", "desconhecido"], ["RELATORIO.TXT", "arquivo", None], ["README", "arquivo", None]]
+    assert r["linkForaInerte"] is True and r["atalhoAtivo"] is True and r["desconhecidoAtivo"] is True
     assert r["subirDesligado"] is False
-    assert "1 ocultos escondidos" in r["rodape"]
+    assert "1 ocultos escondidos" in r["rodape"] and "1 links não verificados" in r["rodape"]
     assert "consulta.sql" in r["textoConsulta"] and "15 B" in r["textoConsulta"]
+    assert r["real"] == 0                          # caminho_real == caminho: sem nota
+    assert r["todosTypeButton"] is True            # dentro do <form>: nenhum botão pode submeter
+    assert r["enterNoFiltroPrevenido"] == 1
     c = r["chamadas"]
-    assert c["navegar"] == ["/dados/bi/2026", None, None, None]   # pasta; Subir na raiz → zero; Backspace → zero; migalha raízes
+    # pasta; link não verificado (tenta); Subir na raiz → zero; Backspace → zero; migalha raízes
+    assert c["navegar"] == ["/dados/bi/2026", "/dados/bi/l_desconhecido", None, None, None]
     assert c["arquivo"] == [["/dados/bi", "consulta.sql"], ["/dados/bi", "atalho.param"]]
     assert c["usar"] == ["/dados/bi"]
     assert c["ocultos"] == [True]
@@ -113,7 +119,8 @@ def test_dentro_da_raiz_pastas_arquivos_links_e_gestos(cen):
 
 def test_no_fundo_subir_segue_o_pai_e_a_migalha_volta(cen):
     f = cen["fundo"]
-    assert f["migalhas"] == ["raizes", "/dados/bi", "/dados/bi/2026", "/dados/bi/2026/cargas"]
+    assert f["migalhas"] == ["raizes", "/dados/bi", "/dados/bi/2026", "/dados/bi/2026/cargas"]   # lexical, não o real
+    assert f["real"] == "→ /u01/dados/bi/2026/cargas"                                          # o real é só nota
     assert "truncada em 1" in f["rodape"]
     assert f["navegou"] == ["/dados/bi/2026", "/dados/bi"]
 
@@ -138,7 +145,8 @@ def test_ver_arquivo_navega_e_preenche_pasta_e_nome(cen):
 def test_ver_arquivo_abre_na_pasta_digitada_e_usa_esta_pasta(cen):
     v = cen["formVer"]
     assert v["abriuNaDigitada"] == {"ultimoPedido": ["datastage", "/dados/bi/2026/cargas", False], "entradas": ["carga_utf8.txt"]}
-    assert v["usouPasta"] == {"pasta": "/dados/bi/2026/cargas", "aberto": 0}
+    assert v["usouPasta"] == {"pasta": "/dados/bi/2026/cargas", "aberto": 0}   # lexical (o real é /u01/…)
+    assert v["filtrouTudo"] == 0 and v["reabriuSemFiltro"] == {"entradas": 1, "filtro": ""}   # o filtro morre com o painel
 
 
 def test_pasta_digitada_invalida_mostra_o_erro_e_cai_nas_raizes(cen):
@@ -161,6 +169,9 @@ def test_editar_arquivo_separa_nome_e_extensao_do_arquivo_escolhido(cen):
     assert e["sql"] == {"pasta": "/dados/bi", "nome": "consulta", "extensao": "sql", "aberto": 0, "gravar": False, "carregar": False}
     assert e["bin"] == {"nome": "imagem", "extensao": "bin", "gravar": True, "aviso": True}
     assert e["abriuNaPastaDoCampo"] == ["datastage", "/dados/bi", False]   # o campo já tinha /dados/bi: abre nela
+    assert e["maiuscula"] == {"nome": "imagem", "aviso": 1, "cita": True}   # RELATORIO.TXT: nome intacto + aviso
+    assert e["semExtensao"] == {"nome": "imagem", "aviso": 1}              # README idem
+    assert e["avisoSomeAoDigitar"] == 0
     assert cen["formEditarOperador"] is True
 
 

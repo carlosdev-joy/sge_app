@@ -14,6 +14,10 @@ export function useNavegadorPastas(servidor: string, onListar?: ListarPasta) {
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [ocultos, setOcultos] = useState(false)
+  // Filtro por nome: vive aqui (não no componente, que nunca desmonta) para
+  // morrer ao abrir de novo — senão o navegador reabria vazio com "nada com
+  // esse nome".
+  const [filtro, setFiltro] = useState('')
   // Série do pedido em curso: a resposta de um pedido já substituído (ou de um
   // navegador já fechado) não pode sobrescrever a lista atual.
   const serie = useRef(0)
@@ -43,19 +47,19 @@ export function useNavegadorPastas(servidor: string, onListar?: ListarPasta) {
 
   /** Abre no caminho digitado (se houver) ou nas raízes. */
   const abrir = (inicial: string | null) => {
-    setAberto(true); setListagem(null)
+    setAberto(true); setListagem(null); setFiltro('')
     void navegar(inicial, ocultos, true)
   }
   const fechar = () => { serie.current++; setAberto(false); setCarregando(false) }
   const mudarOcultos = (v: boolean) => {
     setOcultos(v)
-    void navegar(listagem?.caminho_real ?? null, v)
+    void navegar(listagem?.caminho ?? null, v)
   }
 
   return {
     disponivel: !!onListar,
-    aberto, listagem, carregando, erro, ocultos,
-    abrir, fechar, mudarOcultos,
+    aberto, listagem, carregando, erro, ocultos, filtro,
+    abrir, fechar, mudarOcultos, mudarFiltro: setFiltro,
     navegar: (caminho: string | null) => { void navegar(caminho) },
   }
 }
