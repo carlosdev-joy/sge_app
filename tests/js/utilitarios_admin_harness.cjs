@@ -285,6 +285,14 @@ async function raizes() {
     t.clicar(porAcao(t, 'editar')[0])
     t.clicar(porAcao(t, 'cancelar-caminho')[0])
     e.aposCancelar = { campo: !!campoEdicao(t) }
+    // `/dados/bi/` não é mudança de `/dados/bi`: Salvar continua desligado.
+    t.clicar(porAcao(t, 'editar')[0])
+    digitar(t, campoEdicao(t), '/dados/bi/')
+    e.barraFinalNaoMuda = !!porAcao(t, 'salvar-caminho')[0].props.disabled
+    t.clicar(porAcao(t, 'cancelar-caminho')[0])
+    // Com um teste em andamento o lápis fica desligado (o resultado seria do caminho antigo).
+    const testando = montarRaizes({ testandoId: 2 }).tela
+    e.lapisDesligadoTestando = porAcao(testando, 'editar').map(n => !!n.props.disabled)
     // O servidor recusou (409 "já existe outra raiz"): a linha continua em edição com o texto.
     const { tela: t2 } = montarRaizes({ onEditar: () => false })
     t2.clicar(porAcao(t2, 'editar')[0])

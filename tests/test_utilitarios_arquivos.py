@@ -959,7 +959,7 @@ class TestAdminRaizes:
         with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
             assert client.patch("/utilitarios/admin/raizes/99", json={"ativo": True}).status_code == 404
 
-    def test_editar_caminho_normaliza_e_mantem_ativo(self, client, auth_admin):
+    def test_editar_caminho_normaliza_mantem_ativo_e_audita(self, client, auth_admin):
         cur = _Cursor([self.ATUAL, ("AND id <> ?", []), ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
         with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
             r = client.patch("/utilitarios/admin/raizes/3", json={"caminho": "/opt//totalseg-pwa/"})
@@ -967,6 +967,17 @@ class TestAdminRaizes:
         assert r.json() == {"ok": True, "id": 3, "servidor": "datastage", "caminho": "/opt/totalseg-pwa", "ativo": True}
         update = [e for e in cur.executados if "UPDATE dbo.etl_utilitario_raiz SET" in e[0]][0]
         assert update[1] == ["/opt/totalseg-pwa", 1, 3]
+        # A troca deixa rastro: o caminho antigo some da lista, mas não da auditoria.
+        assert len(cur.auditoria) == 1
+        usuario, servidor, acao, caminho, _t, _s, resultado, detalhe, _d = cur.auditoria[0]
+        assert (usuario, acao, caminho, resultado) == ("C012345", "raiz", "/opt/totalseg-pwa", "ok")
+        assert "alterado de /dados/bi" in detalhe
+
+    def test_so_ativo_nao_audita_como_troca_de_caminho(self, client, auth_admin):
+        cur = _Cursor([self.ATUAL, ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            assert client.patch("/utilitarios/admin/raizes/3", json={"ativo": False}).status_code == 200
+        assert cur.auditoria == []
 
     def test_editar_caminho_e_ativo_juntos(self, client, auth_admin):
         cur = _Cursor([self.ATUAL, ("AND id <> ?", []), ("UPDATE dbo.etl_utilitario_raiz SET", 1)])

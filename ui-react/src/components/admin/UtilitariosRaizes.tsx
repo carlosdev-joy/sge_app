@@ -12,7 +12,7 @@ import { Zap, RefreshCw, Power, PowerOff, Plus, FolderTree, AlertTriangle, Penci
 import { Button } from '../ui/Button'
 import { Input, Select } from '../ui/Input'
 import { Badge } from '../ui/Badge'
-import { avisoRaiz, tomDoTeste, type RaizUtil, type ServidorUtil, type TesteRaiz } from '../../lib/utilitariosAdmin'
+import { avisoRaiz, normalizarCaminhoLexical, tomDoTeste, type RaizUtil, type ServidorUtil, type TesteRaiz } from '../../lib/utilitariosAdmin'
 
 export interface UtilitariosRaizesProps {
   servidores: ServidorUtil[]
@@ -134,8 +134,10 @@ function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, o
   const [novo, setNovo] = useState(raiz.caminho)
   const [salvando, setSalvando] = useState(false)
   const avisoNovo = avisoRaiz(novo)
-  const mudou = novo.trim() !== raiz.caminho
-  const podeSalvar = editando && novo.trim().length > 0 && avisoNovo === null && mudou && !salvando
+  // Comparado NORMALIZADO: `/dados/bi/` não é mudança de `/dados/bi` (o servidor
+  // gravaria o mesmo valor e a tela diria "alterada" à toa).
+  const mudou = novo.trim().length > 0 && normalizarCaminhoLexical(novo.trim()) !== raiz.caminho
+  const podeSalvar = editando && avisoNovo === null && mudou && !salvando
 
   const abrirEdicao = () => { setNovo(raiz.caminho); setEditando(true) }
   const cancelar = () => { setEditando(false); setNovo(raiz.caminho) }
@@ -151,7 +153,8 @@ function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, o
   }
   const teclas = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') { e.preventDefault(); void salvar() }
-    if (e.key === 'Escape') { e.preventDefault(); cancelar() }
+    // Esc com o PATCH em voo perderia o texto se o servidor responder 409.
+    if (e.key === 'Escape' && !salvando) { e.preventDefault(); cancelar() }
   }
 
   return (
@@ -190,9 +193,9 @@ function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, o
               </>
             ) : (
               <>
-                <button type="button" onClick={abrirEdicao}
-                  className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded"
-                  title="Editar o caminho desta raiz" data-acao="editar">
+                <button type="button" onClick={abrirEdicao} disabled={bloqueado}
+                  className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded disabled:opacity-40"
+                  title={bloqueado ? 'Aguarde o teste em andamento' : 'Editar o caminho desta raiz'} data-acao="editar">
                   <Pencil size={13} />
                 </button>
                 <button type="button" onClick={() => onTestar(raiz.id)} disabled={bloqueado}

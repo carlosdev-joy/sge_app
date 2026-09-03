@@ -399,9 +399,16 @@ async def admin_raizes_alterar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
         cur.execute("UPDATE dbo.etl_utilitario_raiz SET caminho = ?, ativo = ? WHERE id = ?",
                     [novo_caminho, 1 if novo_ativo else 0, raiz_id])
         conn.commit()
-        return {"ok": True, "id": raiz_id, "servidor": servidor, "caminho": novo_caminho, "ativo": novo_ativo}
     finally:
         _fechar(conn, cur)
+    if novo_caminho != caminho_atual:
+        # A troca apaga o caminho antigo da lista; as leituras já auditadas
+        # abaixo dele precisam de uma linha que explique de onde vieram.
+        quem = str(_admin.get("matricula") or "?")
+        log.info("Utilitários: raiz %s alterada de %s para %s por %s", raiz_id, caminho_atual, novo_caminho, quem)
+        _auditar(usuario=quem, servidor=servidor, acao="raiz", caminho=novo_caminho, resultado="ok",
+                 detalhe=f"raiz {raiz_id}: caminho alterado de {caminho_atual}")
+    return {"ok": True, "id": raiz_id, "servidor": servidor, "caminho": novo_caminho, "ativo": novo_ativo}
 
 
 def _testar_sync(servidor: str, caminho: str) -> dict:

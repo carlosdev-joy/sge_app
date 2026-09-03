@@ -160,6 +160,8 @@ def test_editar_caminho_na_linha(cen):
     assert e["aposEnter"] == {"editar": [[1, "/opt/totalseg-pwa"]], "campo": False}
     assert e["aposEsc"] == {"editar": [[1, "/opt/totalseg-pwa"]], "campo": False}
     assert e["aposCancelar"] == {"campo": False}
+    assert e["barraFinalNaoMuda"] is True            # normalizado igual = nada a salvar
+    assert e["lapisDesligadoTestando"] == [True, True]  # teste em voo desliga o lápis
     assert e["recusaMantem"] == {"campo": "/dados/param"}
 
 

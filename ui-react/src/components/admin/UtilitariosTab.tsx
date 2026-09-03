@@ -30,11 +30,14 @@ export function UtilitariosTab() {
   const raizes = useQuery<RaizUtil[]>({ queryKey: Q_RAIZES, queryFn: () => apiFetch('/utilitarios/admin/raizes') })
   const extensoes = useQuery<ExtensaoUtil[]>({ queryKey: Q_EXTENSOES, queryFn: () => apiFetch('/utilitarios/admin/extensoes') })
 
-  const invalidar = () => {
-    qc.invalidateQueries({ queryKey: Q_CONFIG })
-    qc.invalidateQueries({ queryKey: Q_RAIZES })
-    qc.invalidateQueries({ queryKey: Q_EXTENSOES })
-  }
+  // Devolve a promise: o `mutateAsync` só resolve com a lista nova na tela —
+  // sem isto a linha editada mostrava o caminho antigo por um instante depois
+  // do toast "alterada".
+  const invalidar = () => Promise.all([
+    qc.invalidateQueries({ queryKey: Q_CONFIG }),
+    qc.invalidateQueries({ queryKey: Q_RAIZES }),
+    qc.invalidateQueries({ queryKey: Q_EXTENSOES }),
+  ])
 
   // `onSettled` (não só `onSuccess`): um 404/409 quer dizer que a lista da tela
   // está defasada (outro admin mexeu) — ressincroniza também no erro.
@@ -67,9 +70,14 @@ export function UtilitariosTab() {
   })
 
   const testarRaiz = async (id: number) => {
+    // O caminho no momento do pedido: se a raiz for editada enquanto o teste
+    // corre, a resposta é do caminho ANTIGO e não pode aparecer sob o novo.
+    const caminhoTestado = raizes.data?.find(r => r.id === id)?.caminho
     setTestandoId(id)
     try {
       const r = await apiFetch<TesteRaiz>(`/utilitarios/admin/raizes/${id}/testar`, { method: 'POST' })
+      const agora = qc.getQueryData<RaizUtil[]>(Q_RAIZES)?.find(x => x.id === id)?.caminho
+      if (agora !== undefined && agora !== caminhoTestado) return
       setTestes(t => ({ ...t, [id]: r }))
     } catch (e) {
       toast.error(mensagemErro(e, 'Falha ao testar a raiz no servidor'))
