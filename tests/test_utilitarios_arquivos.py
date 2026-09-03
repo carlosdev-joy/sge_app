@@ -1402,15 +1402,67 @@ class TestAdminRaizes:
         assert r.status_code == 409
         assert "inativa" in r.json()["detail"]
 
+    ATUAL = ("SELECT servidor, caminho, ativo FROM dbo.etl_utilitario_raiz WHERE id", [("datastage", "/dados/bi", 1)])
+
     def test_desativar_e_reativar(self, client, auth_admin):
-        cur = _Cursor([("UPDATE dbo.etl_utilitario_raiz SET ativo", 1)])
+        cur = _Cursor([self.ATUAL, ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
         with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
             r = client.patch("/utilitarios/admin/raizes/3", json={"ativo": False})
             assert r.status_code == 200 and r.json()["ativo"] is False
+            assert r.json()["caminho"] == "/dados/bi"           # caminho preservado
             assert client.patch("/utilitarios/admin/raizes/3", json={"ativo": "sim"}).status_code == 422
-        cur = _Cursor([("UPDATE dbo.etl_utilitario_raiz SET ativo", 0)])
+            assert client.patch("/utilitarios/admin/raizes/3", json={}).status_code == 422
+        update = [e for e in cur.executados if "UPDATE dbo.etl_utilitario_raiz SET" in e[0]][0]
+        assert update[1] == ["/dados/bi", 0, 3]
+        cur = _Cursor([("SELECT servidor, caminho, ativo FROM dbo.etl_utilitario_raiz WHERE id", [])])
         with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
             assert client.patch("/utilitarios/admin/raizes/99", json={"ativo": True}).status_code == 404
+
+    def test_editar_caminho_normaliza_mantem_ativo_e_audita(self, client, auth_admin):
+        cur = _Cursor([self.ATUAL, ("AND id <> ?", []), ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            r = client.patch("/utilitarios/admin/raizes/3", json={"caminho": "/opt//totalseg-pwa/"})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "id": 3, "servidor": "datastage", "caminho": "/opt/totalseg-pwa", "ativo": True}
+        update = [e for e in cur.executados if "UPDATE dbo.etl_utilitario_raiz SET" in e[0]][0]
+        assert update[1] == ["/opt/totalseg-pwa", 1, 3]
+        # A troca deixa rastro: o caminho antigo some da lista, mas não da auditoria.
+        assert len(cur.auditoria) == 1
+        usuario, servidor, acao, caminho, _t, _s, resultado, detalhe, _d = cur.auditoria[0]
+        assert (usuario, acao, caminho, resultado) == ("C012345", "raiz", "/opt/totalseg-pwa", "ok")
+        assert "alterado de /dados/bi" in detalhe
+
+    def test_so_ativo_nao_audita_como_troca_de_caminho(self, client, auth_admin):
+        cur = _Cursor([self.ATUAL, ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            assert client.patch("/utilitarios/admin/raizes/3", json={"ativo": False}).status_code == 200
+        assert cur.auditoria == []
+
+    def test_editar_caminho_e_ativo_juntos(self, client, auth_admin):
+        cur = _Cursor([self.ATUAL, ("AND id <> ?", []), ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            r = client.patch("/utilitarios/admin/raizes/3", json={"caminho": "/dados/novo", "ativo": False})
+        assert r.status_code == 200 and r.json()["caminho"] == "/dados/novo" and r.json()["ativo"] is False
+
+    @pytest.mark.parametrize("caminho", ["", "relativa", "/", "//", "/etc/x", ["/x"], "/" + "a" * 801])
+    def test_editar_caminho_invalido_422(self, client, auth_admin, caminho):
+        cur = _Cursor([self.ATUAL])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            assert client.patch("/utilitarios/admin/raizes/3", json={"caminho": caminho}).status_code == 422
+        assert not [e for e in cur.executados if "UPDATE" in e[0]]
+
+    def test_editar_caminho_para_o_de_outra_raiz_409(self, client, auth_admin):
+        cur = _Cursor([self.ATUAL, ("AND id <> ?", [(7, 0)]), ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            r = client.patch("/utilitarios/admin/raizes/3", json={"caminho": "/dados/param"})
+        assert r.status_code == 409 and "id 7, inativa" in r.json()["detail"]
+        assert not [e for e in cur.executados if "UPDATE" in e[0]]
+
+    def test_editar_para_o_mesmo_caminho_nao_consulta_duplicidade(self, client, auth_admin):
+        cur = _Cursor([self.ATUAL, ("UPDATE dbo.etl_utilitario_raiz SET", 1)])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            assert client.patch("/utilitarios/admin/raizes/3", json={"caminho": "/dados/bi/"}).status_code == 200
+        assert not [e for e in cur.executados if "AND id <> ?" in e[0]]
 
     @pytest.mark.parametrize("raiz_id", ["0", "-1", "99999999999999999999", "abc"])
     def test_id_fora_do_int_e_422_nao_500(self, client, auth_admin, sftp_falso, raiz_id):

@@ -177,7 +177,7 @@ sem retrabalho.
   | POST | `/utilitarios/arquivo/gravar` | `require_tela_utilitarios` **+** `PERM_EDITAR` | `{servidor, diretorio, nome, extensao, conteudo, codificacao, sobrescrever}` → `{caminho, tamanho_bytes, linhas, sha256, criado, backup, duracao_ms}` |
   | GET | `/utilitarios/admin/raizes` | `get_admin_user` | → `[{id, servidor, caminho, ativo, criado_por, criado_em}]` (inclui inativas) |
   | POST | `/utilitarios/admin/raizes` | `get_admin_user` | `{servidor, caminho}` → `{id}`; 422 se não for absoluto/normalizado; 409 se já existe |
-  | PATCH | `/utilitarios/admin/raizes/{id}` | `get_admin_user` | `{ativo}` → `{ok}` |
+  | PATCH | `/utilitarios/admin/raizes/{id}` | `get_admin_user` | `{ativo?, caminho?}` → `{ok, id, servidor, caminho, ativo}`; caminho novo passa pela régua do cadastro, 409 se repetir outra raiz, e a troca é auditada (`acao='raiz'`) |
   | POST | `/utilitarios/admin/raizes/{id}/testar` | `get_admin_user` | → `{existe, legivel, caminho_real}` (faz `stat` no servidor) |
   | GET | `/utilitarios/admin/extensoes` | `get_admin_user` | → `[{extensao, criado_por, criado_em}]` |
   | POST | `/utilitarios/admin/extensoes` | `get_admin_user` | `{extensao}` → `{ok}`; 422 fora de `^[a-z0-9]{1,15}$`; 409 repetida |

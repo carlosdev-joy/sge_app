@@ -146,6 +146,25 @@ def test_servidor_recusou_a_raiz_o_campo_mantem_o_texto(cen):
     assert cen["raizes"]["falhaMantemCampo"] == "/dados/bi"
 
 
+def test_editar_caminho_na_linha(cen):
+    """Pedido do usuário: um erro de digitação (`/opt/totalseg-pw`) não pode obrigar a
+    desativar e recadastrar — o lápis abre o campo na própria linha."""
+    e = cen["editarRaiz"]
+    assert e["antes"] == {"campo": False, "editar": 2}
+    assert e["aberto"]["valorInicial"] == "/dados/bi"
+    assert e["aberto"]["salvarDesligadoSemMudanca"] is True
+    assert e["aberto"]["linhaMarcada"] == [1]
+    assert e["aberto"]["acoesNormaisSomem"] == 1
+    assert e["invalido"] == {"desligado": True, "aviso": True}
+    assert e["valido"]["desligado"] is False
+    assert e["aposEnter"] == {"editar": [[1, "/opt/totalseg-pwa"]], "campo": False}
+    assert e["aposEsc"] == {"editar": [[1, "/opt/totalseg-pwa"]], "campo": False}
+    assert e["aposCancelar"] == {"campo": False}
+    assert e["barraFinalNaoMuda"] is True            # normalizado igual = nada a salvar
+    assert e["lapisDesligadoTestando"] == [True, True]  # teste em voo desliga o lápis
+    assert e["recusaMantem"] == {"campo": "/dados/param"}
+
+
 def test_resultado_do_testar_aparece_na_linha_com_o_tom(cen):
     linhas = cen["raizesTeste"]["linhas"]
     assert [l["id"] for l in linhas] == [1, 2]
@@ -225,7 +244,8 @@ def test_container_ressincroniza_em_erro_e_nao_desmonta_no_refetch():
     também no erro); refetch falho com dados na tela avisa sem desmontar os
     formulários (o admin pode estar no meio de um caminho digitado)."""
     fonte = TAB.read_text(encoding="utf-8")
-    assert fonte.count("onSettled: invalidar") == 5, "toda mutation ressincroniza em onSettled"
+    assert fonte.count("onSettled: invalidar") == 6, "toda mutation ressincroniza em onSettled"
+    assert "JSON.stringify({ caminho: v.caminho })" in fonte, "editar manda só o caminho no PATCH"
     assert "data-aviso=\"refetch\"" in fonte
     assert "const semDados" in fonte and "if (semDados" in fonte
     # O ramo de erro que troca a aba inteira só existe SEM dados.

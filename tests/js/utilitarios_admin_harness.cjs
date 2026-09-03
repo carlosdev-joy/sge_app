@@ -201,16 +201,19 @@ const RAIZES = [
 ]
 
 function montarRaizes(props) {
-  const chamadas = { incluir: [], testar: [], ativar: [] }
+  const chamadas = { incluir: [], testar: [], ativar: [], editar: [] }
   const tela = mini.montar(el(UtilitariosRaizes, Object.assign({
     servidores: SERVIDORES, raizes: RAIZES, testes: {}, testandoId: null, incluindo: false,
     // O pai "aceitou": devolve true — é o que autoriza o componente a limpar o campo.
     onIncluir: (s, c) => { chamadas.incluir.push([s, c]); return true },
     onTestar: (id) => chamadas.testar.push(id),
     onAtivar: (id, ativo) => chamadas.ativar.push([id, ativo]),
+    onEditar: (id, c) => { chamadas.editar.push([id, c]); return true },
   }, props)))
   return { tela, chamadas }
 }
+const campoEdicao = (tela) => inputs(tela).find(n => n.props['data-campo'] === 'caminho')
+const teclar = (tela, no, key) => tela.disparar(no, 'onKeyDown', { key })
 const campoRaiz = (tela) => inputs(tela).find(n => n.props.placeholder && n.props.placeholder.startsWith('/opt'))
 const formRaiz = (tela) => porAttr(tela, 'data-form').find(n => n.props['data-form'] === 'incluir-raiz')
 
@@ -254,6 +257,51 @@ async function raizes() {
   await submeter(recusa, formRaiz(recusa))
   r.falhaMantemCampo = campoRaiz(recusa).props.value
   saida.raizes = r
+
+  // ── editar o caminho na linha ────────────────────────────────────────────
+  {
+    const { tela: t, chamadas: c } = montarRaizes({})
+    const e = { antes: { campo: !!campoEdicao(t), editar: porAcao(t, 'editar').length } }
+    t.clicar(porAcao(t, 'editar')[0])                       // lápis da 1ª raiz (/dados/bi)
+    e.aberto = {
+      valorInicial: campoEdicao(t).props.value,
+      salvarDesligadoSemMudanca: !!porAcao(t, 'salvar-caminho')[0].props.disabled,
+      linhaMarcada: porAttr(t, 'data-editando').map(n => n.props['data-raiz']),
+      acoesNormaisSomem: porAcao(t, 'testar').length,       // só a 2ª linha continua com Testar
+    }
+    digitar(t, campoEdicao(t), '/etc/x')
+    e.invalido = { desligado: !!porAcao(t, 'salvar-caminho')[0].props.disabled, aviso: t.texto.includes('pasta do sistema') }
+    digitar(t, campoEdicao(t), '/opt/totalseg-pwa')
+    e.valido = { desligado: !!porAcao(t, 'salvar-caminho')[0].props.disabled }
+    teclar(t, campoEdicao(t), 'Enter')                      // Enter salva
+    await tick(); await tick(); t.sincronizar()
+    e.aposEnter = { editar: c.editar, campo: !!campoEdicao(t) }
+    // Esc cancela sem chamar o pai.
+    t.clicar(porAcao(t, 'editar')[0])
+    digitar(t, campoEdicao(t), '/dados/outro')
+    teclar(t, campoEdicao(t), 'Escape')
+    e.aposEsc = { editar: c.editar, campo: !!campoEdicao(t) }
+    // Cancelar pelo botão idem.
+    t.clicar(porAcao(t, 'editar')[0])
+    t.clicar(porAcao(t, 'cancelar-caminho')[0])
+    e.aposCancelar = { campo: !!campoEdicao(t) }
+    // `/dados/bi/` não é mudança de `/dados/bi`: Salvar continua desligado.
+    t.clicar(porAcao(t, 'editar')[0])
+    digitar(t, campoEdicao(t), '/dados/bi/')
+    e.barraFinalNaoMuda = !!porAcao(t, 'salvar-caminho')[0].props.disabled
+    t.clicar(porAcao(t, 'cancelar-caminho')[0])
+    // Com um teste em andamento o lápis fica desligado (o resultado seria do caminho antigo).
+    const testando = montarRaizes({ testandoId: 2 }).tela
+    e.lapisDesligadoTestando = porAcao(testando, 'editar').map(n => !!n.props.disabled)
+    // O servidor recusou (409 "já existe outra raiz"): a linha continua em edição com o texto.
+    const { tela: t2 } = montarRaizes({ onEditar: () => false })
+    t2.clicar(porAcao(t2, 'editar')[0])
+    digitar(t2, campoEdicao(t2), '/dados/param')
+    t2.clicar(porAcao(t2, 'salvar-caminho')[0])
+    await tick(); await tick(); t2.sincronizar()
+    e.recusaMantem = { campo: campoEdicao(t2) ? campoEdicao(t2).props.value : null }
+    saida.editarRaiz = e
+  }
 
   // Resultado do Testar aparece na linha de baixo, com o tom certo.
   const comTestes = montarRaizes({ testes: {

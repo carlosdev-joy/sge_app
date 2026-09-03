@@ -30,11 +30,14 @@ export function UtilitariosTab() {
   const raizes = useQuery<RaizUtil[]>({ queryKey: Q_RAIZES, queryFn: () => apiFetch('/utilitarios/admin/raizes') })
   const extensoes = useQuery<ExtensaoUtil[]>({ queryKey: Q_EXTENSOES, queryFn: () => apiFetch('/utilitarios/admin/extensoes') })
 
-  const invalidar = () => {
-    qc.invalidateQueries({ queryKey: Q_CONFIG })
-    qc.invalidateQueries({ queryKey: Q_RAIZES })
-    qc.invalidateQueries({ queryKey: Q_EXTENSOES })
-  }
+  // Devolve a promise: o `mutateAsync` só resolve com a lista nova na tela —
+  // sem isto a linha editada mostrava o caminho antigo por um instante depois
+  // do toast "alterada".
+  const invalidar = () => Promise.all([
+    qc.invalidateQueries({ queryKey: Q_CONFIG }),
+    qc.invalidateQueries({ queryKey: Q_RAIZES }),
+    qc.invalidateQueries({ queryKey: Q_EXTENSOES }),
+  ])
 
   // `onSettled` (não só `onSuccess`): um 404/409 quer dizer que a lista da tela
   // está defasada (outro admin mexeu) — ressincroniza também no erro.
@@ -54,10 +57,27 @@ export function UtilitariosTab() {
     onSettled: invalidar,
   })
 
+  const editarRaiz = useMutation({
+    mutationFn: (v: { id: number; caminho: string }) =>
+      apiFetch<{ caminho: string }>(`/utilitarios/admin/raizes/${v.id}`, { method: 'PATCH', body: JSON.stringify({ caminho: v.caminho }) }),
+    onSuccess: (d, v) => {
+      toast.success(`Raiz alterada para ${d.caminho}`)
+      // O resultado do Testar era do caminho antigo.
+      setTestes(t => ({ ...t, [v.id]: undefined }))
+    },
+    onError: e => toast.error(mensagemErro(e, 'Falha ao alterar o caminho da raiz')),
+    onSettled: invalidar,
+  })
+
   const testarRaiz = async (id: number) => {
+    // O caminho no momento do pedido: se a raiz for editada enquanto o teste
+    // corre, a resposta é do caminho ANTIGO e não pode aparecer sob o novo.
+    const caminhoTestado = raizes.data?.find(r => r.id === id)?.caminho
     setTestandoId(id)
     try {
       const r = await apiFetch<TesteRaiz>(`/utilitarios/admin/raizes/${id}/testar`, { method: 'POST' })
+      const agora = qc.getQueryData<RaizUtil[]>(Q_RAIZES)?.find(x => x.id === id)?.caminho
+      if (agora !== undefined && agora !== caminhoTestado) return
       setTestes(t => ({ ...t, [id]: r }))
     } catch (e) {
       toast.error(mensagemErro(e, 'Falha ao testar a raiz no servidor'))
@@ -146,6 +166,7 @@ export function UtilitariosTab() {
         onIncluir={(servidor, caminho) => incluirRaiz.mutateAsync({ servidor, caminho }).then(() => true, () => false)}
         onTestar={testarRaiz}
         onAtivar={(id, ativo) => ativarRaiz.mutate({ id, ativo })}
+        onEditar={(id, caminho) => editarRaiz.mutateAsync({ id, caminho }).then(() => true, () => false)}
       />
 
       <UtilitariosExtensoes

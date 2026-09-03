@@ -7,7 +7,7 @@ Spec: docs/spec-utilitarios-arquivos.md (F1 = leitura + cadastro do admin).
   POST /utilitarios/arquivo/gravar            — {servidor, diretorio, nome, extensao, conteudo, codificacao?, sobrescrever?}  [+ acao_editar]
   GET  /utilitarios/admin/raizes              — todas (inclusive inativas)            [admin]
   POST /utilitarios/admin/raizes              — {servidor, caminho} → {id}            [admin]
-  PATCH /utilitarios/admin/raizes/{id}        — {ativo}                                [admin]
+  PATCH /utilitarios/admin/raizes/{id}        — {ativo?, caminho?}                     [admin]
   POST /utilitarios/admin/raizes/{id}/testar  — stat no servidor                       [admin]
   GET  /utilitarios/admin/extensoes                                                    [admin]
   POST /utilitarios/admin/extensoes           — {extensao}                             [admin]
@@ -461,24 +461,62 @@ async def admin_raizes_incluir(body: dict = Body(...), admin: dict = Depends(get
 
 
 @router.patch("/utilitarios/admin/raizes/{raiz_id}")
-async def admin_raizes_ativar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
-                              body: dict = Body(...),
-                              _admin: dict = Depends(get_admin_user)):
+async def admin_raizes_alterar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
+                               body: dict = Body(...),
+                               _admin: dict = Depends(get_admin_user)):
+    """Altera `ativo` e/ou `caminho` de uma raiz. Editar o caminho existe para o
+    erro de digitação (`/opt/totalseg-pw`) não obrigar a desativar e recadastrar;
+    o caminho novo passa pela mesma régua do cadastro e não pode repetir outra
+    raiz do mesmo servidor."""
     ativo = body.get("ativo")
-    if not isinstance(ativo, bool):
+    caminho_bruto = body.get("caminho")
+    if ativo is None and caminho_bruto is None:
+        raise HTTPException(status_code=422, detail="Informe 'ativo' e/ou 'caminho'.")
+    if ativo is not None and not isinstance(ativo, bool):
         raise HTTPException(status_code=422, detail="'ativo' precisa ser true ou false.")
+    caminho: str | None = None
+    if caminho_bruto is not None:
+        if not isinstance(caminho_bruto, str):
+            raise HTTPException(status_code=422, detail="'caminho' precisa ser texto.")
+        try:
+            caminho = svc.normalizar_raiz(caminho_bruto)
+        except svc.ArquivoError as e:
+            raise HTTPException(status_code=e.status, detail=e.detail)
+
     conn = get_db_conn()
     cur = conn.cursor()
     try:
         _exigir_tabelas(cur)
-        cur.execute("UPDATE dbo.etl_utilitario_raiz SET ativo = ? WHERE id = ?",
-                    [1 if ativo else 0, raiz_id])
-        if not cur.rowcount:
+        cur.execute("SELECT servidor, caminho, ativo FROM dbo.etl_utilitario_raiz WHERE id = ?", [raiz_id])
+        atual = cur.fetchone()
+        if not atual:
             raise HTTPException(status_code=404, detail="Raiz não encontrada.")
+        servidor, caminho_atual, ativo_atual = str(atual[0]), str(atual[1]), bool(atual[2])
+        if caminho is not None and caminho != caminho_atual:
+            cur.execute(
+                "SELECT id, ativo FROM dbo.etl_utilitario_raiz "
+                "WHERE servidor = ? AND caminho = ? AND id <> ?", [servidor, caminho, raiz_id])
+            outra = cur.fetchone()
+            if outra:
+                estado = "ativa" if outra[1] else "inativa"
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Já existe outra raiz com esse caminho neste servidor (id {outra[0]}, {estado}).")
+        novo_caminho = caminho if caminho is not None else caminho_atual
+        novo_ativo = ativo if ativo is not None else ativo_atual
+        cur.execute("UPDATE dbo.etl_utilitario_raiz SET caminho = ?, ativo = ? WHERE id = ?",
+                    [novo_caminho, 1 if novo_ativo else 0, raiz_id])
         conn.commit()
-        return {"ok": True, "id": raiz_id, "ativo": ativo}
     finally:
         _fechar(conn, cur)
+    if novo_caminho != caminho_atual:
+        # A troca apaga o caminho antigo da lista; as leituras já auditadas
+        # abaixo dele precisam de uma linha que explique de onde vieram.
+        quem = str(_admin.get("matricula") or "?")
+        log.info("Utilitários: raiz %s alterada de %s para %s por %s", raiz_id, caminho_atual, novo_caminho, quem)
+        _auditar(usuario=quem, servidor=servidor, acao="raiz", caminho=novo_caminho, resultado="ok",
+                 detalhe=f"raiz {raiz_id}: caminho alterado de {caminho_atual}")
+    return {"ok": True, "id": raiz_id, "servidor": servidor, "caminho": novo_caminho, "ativo": novo_ativo}
 
 
 def _testar_sync(servidor: str, caminho: str) -> dict:
