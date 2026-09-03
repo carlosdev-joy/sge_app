@@ -540,6 +540,13 @@ mostra o aviso e nada quebra no resto do Orquestra.
 
 ## 7. Smoke pós-deploy
 
+> **Script**: `scripts/smoke_utilitarios.sh` executa pela API tudo que não exige o
+> navegador (c, d, e, g, h, i, j, k, l, m, o, p) e compara com o servidor quando tem
+> acesso a ele (`wc -lc`, `cat`, `od`, `.bak`). Uso em produção: `ORQ_URL`, `ORQ_USER`,
+> `ORQ_PASS`, `RAIZ`, `PASTA`, `ARQ`, `LATIN1` no ambiente. **Resultado no DEV
+> (2026-09-03, F7): 37 conferências ok, 0 falhas**; a, b, f, n e a parte visual de j são
+> manuais (marcados "UI" na saída).
+
 a) Sair e entrar de novo (permissão vive no `localStorage`). Com `admin`, `desenvolvedor` e
    `operador`, o menu Operação mostra **Utilitários**; com `consulta`, não mostra e
    `/utilitarios` direto dá "sem permissão".

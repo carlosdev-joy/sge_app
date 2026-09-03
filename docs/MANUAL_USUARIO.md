@@ -10,9 +10,9 @@
 | Perfil | Quem é | O que pode fazer |
 |---|---|---|
 | **Consulta** | Analistas, gestores, auditoria | Visualizar Dashboard, Logs, Malha, Governança (lineage/catálogo) e Monitor DataStage |
-| **Operador** | Operação/Sustentação ETL | Tudo do Consulta + executar pipelines manualmente, reexecutar falhas, acompanhar SLA |
-| **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX |
-| **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout |
+| **Operador** | Operação/Sustentação ETL | Tudo do Consulta + executar pipelines manualmente, reexecutar falhas, acompanhar SLA, **ver arquivos do servidor do DataStage** (Utilitários) |
+| **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX, **criar e editar arquivos no servidor** (Utilitários) |
+| **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout, **diretórios e extensões dos Utilitários** |
 
 > **Como funciona:** todo usuário entra automaticamente no 1º login com perfil **consulta**. O administrador promove usuários e ajusta o que cada perfil acessa (telas e ações) em **Admin → Usuários & Perfis** — sem mexer no banco. A sessão sobrevive ao F5 e expira após o período configurado (padrão 12h); a senha nunca é armazenada, apenas um token de sessão revogável.
 
@@ -125,6 +125,49 @@ Cada alerta é enviado uma única vez por execução (sem spam).
 
 ### 2.4 Janelas de blackout
 Na aba **Pipelines → Agendamento**, consulte as janelas de blackout cadastradas (períodos em que execuções agendadas são suprimidas — ex.: fechamento contábil, manutenção de infra).
+
+### 2.5 Utilitários — ver um arquivo do servidor do DataStage
+Menu **Operação → Utilitários**, aba **Ver arquivo**. Serve para ler um `.param`,
+um log ou um arquivo de carga que está no servidor do DataStage, sem acesso SSH.
+Só funciona **abaixo dos diretórios que o administrador liberou** (§4.7); a
+tela avisa "Nenhum diretório liberado ainda" enquanto não houver nenhum.
+
+1. **Servidor**: hoje só o Servidor DataStage.
+2. **Pasta**: caminho absoluto no servidor (ex.: `/dados/bi/2026`). Ao digitar,
+   o campo já diz *abaixo de /dados/bi* ou avisa em vermelho **Fora dos
+   diretórios liberados** — nesse caso nem adianta clicar, o servidor vai negar.
+   Sem saber o caminho, use **Navegar…** (abaixo).
+3. **Nome do arquivo**: com a extensão (ex.: `parametros_carga.param`).
+4. **Últimas N linhas** (opcional): para log grande, traz só o fim do arquivo.
+5. **Iniciar**: abre o modal, que passa por *conectando* → *lendo* → conteúdo.
+
+No modal: o conteúdo inteiro em fonte mono, rodapé com **linhas, tamanho,
+codificação** (`utf-8` ou `latin-1`, detectada) e a data de modificação, e o
+botão **Copiar** — que diz *copiado* ou *falhou*; se falhar, selecione o texto
+e copie com Ctrl+C.
+
+**Navegar…** (ao lado do campo Pasta) abre o navegador de pastas: a primeira
+tela lista as raízes liberadas (com uma só, já abre nela); clique numa pasta
+para descer, **Subir** ou **Backspace** para voltar (nunca acima da raiz), a
+trilha no topo leva a qualquer nível. **Usar esta pasta** preenche o campo
+Pasta; clicar num **arquivo** preenche pasta e nome. Arquivos e pastas ocultos
+(nome começando com `.`) ficam escondidos — ligue *mostrar ocultos* se
+precisar. Um link que aponta para fora dos diretórios liberados aparece
+apagado, sem abrir.
+
+Mensagens que você pode ver e o que fazem:
+
+| Mensagem | O que significa |
+|---|---|
+| **Fora dos diretórios liberados.** | O caminho não está abaixo de nenhuma raiz cadastrada (inclusive quando passa por um link que sai da raiz). Peça ao administrador para liberar a pasta. |
+| **Arquivo não encontrado: /…** | O caminho não existe no servidor. Confira maiúsculas e minúsculas — o servidor distingue. |
+| **O usuário SSH não tem permissão para acessar /…** | A conta que o Orquestra usa no servidor não lê essa pasta ou arquivo. |
+| **O arquivo não é texto (parece binário) — os Utilitários só abrem texto.** | Imagem, zip, executável: a tela não mostra. |
+| **Arquivo de X, acima do teto de Y.** | Maior que o teto configurado pelo administrador. O modal oferece o campo **últimas N linhas** — informe (ex.: 200) e clique em Tentar de novo para ver só o fim. |
+| **O servidor não respondeu em 90 s.** / **Servidor não configurado nesta instância da API…** | O servidor demorou demais ou a API não tem as credenciais SSH; acione a sustentação. |
+
+> Toda leitura, listagem e gravação fica registrada com sua matrícula, o
+> caminho e o resultado (auditoria). O conteúdo do arquivo **não** é gravado.
 
 ---
 
@@ -409,6 +452,55 @@ Requer a permissão **Executar** (a mesma do botão de rodar pipeline).
 > modal de cada gesto lista quem precisa (`Republicação necessária`) — sem
 > republicar, a DAG continua com o agendamento/dependência antigos.
 
+### 3.7 Utilitários — criar ou editar um arquivo no servidor
+Menu **Operação → Utilitários**, aba **Criar/editar arquivo**. Quem só lê
+(operador) vê o editor desabilitado com a explicação; desenvolvedor e
+administrador gravam. Só abaixo dos diretórios liberados e só com as
+**extensões que o administrador liberou** (§4.7).
+
+1. **Pasta**: como na aba Ver arquivo (ou **Navegar…**). A pasta precisa
+   existir — a tela não cria pastas.
+2. **Nome do arquivo (sem a extensão)** e **Extensão** (lista do admin). Colar
+   `carga.sql` no nome separa a extensão sozinho. Pelo navegador, o clique num
+   arquivo preenche os dois.
+3. **Codificação**: `UTF-8` ou `Latin-1` (o servidor do DataStage costuma usar
+   Latin-1). Em Latin-1, um caractere que não existe nela (ex.: `€`, emoji)
+   desliga o Gravar e diz a linha e a posição.
+4. **Carregar existente**: traz o conteúdo do arquivo que já existe e troca a
+   codificação para a detectada — gravar de volta mantém os bytes.
+5. **Conteúdo**: editor em fonte mono com contador de linhas e bytes; *não
+   gravado* aparece enquanto houver texto por gravar. **Ctrl+Enter** grava
+   (Enter no nome ou na pasta não grava nada).
+6. **Gravar**: abre o modal com o resultado — caminho, criado ou sobrescrito,
+   tamanho, linhas, codificação, hash SHA-256 e a cópia de segurança — e o botão
+   **Ver arquivo**, que abre o conteúdo gravado.
+
+**Quando o arquivo já existe**, o modal mostra tamanho e data do atual e pede
+**Sobrescrever**. Ao confirmar, o original vira `nome.ext.bak-<data-hora>` na
+mesma pasta (se a cópia de segurança estiver ligada no Admin) e o novo entra
+de uma vez — um job que leia no meio vê o antigo ou o novo, nunca meio arquivo.
+As permissões do arquivo são preservadas; o dono passa a ser a conta SSH do
+Orquestra.
+
+O que a gravação faz com o texto: quebras de linha do Windows (CRLF) viram LF
+e o arquivo termina com quebra de linha.
+
+Mensagens que você pode ver:
+
+| Mensagem | O que significa |
+|---|---|
+| **Seu perfil só lê…** | Sem a permissão de cadastrar/editar; peça ao administrador. |
+| **Nenhuma extensão liberada** / **Extensão não liberada.** | O admin não incluiu essa extensão em Admin › Utilitários. |
+| **Caractere fora do Latin-1 na linha N (…)** | Troque o caractere ou grave em UTF-8. |
+| **O arquivo já existe. Confirme para gravar por cima.** | Escolha Sobrescrever ou Cancelar. |
+| **O servidor recusou gravar em /…: o sistema de arquivos está montado somente leitura.** | A pasta é de uma montagem sem escrita; escolha outra pasta ou acione a sustentação. |
+| **… não há espaço livre no disco.** | Disco cheio no servidor. |
+| **O usuário SSH não tem permissão para gravar em /…** | A conta do Orquestra não escreve nessa pasta. |
+| **Conteúdo de X, acima do teto de Y.** | O texto passa do teto por arquivo; divida o arquivo ou peça ao admin para subir o teto. |
+| **"NOME" não segue o padrão nome + extensão em minúscula…** | O navegador escolheu um arquivo que o editor não consegue gravar (extensão maiúscula, sem extensão, espaço na ponta). Veja pela aba Ver arquivo ou renomeie no servidor. |
+
+Trocar de aba com texto por gravar pergunta antes de descartar.
+
 ---
 
 ## 4. Perfil Administrador
@@ -447,6 +539,62 @@ Lembretes:
 - Segredos só em `/opt/airflow/.env` (nunca no Git).
 - Dependências novas chegam via Git (`wheels/`), nunca via pip/internet no servidor.
 
+### 4.7 Utilitários (Admin → Sistema → Utilitários)
+É aqui que se decide **o que** a tela Utilitários (§2.5 e §3.7) alcança no
+servidor do DataStage. Nada vem de fábrica: sem raiz cadastrada, ninguém lê
+nem grava.
+
+**Diretórios-raiz.** Cadastre a pasta absoluta (ex.: `/dados/bi`) — tudo
+abaixo dela fica navegável. Pode haver várias raízes. Pastas do sistema
+(`/etc`, `/usr`, `/dev`, `/root`, `/var/run`…) e a barra (`/`) são recusadas
+no cadastro **e** quando uma raiz aponta para elas por link no servidor.
+Na linha de cada raiz:
+- **Testar** — pergunta ao servidor: a pasta existe? é pasta? a conta SSH do
+  Orquestra consegue listá-la? Se a raiz for um link, mostra para onde ("é um
+  link para /u01/dados"). Uma raiz que aponta para pasta do sistema aparece
+  como **NÃO vale**.
+- **Editar** (lápis) — corrige o caminho sem criar outra raiz (Enter salva,
+  Esc cancela).
+- **Desativar** / **Reativar** — raiz desativada não abre mais nada abaixo
+  dela; o histórico de auditoria fica.
+
+> ⚠️ **Toda raiz ativa vale para ler E gravar.** Não cadastre diretórios de
+> projeto que contenham `.param` com credencial de banco: quem tem a permissão
+> de cadastrar/editar poderia sobrescrevê-los. Enquanto não existir "raiz só de
+> leitura", a decisão é não cadastrar.
+
+**Extensões graváveis.** A lista do que a aba Criar/editar pode gravar
+(`txt`, `sql`, `param`, `cfg`, `conf`, `properties`, `csv`, `json`, `yml`…);
+ler não depende dela. Incluir uma extensão de **script** (`sh`, `bat`, `py`,
+`ksh`…) pede confirmação: permite gravar scripts que um job pode executar.
+Excluir pede confirmação e vale na hora — quem já está com o editor aberto
+recebe "extensão não liberada" ao gravar.
+
+**Limites.** *Teto por arquivo (KB)* — acima disso a leitura pede "últimas N
+linhas" e a gravação é recusada (padrão 2.048 KB, máximo 16.384). *Guardar
+cópia de segurança ao sobrescrever* — liga o `.bak-<data-hora>` na mesma pasta
+(ligado por padrão). Lembre que ninguém expurga os `.bak`: combine a limpeza
+com a sustentação.
+
+**Permissão.** Em Admin → Usuários & Perfis, a tela **Utilitários** é um
+checkbox por perfil (admin, desenvolvedor e operador já vêm marcados pela
+migration 105). Gravar exige, além da tela, a ação **Cadastrar/Editar**. A
+permissão só aparece para o usuário depois de **sair e entrar de novo**.
+
+**Auditoria.** `dbo.etl_utilitario_arquivo_log`: matrícula, servidor, ação
+(`ler`, `listar`, `gravar`, `testar`, `raiz`), caminho real no servidor,
+tamanho, hash SHA-256, resultado (`ok`, `negado`, `erro`), detalhe e duração.
+Sem conteúdo de arquivo. Consulta útil:
+```sql
+SELECT TOP 50 criado_em, usuario, acao, resultado, caminho, LEFT(detalhe, 120) AS detalhe
+FROM dbo.etl_utilitario_arquivo_log ORDER BY id DESC
+```
+
+**Ambiente.** A API usa as mesmas variáveis SSH do Console DataStage
+(`DS_SSH_HOST`, `DS_SSH_USER`, `DS_SSH_PASSWORD` ou `DS_SSH_KEY_FILE`). Com
+`DS_SSH_KNOWN_HOSTS` definida, só a host key conhecida do servidor entra
+(recomendado em produção).
+
 ---
 
 ## 5. Perguntas frequentes
@@ -462,3 +610,9 @@ Lembretes:
 **Não vejo a aba Admin (ou outra aba).** Seu perfil não tem acesso a essa tela — solicite ao administrador em Admin → Usuários & Perfis.
 
 **Apertei F5 e continuei logado — é normal?** Sim. A sessão usa um token salvo no navegador (a senha nunca fica armazenada) e expira automaticamente após o período configurado (padrão 12h). Para encerrar antes, use Sair.
+
+**Utilitários diz "Fora dos diretórios liberados", mas a pasta existe.** Existir não basta: a pasta precisa estar abaixo de uma raiz cadastrada e ativa em Admin → Sistema → Utilitários (§4.7). Se o caminho passa por um link que sai da raiz, a resposta é a mesma.
+
+**Utilitários: o acento veio errado.** O rodapé do modal mostra a codificação detectada (`utf-8` ou `latin-1`). Ao editar, escolha a mesma codificação antes de gravar — "Carregar existente" já faz isso.
+
+**Gravei um arquivo e o job passou a falhar por permissão.** A gravação preserva as permissões do arquivo anterior, mas o **dono** passa a ser a conta SSH do Orquestra. Se o job depende do dono, peça à sustentação para ajustar; a cópia `.bak-<data-hora>` na mesma pasta tem o conteúdo anterior.
