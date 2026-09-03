@@ -55,6 +55,28 @@ services:
   # ── UI: publica na porta de UI_PORT_VIP (default 8090) do compose base ────
   ui-nginx: {}
 
+  # ── Servidor de arquivos de amostra (tela Utilitários) ─────────────────────
+  # A VPS não tem servidor DataStage. Este sshd faz o papel dele SÓ para o SFTP
+  # dos Utilitários (spec docs/spec-utilitarios-arquivos.md): a API chega nele
+  # pelas mesmas variáveis do Console (DS_SSH_HOST=sshd-amostra, porta 2222 —
+  # ver .env.dev.example). O Console DataStage continua degradado no DEV, porque
+  # aqui não existe `dsjob`. Sem `ports`: só a rede do compose alcança.
+  # A árvore de amostra é gerada no arranque por dev/sshd-amostra/10-amostra.sh.
+  sshd-amostra:
+    image: linuxserver/openssh-server:10.3_p1-r1-ls235  # fixada: harness reproduzível
+    container_name: orquestra-dev-sshd-amostra
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "America/Sao_Paulo"
+      PASSWORD_ACCESS: "true"
+      SUDO_ACCESS: "false"
+      USER_NAME: "${DEV_SSHD_USER:-orquestra}"
+      USER_PASSWORD: "${DEV_SSHD_PASSWORD:-orquestra-amostra}"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/dev/sshd-amostra/10-amostra.sh:/custom-cont-init.d/10-amostra.sh:ro
+    restart: unless-stopped
+
   # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────
   # webserver_config.dev.py substitui o de prod (LDAP → DB auth)
   airflow-webserver:
