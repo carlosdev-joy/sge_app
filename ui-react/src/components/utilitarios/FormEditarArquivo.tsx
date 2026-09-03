@@ -47,21 +47,19 @@ export interface FormEditarArquivoProps {
   onGravar: (pedido: PedidoGravacao) => void
   /** Lista pastas para o navegador; sem ele o botão Navegar… não aparece. */
   onListar?: ListarPasta
-  /** Preenchimento inicial (ex.: vindo do "Ver arquivo"). */
-  inicial?: { diretorio?: string; nome?: string; extensao?: string }
 }
 
 export function FormEditarArquivo({
   servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, sujo, onSujo, onCarregar, onGravar,
-  onListar, inicial,
+  onListar,
 }: FormEditarArquivoProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
-  const [diretorio, setDiretorio] = useState(inicial?.diretorio ?? '')
-  const [nome, setNome] = useState(inicial?.nome ?? '')
+  const [diretorio, setDiretorio] = useState('')
+  const [nome, setNome] = useState('')
   // Só o que o usuário ESCOLHEU; enquanto não escolhe, vale o padrão da lista —
   // derivado a cada render, então extensões que chegam depois (refetch após o
   // admin cadastrar) entram sem efeito nem estado preso em ''.
-  const [extensaoEscolhida, setExtensaoEscolhida] = useState(inicial?.extensao ?? '')
+  const [extensaoEscolhida, setExtensaoEscolhida] = useState('')
   const extensao = extensaoEscolhida || extensaoPadrao(extensoes)
   const [codificacao, setCodificacao] = useState<Codificacao>('utf-8')
   const [conteudo, setConteudo] = useState('')
@@ -110,7 +108,7 @@ export function FormEditarArquivo({
   const mudarNome = (v: string) => {
     setAvisoEscolha(null)
     const { nome: n, extensao: e } = separarNomeExtensao(v)
-    if (e && extensoes.includes(e) && v.trim().toLowerCase().endsWith(`.${e}`)) { setNome(n); setExtensaoEscolhida(e) }
+    if (e && extensoes.includes(e)) { setNome(n); setExtensaoEscolhida(e) }
     else setNome(v)
   }
   // Arquivo escolhido no navegador: pasta + nome separado da extensão. Extensão

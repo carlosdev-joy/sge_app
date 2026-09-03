@@ -95,10 +95,9 @@ export function UtilitariosRaizes({
           <tbody>
             {raizes.map(r => {
               const teste = testes[r.id]
-              const resumo = teste ? tomDoTeste(teste) : null
               const testando = testandoId === r.id
               return (
-                <RaizLinhas key={r.id} raiz={r} resumo={resumo} teste={teste} testando={testando}
+                <RaizLinhas key={r.id} raiz={r} teste={teste} testando={testando}
                   bloqueado={testandoId !== null}
                   servidorLabel={servidores.find(s => s.id === r.servidor)?.label ?? r.servidor}
                   onTestar={onTestar} onAtivar={onAtivar} onEditar={onEditar} />
@@ -118,9 +117,8 @@ export function UtilitariosRaizes({
   )
 }
 
-function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, onTestar, onAtivar, onEditar }: {
+function RaizLinhas({ raiz, teste, testando, bloqueado, servidorLabel, onTestar, onAtivar, onEditar }: {
   raiz: RaizUtil
-  resumo: { tom: 'success' | 'warning' | 'error'; texto: string } | null
   teste: TesteRaiz | undefined
   testando: boolean
   bloqueado: boolean
@@ -129,6 +127,7 @@ function RaizLinhas({ raiz, resumo, teste, testando, bloqueado, servidorLabel, o
   onAtivar: (id: number, ativo: boolean) => void
   onEditar: (id: number, caminho: string) => Promise<boolean> | boolean
 }) {
+  const resumo = teste ? tomDoTeste(teste) : null
   const inativa = !raiz.ativo
   const [editando, setEditando] = useState(false)
   const [novo, setNovo] = useState(raiz.caminho)

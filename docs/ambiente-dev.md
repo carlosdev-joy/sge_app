@@ -110,7 +110,14 @@ docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env
 docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d --no-deps orquestra-api
 # conferir a árvore
 docker exec orquestra-dev-sshd-amostra ls -la /dados/bi /dados/param
+# smoke da tela Utilitários (spec §7) pela API, comparando com o servidor
+bash scripts/smoke_utilitarios.sh
 ```
+
+`DEV_SSHD_PASTA_EXTRA=/caminho/na/vps` no `.env.dev` monta uma pasta real da VPS
+dentro do `sshd-amostra` (**somente leitura**) para testar com arquivos de
+verdade — cadastre-a como raiz no Admin. Gravar nela responde "o sistema de
+arquivos está montado somente leitura", que é o esperado.
 
 ## Nota de operação (075+): DML manual em etl_pipeline_dependencia
 

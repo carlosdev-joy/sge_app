@@ -1,5 +1,5 @@
 # Spec: Utilitários de arquivos no servidor — Orquestra
-Data: 2026-09-03 · Status: rascunho v2 (respostas do usuário incorporadas; aguarda aprovação)
+Data: 2026-09-03 · Status: concluída — F1–F6 mergeadas (PRs #356–#362), F7 (manual, release note, smoke, backlog) na PR de fecho; deploy em produção pendente
 
 ## 1. Visão
 
@@ -539,6 +539,15 @@ mostra o aviso e nada quebra no resto do Orquestra.
 | 11 | `AutoAddPolicy` aceita qualquer host key (paridade com o Console) | MITM na rede interna | Registrado como melhoria transversal no §8 (`known_hosts` fixo para Console e Utilitários) |
 
 ## 7. Smoke pós-deploy
+
+> **Script**: `scripts/smoke_utilitarios.sh` executa pela API o que não exige o navegador
+> (c, d, e, g, h, j, k, l, m, p) e, **com acesso ao servidor de arquivos** (`docker exec` no
+> DEV), também i e o, comparando com `wc -lc`, `cat`, `od` e o `.bak`. Sem esse acesso, i e
+> o ficam para fazer à mão e o script avisa no fim o que sobrou para apagar
+> (`smoke_orquestra.txt` e o `.bak`). Só mexe nas extensões que estão na lista e repõe o que
+> excluiu mesmo se for interrompido. Uso em produção: `ORQ_URL`, `ORQ_USER`, `ORQ_PASS`,
+> `RAIZ`, `PASTA`, `ARQ`, `LATIN1` no ambiente. **Resultado no DEV (2026-09-03, F7): 38
+> conferências ok, 0 falhas**; a, b, f, n e a parte visual de j são manuais (marcados "UI").
 
 a) Sair e entrar de novo (permissão vive no `localStorage`). Com `admin`, `desenvolvedor` e
    `operador`, o menu Operação mostra **Utilitários**; com `consulta`, não mostra e

@@ -87,9 +87,10 @@ export function descricaoEntrada(e: EntradaPasta): string {
  *  (lexicalmente); senão, com uma raiz só, direto nela; com várias, na lista
  *  das raízes (null). */
 export function inicioNavegacao(diretorio: string, raizes: string[]): string | null {
-  const d = diretorio.trim().replace(/\/+$/, '') || diretorio.trim()
-  if (d && d.startsWith('/') && raizDe(d, raizes)) return d
-  if (raizes.length === 1) return raizes[0].trim().replace(/\/+$/, '') || raizes[0]
+  // Só barras vira '' e cai fora — raiz nunca é `/`, então nada se perde.
+  const d = diretorio.trim().replace(/\/+$/, '')
+  if (d.startsWith('/') && raizDe(d, raizes)) return d
+  if (raizes.length === 1) return raizes[0].trim().replace(/\/+$/, '')
   return null
 }
 

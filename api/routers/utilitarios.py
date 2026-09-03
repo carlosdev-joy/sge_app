@@ -55,7 +55,6 @@ router = APIRouter()
 
 K_TETO = "utilitarios_arquivo_max_kb"
 K_BACKUP = "utilitarios_arquivo_backup"
-_EXT_RE = re.compile(r"^[a-z0-9]{1,15}$")
 _INT_RE = re.compile(r"^-?\d+$")
 _TABELAS = ("etl_utilitario_raiz", "etl_utilitario_extensao", "etl_utilitario_arquivo_log")
 _ID_MAX = 2_147_483_647  # INT do SQL Server
@@ -322,7 +321,7 @@ async def utilitarios_listar_pasta(servidor: str = Query("datastage"),
     try:
         servidor = svc.servidor_valido(servidor)
     except svc.ArquivoError as e:
-        _auditar(usuario=usuario, servidor=str(servidor)[:50], acao="listar", caminho=str(caminho or ""),
+        _auditar(usuario=usuario, servidor=str(servidor), acao="listar", caminho=str(caminho or ""),
                  resultado="erro", detalhe=e.detail, duracao_ms=_ms(t0))
         raise HTTPException(status_code=e.status, detail=e.detail)
     cfg = _config_do_banco()
@@ -535,7 +534,7 @@ async def admin_raizes_incluir(body: dict = Body(...), admin: dict = Depends(get
 @router.patch("/utilitarios/admin/raizes/{raiz_id}")
 async def admin_raizes_alterar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
                                body: dict = Body(...),
-                               _admin: dict = Depends(get_admin_user)):
+                               admin: dict = Depends(get_admin_user)):
     """Altera `ativo` e/ou `caminho` de uma raiz. Editar o caminho existe para o
     erro de digitação (`/opt/totalseg-pw`) não obrigar a desativar e recadastrar;
     o caminho novo passa pela mesma régua do cadastro e não pode repetir outra
@@ -584,7 +583,7 @@ async def admin_raizes_alterar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
     if novo_caminho != caminho_atual:
         # A troca apaga o caminho antigo da lista; as leituras já auditadas
         # abaixo dele precisam de uma linha que explique de onde vieram.
-        quem = str(_admin.get("matricula") or "?")
+        quem = str(admin.get("matricula") or "?")
         log.info("Utilitários: raiz %s alterada de %s para %s por %s", raiz_id, caminho_atual, novo_caminho, quem)
         _auditar(usuario=quem, servidor=servidor, acao="raiz", caminho=novo_caminho, resultado="ok",
                  detalhe=f"raiz {raiz_id}: caminho alterado de {caminho_atual}")
@@ -628,10 +627,8 @@ async def admin_raizes_testar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
 
 def _extensao_valida(bruto) -> str:
     s = str(bruto or "").strip().lower().lstrip(".")
-    if not _EXT_RE.match(s):
-        raise HTTPException(
-            status_code=422,
-            detail="Extensão inválida: só letras minúsculas e números, sem ponto, até 15 caracteres.")
+    if not svc.EXTENSAO_RE.match(s):
+        raise HTTPException(status_code=422, detail=svc.MSG_EXTENSAO_INVALIDA)
     return s
 
 
