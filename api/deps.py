@@ -224,3 +224,18 @@ async def require_ds_console(user: dict = Depends(get_current_user)) -> dict:
     raise HTTPException(
         status_code=403,
         detail="Sem acesso ao Console DataStage (recurso 'tela_ds_console').")
+
+
+async def require_tela_utilitarios(user: dict = Depends(get_current_user)) -> dict:
+    """
+    Dependency da tela Utilitários (spec docs/spec-utilitarios-arquivos.md): libera
+    para admin (acao_admin) OU para quem tem o recurso 'tela_utilitarios'
+    (migration 105: admin, desenvolvedor e operador). Isto dá LEITURA; gravar
+    exige também PERM_EDITAR, conferido no endpoint.
+    """
+    perms = user.get("permissoes", [])
+    if PERM_ADMIN in perms or "tela_utilitarios" in perms:
+        return user
+    raise HTTPException(
+        status_code=403,
+        detail="Sem acesso a Utilitários (recurso 'tela_utilitarios').")

@@ -84,6 +84,34 @@ Airflow").
   `scripts/carregar-dados-dev.sh` com um dump de produção, ou criar pipelines
   de teste pela própria UI.
 
+## Servidor de arquivos de amostra (`sshd-amostra`) — tela Utilitários
+
+A VPS não tem servidor DataStage, e a tela Utilitários (spec
+`docs/spec-utilitarios-arquivos.md`) lê arquivos dele por SFTP. O serviço
+`sshd-amostra` do `docker-compose.dev.yaml` (`linuxserver/openssh-server`, porta
+2222, só na rede do compose) faz esse papel. A API chega nele pelas **mesmas
+variáveis do Console DataStage** — no `.env.dev`, `DS_SSH_HOST=sshd-amostra`,
+`DS_SSH_PORT=2222` e `DS_SSH_USER/PASSWORD` iguais a `DEV_SSHD_USER/PASSWORD`
+(ver `.env.dev.example`). O Console DataStage continua degradado no DEV: lá não
+existe `dsjob`, e isso é esperado.
+
+A árvore de amostra é gerada no arranque do container por
+`dev/sshd-amostra/10-amostra.sh` (nada vai para o git): duas raízes para
+cadastrar no Admin — `/dados/bi` e `/dados/param` — com texto UTF-8, texto
+Latin-1 (`parametros_latin1.param`), log de ~5 MB acima do teto
+(`logs/grande.log`), binário (`imagem.bin`), oculto (`.oculto.txt`), symlink para
+fora da raiz (`link_fora → /fora`), pasta ilegível (`param/sem_acesso`) e um
+arquivo fora de qualquer raiz (`/fora/segredo.txt`).
+
+```bash
+# subir só ele (primeira vez cria; depois stop/start preserva a árvore)
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d sshd-amostra
+# recriar a API para ela enxergar as DS_SSH_* novas do .env.dev
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d --no-deps orquestra-api
+# conferir a árvore
+docker exec orquestra-dev-sshd-amostra ls -la /dados/bi /dados/param
+```
+
 ## Nota de operação (075+): DML manual em etl_pipeline_dependencia
 
 Após a migration 075 (índice filtrado `ix_dep_origem_no`), qualquer
