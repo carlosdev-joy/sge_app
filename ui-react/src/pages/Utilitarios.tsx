@@ -1,30 +1,51 @@
 // Utilitários — ferramentas sobre arquivos do servidor do DataStage por SFTP
-// (spec docs/spec-utilitarios-arquivos.md). Hoje: a aba Ver arquivo. A aba
-// Criar/editar é de uma fase posterior da spec e, até existir, não aparece —
-// nem como "em breve" desabilitada (texto de plano de obra na tela ensina a
-// não acreditar no que a tela diz).
-//
-// A página é o container: carrega `GET /utilitarios/config` (servidores, raízes
-// ativas, teto), chama `POST /utilitarios/arquivo/ler` e passa estado para os
-// componentes de apresentação (FormVerArquivo, ModalConteudoArquivo).
+// (spec docs/spec-utilitarios-arquivos.md). Duas abas: Ver arquivo e
+// Criar/editar arquivo. A página é o container: carrega `GET /utilitarios/config`
+// (servidores, raízes ativas, extensões, teto, pode_gravar), chama
+// `POST /utilitarios/arquivo/ler` e `POST /utilitarios/arquivo/gravar`, e passa
+// estado para os componentes de apresentação.
 import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Wrench, AlertTriangle } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import { Tabs } from '../components/ui/Tabs'
+import { Modal } from '../components/ui/Modal'
+import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
 import { InfoBanner } from '../components/ui/InfoBanner'
+import { toast } from '../components/ui/Toast'
 import { FormVerArquivo } from '../components/utilitarios/FormVerArquivo'
 import { ModalConteudoArquivo, type EstadoLeitura } from '../components/utilitarios/ModalConteudoArquivo'
+import { FormEditarArquivo, type CarregadoExistente } from '../components/utilitarios/FormEditarArquivo'
+import { ModalGravacaoArquivo, type EstadoGravacao } from '../components/utilitarios/ModalGravacaoArquivo'
 import { mensagemErro, migrationPendente, type ConfigUtil } from '../lib/utilitariosAdmin'
 import { erroLeitura, type ConteudoArquivo, type ErroLeitura, type PedidoLeitura } from '../lib/utilitariosArquivo'
+import {
+  erroGravacao, nomeArquivoCompleto,
+  type ErroGravacao, type PedidoGravacao, type ResultadoGravacao,
+} from '../lib/utilitariosGravacao'
 
-const TABS = [{ id: 'ver', label: 'Ver arquivo' }]
+const TABS = [
+  { id: 'ver', label: 'Ver arquivo' },
+  { id: 'editar', label: 'Criar/editar arquivo' },
+]
+const ABA_CHAVE = 'orq.utilitarios.aba'
 
 export default function Utilitarios() {
   const isAdmin = useAuthStore(s => s.isAdmin)
-  const [aba, setAba] = useState('ver')
+  // Aba lembrada por navegador (`localStorage` LANÇA em janela privada: try/catch dos dois lados).
+  const [aba, setAbaEstado] = useState(() => {
+    try { return localStorage.getItem(ABA_CHAVE) === 'editar' ? 'editar' : 'ver' } catch { return 'ver' }
+  })
+  const setAba = (id: string) => {
+    setAbaEstado(id)
+    try { localStorage.setItem(ABA_CHAVE, id) } catch { /* sem memória, sem drama */ }
+  }
+  const [abaPendente, setAbaPendente] = useState<string | null>(null)
+  const [sujo, setSujo] = useState(false)
+
+  // ── leitura ────────────────────────────────────────────────────────────────
   const [pedido, setPedido] = useState<PedidoLeitura | null>(null)
   const [resultado, setResultado] = useState<ConteudoArquivo | null>(null)
   const [erro, setErro] = useState<ErroLeitura | null>(null)
@@ -34,7 +55,12 @@ export default function Utilitarios() {
   // observer, os callbacks do nível do hook continuariam rodando.
   const serie = useRef(0)
 
-  const config = useQuery<ConfigUtil>({ queryKey: ['utilitarios-config'], queryFn: () => apiFetch('/utilitarios/config') })
+  // Sem refetch ao focar a janela: um refetch que falha (API reiniciando) NÃO
+  // pode desmontar o editor com texto por gravar — e abaixo o erro só derruba
+  // a página quando não há dado nenhum.
+  const config = useQuery<ConfigUtil>({
+    queryKey: ['utilitarios-config'], queryFn: () => apiFetch('/utilitarios/config'), refetchOnWindowFocus: false,
+  })
 
   const leitura = useMutation({
     mutationFn: (p: PedidoLeitura) =>
@@ -57,11 +83,81 @@ export default function Utilitarios() {
     serie.current++
     setPedido(null); setResultado(null); setErro(null); leitura.reset()
   }
-
   const estado: EstadoLeitura = leitura.isPending ? 'buscando' : erro ? 'erro' : resultado ? 'pronto' : 'buscando'
 
+  // ── gravação ───────────────────────────────────────────────────────────────
+  const [pedidoG, setPedidoG] = useState<PedidoGravacao | null>(null)
+  const [resultadoG, setResultadoG] = useState<ResultadoGravacao | null>(null)
+  const [erroG, setErroG] = useState<ErroGravacao | null>(null)
+  const [carregando, setCarregando] = useState(false)
+  const serieG = useRef(0)
+
+  const gravacao = useMutation({
+    mutationFn: (p: PedidoGravacao) =>
+      apiFetch<ResultadoGravacao>('/utilitarios/arquivo/gravar', { method: 'POST', body: JSON.stringify(p) }),
+  })
+
+  const gravar = (p: PedidoGravacao) => {
+    const minha = ++serieG.current
+    setPedidoG(p); setResultadoG(null); setErroG(null)
+    gravacao.mutate(p, {
+      onSuccess: r => { if (serieG.current === minha) { setResultadoG(r); setErroG(null); setSujo(false) } },
+      onError: e => { if (serieG.current === minha) { setResultadoG(null); setErroG(erroGravacao(e)) } },
+    })
+  }
+  // Saída do 409: o MESMO pedido, agora com sobrescrever.
+  const sobrescrever = () => { if (pedidoG) gravar({ ...pedidoG, sobrescrever: true }) }
+  // Fechar o modal NÃO reseta a mutation: `gravando` segue verdadeiro até o
+  // pedido em voo responder, senão o Gravar religava e um segundo pedido podia
+  // aterrissar antes do primeiro (que então gravaria por cima, sem backup).
+  const fecharGravacao = () => {
+    serieG.current++
+    setPedidoG(null); setResultadoG(null); setErroG(null)
+  }
+  const estadoG: EstadoGravacao = gravacao.isPending ? 'gravando'
+    : erroG?.status === 409 ? 'existe' : erroG ? 'erro' : resultadoG ? 'pronto' : 'gravando'
+
+  // "Carregar existente": lê pelo mesmo endpoint da aba Ver arquivo.
+  const carregar = async (p: { servidor: string; diretorio: string; nome: string }): Promise<CarregadoExistente | null> => {
+    setCarregando(true)
+    try {
+      const r = await apiFetch<ConteudoArquivo>('/utilitarios/arquivo/ler', { method: 'POST', body: JSON.stringify(p) })
+      return { conteudo: r.conteudo, codificacao: r.codificacao }
+    } catch (e) {
+      const erro = erroLeitura(e)
+      // Acima do teto o `ler` sugere "últimas N linhas", que não existe aqui:
+      // um arquivo desse tamanho não se edita pelo Orquestra.
+      toast.error(erro.status === 413
+        ? `O arquivo passa do teto de ${config.data?.tamanho_max_kb ?? '?'} KB e não dá para editá-lo por aqui.`
+        : erro.mensagem)
+      return null
+    } finally {
+      setCarregando(false)
+    }
+  }
+  // "Ver arquivo" do resultado da gravação: abre o modal de conteúdo no que foi
+  // gravado — pelo caminho que o usuário digitou (lexical), não pelo real que a
+  // API devolve: com raiz que é symlink, o real cai fora das raízes e o `ler`
+  // responderia 403.
+  const verGravado = () => {
+    if (!pedidoG) return
+    const pedidoLeitura: PedidoLeitura = {
+      servidor: pedidoG.servidor, diretorio: pedidoG.diretorio, nome: nomeArquivoCompleto(pedidoG.nome, pedidoG.extensao),
+    }
+    fecharGravacao()
+    iniciar(pedidoLeitura)
+  }
+
+  // Troca de aba com texto não gravado no editor: pergunta antes de descartar.
+  const mudarAba = (id: string) => {
+    if (id === aba) return
+    if (aba === 'editar' && sujo) { setAbaPendente(id); return }
+    setAba(id)
+  }
+  const confirmarTroca = () => { if (abaPendente) { setSujo(false); setAba(abaPendente) } ; setAbaPendente(null) }
+
   if (config.isLoading) return <PageSpinner />
-  if (config.error && migrationPendente(config.error)) {
+  if (config.error && !config.data && migrationPendente(config.error)) {
     return (
       <div className="flex flex-col gap-4">
         <Cabecalho />
@@ -72,7 +168,7 @@ export default function Utilitarios() {
       </div>
     )
   }
-  if (config.error || !config.data) {
+  if (!config.data) {
     return (
       <div className="flex flex-col gap-4">
         <Cabecalho />
@@ -93,10 +189,11 @@ export default function Utilitarios() {
     <div className="flex flex-col gap-4">
       <Cabecalho />
 
-      <InfoBanner storageKey="utilitarios_ver_v1">
-        Informe a <strong>pasta</strong> e o <strong>nome do arquivo</strong> no servidor e clique em
-        <strong> Iniciar</strong>: o conteúdo abre num modal, com botão para copiar. Só pastas abaixo dos
-        diretórios liberados pelo admin podem ser abertas; toda leitura fica registrada.
+      <InfoBanner storageKey="utilitarios_ver_v2">
+        <strong>Ver arquivo</strong>: informe a pasta e o nome e clique em Iniciar — o conteúdo abre num modal, com
+        botão para copiar. <strong>Criar/editar arquivo</strong>: escreva no editor, escolha a extensão e a pasta e
+        grave; para alterar um arquivo que já existe, use "Carregar existente". Só pastas abaixo dos diretórios
+        liberados pelo admin; toda leitura e gravação fica registrada.
       </InfoBanner>
 
       {semRaiz && (
@@ -111,18 +208,25 @@ export default function Utilitarios() {
         </div>
       )}
 
+      {config.isError && (
+        <p className="text-xs text-amber-700 dark:text-amber-300 inline-flex items-center gap-1.5" data-aviso="config-desatualizada">
+          <AlertTriangle size={12} /> Não foi possível atualizar a configuração dos Utilitários
+          ({mensagemErro(config.error, 'erro desconhecido')}); usando a última carregada.
+        </p>
+      )}
+
       {semServidor && (
         <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-800"
           data-aviso="sem-servidor">
           <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
           <p className="text-sm text-amber-800 dark:text-amber-200">
-            O servidor não está configurado nesta instância da API (DS_SSH_HOST/DS_SSH_USER). A leitura vai
-            responder "servidor não configurado" até isso ser definido no ambiente.
+            O servidor não está configurado nesta instância da API (DS_SSH_HOST/DS_SSH_USER). A leitura e a gravação
+            vão responder "servidor não configurado" até isso ser definido no ambiente.
           </p>
         </div>
       )}
 
-      <Tabs tabs={TABS} active={aba} onChange={setAba} size="md" />
+      <Tabs tabs={TABS} active={aba} onChange={mudarAba} size="md" />
 
       {aba === 'ver' && (
         <FormVerArquivo
@@ -130,6 +234,21 @@ export default function Utilitarios() {
           raizesPorServidor={raizesPorServidor}
           iniciando={leitura.isPending}
           onIniciar={iniciar}
+        />
+      )}
+
+      {aba === 'editar' && (
+        <FormEditarArquivo
+          servidores={cfg.servidores}
+          raizesPorServidor={raizesPorServidor}
+          extensoes={cfg.extensoes}
+          podeGravar={cfg.pode_gravar}
+          gravando={gravacao.isPending}
+          carregando={carregando}
+          sujo={sujo}
+          onSujo={setSujo}
+          onCarregar={carregar}
+          onGravar={gravar}
         />
       )}
 
@@ -142,6 +261,29 @@ export default function Utilitarios() {
         onFechar={fechar}
         onRetentar={retentar}
       />
+
+      <ModalGravacaoArquivo
+        aberto={pedidoG !== null}
+        pedido={pedidoG}
+        estado={estadoG}
+        resultado={resultadoG}
+        erro={erroG}
+        onFechar={fecharGravacao}
+        onSobrescrever={sobrescrever}
+        onVerArquivo={verGravado}
+      />
+
+      <Modal open={abaPendente !== null} onClose={() => setAbaPendente(null)} title="Alterações não gravadas" size="sm">
+        <div className="flex flex-col gap-5">
+          <p className="text-sm text-ink">
+            Há texto no editor que ainda não foi gravado. Trocar de aba descarta o que foi digitado.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setAbaPendente(null)} data-acao="ficar">Ficar no editor</Button>
+            <Button variant="danger" size="sm" onClick={confirmarTroca} data-acao="descartar">Descartar e trocar</Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

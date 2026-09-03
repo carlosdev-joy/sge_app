@@ -197,8 +197,8 @@ def test_pagina_chama_os_endpoints_e_copia_pelo_helper():
     assert "from '../../lib/copiar'" in modal
     assert "navigator.clipboard" not in _sem_comentarios(modal), \
         "clipboard direto não existe em HTTP — use lib/copiar"
-    # A aba Criar/editar é de outra fase: até lá não existe nem como "em breve" desabilitada.
-    assert "Criar/editar" not in pagina and "em breve" not in pagina
+    # Nada de aba "em breve" desabilitada: uma aba ou existe inteira ou não aparece.
+    assert "em breve" not in pagina
     # Achado da revisão adversarial: os callbacks vão POR CHAMADA (`mutate(p, {...})`)
     # e conferem o número de série — a resposta de um pedido fechado não pode
     # sobrescrever o modal do pedido atual.
