@@ -142,12 +142,26 @@ sem retrabalho.
     | `arquivo` | `link`; link é mostrado mas só é seguido se o `realpath` ficar dentro de
     uma raiz). Sem `caminho`, devolve as raízes ativas do servidor como nível zero.
   - Gravação: mesmas validações + extensão na lista cadastrada (422) + tamanho do conteúdo
-    ≤ teto (413) → `stat` do destino: existe e `sobrescrever=false` → 409 com
+    ≤ teto (413) → destino por `lstat`: **link para dentro das raízes grava no ALVO** (é o
+    que `ler` mostra e o que um job usa), link para fora → 403, link quebrado é substituído
+    por arquivo; `stat` do alvo: existe e `sobrescrever=false` → 409 com
     `{existente: {tamanho_bytes, modificado_em}}`; existe e `sobrescrever=true` →
-    cópia de segurança `<nome>.<ext>.bak-<AAAAMMDDHHMMSS>` no mesmo diretório (se a chave
-    de backup estiver ligada) → **escrita atômica**: grava em `.<nome>.<ext>.tmp-<pid>` e
-    `rename` por cima (um job que leia o arquivo no meio nunca vê metade) → `sha256` →
-    auditoria.
+    cópia de segurança `<nome>.<ext>.bak-<AAAAMMDDHHMMSS>-<ms>` no mesmo diretório (se a
+    chave de backup estiver ligada) → **escrita atômica**: grava em
+    `.<nome>.<ext>.tmp-<marca única>`, **preserva as permissões** do arquivo anterior
+    (`chmod` no tmp — sem isto um `.param` 0775 do grupo sairia 0644 e o job que escreve
+    nele quebraria) e `posix_rename` por cima (um job que leia o arquivo no meio vê o
+    antigo ou o novo, nunca metade) → `sha256` → auditoria. Falha no meio: o original volta
+    ao lugar e o `.tmp` some.
+  - ⚠️ Dois efeitos que a tela e o manual dizem: (1) o **dono** do arquivo sobrescrito
+    passa a ser o usuário SSH da API (SFTP não muda dono; as permissões são preservadas);
+    (2) com backup ligado, entre mover o original para `.bak` e pôr o novo no lugar há um
+    instante em que o caminho **não existe** — nunca "metade", mas um `open` nesse
+    instante recebe "não encontrado". Backup desligado = um único `posix_rename`, sem
+    janela.
+  - Nome final (`<nome>.<ext>`) limitado a 215 bytes: o `.tmp` e o `.bak` precisam caber
+    nos 255 do NAME_MAX. Criar arquivo NOVO não é exclusivo sob corrida (o SFTP não tem
+    `O_EXCL`): duas criações simultâneas do mesmo nome terminam com o último a renomear.
   - **Fora do event loop**: todo acesso SSH roda em `await asyncio.to_thread(...)`
     (padrão de `services/monitor_capture.py` e `dag_reconcile.py`). O Console chama o
     `paramiko` direto dentro de `async def` e segura a API inteira por até 120 s; não
@@ -573,4 +587,18 @@ Ainda em aberto:
    idade (ex.: 365 dias) numa fase de polimento ou como item do backlog.
 8. **Retenção do que a F1 ainda não cobre**, registrado pela revisão adversarial: o
    `open` no caminho real ainda segue symlink criado ENTRE o `realpath` e o `open`
-   (TOCTOU) — exige shell no servidor, sem ganho de privilégio; residual aceito.
+   (TOCTOU) — exige shell no servidor, sem ganho de privilégio; residual aceito. Na
+   gravação (F4) o mesmo residual tem impacto maior (escrita), com a mesma barreira.
+9. **Raiz de leitura × raiz de escrita** (auditoria de segurança da F4): hoje toda raiz
+   ativa vale para ler E gravar, e a semente de extensões inclui `param`/`cfg`/`conf`/
+   `properties` — quem tem `acao_editar` pode sobrescrever um `.param` de projeto DataStage
+   (credencial de banco) se a raiz o alcançar. **Decisão operacional para produção: não
+   cadastrar diretórios de projeto com `.param` de credencial como raiz**, ou tratá-los só
+   em leitura. Separar raiz de leitura e de escrita (uma coluna `permite_gravar` +
+   interruptor no Admin) fica como melhoria — barata, decidir antes ou depois da F5.
+10. **`.bak` sem expurgo no servidor** (F4): cada sobrescrita com backup deixa um
+    `.bak-<ts>-<ms>` que nada apaga — disco do DS e cópias de dado pessoal acumulando.
+    Purga por idade (ou subpasta `.orquestra_bak/` com limpeza) antes de liberar a gravação
+    em volume. Junto com o item 7.
+11. **413 cedo**: o teto é aplicado depois de ler o corpo inteiro (o nginx aceita 64 MB); um
+    `Content-Length` acima do teto poderia ser recusado antes de ler. Backlog.

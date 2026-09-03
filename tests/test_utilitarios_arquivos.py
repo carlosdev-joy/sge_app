@@ -17,6 +17,7 @@ mockado no módulo do router, `get_current_user` via dependency_overrides.
 from __future__ import annotations
 
 import errno
+import hashlib
 import io
 import os
 import posixpath
@@ -288,9 +289,21 @@ class FakeSftp:
     `normalize` resolve symlinks componente a componente, como o realpath do
     servidor. Pastas em `ilegiveis` recusam `listdir` (EACCES)."""
 
-    def __init__(self, arvore: dict, ilegiveis=()):
+    def __init__(self, arvore: dict, ilegiveis=(), *, sem_posix_rename=False, falhar_rename=False,
+                 falhar_escrita=False, falhar_posix_rename=False, falhar_chmod=False, modos=None):
         self.arvore = dict(arvore)
         self.ilegiveis = set(ilegiveis)
+        # Botões de sabotagem da gravação (F4): servidor sem a extensão
+        # posix-rename, rename que falha, escrita recusada, SÓ o posix_rename
+        # falhando (é o que prova o rollback do backup), chmod recusado.
+        self.sem_posix_rename = sem_posix_rename
+        self.falhar_rename = falhar_rename
+        self.falhar_escrita = falhar_escrita
+        self.falhar_posix_rename = falhar_posix_rename
+        self.falhar_chmod = falhar_chmod
+        # Modo (permissões) por arquivo; o padrão é 0644, como o umask do sshd.
+        self.modos: dict[str, int] = dict(modos or {})
+        self.renames: list[tuple[str, str]] = []
         for p in list(self.arvore):
             # garante as pastas intermediárias
             d = posixpath.dirname(p)
@@ -332,7 +345,13 @@ class FakeSftp:
         v = self.arvore[real]
         if v is None:
             return _Attrs(statmod.S_IFDIR | 0o755)
-        return _Attrs(statmod.S_IFREG | 0o644, st_size=len(v))
+        return _Attrs(statmod.S_IFREG | self.modos.get(real, 0o644), st_size=len(v))
+
+    def chmod(self, caminho, modo):
+        if self.falhar_chmod:
+            raise OSError(errno.EACCES, "Permission denied")
+        real = self._resolver(caminho)
+        self.modos[real] = modo
 
     def listdir(self, caminho):
         real = self._resolver(caminho)
@@ -342,14 +361,101 @@ class FakeSftp:
         return sorted({p[len(pref):].split("/")[0] for p in self.arvore if p.startswith(pref)})
 
     def open(self, caminho, modo="rb"):
+        if "w" in modo:
+            return self._abrir_para_escrita(caminho)
         real = self._resolver(caminho)
         v = self.arvore[real]
         if v is None:
             raise OSError(errno.EISDIR, "Is a directory")
         return io.BytesIO(v)
 
+    # ── escrita (F4) — espelha o que o sftp-server do OpenSSH faz ────────────
+    def _pai_e_nome(self, caminho):
+        caminho = posixpath.normpath(caminho)
+        pai, nome = posixpath.split(caminho)
+        real_pai = self._resolver(pai)            # ENOENT se a pasta não existe
+        if self.arvore.get(real_pai, "x") is not None:
+            raise OSError(errno.ENOTDIR, "Not a directory")
+        return real_pai, nome
+
+    def _abrir_para_escrita(self, caminho):
+        if self.falhar_escrita:
+            raise OSError(errno.EACCES, "Permission denied")
+        real_pai, nome = self._pai_e_nome(caminho)
+        destino = posixpath.join(real_pai, nome)
+        arvore = self.arvore
+
+        class _Escritor(io.BytesIO):
+            def close(_self):
+                arvore[destino] = _self.getvalue()
+                super().close()
+
+            def __exit__(_self, *exc):
+                _self.close()
+                return False
+        return _Escritor()
+
+    def lstat(self, caminho):
+        real_pai, nome = self._pai_e_nome(caminho)
+        alvo = posixpath.join(real_pai, nome)
+        if alvo not in self.arvore:
+            raise OSError(errno.ENOENT, "No such file")
+        v = self.arvore[alvo]
+        if isinstance(v, tuple) and v[0] == "link":
+            return _Attrs(statmod.S_IFLNK | 0o777)
+        if v is None:
+            return _Attrs(statmod.S_IFDIR | 0o755)
+        return _Attrs(statmod.S_IFREG | 0o644, st_size=len(v))
+
+    def rename(self, de, para):
+        """Como o SFTP RENAME padrão: recusa quando o destino existe."""
+        if self.falhar_rename:
+            raise OSError("Failure")
+        real_pai, nome = self._pai_e_nome(de)
+        origem = posixpath.join(real_pai, nome)
+        if origem not in self.arvore:
+            raise OSError(errno.ENOENT, "No such file")
+        pai_d, nome_d = self._pai_e_nome(para)
+        destino = posixpath.join(pai_d, nome_d)
+        if destino in self.arvore:
+            raise OSError("Failure")
+        self.arvore[destino] = self.arvore.pop(origem)
+        if origem in self.modos:
+            self.modos[destino] = self.modos.pop(origem)
+        self.renames.append((origem, destino))
+
+    def posix_rename(self, de, para):
+        """Extensão posix-rename@openssh.com: sobrescreve o destino de uma vez."""
+        if self.sem_posix_rename:
+            raise AttributeError("posix_rename não suportado")
+        if self.falhar_rename or self.falhar_posix_rename:
+            raise OSError("Failure")
+        real_pai, nome = self._pai_e_nome(de)
+        origem = posixpath.join(real_pai, nome)
+        if origem not in self.arvore:
+            raise OSError(errno.ENOENT, "No such file")
+        pai_d, nome_d = self._pai_e_nome(para)
+        destino = posixpath.join(pai_d, nome_d)
+        self.arvore[destino] = self.arvore.pop(origem)
+        self.modos[destino] = self.modos.pop(origem, 0o644)
+        self.renames.append((origem, destino))
+
+    def remove(self, caminho):
+        real_pai, nome = self._pai_e_nome(caminho)
+        alvo = posixpath.join(real_pai, nome)
+        if alvo not in self.arvore:
+            raise OSError(errno.ENOENT, "No such file")
+        if self.arvore[alvo] is None:
+            raise OSError(errno.EISDIR, "Is a directory")
+        del self.arvore[alvo]
+
     def close(self):
         self.fechado = True
+
+
+class FakeSftpSemPosixRename(FakeSftp):
+    """Servidor sem a extensão: o atributo NÃO existe (é o que `getattr` vê)."""
+    posix_rename = None  # type: ignore[assignment]
 
 
 ARVORE = {
@@ -506,6 +612,242 @@ class TestLerArquivo:
         assert exc.value.status == 502
         assert "srv:22" not in exc.value.detail
         assert "srv:22" in (exc.value.interno or "")
+
+
+class TestGravarPuras:
+    def test_normalizar_conteudo(self):
+        assert svc.normalizar_conteudo("a\r\nb\rc") == "a\nb\nc\n"
+        assert svc.normalizar_conteudo("a\n") == "a\n"
+        assert svc.normalizar_conteudo("") == ""
+        assert svc.normalizar_conteudo(None) == ""
+
+    def test_codificar_latin1_recusa_caractere_fora_com_linha_e_posicao(self):
+        assert svc.codificar_conteudo("ação\n", "latin-1") == "ação\n".encode("latin-1")
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.codificar_conteudo("ok\nvalor: 10€\n", "latin-1")
+        assert exc.value.status == 422
+        assert "linha 2" in exc.value.detail and "'€'" in exc.value.detail
+        assert svc.codificar_conteudo("10€\n", "utf-8") == "10€\n".encode("utf-8")
+
+    def test_extensao_precisa_estar_na_lista(self):
+        assert svc.validar_extensao_gravacao(" .SQL ", ["sql", "txt"]) == "sql"
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.validar_extensao_gravacao("sh", ["sql", "txt"])
+        assert exc.value.status == 422 and "'sh' não liberada" in exc.value.detail
+        for ruim in ("", "a.b", "x" * 16):
+            with pytest.raises(svc.ArquivoError):
+                svc.validar_extensao_gravacao(ruim, ["sql"])
+
+    def test_preparar_gravacao(self):
+        caminho, raiz = svc.preparar_gravacao("/dados/bi/2026/", "carga", "txt", RAIZES, ["txt"])
+        assert (caminho, raiz) == ("/dados/bi/2026/carga.txt", "/dados/bi")
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.preparar_gravacao("/etc", "x", "txt", RAIZES, ["txt"])
+        assert exc.value.status == 403 and exc.value.resultado == "negado"
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.preparar_gravacao("/dados/bi", "a/b", "txt", RAIZES, ["txt"])
+        assert exc.value.status == 422
+
+    def test_nomes_de_backup_e_temporario(self):
+        from datetime import datetime
+        assert svc.nome_backup("/dados/bi/x.txt", datetime(2026, 9, 3, 10, 5, 7, 123456)) == "/dados/bi/x.txt.bak-20260903100507-123"
+        assert svc.nome_temporario("/dados/bi/x.txt", "77-1") == "/dados/bi/.x.txt.tmp-77-1"
+
+    def test_erro_de_codificacao_nao_leva_o_caractere_para_a_auditoria(self):
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.codificar_conteudo("10€\n", "latin-1")
+        assert "'€'" in exc.value.detail          # a resposta diz qual é
+        assert "€" not in (exc.value.interno or "")  # a auditoria só diz onde
+        assert "linha 1" in exc.value.interno
+
+
+class TestGravarArquivo:
+    def _gravar(self, fake, caminho, dados=b"novo\n", **kw):
+        kw.setdefault("sobrescrever", False)
+        kw.setdefault("backup", True)
+        return svc.gravar_arquivo(fake, caminho, RAIZES, dados, marca="t", **kw)
+
+    def test_cria_arquivo_novo_sem_deixar_tmp(self):
+        fake = FakeSftp(ARVORE)
+        r = self._gravar(fake, "/dados/bi/2026/novo.txt")
+        assert r["criado"] is True and r["backup"] is None
+        assert r["caminho"] == "/dados/bi/2026/novo.txt"
+        assert fake.arvore["/dados/bi/2026/novo.txt"] == b"novo\n"
+        assert r["sha256"] == hashlib.sha256(b"novo\n").hexdigest()
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_existente_sem_sobrescrever_409_com_o_que_existe(self):
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/consulta.sql")
+        assert exc.value.status == 409
+        assert exc.value.extra == {"existente": {"tamanho_bytes": 10, "modificado_em": svc._mtime_iso(_Attrs(0))}}
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"   # nada mudou
+
+    def test_sobrescreve_com_backup_byte_identico(self):
+        fake = FakeSftp(ARVORE)
+        from datetime import datetime
+        r = svc.gravar_arquivo(fake, "/dados/bi/consulta.sql", RAIZES, b"SELECT 2;\n",
+                               sobrescrever=True, backup=True, marca="t", agora=datetime(2026, 9, 3, 1, 2, 3))
+        assert r["criado"] is False
+        assert r["backup"] == "/dados/bi/consulta.sql.bak-20260903010203-000"
+        assert fake.arvore["/dados/bi/consulta.sql.bak-20260903010203-000"] == b"SELECT 1;\n"
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 2;\n"
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_sobrescreve_sem_backup(self):
+        fake = FakeSftp(ARVORE)
+        r = self._gravar(fake, "/dados/bi/consulta.sql", b"SELECT 3;\n", sobrescrever=True, backup=False)
+        assert r["backup"] is None
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 3;\n"
+        assert not [p for p in fake.arvore if ".bak-" in p]
+
+    def test_servidor_sem_posix_rename_cai_no_remove_e_rename(self):
+        fake = FakeSftpSemPosixRename(ARVORE)
+        r = self._gravar(fake, "/dados/bi/consulta.sql", b"SELECT 4;\n", sobrescrever=True, backup=False)
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 4;\n"
+        assert r["criado"] is False
+
+    def test_falha_no_rename_devolve_o_original_e_nao_deixa_tmp(self):
+        fake = FakeSftp(ARVORE, falhar_rename=True)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/consulta.sql", b"SELECT 5;\n", sobrescrever=True, backup=True)
+        assert exc.value.status == 502
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"
+        assert not [p for p in fake.arvore if ".tmp-" in p or ".bak-" in p]
+
+    def test_rollback_de_verdade_quando_so_o_posix_rename_falha(self):
+        # Achado da revisão: com `falhar_rename` o 1º rename já falha e o original
+        # nunca sai do lugar — o rollback (bak → real) não era exercitado.
+        from datetime import datetime
+        fake = FakeSftp(ARVORE, falhar_posix_rename=True)
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.gravar_arquivo(fake, "/dados/bi/consulta.sql", RAIZES, b"SELECT 5;\n",
+                               sobrescrever=True, backup=True, marca="t", agora=datetime(2026, 9, 3, 1, 2, 3))
+        assert exc.value.status == 502
+        bak = "/dados/bi/consulta.sql.bak-20260903010203-000"
+        assert fake.renames == [("/dados/bi/consulta.sql", bak), (bak, "/dados/bi/consulta.sql")]
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"
+        assert not [p for p in fake.arvore if ".tmp-" in p or ".bak-" in p]
+
+    def test_sobrescrever_preserva_as_permissoes_do_arquivo(self):
+        # GRAVE da revisão: o inode novo nascia 0644 — um .param 0775 do grupo
+        # deixava de ser gravável pelo job.
+        fake = FakeSftp(ARVORE, modos={"/dados/bi/consulta.sql": 0o775})
+        self._gravar(fake, "/dados/bi/consulta.sql", b"SELECT 6;\n", sobrescrever=True, backup=True)
+        assert fake.modos["/dados/bi/consulta.sql"] == 0o775
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 6;\n"
+
+    def test_chmod_recusado_aborta_sem_trocar_o_arquivo(self):
+        fake = FakeSftp(ARVORE, modos={"/dados/bi/consulta.sql": 0o775}, falhar_chmod=True)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/consulta.sql", b"SELECT 7;\n", sobrescrever=True)
+        assert exc.value.status == 403
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_backup_no_mesmo_instante_nao_da_502(self):
+        from datetime import datetime
+        fake = FakeSftp(ARVORE)
+        mesmo = datetime(2026, 9, 3, 1, 2, 3, 456000)
+        r1 = svc.gravar_arquivo(fake, "/dados/bi/consulta.sql", RAIZES, b"v1\n",
+                                sobrescrever=True, backup=True, marca="m1", agora=mesmo)
+        r2 = svc.gravar_arquivo(fake, "/dados/bi/consulta.sql", RAIZES, b"v2\n",
+                                sobrescrever=True, backup=True, marca="m2", agora=mesmo)
+        assert r1["backup"] == "/dados/bi/consulta.sql.bak-20260903010203-456"
+        assert r2["backup"] == "/dados/bi/consulta.sql.bak-20260903010203-456-m2"
+        assert fake.arvore[r1["backup"]] == b"SELECT 1;\n" and fake.arvore[r2["backup"]] == b"v1\n"
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"v2\n"
+
+    def test_destino_link_para_dentro_grava_no_alvo(self):
+        # `ler` segue o link; gravar também — senão o usuário edita o que leu e
+        # o job (que usa o alvo) não vê a mudança.
+        arvore = dict(ARVORE)
+        arvore["/dados/bi/atalho.param"] = ("link", "/dados/param/parametros_latin1.param")
+        fake = FakeSftp(arvore)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/atalho.param", b"x\n")
+        assert exc.value.status == 409
+        assert exc.value.extra["existente"]["tamanho_bytes"] == 15   # o ALVO, não o link
+        r = self._gravar(fake, "/dados/bi/atalho.param", b"NOVO\n", sobrescrever=True)
+        assert r["caminho"] == "/dados/param/parametros_latin1.param"
+        assert fake.arvore["/dados/param/parametros_latin1.param"] == b"NOVO\n"
+        assert fake.arvore["/dados/bi/atalho.param"] == ("link", "/dados/param/parametros_latin1.param")
+
+    def test_destino_link_para_pasta_422(self):
+        arvore = dict(ARVORE)
+        arvore["/dados/bi/atalho.txt"] = ("link", "/dados/bi/logs")
+        fake = FakeSftp(arvore)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/atalho.txt", sobrescrever=True)
+        assert exc.value.status == 422
+
+    def test_link_quebrado_para_dentro_e_substituido_por_arquivo(self):
+        # O realpath do OpenSSH devolve o próprio caminho do link quebrado (o
+        # alvo não resolve), o stat dá ENOENT e a gravação cria o arquivo NO
+        # LUGAR do link — não há alvo para preservar.
+        arvore = dict(ARVORE)
+        arvore["/dados/bi/quebrado.txt"] = ("link", "/dados/bi/2026/nao_existe.txt")
+        fake = FakeSftp(arvore)
+        r = self._gravar(fake, "/dados/bi/quebrado.txt", b"vivo\n")
+        assert r["criado"] is True and r["caminho"] == "/dados/bi/quebrado.txt"
+        assert fake.arvore["/dados/bi/quebrado.txt"] == b"vivo\n"
+        assert "/dados/bi/2026/nao_existe.txt" not in fake.arvore
+
+    def test_nome_longo_demais_para_o_tmp_e_bak_422(self):
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.preparar_gravacao("/dados/bi", "a" * 230, "txt", RAIZES, ["txt"])
+        assert exc.value.status == 422 and "215" in exc.value.detail
+        assert svc.preparar_gravacao("/dados/bi", "a" * 211, "txt", RAIZES, ["txt"])
+
+    def test_nome_com_controle_422(self):
+        for ruim in ("qa\nquebra", "esc\x1b[31m", "del\x7f"):
+            with pytest.raises(svc.ArquivoError) as exc:
+                svc.validar_nome(ruim)
+            assert exc.value.status == 422
+
+    def test_falha_no_rename_sem_backup_tambem_limpa(self):
+        fake = FakeSftp(ARVORE, falhar_rename=True)
+        with pytest.raises(svc.ArquivoError):
+            self._gravar(fake, "/dados/bi/2026/novo.txt")
+        assert "/dados/bi/2026/novo.txt" not in fake.arvore
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_pasta_inexistente_404_sem_criar_pasta(self):
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/nao_existe/x.txt")
+        assert exc.value.status == 404
+        assert "/dados/bi/nao_existe" not in fake.arvore
+
+    def test_pasta_fora_da_raiz_e_symlink_para_fora_403(self):
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/link_fora/x.txt")
+        assert exc.value.status == 403 and exc.value.resultado == "negado"
+        assert "/fora/x.txt" not in fake.arvore
+
+    def test_destino_e_link_para_fora_403(self):
+        arvore = dict(ARVORE)
+        arvore["/dados/bi/segredo.txt"] = ("link", "/fora/segredo.txt")
+        fake = FakeSftp(arvore)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/segredo.txt", sobrescrever=True)
+        assert exc.value.status == 403
+        assert fake.arvore["/fora/segredo.txt"] == b"nao pode\n"
+
+    def test_destino_e_pasta_422(self):
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/logs", sobrescrever=True)
+        assert exc.value.status == 422
+
+    def test_escrita_recusada_pelo_servidor_403_sem_tmp(self):
+        fake = FakeSftp(ARVORE, falhar_escrita=True)
+        with pytest.raises(svc.ArquivoError) as exc:
+            self._gravar(fake, "/dados/bi/2026/novo.txt")
+        assert exc.value.status == 403
+        assert not [p for p in fake.arvore if ".tmp-" in p]
 
 
 class TestTestarRaiz:
@@ -812,6 +1154,7 @@ class TestLerEndpoint:
         {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": True},
         {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": -1},
         {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": 100_001},
+        {"diretorio": "/dados/bi", "nome": ["x"]}, {"diretorio": 5, "nome": "x"},
         {"diretorio": "/dados/bi", "nome": "x", "codificacao": ["utf-8"]},
         {"diretorio": "/dados/bi", "nome": "x", "codificacao": "utf-16"},
         {"diretorio": "/dados/bi", "nome": "x", "servidor": "outro"},
@@ -907,6 +1250,122 @@ class TestLerEndpoint:
         cur = _CursorSemLog(REGRAS_CONFIG)
         r = _post_ler(client, cur, {"diretorio": "/dados/bi", "nome": "consulta.sql"})
         assert r.status_code == 200
+
+
+def _post_gravar(client, cur, body):
+    with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+        return client.post("/utilitarios/arquivo/gravar", json=body)
+
+
+GRAVAR_OK = {"diretorio": "/dados/bi/2026", "nome": "novo", "extensao": "txt", "conteudo": "linha 1\r\nlinha 2"}
+
+
+class TestGravarEndpoint:
+    def test_operador_nao_grava_e_e_auditado_como_negado(self, client, auth_operador, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_gravar(client, cur, GRAVAR_OK)
+        assert r.status_code == 403
+        assert "acao_editar" in r.json()["detail"]
+        assert cur.auditoria[0][2] == "gravar" and cur.auditoria[0][6] == "negado"
+
+    def test_dev_grava_com_lf_e_audita_com_hash(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_gravar(client, cur, GRAVAR_OK)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["caminho"] == "/dados/bi/2026/novo.txt" and j["criado"] is True
+        assert j["codificacao"] == "utf-8" and j["linhas"] == 2 and j["backup"] is None
+        assert sftp_falso.arvore["/dados/bi/2026/novo.txt"] == b"linha 1\nlinha 2\n"
+        usuario, servidor, acao, caminho, tamanho, sha, resultado, detalhe, dur = cur.auditoria[0]
+        assert (acao, resultado, caminho, tamanho) == ("gravar", "ok", "/dados/bi/2026/novo.txt", 16)
+        assert sha == hashlib.sha256(b"linha 1\nlinha 2\n").hexdigest()
+        assert detalhe == "criado"
+
+    def test_admin_tambem_grava(self, client, auth_admin, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _post_gravar(client, cur, GRAVAR_OK).status_code == 200
+
+    def test_extensao_fora_da_lista_422(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)   # extensões cadastradas: sql, txt
+        r = _post_gravar(client, cur, {**GRAVAR_OK, "extensao": "sh"})
+        assert r.status_code == 422
+        assert "'sh' não liberada" in r.json()["detail"]
+        assert cur.auditoria[0][6] == "erro"
+
+    def test_existente_409_traz_o_que_existe_e_sobrescrever_grava_com_backup(self, client, auth_dev, sftp_falso):
+        regras = REGRAS_CONFIG[:2] + [("FROM dbo.etl_app_config", [("utilitarios_arquivo_max_kb", "16"),
+                                                                    ("utilitarios_arquivo_backup", "1")])]
+        cur = _Cursor(regras)
+        body = {"diretorio": "/dados/bi", "nome": "consulta", "extensao": "sql", "conteudo": "SELECT 9;"}
+        r = _post_gravar(client, cur, body)
+        assert r.status_code == 409
+        assert r.json()["detail"]["mensagem"].startswith("O arquivo já existe")
+        assert r.json()["detail"]["existente"]["tamanho_bytes"] == 10
+        assert sftp_falso.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"
+        r = _post_gravar(client, cur, {**body, "sobrescrever": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["criado"] is False and r.json()["backup"].startswith("/dados/bi/consulta.sql.bak-")
+        assert sftp_falso.arvore["/dados/bi/consulta.sql"] == b"SELECT 9;\n"
+        assert "backup /dados/bi/consulta.sql.bak-" in cur.auditoria[-1][7]
+
+    def test_backup_desligado_no_admin(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)   # utilitarios_arquivo_backup = 0
+        body = {"diretorio": "/dados/bi", "nome": "consulta", "extensao": "sql", "conteudo": "SELECT 9;", "sobrescrever": True}
+        r = _post_gravar(client, cur, body)
+        assert r.status_code == 200 and r.json()["backup"] is None
+        assert not [p for p in sftp_falso.arvore if ".bak-" in p]
+
+    def test_latin1_grava_os_bytes_certos_e_recusa_caractere_fora(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_gravar(client, cur, {**GRAVAR_OK, "conteudo": "ação", "codificacao": "latin-1"})
+        assert r.status_code == 200
+        assert sftp_falso.arvore["/dados/bi/2026/novo.txt"] == "ação\n".encode("latin-1")
+        r = _post_gravar(client, cur, {**GRAVAR_OK, "nome": "outro", "conteudo": "10€", "codificacao": "latin-1"})
+        assert r.status_code == 422 and "'€'" in r.json()["detail"]
+        assert "/dados/bi/2026/outro.txt" not in sftp_falso.arvore
+
+    def test_teto_413_e_nul_415(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)   # teto 16 KB
+        r = _post_gravar(client, cur, {**GRAVAR_OK, "conteudo": "x" * (17 * 1024)})
+        assert r.status_code == 413 and "acima do teto" in r.json()["detail"]
+        r = _post_gravar(client, cur, {**GRAVAR_OK, "conteudo": "a\0b"})
+        assert r.status_code == 415
+
+    @pytest.mark.parametrize("body", [
+        {**GRAVAR_OK, "conteudo": None}, {**GRAVAR_OK, "conteudo": 12},
+        {**GRAVAR_OK, "sobrescrever": "sim"}, {**GRAVAR_OK, "nome": "a/b"},
+        {**GRAVAR_OK, "nome": ""}, {**GRAVAR_OK, "extensao": "a.b"},
+        {**GRAVAR_OK, "codificacao": "utf-16"}, {**GRAVAR_OK, "diretorio": "relativa"},
+        {**GRAVAR_OK, "nome": ["a"]}, {**GRAVAR_OK, "nome": "qa\nquebra"},
+        {**GRAVAR_OK, "extensao": 7}, {**GRAVAR_OK, "diretorio": None},
+    ])
+    def test_422_de_validacao_auditado(self, client, auth_dev, sftp_falso, body):
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _post_gravar(client, cur, body).status_code == 422
+        assert len(cur.auditoria) == 1 and cur.auditoria[0][2] == "gravar"
+
+    def test_fora_das_raizes_403_sem_ssh(self, client, auth_dev, monkeypatch):
+        chamou = []
+
+        @contextmanager
+        def _cm(servidor):
+            chamou.append(servidor)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_gravar(client, cur, {**GRAVAR_OK, "diretorio": "/etc"})
+        assert r.status_code == 403 and chamou == []
+        assert cur.auditoria[0][6] == "negado"
+
+    def test_pasta_inexistente_404(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_gravar(client, cur, {**GRAVAR_OK, "diretorio": "/dados/bi/nao_existe"})
+        assert r.status_code == 404
+
+    def test_servidor_nao_configurado_503(self, client, auth_dev, monkeypatch):
+        monkeypatch.delenv("DS_SSH_HOST", raising=False)
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _post_gravar(client, cur, GRAVAR_OK).status_code == 503
 
 
 class TestAdminRaizes:
