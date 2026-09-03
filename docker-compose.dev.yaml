@@ -63,7 +63,7 @@ services:
   # aqui não existe `dsjob`. Sem `ports`: só a rede do compose alcança.
   # A árvore de amostra é gerada no arranque por dev/sshd-amostra/10-amostra.sh.
   sshd-amostra:
-    image: linuxserver/openssh-server:latest
+    image: linuxserver/openssh-server:10.3_p1-r1-ls235  # fixada: harness reproduzível
     container_name: orquestra-dev-sshd-amostra
     environment:
       PUID: "1000"

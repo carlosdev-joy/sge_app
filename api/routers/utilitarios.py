@@ -18,8 +18,15 @@ Permissão: `require_tela_utilitarios` (admin OU recurso tela_utilitarios). Grav
 
 Política e SFTP vivem em `services/ssh_arquivos.py`; aqui fica o banco (raízes,
 extensões, config, auditoria) e a tradução ArquivoError → HTTP. Todo acesso SSH
-roda em `asyncio.to_thread` — o paramiko é bloqueante. A conexão com o banco é
-aberta e fechada em volta de cada consulta: nunca fica presa esperando o SSH.
+roda num executor DEDICADO com teto de tempo — o paramiko é bloqueante, e N
+leituras presas não podem esgotar o `to_thread` que o resto da API compartilha.
+A conexão com o banco é aberta e fechada em volta de cada consulta: nunca fica
+presa esperando o SSH.
+
+Auditoria: TODA saída de /arquivo/ler grava uma linha (ok / negado / erro),
+inclusive as 422 de validação — quem tenta `..` e erra a sintaxe também fica no
+rastro. O detalhe interno (host, erro cru do paramiko) vai ao log e à auditoria;
+a resposta leva só a mensagem genérica.
 
 Degradação: sem a migration 105, `/config` responde 503 nomeando a migration e a
 tela mostra o aviso; o resto do Orquestra não é afetado.
@@ -30,8 +37,9 @@ import asyncio
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Path
 
 from db import get_db_conn
 from deps import PERM_EDITAR, get_admin_user, require_tela_utilitarios
@@ -44,7 +52,27 @@ router = APIRouter()
 K_TETO = "utilitarios_arquivo_max_kb"
 K_BACKUP = "utilitarios_arquivo_backup"
 _EXT_RE = re.compile(r"^[a-z0-9]{1,15}$")
+_INT_RE = re.compile(r"^-?\d+$")
 _TABELAS = ("etl_utilitario_raiz", "etl_utilitario_extensao", "etl_utilitario_arquivo_log")
+_ID_MAX = 2_147_483_647  # INT do SQL Server
+
+# Executor só dos Utilitários: 4 conexões SSH simultâneas no máximo; a 5ª espera
+# na fila (e cai no teto de tempo se demorar). Nada disto toca o pool padrão do
+# `asyncio.to_thread`, usado por reconciliação, monitor e execuções.
+_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="orq-utilitarios-ssh")
+_TIMEOUT_S = 90
+
+
+async def _no_servidor(fn, *args):
+    """Roda `fn` (bloqueante, SSH) no executor dedicado, com teto de tempo.
+
+    Passado o teto a requisição é liberada com 504; a thread presa termina por
+    conta do timeout de canal (60 s) e do keepalive — não há como matá-la."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, fn, *args), timeout=_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise svc.ArquivoError(504, f"O servidor não respondeu em {_TIMEOUT_S} s.")
 
 
 # ── banco: helpers ───────────────────────────────────────────────────────────
@@ -117,7 +145,11 @@ def _config_do_banco() -> dict:
 
 def _auditar(*, usuario: str, servidor: str, acao: str, caminho: str, resultado: str,
              tamanho=None, sha256=None, detalhe=None, duracao_ms=None) -> None:
-    """Best-effort: auditoria que falha não derruba a leitura — mas avisa no log."""
+    """Best-effort: auditoria que falha não derruba a leitura — mas avisa no log.
+
+    Cortes em unidades UTF-16 (o que NVARCHAR conta): `[:1000]` em code points
+    deixaria passar um caminho de 600 emojis, o INSERT estouraria e a auditoria
+    da tentativa sumiria em silêncio."""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
@@ -126,8 +158,13 @@ def _auditar(*, usuario: str, servidor: str, acao: str, caminho: str, resultado:
                 "INSERT INTO dbo.etl_utilitario_arquivo_log "
                 "(usuario, servidor, acao, caminho, tamanho_bytes, sha256, resultado, detalhe, duracao_ms) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [usuario, servidor, acao, (caminho or "")[:svc.LIMITE_CAMINHO], tamanho, sha256,
-                 resultado, (detalhe or "")[:500] or None, duracao_ms])
+                [svc.cortar_utf16(str(usuario or "?"), 100),
+                 svc.cortar_utf16(str(servidor or "?"), 50),
+                 acao,
+                 svc.cortar_utf16(caminho or "", svc.LIMITE_CAMINHO),
+                 tamanho, sha256, resultado,
+                 svc.cortar_utf16(detalhe or "", 500) or None,
+                 duracao_ms])
             conn.commit()
         finally:
             _fechar(conn, cur)
@@ -137,6 +174,27 @@ def _auditar(*, usuario: str, servidor: str, acao: str, caminho: str, resultado:
 
 def _ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
+
+
+def _inteiro(valor, campo: str, minimo: int, maximo: int) -> int:
+    """Inteiro de verdade: bool não é inteiro, 2048.9 não é inteiro, "2048" é."""
+    if isinstance(valor, bool):
+        raise HTTPException(status_code=422, detail=f"'{campo}' precisa ser um inteiro.")
+    if isinstance(valor, float):
+        if not valor.is_integer():
+            raise HTTPException(status_code=422, detail=f"'{campo}' precisa ser um inteiro.")
+        valor = int(valor)
+    elif isinstance(valor, str):
+        s = valor.strip()
+        if not _INT_RE.match(s):
+            raise HTTPException(status_code=422, detail=f"'{campo}' precisa ser um inteiro.")
+        valor = int(s)
+    elif not isinstance(valor, int):
+        raise HTTPException(status_code=422, detail=f"'{campo}' precisa ser um inteiro.")
+    if valor < minimo or valor > maximo:
+        raise HTTPException(
+            status_code=422, detail=f"'{campo}' precisa estar entre {minimo} e {maximo}.")
+    return valor
 
 
 # ── config da tela ───────────────────────────────────────────────────────────
@@ -157,17 +215,11 @@ async def utilitarios_config(user: dict = Depends(require_tela_utilitarios)):
 # ── ler arquivo ──────────────────────────────────────────────────────────────
 
 def _ultimas_linhas_valido(bruto) -> int | None:
+    if isinstance(bruto, bool):
+        raise HTTPException(status_code=422, detail="'ultimas_linhas' precisa ser um inteiro.")
     if bruto in (None, "", 0, "0"):
         return None
-    try:
-        n = int(bruto)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="'ultimas_linhas' precisa ser um inteiro.")
-    if n < 1 or n > svc.ULTIMAS_LINHAS_MAX:
-        raise HTTPException(
-            status_code=422,
-            detail=f"'ultimas_linhas' precisa estar entre 1 e {svc.ULTIMAS_LINHAS_MAX}.")
-    return n
+    return _inteiro(bruto, "ultimas_linhas", 1, svc.ULTIMAS_LINHAS_MAX)
 
 
 def _ler_sync(servidor: str, caminho: str, raizes: list[str], teto_bytes: int,
@@ -182,15 +234,24 @@ async def utilitarios_ler_arquivo(body: dict = Body(...),
                                   user: dict = Depends(require_tela_utilitarios)):
     t0 = time.time()
     usuario = str(user.get("matricula") or "?")
-    try:
-        servidor = svc.servidor_valido(body.get("servidor"))
-    except svc.ArquivoError as e:
-        raise HTTPException(status_code=e.status, detail=e.detail)
     diretorio = body.get("diretorio")
     nome = body.get("nome")
-    ultimas = _ultimas_linhas_valido(body.get("ultimas_linhas"))
-    codificacao = (body.get("codificacao") or None)
     pedido_bruto = f"{str(diretorio or '').rstrip('/')}/{str(nome or '')}"
+    servidor = str(body.get("servidor") or "datastage")
+
+    # Validação do pedido — 422 também é auditado: quem tenta e erra a sintaxe fica no rastro.
+    try:
+        servidor = svc.servidor_valido(body.get("servidor"))
+        ultimas = _ultimas_linhas_valido(body.get("ultimas_linhas"))
+        codificacao = svc.codificacao_valida(body.get("codificacao"))
+    except svc.ArquivoError as e:
+        _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=pedido_bruto,
+                 resultado=e.resultado, detalhe=e.interno or e.detail, duracao_ms=_ms(t0))
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    except HTTPException as e:
+        _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=pedido_bruto,
+                 resultado="erro", detalhe=str(e.detail), duracao_ms=_ms(t0))
+        raise
 
     cfg = _config_do_banco()
     raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
@@ -208,27 +269,26 @@ async def utilitarios_ler_arquivo(body: dict = Body(...),
         caminho, _raiz = svc.preparar_leitura(diretorio, nome, raizes)
     except svc.ArquivoError as e:
         _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=pedido_bruto,
-                 resultado=e.resultado, detalhe=e.detail, duracao_ms=_ms(t0))
+                 resultado=e.resultado, detalhe=e.interno or e.detail, duracao_ms=_ms(t0))
         raise HTTPException(status_code=e.status, detail=e.detail)
 
     teto_bytes = cfg["tamanho_max_kb"] * 1024
     try:
-        resultado = await asyncio.to_thread(
+        resultado = await _no_servidor(
             _ler_sync, servidor, caminho, raizes, teto_bytes, ultimas, codificacao)
     except svc.ArquivoError as e:
         _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=caminho,
-                 resultado=e.resultado, detalhe=e.detail, duracao_ms=_ms(t0))
+                 resultado=e.resultado, detalhe=e.interno or e.detail, duracao_ms=_ms(t0))
         raise HTTPException(status_code=e.status, detail=e.detail)
     except Exception as e:
         log.exception("Utilitários: falha inesperada ao ler %s", caminho)
         _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=caminho,
-                 resultado="erro", detalhe=f"inesperado: {e}", duracao_ms=_ms(t0))
-        raise HTTPException(status_code=502, detail=f"Falha ao ler o arquivo: {e}")
+                 resultado="erro", detalhe=f"inesperado: {e!r}", duracao_ms=_ms(t0))
+        raise HTTPException(
+            status_code=502, detail="Falha ao ler o arquivo — detalhe registrado no log da API.")
 
     resultado["duracao_ms"] = _ms(t0)
-    detalhe = None
-    if resultado["truncado"]:
-        detalhe = f"últimas {ultimas} linhas (truncado)"
+    detalhe = f"últimas {ultimas} linhas (truncado)" if resultado["truncado"] else None
     _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=resultado["caminho"],
              resultado="ok", tamanho=resultado["tamanho_bytes"], detalhe=detalhe,
              duracao_ms=resultado["duracao_ms"])
@@ -293,7 +353,8 @@ async def admin_raizes_incluir(body: dict = Body(...), admin: dict = Depends(get
 
 
 @router.patch("/utilitarios/admin/raizes/{raiz_id}")
-async def admin_raizes_ativar(raiz_id: int, body: dict = Body(...),
+async def admin_raizes_ativar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
+                              body: dict = Body(...),
                               _admin: dict = Depends(get_admin_user)):
     ativo = body.get("ativo")
     if not isinstance(ativo, bool):
@@ -318,7 +379,8 @@ def _testar_sync(servidor: str, caminho: str) -> dict:
 
 
 @router.post("/utilitarios/admin/raizes/{raiz_id}/testar")
-async def admin_raizes_testar(raiz_id: int, admin: dict = Depends(get_admin_user)):
+async def admin_raizes_testar(raiz_id: int = Path(..., ge=1, le=_ID_MAX),
+                              admin: dict = Depends(get_admin_user)):
     t0 = time.time()
     conn = get_db_conn()
     cur = conn.cursor()
@@ -333,10 +395,10 @@ async def admin_raizes_testar(raiz_id: int, admin: dict = Depends(get_admin_user
     servidor, caminho = str(row[0]), str(row[1])
     usuario = str(admin.get("matricula") or "?")
     try:
-        resultado = await asyncio.to_thread(_testar_sync, servidor, caminho)
+        resultado = await _no_servidor(_testar_sync, servidor, caminho)
     except svc.ArquivoError as e:
         _auditar(usuario=usuario, servidor=servidor, acao="testar", caminho=caminho,
-                 resultado="erro", detalhe=e.detail, duracao_ms=_ms(t0))
+                 resultado="erro", detalhe=e.interno or e.detail, duracao_ms=_ms(t0))
         raise HTTPException(status_code=e.status, detail=e.detail)
     _auditar(usuario=usuario, servidor=servidor, acao="testar", caminho=caminho,
              resultado="ok", detalhe=resultado.get("detalhe"), duracao_ms=_ms(t0))
@@ -405,15 +467,7 @@ async def admin_extensoes_excluir(extensao: str, _admin: dict = Depends(get_admi
 
 @router.put("/utilitarios/admin/config")
 async def admin_config_gravar(body: dict = Body(...), admin: dict = Depends(get_admin_user)):
-    bruto = body.get("tamanho_max_kb")
-    try:
-        teto = int(bruto)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="'tamanho_max_kb' precisa ser um inteiro (KB).")
-    if teto < 1 or teto > svc.TETO_MAX_KB:
-        raise HTTPException(
-            status_code=422,
-            detail=f"'tamanho_max_kb' precisa estar entre 1 e {svc.TETO_MAX_KB}.")
+    teto = _inteiro(body.get("tamanho_max_kb"), "tamanho_max_kb", 1, svc.TETO_MAX_KB)
     backup = body.get("backup_ao_sobrescrever")
     if not isinstance(backup, bool):
         raise HTTPException(status_code=422, detail="'backup_ao_sobrescrever' precisa ser true ou false.")

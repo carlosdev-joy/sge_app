@@ -184,6 +184,10 @@ services:
       DS_SSH_USER:      "${DS_SSH_USER:-}"
       DS_SSH_PASSWORD:  "${DS_SSH_PASSWORD:-}"
       DS_SSH_KEY_FILE:  "${DS_SSH_KEY_FILE:-}"
+      # Utilitários (spec docs/spec-utilitarios-arquivos.md): known_hosts com a
+      # chave do servidor. Definido, host key desconhecida é RECUSADA; vazio =
+      # aceita qualquer (paridade com o Console). Em produção, defina.
+      DS_SSH_KNOWN_HOSTS: "${DS_SSH_KNOWN_HOSTS:-}"
       DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
       CORS_ORIGINS:     "${CORS_ORIGINS:-http://orquestra.caixavidaeprevidencia.intranet,http://orquestra.caixavidaeprevidencia.intranet:8090,http://vmlnxprd083,http://vmlnxprd083:8090}"
       # ── ServiceNow (sonda do Admin; espelho dos chamados na spec) ──────────

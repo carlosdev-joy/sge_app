@@ -106,6 +106,58 @@ class TestCaminho:
     def test_extensao_de(self, nome, ext):
         assert svc.extensao_de(nome) == ext
 
+    def test_barras_iniciais_colapsam(self):
+        # POSIX preserva `//` no normpath; aqui é sempre UMA barra.
+        assert svc.normalizar_diretorio("//dados//bi") == "/dados/bi"
+        assert svc.normalizar_diretorio("///") == "/"
+
+    def test_raiz_dupla_barra_nao_libera_o_servidor(self):
+        # `//` passava pela guarda "raiz não pode ser /" e casava com TUDO.
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.normalizar_raiz("//")
+        assert exc.value.status == 422
+        assert svc.raiz_de("/etc/passwd", ["//"]) is None
+        assert svc.raiz_de("/etc/passwd", ["/"]) is None
+        assert svc.raiz_de("/dados/bi/x", ["//dados/bi"]) == "/dados/bi"
+
+    @pytest.mark.parametrize("raiz", ["/etc", "/etc/ssh", "/usr/local/x", "/dev", "/var/run/x", "/root"])
+    def test_raiz_de_pasta_do_sistema_422(self, raiz):
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.normalizar_raiz(raiz)
+        assert exc.value.status == 422
+
+    @pytest.mark.parametrize("raiz", ["/opt/IBM/InformationServer/Server/Projects", "/var/log", "/dados", "/home/ds"])
+    def test_raiz_legitima_passa(self, raiz):
+        assert svc.normalizar_raiz(raiz) == raiz
+
+    def test_raiz_longa_422_no_limite_do_indice(self):
+        assert svc.normalizar_raiz("/" + "a" * 799) == "/" + "a" * 799
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.normalizar_raiz("/" + "a" * 801)
+        assert exc.value.status == 422
+
+    def test_comprimento_conta_unidades_utf16(self):
+        # 600 emojis = 610 code points, mas 1.210 unidades UTF-16 (o que NVARCHAR conta).
+        assert svc.utf16_len("😀") == 2
+        assert svc.utf16_len("abc") == 3
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.normalizar_diretorio("/" + "😀" * 500)  # 1 + 1.000 unidades > 1.000
+        assert exc.value.status == 422
+        assert svc.normalizar_diretorio("/" + "😀" * 499)
+
+    def test_cortar_utf16_nao_parte_emoji(self):
+        assert svc.cortar_utf16("a😀b", 2) == "a"
+        assert svc.cortar_utf16("a😀b", 3) == "a😀"
+        assert svc.cortar_utf16("abc", 5) == "abc"
+        assert svc.cortar_utf16("", 5) == ""
+        assert svc.utf16_len(svc.cortar_utf16("😀" * 700, 1000)) <= 1000
+
+    def test_nome_limite_em_bytes(self):
+        assert svc.validar_nome("ç" * 127)          # 254 bytes
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.validar_nome("ç" * 128)             # 256 bytes > NAME_MAX
+        assert exc.value.status == 422
+
 
 class TestConteudo:
     def test_texto_e_binario(self):
@@ -156,6 +208,22 @@ class TestConteudo:
         assert svc.formatar_tamanho(1536) == "1,5 KB"
         assert svc.formatar_tamanho(5 * 1024 * 1024) == "5,0 MB"
 
+    def test_codificacao_valida_e_pura(self):
+        assert svc.codificacao_valida(None) is None
+        assert svc.codificacao_valida("") is None
+        assert svc.codificacao_valida(" UTF8 ") == "utf-8"
+        for ruim in (["utf-8"], 7, "utf-16"):
+            with pytest.raises(svc.ArquivoError) as exc:
+                svc.codificacao_valida(ruim)
+            assert exc.value.status == 422
+
+    def test_bloco_do_tail_e_limitado(self):
+        assert svc.tamanho_bloco_tail(5_040_000, 65_536, 200) == 65_536       # teto
+        assert svc.tamanho_bloco_tail(1_000, 100, 10) == 100                  # teto menor
+        assert svc.tamanho_bloco_tail(10 ** 7, 16 * 2 ** 20, 200) == 256 * 1024   # mínimo
+        assert svc.tamanho_bloco_tail(10 ** 8, 16 * 2 ** 20, 100_000) == 16 * 2 ** 20  # teto de novo
+        assert svc.tamanho_bloco_tail(0, 100, 10) == 0
+
 
 class TestServidores:
     def test_registro_so_tem_datastage(self):
@@ -191,6 +259,18 @@ class TestServidores:
             with svc.conexao_sftp("datastage"):
                 pass
         assert exc.value.status == 503
+
+    def test_known_hosts_ilegivel_e_503_antes_do_paramiko(self, monkeypatch):
+        monkeypatch.setenv("DS_SSH_HOST", "srv")
+        monkeypatch.setenv("DS_SSH_USER", "u")
+        monkeypatch.setenv("DS_SSH_KNOWN_HOSTS", "/nao/existe/known_hosts")
+        with pytest.raises(svc.ArquivoError) as exc:
+            with svc.conexao_sftp("datastage"):
+                pass
+        assert exc.value.status == 503
+        assert "DS_SSH_KNOWN_HOSTS" in exc.value.detail
+        assert "/nao/existe" not in exc.value.detail  # o caminho fica no `interno`
+        assert exc.value.interno == "/nao/existe/known_hosts"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -232,7 +312,20 @@ class FakeSftp:
         return atual
 
     def normalize(self, caminho):
-        return self._resolver(posixpath.normpath(caminho))
+        """Como o realpath do OpenSSH: resolve o que existe e TOLERA só o último
+        componente ausente (devolve pai resolvido + nome); componente
+        intermediário ausente é ENOENT. Foi a divergência que escondeu o defeito
+        do Testar (revisão adversarial da F1)."""
+        caminho = posixpath.normpath(caminho)
+        try:
+            return self._resolver(caminho)
+        except OSError as e:
+            if e.errno != errno.ENOENT:
+                raise
+            pai, ultimo = posixpath.split(caminho)
+            if not ultimo or pai == caminho:
+                raise
+            return posixpath.join(self._resolver(pai), ultimo)
 
     def stat(self, caminho):
         real = self._resolver(caminho)
@@ -265,6 +358,8 @@ ARVORE = {
     "/dados/bi/imagem.bin": b"\x00\x00BIN\x00" + bytes(range(256)),
     "/dados/bi/logs/grande.log": b"".join(f"linha {i:06d}\n".encode() for i in range(1, 5001)),
     "/dados/bi/link_fora": ("link", "/fora"),
+    "/dados/bi/2026/link_outra_raiz": ("link", "/dados/param"),
+    "/dados/link_raiz": ("link", "/dados/param"),
     "/dados/param/parametros_latin1.param": "DESCRICAO=ação\n".encode("latin-1"),
     "/dados/param/sem_acesso": None,
     "/fora/segredo.txt": b"nao pode\n",
@@ -345,6 +440,73 @@ class TestLerArquivo:
                             teto_bytes=TETO, codificacao="utf-8")
         assert exc.value.status == 422
 
+    def test_raiz_que_e_symlink_continua_valendo(self, sftp):
+        # Admin cadastra /dados/link_raiz; no servidor é um link para /dados/param.
+        r = svc.ler_arquivo(sftp, "/dados/link_raiz/parametros_latin1.param",
+                            ["/dados/link_raiz"], teto_bytes=TETO)
+        assert r["caminho"] == "/dados/param/parametros_latin1.param"
+        assert r["codificacao"] == "latin-1"
+
+    def test_symlink_para_outra_raiz_e_permitido(self, sftp):
+        r = svc.ler_arquivo(sftp, "/dados/bi/2026/link_outra_raiz/parametros_latin1.param",
+                            RAIZES, teto_bytes=TETO)
+        assert r["caminho"] == "/dados/param/parametros_latin1.param"
+
+    def test_oraculo_403_x_404_fechado(self, sftp):
+        # Pelo link para fora, "existe" e "não existe" respondem IGUAL (403):
+        # o prefixo /dados/bi/link_fora já sai da raiz e nada abaixo é consultado.
+        for alvo in ("/dados/bi/link_fora/segredo.txt", "/dados/bi/link_fora/pasta_inexistente/x"):
+            with pytest.raises(svc.ArquivoError) as exc:
+                svc.ler_arquivo(sftp, alvo, RAIZES, teto_bytes=TETO)
+            assert exc.value.status == 403, alvo
+            assert exc.value.resultado == "negado"
+
+    def test_tail_quando_o_bloco_comeca_exatamente_numa_linha(self):
+        # 100 linhas × 10 bytes; teto 100 → o bloco começa no byte 900, que é o
+        # INÍCIO da linha 90. Sem o byte extra, a primeira linha inteira era jogada fora.
+        fake = FakeSftp({"/dados/bi/cem.txt": b"".join(b"L%08d\n" % i for i in range(100))})
+        r = svc.ler_arquivo(fake, "/dados/bi/cem.txt", RAIZES, teto_bytes=100, ultimas=10)
+        assert r["linhas"] == 10
+        assert r["conteudo"].startswith("L00000090\n")
+        assert r["truncado"] is True
+
+    def test_tail_quando_o_bloco_comeca_no_meio_de_uma_linha(self):
+        fake = FakeSftp({"/dados/bi/cem.txt": b"".join(b"L%08d\n" % i for i in range(100))})
+        r = svc.ler_arquivo(fake, "/dados/bi/cem.txt", RAIZES, teto_bytes=95, ultimas=10)
+        assert r["linhas"] == 9   # 95 bytes cobrem 9 linhas inteiras + meia — a meia sai
+        assert r["conteudo"].startswith("L00000091\n")
+
+    @pytest.mark.parametrize("dados", [b"x" * 200 + b"\n", b"x" * 200])
+    def test_tail_linha_maior_que_o_bloco_e_413_e_nao_200_vazio(self, dados):
+        fake = FakeSftp({"/dados/bi/longa.txt": dados})
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.ler_arquivo(fake, "/dados/bi/longa.txt", RAIZES, teto_bytes=50, ultimas=1)
+        assert exc.value.status == 413
+        assert "última linha" in exc.value.detail
+
+    def test_nome_fora_do_utf8_no_servidor_e_422_nao_502(self):
+        class _SftpNomeRuim(FakeSftp):
+            def normalize(self, caminho):
+                if caminho.endswith("ruim"):
+                    raise UnicodeDecodeError("utf-8", b"\xe7", 0, 1, "invalid start byte")
+                return super().normalize(caminho)
+        fake = _SftpNomeRuim(ARVORE)
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.ler_arquivo(fake, "/dados/bi/ruim", RAIZES, teto_bytes=TETO)
+        assert exc.value.status == 422
+        assert "UTF-8" in exc.value.detail
+
+    def test_erro_generico_do_servidor_nao_vai_na_resposta(self):
+        class _SftpQuebrado(FakeSftp):
+            def stat(self, caminho):
+                raise OSError("Garbage packet received from srv:22")
+        fake = _SftpQuebrado(ARVORE)
+        with pytest.raises(svc.ArquivoError) as exc:
+            svc.ler_arquivo(fake, "/dados/bi/consulta.sql", RAIZES, teto_bytes=TETO)
+        assert exc.value.status == 502
+        assert "srv:22" not in exc.value.detail
+        assert "srv:22" in (exc.value.interno or "")
+
 
 class TestTestarRaiz:
     def test_pasta_legivel(self, sftp):
@@ -363,6 +525,18 @@ class TestTestarRaiz:
     def test_arquivo_nao_e_raiz(self, sftp):
         r = svc.testar_raiz(sftp, "/dados/bi/consulta.sql")
         assert r["existe"] and not r["eh_pasta"] and not r["legivel"]
+
+    def test_so_o_ultimo_componente_ausente_tambem_e_nao_existe(self, sftp):
+        # O realpath do OpenSSH tolera o último componente ausente e devolve o
+        # caminho; o "não existe" só aparece no stat. Antes virava 404 cru.
+        r = svc.testar_raiz(sftp, "/dados/nao_existe")
+        assert r["existe"] is False and r["caminho_real"] is None
+
+    def test_raiz_symlink_diz_para_onde_aponta(self, sftp):
+        r = svc.testar_raiz(sftp, "/dados/link_raiz/")
+        assert r["existe"] and r["eh_pasta"] and r["legivel"]
+        assert r["caminho_real"] == "/dados/param"
+        assert r["detalhe"].startswith("é um link para /dados/param; ")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -634,12 +808,58 @@ class TestLerEndpoint:
         {"diretorio": "/dados/bi", "nome": "a/b"}, {"diretorio": "relativa", "nome": "x"},
         {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": "abc"},
         {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": 0.5},
+        {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": 2.5},
+        {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": True},
         {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": -1},
+        {"diretorio": "/dados/bi", "nome": "x", "ultimas_linhas": 100_001},
+        {"diretorio": "/dados/bi", "nome": "x", "codificacao": ["utf-8"]},
+        {"diretorio": "/dados/bi", "nome": "x", "codificacao": "utf-16"},
         {"diretorio": "/dados/bi", "nome": "x", "servidor": "outro"},
     ])
-    def test_422_de_validacao(self, client, auth_operador, sftp_falso, body):
+    def test_422_de_validacao_e_auditado(self, client, auth_operador, sftp_falso, body):
         cur = _Cursor(REGRAS_CONFIG)
         assert _post_ler(client, cur, body).status_code == 422
+        assert len(cur.auditoria) == 1
+        assert cur.auditoria[0][6] == "erro"
+
+    def test_ultimas_linhas_float_inteiro_e_string_sao_aceitos(self, client, auth_operador, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        for v in (200.0, "200"):
+            r = _post_ler(client, cur, {"diretorio": "/dados/bi/logs", "nome": "grande.log", "ultimas_linhas": v})
+            assert r.status_code == 200, v
+            assert r.json()["linhas"] == 200
+
+    def test_codificacao_invalida_e_recusada_sem_abrir_ssh(self, client, auth_operador, monkeypatch):
+        chamou = []
+
+        @contextmanager
+        def _cm(servidor):
+            chamou.append(servidor)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_ler(client, cur, {"diretorio": "/dados/bi", "nome": "consulta.sql", "codificacao": "utf-16"})
+        assert r.status_code == 422
+        assert chamou == []
+
+    def test_auditoria_corta_em_unidades_utf16_e_nao_some(self, client, auth_operador, sftp_falso):
+        # 600 emojis: 623 code points, 1.223 unidades — o corte por code points
+        # deixava o INSERT estourar e a auditoria da tentativa de traversal sumir.
+        casos = [
+            # o `..` engole os emojis no normpath → /etc → 403 negado (o pedido é o que se audita)
+            ({"diretorio": "/dados/bi/" + "😀" * 600 + "/../../../etc", "nome": "passwd"}, 403, "negado"),
+            # sem `..` o caminho normalizado continua com 1.210 unidades → 422 erro
+            ({"diretorio": "/dados/bi/" + "😀" * 600, "nome": "x"}, 422, "erro"),
+        ]
+        for body, status, resultado in casos:
+            cur = _Cursor(REGRAS_CONFIG)
+            r = _post_ler(client, cur, body)
+            assert r.status_code == status, body["diretorio"][:20]
+            assert len(cur.auditoria) == 1
+            assert cur.auditoria[0][6] == resultado
+            caminho = cur.auditoria[0][3]
+            assert svc.utf16_len(caminho) <= 1000
+            caminho.encode("utf-16-le")  # sem par substituto partido
 
     def test_servidor_nao_configurado_503(self, client, auth_operador, monkeypatch):
         monkeypatch.delenv("DS_SSH_HOST", raising=False)
@@ -648,15 +868,34 @@ class TestLerEndpoint:
         assert r.status_code == 503
         assert cur.auditoria[0][6] == "erro"
 
-    def test_falha_ssh_502(self, client, auth_operador, monkeypatch):
+    def test_falha_ssh_502_generica_na_resposta_e_detalhada_na_auditoria(self, client, auth_operador, monkeypatch):
         @contextmanager
         def _cm(servidor):
-            raise svc.ArquivoError(502, "Falha ao conectar por SSH em srv:22: boom")
+            raise svc.ArquivoError(
+                502, "Falha ao conectar ao servidor por SSH — detalhe registrado no log da API.",
+                interno="srv:22: Authentication failed.")
             yield  # pragma: no cover
         monkeypatch.setattr(svc, "conexao_sftp", _cm)
         cur = _Cursor(REGRAS_CONFIG)
         r = _post_ler(client, cur, {"diretorio": "/dados/bi", "nome": "consulta.sql"})
         assert r.status_code == 502
+        assert "srv:22" not in r.json()["detail"]
+        assert cur.auditoria[0][6] == "erro"
+        assert cur.auditoria[0][7] == "srv:22: Authentication failed."
+
+    def test_teto_de_tempo_vira_504(self, client, auth_operador, monkeypatch):
+        import routers.utilitarios as rt
+        monkeypatch.setattr(rt, "_TIMEOUT_S", 0.05)
+
+        @contextmanager
+        def _cm(servidor):
+            import time as _t
+            _t.sleep(0.3)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_ler(client, cur, {"diretorio": "/dados/bi", "nome": "consulta.sql"})
+        assert r.status_code == 504
         assert cur.auditoria[0][6] == "erro"
 
     def test_auditoria_que_falha_nao_derruba_a_leitura(self, client, auth_operador, sftp_falso):
@@ -713,6 +952,13 @@ class TestAdminRaizes:
         cur = _Cursor([("UPDATE dbo.etl_utilitario_raiz SET ativo", 0)])
         with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
             assert client.patch("/utilitarios/admin/raizes/99", json={"ativo": True}).status_code == 404
+
+    @pytest.mark.parametrize("raiz_id", ["0", "-1", "99999999999999999999", "abc"])
+    def test_id_fora_do_int_e_422_nao_500(self, client, auth_admin, sftp_falso, raiz_id):
+        cur = _Cursor([])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            assert client.patch(f"/utilitarios/admin/raizes/{raiz_id}", json={"ativo": True}).status_code == 422
+            assert client.post(f"/utilitarios/admin/raizes/{raiz_id}/testar").status_code == 422
 
     def test_testar_raiz_audita(self, client, auth_admin, sftp_falso):
         cur = _Cursor([("SELECT servidor, caminho FROM dbo.etl_utilitario_raiz WHERE id",
@@ -778,9 +1024,19 @@ class TestAdminConfig:
         {"tamanho_max_kb": "x", "backup_ao_sobrescrever": True},
         {"tamanho_max_kb": 0, "backup_ao_sobrescrever": True},
         {"tamanho_max_kb": 10 ** 9, "backup_ao_sobrescrever": True},
+        {"tamanho_max_kb": True, "backup_ao_sobrescrever": True},
+        {"tamanho_max_kb": 2048.9, "backup_ao_sobrescrever": True},
         {"tamanho_max_kb": 10, "backup_ao_sobrescrever": "sim"},
     ])
     def test_422(self, client, auth_admin, body):
         cur = _Cursor([])
         with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
             assert client.put("/utilitarios/admin/config", json=body).status_code == 422
+
+    @pytest.mark.parametrize("valor,esperado", [(2048.0, 2048), ("4096", 4096), (16384, 16384)])
+    def test_inteiros_de_verdade_sao_aceitos(self, client, auth_admin, valor, esperado):
+        cur = _Cursor([])
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            r = client.put("/utilitarios/admin/config", json={"tamanho_max_kb": valor, "backup_ao_sobrescrever": True})
+        assert r.status_code == 200
+        assert r.json()["tamanho_max_kb"] == esperado

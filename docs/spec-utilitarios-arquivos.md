@@ -209,8 +209,17 @@ sem retrabalho.
   dado pessoal (LGPD) e volume.
 - **Backup no mesmo diretório** (`.bak-<ts>`) — simples e visível; alternativa de subpasta
   `.orquestra_bak/` fica em aberto no §8.
-- **`AutoAddPolicy` mantida** (paridade com o Console) — `known_hosts` fixo é melhoria
-  transversal aos dois, registrada no §8.
+- **`known_hosts` opcional desde a F1** — `DS_SSH_KNOWN_HOSTS` definida = host key
+  desconhecida é recusada (`RejectPolicy`); vazia = `AutoAddPolicy`, paridade com o
+  Console. Levar ao Console é melhoria transversal (§8).
+- **Raízes de sistema recusadas** (`/etc`, `/root`, `/proc`, `/sys`, `/dev`, `/boot`,
+  `/bin`, `/sbin`, `/lib*`, `/usr`, `/run`) — o resto é decisão do admin.
+- **`realpath` de cima para baixo** (raiz → cada pasta → arquivo), e não só do caminho
+  inteiro: um symlink que sai da raiz é barrado no nível dele, sem revelar se o que vem
+  depois existe (403 × 404 seria um oráculo). Raízes também são resolvidas no servidor:
+  raiz que é symlink continua valendo.
+- **Executor dedicado** (4 threads) com teto de 90 s para o SSH — N leituras presas não
+  esgotam o `to_thread` que reconciliação, monitor e execuções compartilham.
 
 ## 4. Modelo de dados
 
@@ -225,7 +234,8 @@ BEGIN
     CREATE TABLE dbo.etl_utilitario_raiz (
         id          INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_etl_utilitario_raiz PRIMARY KEY,
         servidor    NVARCHAR(50)   NOT NULL,     -- 'datastage' hoje
-        caminho     NVARCHAR(1000) NOT NULL,     -- absoluto, normalizado, sem barra final
+        caminho     NVARCHAR(800)  NOT NULL,     -- absoluto, normalizado, sem barra final
+                                                 -- (800: (50+800)×2 = 1.700 bytes, o teto da chave única)
         ativo       BIT            NOT NULL CONSTRAINT DF_util_raiz_ativo DEFAULT 1,
         criado_por  NVARCHAR(100)  NOT NULL,
         criado_em   DATETIME2(0)   NOT NULL CONSTRAINT DF_util_raiz_em DEFAULT GETDATE(),
@@ -287,9 +297,11 @@ GO
 --   Gravar exige também 'acao_editar' (019: desenvolvedor e admin; operador NÃO tem).
 ```
 
-Larguras: `caminho` NVARCHAR(1000) cobre PATH_MAX (4096 bytes) só parcialmente; a API
-recusa caminho > 1000 caracteres com 422 antes de tocar o servidor. `usuario` segue o
-NVARCHAR(100) de `etl_pipeline_audit.changed_by`. `UQ_etl_utilitario_raiz` usa a colação
+Larguras: `caminho` do log NVARCHAR(1000) cobre PATH_MAX (4096 bytes) só parcialmente; a
+API recusa caminho > 1000 **unidades UTF-16** (o que NVARCHAR conta — 600 emojis são 610
+caracteres Python e 1.210 unidades) com 422 antes de tocar o servidor, e corta o que
+audita na mesma medida. A raiz fica em 800 por causa da chave única (1.700 bytes).
+`usuario` segue o NVARCHAR(100) de `etl_pipeline_audit.changed_by`. `UQ_etl_utilitario_raiz` usa a colação
 padrão (CI) do banco: `/Dados` e `/dados` colidem no cadastro, de propósito — no servidor
 são pastas diferentes, mas a API normaliza e o `realpath` decide; duas raízes que só diferem
 na caixa seriam armadilha.
@@ -553,4 +565,12 @@ Ainda em aberto:
 5. **Mais servidores (futuro)**: quando chegar, qual caminho — `etl_conexao` tipo `ssh`
    (senha cifrada, lida pela API e pelo worker) ou RPC via DAG? A primeira é mais simples e
    reaproveita a aba Conexões do Admin. Decidir só quando o pedido vier.
-6. **`known_hosts`** fixo para Console e Utilitários (risco 11): backlog transversal.
+6. **`known_hosts`**: nos Utilitários já existe (`DS_SSH_KNOWN_HOSTS`, opcional); levar ao
+   Console DataStage é backlog transversal. Em produção, **definir** a variável (fecha o
+   MITM na intranet com a senha da conta de serviço).
+7. **Expurgo de `etl_utilitario_arquivo_log`** (achado da auditoria de segurança da F1):
+   nada apaga o log; o `etl_log_cleanup` só cuida de `.log` em disco. Propor purga por
+   idade (ex.: 365 dias) numa fase de polimento ou como item do backlog.
+8. **Retenção do que a F1 ainda não cobre**, registrado pela revisão adversarial: o
+   `open` no caminho real ainda segue symlink criado ENTRE o `realpath` e o `open`
+   (TOCTOU) — exige shell no servidor, sem ganho de privilégio; residual aceito.

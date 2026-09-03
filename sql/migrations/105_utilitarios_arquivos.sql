@@ -37,7 +37,10 @@ BEGIN
     CREATE TABLE dbo.etl_utilitario_raiz (
         id          INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_etl_utilitario_raiz PRIMARY KEY,
         servidor    NVARCHAR(50)   NOT NULL,     -- 'datastage' hoje; outros no futuro
-        caminho     NVARCHAR(1000) NOT NULL,     -- absoluto, normalizado, sem barra final
+        -- 800, nao 1000: (50 + 800) x 2 bytes = 1.700, o maximo de uma chave de indice
+        -- nao clusterizado. Com 1000 o CREATE so avisa e o INSERT de um caminho
+        -- longo falha em runtime (Msg 1946). A API recusa acima de 800 (LIMITE_RAIZ).
+        caminho     NVARCHAR(800)  NOT NULL,     -- absoluto, normalizado, sem barra final
         ativo       BIT            NOT NULL CONSTRAINT DF_etl_utilitario_raiz_ativo DEFAULT 1,
         criado_por  NVARCHAR(100)  NOT NULL,
         criado_em   DATETIME2(0)   NOT NULL CONSTRAINT DF_etl_utilitario_raiz_em DEFAULT GETDATE(),
