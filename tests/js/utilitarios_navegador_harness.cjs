@@ -5,7 +5,10 @@
 // numa pasta desce; clicar num arquivo devolve pasta + nome; link para fora
 // fica inerte; Subir/Backspace seguem o `pai` e nunca sobem acima da raiz;
 // "Usar esta pasta" só com uma pasta aberta; o filtro por nome não some com
-// a lista. O componente de apresentação roda aqui no React mínimo da casa.
+// a lista. O componente de apresentação roda aqui no React mínimo da casa —
+// e os dois formulários também, com um `onListar` falso: Navegar… abre na
+// pasta digitada (ou nas raízes), o clique num arquivo preenche os campos, a
+// pasta inválida mostra o erro e cai nas raízes.
 //
 // A página (container com react-query) fica de fora: tsc + build + DEV.
 // Saída: um JSON só no stdout, lido por tests/test_utilitarios_navegador_front.py.
@@ -20,7 +23,10 @@ const SRC = path.join(UI, 'src')
 const { transform } = require(path.join(UI, 'node_modules', 'sucrase'))
 const mini = require(path.join(__dirname, 'minireact.cjs'))
 
-const ENTRADAS = ['components/utilitarios/NavegadorPastas.tsx', 'lib/utilitariosNavegador.ts']
+const ENTRADAS = [
+  'components/utilitarios/NavegadorPastas.tsx', 'lib/utilitariosNavegador.ts',
+  'components/utilitarios/FormVerArquivo.tsx', 'components/utilitarios/FormEditarArquivo.tsx',
+]
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -126,6 +132,9 @@ saida.puras = {
               puras.descricaoEntrada(E('l', 'link', { alvo: null }))],
   erro: [puras.erroListagem({ status: 403, detail: 'Fora dos diretórios liberados.' }), puras.erroListagem({ status: 404 }),
          puras.erroListagem(new TypeError('Failed to fetch'))],
+  inicio: [puras.inicioNavegacao('', ['/dados/bi', '/dados/param']), puras.inicioNavegacao('', ['/dados/bi/']),
+           puras.inicioNavegacao(' /dados/bi/2026/ ', ['/dados/bi', '/dados/param']), puras.inicioNavegacao('/etc', ['/dados/bi', '/dados/param']),
+           puras.inicioNavegacao('/etc', ['/dados/bi']), puras.inicioNavegacao('', [])],
 }
 
 // ── 2. o navegador ─────────────────────────────────────────────────────────
@@ -205,5 +214,109 @@ function montar(props) {
   saida.fechado = porAttr(t3, 'data-navegador').length
 }
 
-fs.rmSync(tmp, { recursive: true, force: true })
-process.stdout.write(JSON.stringify(saida), () => process.exit(0))
+// ── 3. os formulários com o navegador dentro ───────────────────────────────
+// O navegador vive no formulário (hook useNavegadorPastas); a página só passa
+// `onListar`. Aqui `onListar` é um fake por caminho — e é assim que se prova
+// que o clique numa pasta desce, o clique num arquivo preenche os campos, a
+// pasta digitada é o ponto de partida e uma pasta inválida cai nas raízes.
+const { FormVerArquivo } = require(path.join(tmp, 'components/utilitarios/FormVerArquivo.js'))
+const { FormEditarArquivo } = require(path.join(tmp, 'components/utilitarios/FormEditarArquivo.js'))
+const tick = () => new Promise(r => setImmediate(r))
+const inputs = (tela) => tela.achar(n => n.tag === 'input')
+const digitar = (tela, no, value) => tela.disparar(no, 'onChange', { target: { value } })
+const campoPasta = (tela) => inputs(tela).find(n => n.props.placeholder && (n.props.placeholder.endsWith('/…') || n.props.placeholder === '/caminho/da/pasta'))
+const campoNome = (tela, placeholder) => inputs(tela).find(n => n.props.placeholder === placeholder)
+const porCampo = (tela, campo) => tela.achar(n => n.props && n.props['data-campo'] === campo)[0]
+const SERVIDORES = [{ id: 'datastage', label: 'Servidor DataStage', configurado: true }]
+const RAIZES = ['/dados/bi', '/dados/param']
+const LISTAGENS = { null: NIVEL_ZERO, '/dados/bi': BI, '/dados/bi/2026/cargas': CARGAS }
+const listarFake = (registro) => async (servidor, caminho, ocultos) => {
+  registro.push([servidor, caminho, ocultos])
+  const l = LISTAGENS[caminho === null ? 'null' : caminho]
+  if (!l) { const e = new Error('404'); e.status = 404; e.detail = 'Pasta não encontrada.'; throw e }
+  return l
+}
+const esperar = async (tela) => { await tick(); await tick(); await tick(); tela.sincronizar() }
+const navegadorAberto = (tela) => porAttr(tela, 'data-navegador').length
+const entradas = (tela) => porAttr(tela, 'data-entrada').map(n => n.props['data-entrada'])
+
+async function formularios() {
+  // Ver arquivo
+  {
+    const pedidos = []
+    const tela = mini.montar(el(FormVerArquivo, { servidores: SERVIDORES, raizesPorServidor: { datastage: RAIZES },
+      iniciando: false, onIniciar: () => {}, onListar: listarFake(pedidos) }))
+    const r = { botao: porAcao(tela, 'navegar').length, fechadoNoInicio: navegadorAberto(tela) }
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    r.abriuNoZero = { aberto: navegadorAberto(tela), pedidos: pedidos.slice(), entradas: entradas(tela) }
+    tela.clicar(botaoDaEntrada(tela, '/dados/bi')); await esperar(tela)
+    r.desceu = { entradas: entradas(tela).slice(0, 3), migalhas: porAttr(tela, 'data-migalha').map(n => n.props['data-migalha']) }
+    tela.clicar(botaoDaEntrada(tela, 'consulta.sql')); await esperar(tela)
+    r.escolheuArquivo = { pasta: campoPasta(tela).props.value, nome: campoNome(tela, 'carga_20260903.txt').props.value,
+                          aberto: navegadorAberto(tela) }
+    // Pasta digitada válida: o navegador abre nela; "Usar esta pasta" devolve o caminho real.
+    digitar(tela, campoPasta(tela), '/dados/bi/2026/cargas/')
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    r.abriuNaDigitada = { ultimoPedido: pedidos[pedidos.length - 1], entradas: entradas(tela) }
+    tela.clicar(porAcao(tela, 'usar-pasta')[0]); await esperar(tela)
+    r.usouPasta = { pasta: campoPasta(tela).props.value, aberto: navegadorAberto(tela) }
+    // Pasta digitada que não existe: erro na tela e a lista cai nas raízes.
+    digitar(tela, campoPasta(tela), '/dados/bi/nao_existe')
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    r.pastaInvalida = { pedidos: pedidos.slice(-2), erro: porAttr(tela, 'data-erro').length, entradas: entradas(tela),
+                        carregando: porAttr(tela, 'data-carregando').length }
+    // Ocultos: no nível zero o interruptor fica desligado; dentro de uma pasta, relista com ele.
+    r.ocultosDesligadoNoZero = !!porAttr(tela, 'data-campo').find(n => n.props['data-campo'] === 'ocultos').props.disabled
+    tela.clicar(botaoDaEntrada(tela, '/dados/bi')); await esperar(tela)
+    tela.disparar(porAttr(tela, 'data-campo').find(n => n.props['data-campo'] === 'ocultos'), 'onChange', { target: { checked: true } })
+    await esperar(tela)
+    r.ocultos = pedidos[pedidos.length - 1]
+    tela.clicar(porAcao(tela, 'fechar')[0]); await esperar(tela)
+    r.fechou = navegadorAberto(tela)
+    saida.formVer = r
+    // Sem onListar: sem botão.
+    const semNav = mini.montar(el(FormVerArquivo, { servidores: SERVIDORES, raizesPorServidor: { datastage: RAIZES }, iniciando: false, onIniciar: () => {} }))
+    saida.formVerSemListar = porAcao(semNav, 'navegar').length
+    // Sem raiz: botão desligado.
+    const semRaiz = mini.montar(el(FormVerArquivo, { servidores: SERVIDORES, raizesPorServidor: {}, iniciando: false, onIniciar: () => {}, onListar: listarFake([]) }))
+    saida.formVerSemRaiz = !!porAcao(semRaiz, 'navegar')[0].props.disabled
+  }
+  // Criar/editar arquivo
+  {
+    const pedidos = []
+    const tela = mini.montar(el(FormEditarArquivo, { servidores: SERVIDORES, raizesPorServidor: { datastage: RAIZES },
+      extensoes: ['txt', 'sql', 'param'], podeGravar: true, gravando: false, carregando: false, sujo: false, onSujo: () => {},
+      onCarregar: async () => null, onGravar: () => {}, onListar: listarFake(pedidos) }))
+    const r = { botao: porAcao(tela, 'navegar').length }
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    tela.clicar(botaoDaEntrada(tela, '/dados/bi')); await esperar(tela)
+    tela.clicar(botaoDaEntrada(tela, 'consulta.sql')); await esperar(tela)
+    r.sql = { pasta: campoPasta(tela).props.value, nome: campoNome(tela, 'parametros_carga').props.value,
+              extensao: porCampo(tela, 'extensao').props.value, aberto: navegadorAberto(tela),
+              gravar: !!porAcao(tela, 'gravar')[0].props.disabled, carregar: !!porAcao(tela, 'carregar')[0].props.disabled }
+    // Extensão fora da lista (imagem.bin): nome e extensão separados, Gravar desligado com o aviso.
+    tela.clicar(porAcao(tela, 'navegar')[0]); await esperar(tela)
+    tela.clicar(botaoDaEntrada(tela, 'imagem.bin')); await esperar(tela)
+    r.bin = { nome: campoNome(tela, 'parametros_carga').props.value, extensao: porCampo(tela, 'extensao').props.value,
+              gravar: !!porAcao(tela, 'gravar')[0].props.disabled, aviso: tela.texto.includes('Extensão não liberada') }
+    r.abriuNaPastaDoCampo = pedidos[pedidos.length - 1]
+    saida.formEditar = r
+    // Operador (não grava): Navegar… desligado junto com o resto.
+    const op = mini.montar(el(FormEditarArquivo, { servidores: SERVIDORES, raizesPorServidor: { datastage: RAIZES },
+      extensoes: ['txt'], podeGravar: false, gravando: false, carregando: false, sujo: false, onSujo: () => {},
+      onCarregar: async () => null, onGravar: () => {}, onListar: listarFake([]) }))
+    saida.formEditarOperador = !!porAcao(op, 'navegar')[0].props.disabled
+  }
+}
+
+;(async () => {
+  try {
+    await formularios()
+  } catch (e) {
+    fs.rmSync(tmp, { recursive: true, force: true })
+    console.error(e && e.stack || e)
+    process.exit(1)
+  }
+  fs.rmSync(tmp, { recursive: true, force: true })
+  process.stdout.write(JSON.stringify(saida), () => process.exit(0))
+})()

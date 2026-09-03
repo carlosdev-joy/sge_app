@@ -77,6 +77,12 @@ def test_descricao_e_erro(cen):
     assert cen["puras"]["erro"] == ["Fora dos diretórios liberados.", "Pasta não encontrada.", "Não foi possível listar a pasta."]
 
 
+def test_onde_o_navegador_abre(cen):
+    # várias raízes e nada digitado → lista das raízes; uma raiz só → direto nela;
+    # pasta digitada abaixo de uma raiz → nela; fora → raízes (ou a única raiz).
+    assert cen["puras"]["inicio"] == [None, "/dados/bi", "/dados/bi/2026", None, "/dados/bi", None]
+
+
 # ═══════════ 2. navegador ══════════════════════════════════════════════════
 
 def test_nivel_zero_lista_as_raizes_e_nao_sobe(cen):
@@ -118,14 +124,55 @@ def test_carregando_erro_e_fechado(cen):
     assert cen["fechado"] == 0
 
 
-# ═══════════ 3. anti-drift (sem Node) ══════════════════════════════════════
+# ═══════════ 3. os formulários com o navegador ═════════════════════════════
+
+def test_ver_arquivo_navega_e_preenche_pasta_e_nome(cen):
+    v = cen["formVer"]
+    assert v["botao"] == 1 and v["fechadoNoInicio"] == 0
+    assert v["abriuNoZero"] == {"aberto": 1, "pedidos": [["datastage", None, False]], "entradas": ["/dados/bi", "/dados/param"]}
+    assert v["desceu"]["entradas"] == ["2026", "logs", "consulta.sql"]
+    assert v["desceu"]["migalhas"] == ["raizes", "/dados/bi"]
+    assert v["escolheuArquivo"] == {"pasta": "/dados/bi", "nome": "consulta.sql", "aberto": 0}
+
+
+def test_ver_arquivo_abre_na_pasta_digitada_e_usa_esta_pasta(cen):
+    v = cen["formVer"]
+    assert v["abriuNaDigitada"] == {"ultimoPedido": ["datastage", "/dados/bi/2026/cargas", False], "entradas": ["carga_utf8.txt"]}
+    assert v["usouPasta"] == {"pasta": "/dados/bi/2026/cargas", "aberto": 0}
+
+
+def test_pasta_digitada_invalida_mostra_o_erro_e_cai_nas_raizes(cen):
+    p = cen["formVer"]["pastaInvalida"]
+    assert p["pedidos"] == [["datastage", "/dados/bi/nao_existe", False], ["datastage", None, False]]
+    assert p["erro"] == 1 and p["entradas"] == ["/dados/bi", "/dados/param"] and p["carregando"] == 0
+
+
+def test_ocultos_relista_a_pasta_atual(cen):
+    v = cen["formVer"]
+    assert v["ocultosDesligadoNoZero"] is True                        # no nível zero não há o que esconder
+    assert v["ocultos"] == ["datastage", "/dados/bi", True]
+    assert v["fechou"] == 0
+    assert cen["formVerSemListar"] == 0 and cen["formVerSemRaiz"] is True
+
+
+def test_editar_arquivo_separa_nome_e_extensao_do_arquivo_escolhido(cen):
+    e = cen["formEditar"]
+    assert e["botao"] == 1
+    assert e["sql"] == {"pasta": "/dados/bi", "nome": "consulta", "extensao": "sql", "aberto": 0, "gravar": False, "carregar": False}
+    assert e["bin"] == {"nome": "imagem", "extensao": "bin", "gravar": True, "aviso": True}
+    assert e["abriuNaPastaDoCampo"] == ["datastage", "/dados/bi", False]   # o campo já tinha /dados/bi: abre nela
+    assert cen["formEditarOperador"] is True
+
+
+# ═══════════ 4. anti-drift (sem Node) ══════════════════════════════════════
 
 def test_navegar_esta_nas_duas_abas_e_a_pagina_lista():
     pagina = _sem_comentarios(PAGINA.read_text(encoding="utf-8"))
     assert "/utilitarios/pasta/listar" in pagina
-    assert "NavegadorPastas" in pagina
+    assert pagina.count("onListar={listarPasta}") == 2, "as duas abas recebem o listar"
     campo = _sem_comentarios(CAMPO.read_text(encoding="utf-8"))
     assert "data-acao=\"navegar\"" in campo
     for f in ("FormVerArquivo.tsx", "FormEditarArquivo.tsx"):
         fonte = _sem_comentarios((RAIZ / "ui-react" / "src" / "components" / "utilitarios" / f).read_text(encoding="utf-8"))
-        assert "CampoPasta" in fonte, f
+        assert "<CampoPasta" in fonte and "<NavegadorPastas" in fonte and "useNavegadorPastas(" in fonte, f
+        assert "chega na F" not in fonte

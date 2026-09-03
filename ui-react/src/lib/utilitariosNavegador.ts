@@ -1,7 +1,7 @@
 // Lógica PURA do navegador de pastas (spec docs/spec-utilitarios-arquivos.md,
 // F6): o contrato de `GET /utilitarios/pasta/listar`, o que pode ser aberto, o
 // caminho das migalhas e o texto de cada entrada. Sem React, sem rede.
-import { formatarTamanho } from './utilitariosArquivo'
+import { formatarTamanho, raizDe } from './utilitariosArquivo'
 
 export type TipoEntrada = 'raiz' | 'pasta' | 'arquivo' | 'link' | 'outro'
 
@@ -69,6 +69,16 @@ export function descricaoEntrada(e: EntradaPasta): string {
       return 'link (fora dos diretórios liberados ou quebrado)'
     default: return 'outro'
   }
+}
+
+/** Onde o navegador abre: na pasta digitada, se ela está abaixo de uma raiz
+ *  (lexicalmente); senão, com uma raiz só, direto nela; com várias, na lista
+ *  das raízes (null). */
+export function inicioNavegacao(diretorio: string, raizes: string[]): string | null {
+  const d = diretorio.trim().replace(/\/+$/, '') || diretorio.trim()
+  if (d && d.startsWith('/') && raizDe(d, raizes)) return d
+  if (raizes.length === 1) return raizes[0].trim().replace(/\/+$/, '') || raizes[0]
+  return null
 }
 
 /** Erro do `apiFetch` na listagem → frase (o `detail` da API já vem em pt-BR). */

@@ -15,8 +15,12 @@ import { useState, type KeyboardEvent } from 'react'
 import { Save, FolderOpen, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Input, Select, Textarea } from '../ui/Input'
+import { CampoPasta } from './CampoPasta'
+import { NavegadorPastas } from './NavegadorPastas'
+import { useNavegadorPastas, type ListarPasta } from './useNavegadorPastas'
 import type { ServidorUtil } from '../../lib/utilitariosAdmin'
 import { avisoPasta } from '../../lib/utilitariosArquivo'
+import { inicioNavegacao } from '../../lib/utilitariosNavegador'
 import {
   CODIFICACOES_OPCOES, avisoNomeBase, codificacaoValida, contarBytes, contarLinhas, ehCodificacao, extensaoPadrao,
   extensaoValida, foraDoLatin1, gravacaoPronta, nomeArquivoCompleto, separarNomeExtensao,
@@ -41,12 +45,15 @@ export interface FormEditarArquivoProps {
   /** Lê o arquivo (nome completo) e devolve conteúdo + codificação detectada; null se falhou. */
   onCarregar: (pedido: { servidor: string; diretorio: string; nome: string }) => Promise<CarregadoExistente | null>
   onGravar: (pedido: PedidoGravacao) => void
+  /** Lista pastas para o navegador; sem ele o botão Navegar… não aparece. */
+  onListar?: ListarPasta
   /** Preenchimento inicial (ex.: vindo do "Ver arquivo"). */
   inicial?: { diretorio?: string; nome?: string; extensao?: string }
 }
 
 export function FormEditarArquivo({
-  servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, sujo, onSujo, onCarregar, onGravar, inicial,
+  servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, sujo, onSujo, onCarregar, onGravar,
+  onListar, inicial,
 }: FormEditarArquivoProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
   const [diretorio, setDiretorio] = useState(inicial?.diretorio ?? '')
@@ -58,6 +65,7 @@ export function FormEditarArquivo({
   const extensao = extensaoEscolhida || extensaoPadrao(extensoes)
   const [codificacao, setCodificacao] = useState<Codificacao>('utf-8')
   const [conteudo, setConteudo] = useState('')
+  const nav = useNavegadorPastas(servidor, onListar)
 
   const raizes = raizesPorServidor[servidor] ?? []
   const avPasta = avisoPasta(diretorio, raizes)
@@ -101,6 +109,15 @@ export function FormEditarArquivo({
     if (e && extensoes.includes(e) && v.trim().toLowerCase().endsWith(`.${e}`)) { setNome(n); setExtensaoEscolhida(e) }
     else setNome(v)
   }
+  // Arquivo escolhido no navegador: pasta + nome separado da extensão. Extensão
+  // fora da lista fica marcada "(não liberada)" — o Carregar existente funciona
+  // (leitura não depende da lista), o Gravar fica desligado e diz por quê.
+  const escolherArquivo = (pasta: string, completo: string) => {
+    setDiretorio(pasta)
+    const { nome: n, extensao: e } = separarNomeExtensao(completo)
+    if (e) { setNome(n); setExtensaoEscolhida(e) } else setNome(completo)
+    nav.fechar()
+  }
 
   const desabilitado = !podeGravar
 
@@ -125,15 +142,9 @@ export function FormEditarArquivo({
             <option key={s.id} value={s.id}>{s.label}{s.configurado ? '' : ' (não configurado)'}</option>
           ))}
         </Select>
-        <div className="flex flex-col gap-1">
-          <Input label="Pasta" value={diretorio} onChange={e => setDiretorio(e.target.value)} disabled={desabilitado}
-            placeholder={raizes[0] ? `${raizes[0]}/…` : '/caminho/da/pasta'} autoComplete="off" spellCheck={false}
-            error={avPasta?.tom === 'erro' ? avPasta.texto : undefined}
-            ajuda="Caminho absoluto no servidor, abaixo de uma raiz liberada. A pasta precisa existir." />
-          {avPasta?.tom === 'neutro' && (
-            <span className="text-[11px] text-dim" data-raiz-de>{avPasta.texto}</span>
-          )}
-        </div>
+        <CampoPasta value={diretorio} onChange={setDiretorio} raizes={raizes} disabled={desabilitado}
+          ajuda="Caminho absoluto no servidor, abaixo de uma raiz liberada. A pasta precisa existir."
+          onNavegar={nav.disponivel ? () => nav.abrir(inicioNavegacao(diretorio, raizes)) : undefined} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-[1fr_160px_200px_auto] gap-3 items-start">
@@ -175,6 +186,16 @@ export function FormEditarArquivo({
           </span>
         </div>
       </div>
+
+      {nav.disponivel && (
+        <NavegadorPastas
+          aberto={nav.aberto} listagem={nav.listagem} carregando={nav.carregando} erro={nav.erro}
+          mostrarOcultos={nav.ocultos} onNavegar={nav.navegar} onMostrarOcultos={nav.mudarOcultos}
+          onUsarPasta={c => { setDiretorio(c); nav.fechar() }}
+          onEscolherArquivo={escolherArquivo}
+          onFechar={nav.fechar}
+        />
+      )}
     </form>
   )
 }

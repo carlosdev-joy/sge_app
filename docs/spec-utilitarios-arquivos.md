@@ -479,6 +479,14 @@ mostra o aviso e nada quebra no resto do Orquestra.
   preenche nome e, na aba de edição, extensão), `CampoPasta` ganha o botão; testes de
   listagem (ordem, ocultos, truncado, raiz inativa, symlink para fora aparece como `link`
   mas não desce); `npm run build` commitado.
+- Como ficou: o navegador vive DENTRO de cada formulário (hook
+  `components/utilitarios/useNavegadorPastas.ts`: abrir, descer, subir, ocultos, número
+  de série contra resposta atrasada, pasta digitada inválida → erro na tela + volta às
+  raízes); a página só passa `onListar` (o `apiFetch` de `GET /utilitarios/pasta/listar`).
+  Assim os formulários continuam apresentação pura e a bancada de node prova o fluxo
+  inteiro (Navegar… → raiz → pasta → arquivo → campos preenchidos) sem rede. Links só
+  ganham `alvo` (e só descem) quando apontam para dentro das raízes; o servidor resolve
+  no máximo 200 links por listagem (cada um custa uma ida ao servidor).
 - Critérios de aceite:
   - dado duas raízes ativas, quando abrir Navegar…, então a primeira tela lista as duas e
     nada mais; com uma só, abre direto nela;
