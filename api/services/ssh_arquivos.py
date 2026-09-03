@@ -225,6 +225,10 @@ def validar_nome(bruto) -> str:
         raise ArquivoError(422, "Informe o nome do arquivo.")
     if "/" in s or "\0" in s or s in (".", ".."):
         raise ArquivoError(422, "Nome de arquivo inválido: sem barra, e não pode ser '.' nem '..'.")
+    if any(ord(c) < 32 or ord(c) == 127 for c in s):
+        # Quebra de linha ou ESC no nome vira arquivo que engana o `ls` de quem
+        # opera o servidor; na F1 só lia, na F4 CRIA.
+        raise ArquivoError(422, "Nome de arquivo inválido: sem caracteres de controle.")
     if len(s.encode("utf-8")) > LIMITE_NOME_BYTES:
         raise ArquivoError(422, f"Nome longo demais (máximo {LIMITE_NOME_BYTES} bytes).")
     return s
@@ -385,7 +389,7 @@ def _erro_servidor(e: Exception, caminho: str) -> ArquivoError:
     num = getattr(e, "errno", None)
     if num == errno.ENOENT:
         return ArquivoError(404, f"Arquivo não encontrado: {caminho}")
-    if num == errno.EACCES:
+    if num in (errno.EACCES, errno.EPERM):
         return ArquivoError(403, f"O usuário SSH não tem permissão para acessar {caminho}.")
     return ArquivoError(
         502, "Falha ao acessar o arquivo no servidor — detalhe registrado no log da API.",
@@ -563,14 +567,16 @@ def codificar_conteudo(texto: str, cod: str) -> bytes:
         return texto.encode(cod)
     except UnicodeEncodeError as e:
         linha = texto.count("\n", 0, e.start) + 1
-        return _levantar(ArquivoError(
+        raise ArquivoError(
             422,
             f"O texto tem um caractere que não existe em {cod} na linha {linha} "
-            f"(posição {e.start}: {texto[e.start]!r}). Grave em utf-8 ou troque o caractere."))
+            f"(posição {e.start}: {texto[e.start]!r}). Grave em utf-8 ou troque o caractere.",
+            # A auditoria não leva nem um caractere do conteúdo — só onde está.
+            interno=f"caractere fora de {cod} na linha {linha}, posição {e.start}") from None
 
 
-def _levantar(e: Exception):
-    raise e
+# O `.tmp` e o `.bak-<ts>` são o nome + sufixo: precisam caber em NAME_MAX também.
+RESERVA_SUFIXOS_BYTES = 40
 
 
 def validar_extensao_gravacao(bruta, permitidas) -> str:
@@ -585,7 +591,10 @@ def validar_extensao_gravacao(bruta, permitidas) -> str:
 
 
 def nome_backup(caminho: str, agora: datetime | None = None) -> str:
-    return f"{caminho}.bak-{(agora or datetime.now()):%Y%m%d%H%M%S}"
+    """`<caminho>.bak-<AAAAMMDDHHMMSS>-<ms>` — com milissegundos: duas sobrescritas
+    no mesmo segundo não podem disputar o mesmo nome de backup."""
+    agora = agora or datetime.now()
+    return f"{caminho}.bak-{agora:%Y%m%d%H%M%S}-{agora.microsecond // 1000:03d}"
 
 
 def nome_temporario(caminho: str, marca: str) -> str:
@@ -601,6 +610,11 @@ def preparar_gravacao(diretorio, nome, extensao, raizes, extensoes) -> tuple[str
     base = validar_nome(nome)
     ext = validar_extensao_gravacao(extensao, extensoes)
     completo = validar_nome(f"{base}.{ext}")
+    if len(completo.encode("utf-8")) > LIMITE_NOME_BYTES - RESERVA_SUFIXOS_BYTES:
+        raise ArquivoError(
+            422,
+            f"Nome longo demais para gravar (máximo {LIMITE_NOME_BYTES - RESERVA_SUFIXOS_BYTES} "
+            "bytes): o servidor precisa de espaço para o .tmp e o .bak.")
     caminho = montar_caminho(normalizar_diretorio(diretorio), completo)
     raiz = raiz_de(caminho, raizes)
     if raiz is None:
@@ -640,26 +654,38 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
         raise ArquivoError(422, f"{real_pasta} não é uma pasta.")
     real = posixpath.join(real_pasta, nome)
 
-    existente: dict | None = None
+    # O que existe no destino? `lstat` para enxergar um LINK; se for link para
+    # dentro das raízes, o arquivo que se grava é o ALVO (é o que `ler` mostra
+    # e o que um job usa); link para fora é negado.
     try:
-        st = sftp.lstat(real)
+        st_l = sftp.lstat(real)
     except (OSError, UnicodeDecodeError) as e:
         if getattr(e, "errno", None) == errno.ENOENT:
-            st = None
+            st_l = None
+        else:
+            raise _erro_servidor(e, real) from e
+    if st_l is not None and statmod.S_ISLNK(getattr(st_l, "st_mode", 0) or 0):
+        alvo = _normalize(sftp, real)
+        if raiz_de(alvo, raizes_no_servidor(sftp, raizes)) is None:
+            raise ArquivoError(
+                403, "Fora dos diretórios liberados (o arquivo é um link para fora da raiz).",
+                resultado="negado")
+        real = alvo
+
+    existente: dict | None = None
+    modo_antigo: int | None = None
+    try:
+        st = sftp.stat(real)
+    except (OSError, UnicodeDecodeError) as e:
+        if getattr(e, "errno", None) == errno.ENOENT:
+            st = None  # não existe (ou link quebrado apontando para dentro): cria
         else:
             raise _erro_servidor(e, real) from e
     if st is not None:
         modo = getattr(st, "st_mode", 0) or 0
         if statmod.S_ISDIR(modo):
-            raise ArquivoError(422, f"Já existe uma PASTA chamada {nome} aí.")
-        if statmod.S_ISLNK(modo):
-            # Gravar por cima de um link substitui o LINK; mesmo assim o alvo
-            # tem de estar dentro das raízes — link para fora é negado.
-            alvo = _normalize(sftp, real)
-            if raiz_de(alvo, raizes_no_servidor(sftp, raizes)) is None:
-                raise ArquivoError(
-                    403, "Fora dos diretórios liberados (o arquivo é um link para fora da raiz).",
-                    resultado="negado")
+            raise ArquivoError(422, f"Já existe uma PASTA em {real}.")
+        modo_antigo = modo & 0o7777
         existente = {"tamanho_bytes": int(getattr(st, "st_size", 0) or 0),
                      "modificado_em": _mtime_iso(st)}
         if not sobrescrever:
@@ -668,21 +694,40 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
                 extra={"existente": existente})
 
     tmp = nome_temporario(real, marca)
-    try:
-        with sftp.open(tmp, "wb") as f:
-            f.write(dados)
-    except (OSError, UnicodeDecodeError) as e:
+
+    def _apagar_tmp() -> None:
         try:
             sftp.remove(tmp)
         except Exception:
             pass
-        raise _erro_servidor(e, real) from e
+
+    try:
+        with sftp.open(tmp, "wb") as f:
+            f.write(dados)
+        if modo_antigo is not None:
+            # Sobrescrever troca o inode: sem isto um arquivo 0775 do grupo (ou
+            # um .sh com +x) sairia 0644 e o job que escreve nele passaria a
+            # falhar. O dono não dá para preservar por SFTP: passa a ser o
+            # usuário SSH (documentado na spec).
+            sftp.chmod(tmp, modo_antigo)
+    except Exception as e:
+        _apagar_tmp()
+        if isinstance(e, (OSError, UnicodeDecodeError)):
+            raise _erro_servidor(e, real) from e
+        raise ArquivoError(502, "Falha ao gravar no servidor — detalhe registrado no log da API.",
+                           interno=f"{real}: {e!r}") from e
 
     backup_criado: str | None = None
     try:
         if existente is not None and backup:
             bak = nome_backup(real, agora)
-            sftp.rename(real, bak)
+            try:
+                sftp.rename(real, bak)
+            except OSError:
+                # Nome de backup já tomado (duas gravações no mesmo instante):
+                # tenta uma vez com a marca do pedido, que é única.
+                bak = f"{bak}-{marca}"
+                sftp.rename(real, bak)
             backup_criado = bak
             try:
                 _substituir(sftp, tmp, real)
@@ -696,12 +741,12 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
                 raise
         else:
             _substituir(sftp, tmp, real)
-    except (OSError, UnicodeDecodeError) as e:
-        try:
-            sftp.remove(tmp)
-        except Exception:
-            pass
-        raise _erro_servidor(e, real) from e
+    except Exception as e:
+        _apagar_tmp()
+        if isinstance(e, (OSError, UnicodeDecodeError)):
+            raise _erro_servidor(e, real) from e
+        raise ArquivoError(502, "Falha ao gravar no servidor — detalhe registrado no log da API.",
+                           interno=f"{real}: {e!r}") from e
 
     return {
         "caminho": real,

@@ -39,6 +39,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path
@@ -246,6 +247,9 @@ async def utilitarios_ler_arquivo(body: dict = Body(...),
         servidor = svc.servidor_valido(body.get("servidor"))
         ultimas = _ultimas_linhas_valido(body.get("ultimas_linhas"))
         codificacao = svc.codificacao_valida(body.get("codificacao"))
+        if not isinstance(diretorio, str) or not isinstance(nome, str):
+            # `str(["x"])` viraria o nome "['x']" — texto ou nada.
+            raise HTTPException(status_code=422, detail="'diretorio' e 'nome' precisam ser texto.")
     except svc.ArquivoError as e:
         _auditar(usuario=usuario, servidor=servidor, acao="ler", caminho=pedido_bruto,
                  resultado=e.resultado, detalhe=e.interno or e.detail, duracao_ms=_ms(t0))
@@ -345,6 +349,8 @@ async def utilitarios_gravar_arquivo(body: dict = Body(...),
     conteudo = body.get("conteudo")
     if not isinstance(conteudo, str):
         negar(422, "'conteudo' precisa ser texto.")
+    if not all(isinstance(v, str) for v in (diretorio, nome, extensao)):
+        negar(422, "'diretorio', 'nome' e 'extensao' precisam ser texto.")
     sobrescrever = body.get("sobrescrever", False)
     if not isinstance(sobrescrever, bool):
         negar(422, "'sobrescrever' precisa ser true ou false.")
@@ -371,7 +377,9 @@ async def utilitarios_gravar_arquivo(body: dict = Body(...),
         negar(413, f"Conteúdo de {svc.formatar_tamanho(len(dados))}, acima do teto de "
                    f"{svc.formatar_tamanho(teto_bytes)}.", caminho=caminho)
 
-    marca = f"{os.getpid()}-{int(t0 * 1000)}"
+    # Única por pedido: pid + milissegundo não separa duas threads do mesmo
+    # worker no mesmo instante, e o `.tmp` dos dois seria o mesmo arquivo.
+    marca = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     try:
         resultado = await _no_servidor(
             _gravar_sync, servidor, caminho, raizes, dados, sobrescrever,
