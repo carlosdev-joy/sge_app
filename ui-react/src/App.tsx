@@ -26,6 +26,7 @@ import Inventario from './pages/Inventario'
 import Chamados from './pages/Chamados'
 import Finalizacao from './pages/Finalizacao'
 import Fluxos from './pages/Fluxos'
+import Utilitarios from './pages/Utilitarios'
 import Monitoramento from './caixa/pages/Monitoramento'
 import Index from './caixa/pages/Index'
 import Portabilidades from './caixa/pages/Portabilidades'
@@ -88,6 +89,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/chamados': <Chamados />,
   '/powerbi': <PowerBI />,
   '/ds-console': <DsConsole />,
+  '/utilitarios': <Utilitarios />,
   '/performance': <Performance />,
   '/finalizacao': <Finalizacao />,
   '/caixa-seguro': <CaixaSeguroFallback />,

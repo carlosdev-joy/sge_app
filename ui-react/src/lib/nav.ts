@@ -8,7 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
-  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, LifeBuoy,
+  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, LifeBuoy, Wrench,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
@@ -30,6 +30,8 @@ export const NAV: NavItem[] = [
   { to: '/gestao-falhas', label: 'Gestão de Falhas',   icon: ShieldAlert,     group: 'Operação',           perm: 'tela_logs' },
   { to: '/logs',          label: 'Logs',               icon: ScrollText,      group: 'Operação',           perm: 'tela_logs' },
   { to: '/ds-console',    label: 'Console DataStage',  icon: Terminal,        group: 'Operação',           perm: 'tela_ds_console' },
+  // Arquivos do servidor do DataStage por SFTP (spec docs/spec-utilitarios-arquivos.md).
+  { to: '/utilitarios',   label: 'Utilitários',        icon: Wrench,          group: 'Operação',           perm: 'tela_utilitarios' },
   { to: '/performance',   label: 'Performance',        icon: Gauge,           group: 'Operação',           perm: 'tela_performance' },
   { to: '/finalizacao',   label: 'Finalizar Pipeline', icon: OctagonX,        group: 'Operação',           perm: 'tela_finalizacao' },
   { to: '/avisos',        label: 'Avisos',             icon: Bell,            group: 'Operação' },

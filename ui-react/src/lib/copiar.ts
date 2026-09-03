@@ -19,6 +19,11 @@ export interface AmbienteCopia {
   escrever?: (texto: string) => Promise<void>
   /** O caminho legado (`document.execCommand`), que funciona sem HTTPS. */
   legado?: (texto: string) => boolean
+  /** Copia o texto COMO ESTÁ, sem `trim`. Para um número de chamado o trim é
+   *  o certo (espaço em volta é sujeira); para o conteúdo de um arquivo é
+   *  alteração do dado — o `\n` final e o preenchimento de um `.dat` de
+   *  largura fixa fazem parte do arquivo. */
+  bruto?: boolean
 }
 
 /** O caminho legado padrão: textarea fora da vista, seleciona, copia, remove. */
@@ -45,8 +50,8 @@ function legadoPadrao(texto: string): boolean {
 export async function copiarTexto(
   texto: string, amb: AmbienteCopia = {},
 ): Promise<ResultadoCopia> {
-  const valor = (texto || '').trim()
-  if (!valor) return 'falhou'
+  const valor = amb.bruto ? (texto ?? '') : (texto || '').trim()
+  if (!valor.length) return 'falhou'
 
   const escrever = amb.escrever
     ?? globalThis.navigator?.clipboard?.writeText.bind(globalThis.navigator.clipboard)
