@@ -1,5 +1,5 @@
 # Spec: Utilitários de arquivos no servidor — Orquestra
-Data: 2026-09-03 · Status: rascunho v2 (respostas do usuário incorporadas; aguarda aprovação)
+Data: 2026-09-03 · Status: concluída — F1–F6 mergeadas (PRs #356–#362), F7 (manual, release note, smoke, backlog) na PR de fecho; deploy em produção pendente
 
 ## 1. Visão
 
