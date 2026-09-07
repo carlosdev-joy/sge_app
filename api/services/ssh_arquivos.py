@@ -45,6 +45,8 @@ import os
 import posixpath
 import re
 import stat as statmod
+import unicodedata
+import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -61,6 +63,11 @@ LIMITE_NOME_BYTES = 255
 TETO_PADRAO_KB = 2048
 # 16 MB: acima disso "últimas N linhas" transferiria dezenas de MB por pedido.
 TETO_MAX_KB = 16384
+# Transferência (download/upload — spec docs/spec-utilitarios-transferencia.md):
+# teto único de 50 MB nos dois sentidos (o nginx aceita 64 MB de corpo), lido e
+# escrito em blocos de 256 KB — nunca o arquivo inteiro numa `bytes`.
+TRANSFERENCIA_MAX_BYTES = 50 * 1024 * 1024
+BLOCO_TRANSFERENCIA = 256 * 1024
 ULTIMAS_LINHAS_MAX = 100_000
 # "Últimas N linhas" lê só um bloco do fim: no mínimo 256 KB, ~512 B por linha pedida.
 TAIL_BLOCO_MIN = 256 * 1024
@@ -243,6 +250,11 @@ def validar_nome(bruto) -> str:
         # Quebra de linha ou ESC no nome vira arquivo que engana o `ls` de quem
         # opera o servidor; na F1 só lia, na F4 CRIA.
         raise ArquivoError(422, "Nome de arquivo inválido: sem caracteres de controle.")
+    if any(unicodedata.category(c) == "Cf" for c in s):
+        # Formato invisível (U+202E inverte a leitura: "‮txt.exe" aparece
+        # como "exe.txt" no download; U+200B some). Achado da auditoria de
+        # segurança da transferência: quem cria o arquivo engana quem baixa.
+        raise ArquivoError(422, "Nome de arquivo inválido: sem caracteres invisíveis de formatação.")
     if len(s.encode("utf-8")) > LIMITE_NOME_BYTES:
         raise ArquivoError(422, f"Nome longo demais (máximo {LIMITE_NOME_BYTES} bytes).")
     return s
@@ -379,6 +391,18 @@ def formatar_tamanho(n: int) -> str:
     if n < 1024 * 1024:
         return f"{n / 1024:.1f} KB".replace(".", ",")
     return f"{n / (1024 * 1024):.1f} MB".replace(".", ",")
+
+
+def content_disposition(nome: str) -> str:
+    """Cabeçalho do download (RFC 6266): `filename` ASCII de resgate para cliente
+    antigo (não-ASCII, aspas e barra invertida viram `_`) e `filename*` em UTF-8
+    percent-encoded (RFC 5987), que é o que o navegador usa quando existe. Só
+    ASCII sai daqui — cabeçalho HTTP não carrega UTF-8 cru. Caractere de
+    formato invisível (categoria Cf: U+202E e afins) vira `_` nos DOIS nomes,
+    para a função ser segura sozinha, sem depender do `validar_nome`."""
+    nome = "".join("_" if unicodedata.category(c) == "Cf" else c for c in nome)
+    ascii_ = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in nome) or "arquivo"
+    return f'attachment; filename="{ascii_}"; filename*=UTF-8\'\'{urllib.parse.quote(nome, safe="")}'
 
 
 def _mtime_iso(st) -> str | None:
@@ -572,6 +596,66 @@ def ler_arquivo(sftp, caminho: str, raizes, *, teto_bytes: int,
         "truncado": truncado,
         "modificado_em": _mtime_iso(st),
         "conteudo": texto,
+    }
+
+
+def baixar_arquivo(sftp, caminho: str, raizes, *, teto_bytes: int, destino) -> dict:
+    """Copia `caminho` (já validado por `preparar_leitura`) para `destino` (file-like
+    binário), em blocos — SEM o teste de texto: binário desce. Mesma política de
+    caminho do `ler` (`resolver_real` de cima para baixo).
+
+    `stat` antes de abrir: acima do teto é 413 sem transferir um byte. Lê
+    exatamente `st_size` bytes: um log que cresce enquanto desce sai como estava
+    no `stat` (o Content-Length da resposta é esse tamanho); arquivo que ENCOLHEU
+    no meio é 502, não um download curto que parece inteiro."""
+    real = resolver_real(sftp, caminho, raizes)
+    st = _stat(sftp, real)
+    if statmod.S_ISDIR(getattr(st, "st_mode", 0) or 0):
+        raise ArquivoError(422, f"{real} é uma pasta, não um arquivo.")
+    tamanho = int(getattr(st, "st_size", 0) or 0)
+    if tamanho > teto_bytes:
+        # Os bytes exatos entram porque, no limite, "50,0 MB acima do teto de
+        # 50,0 MB" (50 MB + 1 byte) confunde quem lê.
+        raise ArquivoError(
+            413,
+            f"Arquivo de {formatar_tamanho(tamanho)} ({tamanho} bytes), acima do teto de "
+            f"{formatar_tamanho(teto_bytes)} para download.")
+
+    resumo = hashlib.sha256()
+    lidos = 0
+    try:
+        with sftp.open(real, "rb") as f:
+            prefetch = getattr(f, "prefetch", None)
+            if prefetch and tamanho:
+                prefetch(tamanho)
+            while lidos < tamanho:
+                bloco = f.read(min(BLOCO_TRANSFERENCIA, tamanho - lidos))
+                if not bloco:
+                    break
+                try:
+                    destino.write(bloco)
+                except OSError as e:
+                    # Erro LOCAL (o /tmp da API cheio no rollover do spool) não
+                    # pode sair como "sem espaço no servidor": o operador iria
+                    # olhar o disco do DataStage, que está bom.
+                    raise ArquivoError(
+                        502, "Falha ao guardar o arquivo temporário na API — detalhe registrado "
+                             "no log da API.", interno=f"spool: {e!r}") from e
+                resumo.update(bloco)
+                lidos += len(bloco)
+    except (OSError, UnicodeDecodeError) as e:
+        raise _erro_servidor(e, real) from e
+    if lidos != tamanho:
+        raise ArquivoError(
+            502,
+            f"O arquivo mudou de tamanho durante a leitura ({formatar_tamanho(lidos)} de "
+            f"{formatar_tamanho(tamanho)}) — tente de novo.",
+            interno=f"{real}: esperava {tamanho} bytes, leu {lidos}")
+    return {
+        "caminho": real,
+        "tamanho_bytes": tamanho,
+        "sha256": resumo.hexdigest(),
+        "modificado_em": _mtime_iso(st),
     }
 
 

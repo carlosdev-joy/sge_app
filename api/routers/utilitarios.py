@@ -38,12 +38,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import posixpath
 import re
+import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
+from fastapi.responses import StreamingResponse
 
 from db import get_db_conn
 from deps import PERM_EDITAR, get_admin_user, require_tela_utilitarios
@@ -64,18 +68,31 @@ _ID_MAX = 2_147_483_647  # INT do SQL Server
 # `asyncio.to_thread`, usado por reconciliação, monitor e execuções.
 _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="orq-utilitarios-ssh")
 _TIMEOUT_S = 90
+# Transferências (spec docs/spec-utilitarios-transferencia.md): 50 MB por SFTP
+# leva mais que uma leitura de texto — teto próprio, abaixo dos 300 s do nginx.
+_TIMEOUT_TRANSFERENCIA_S = 240
+# No máximo 2 transferências por worker ao mesmo tempo: a 3ª ouve "ocupado" na
+# hora em vez de esperar na fila do executor, e sobram 2 threads para ler,
+# listar e gravar — fora a janela de até 60 s depois de um 504, em que a thread
+# presa ainda ocupa o executor com a vaga já devolvida. É por worker do
+# uvicorn, não por instância, e limita o SFTP, não respostas em voo (spec §8).
+_VAGAS_TRANSFERENCIA = threading.BoundedSemaphore(2)
+# O arquivo transferido passa por um spool: até 8 MB em memória, o resto em
+# arquivo temporário do container — nunca 50 MB numa `bytes` por pedido.
+_SPOOL_MEMORIA = 8 * 1024 * 1024
 
 
-async def _no_servidor(fn, *args):
+async def _no_servidor(fn, *args, timeout: float | None = None):
     """Roda `fn` (bloqueante, SSH) no executor dedicado, com teto de tempo.
 
     Passado o teto a requisição é liberada com 504; a thread presa termina por
     conta do timeout de canal (60 s) e do keepalive — não há como matá-la."""
+    teto = _TIMEOUT_S if timeout is None else timeout
     loop = asyncio.get_running_loop()
     try:
-        return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, fn, *args), timeout=_TIMEOUT_S)
+        return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, fn, *args), timeout=teto)
     except asyncio.TimeoutError:
-        raise svc.ArquivoError(504, f"O servidor não respondeu em {_TIMEOUT_S} s.")
+        raise svc.ArquivoError(504, f"O servidor não respondeu em {teto} s.")
 
 
 # ── banco: helpers ───────────────────────────────────────────────────────────
@@ -133,6 +150,8 @@ def _carregar_config(cur) -> dict:
         "extensoes": extensoes,
         "tamanho_max_kb": _teto_kb(cfg.get(K_TETO)),
         "backup_ao_sobrescrever": (cfg.get(K_BACKUP) or "1").strip() != "0",
+        # Constante (não vem do banco): a tela recusa arquivo grande ANTES de enviar.
+        "transferencia_max_kb": svc.TRANSFERENCIA_MAX_BYTES // 1024,
     }
 
 
@@ -211,6 +230,7 @@ async def utilitarios_config(user: dict = Depends(require_tela_utilitarios)):
         "extensoes": cfg["extensoes"],
         "tamanho_max_kb": cfg["tamanho_max_kb"],
         "backup_ao_sobrescrever": cfg["backup_ao_sobrescrever"],
+        "transferencia_max_kb": cfg["transferencia_max_kb"],
         "pode_gravar": PERM_EDITAR in user.get("permissoes", []),
     }
 
@@ -299,6 +319,110 @@ async def utilitarios_ler_arquivo(body: dict = Body(...),
              resultado="ok", tamanho=resultado["tamanho_bytes"], detalhe=detalhe,
              duracao_ms=resultado["duracao_ms"])
     return resultado
+
+
+# ── baixar arquivo (transferência — spec docs/spec-utilitarios-transferencia.md) ──
+
+def _baixar_sync(servidor: str, caminho: str, raizes: list[str], teto_bytes: int, destino) -> dict:
+    with svc.conexao_sftp(servidor) as sftp:
+        return svc.baixar_arquivo(sftp, caminho, raizes, teto_bytes=teto_bytes, destino=destino)
+
+
+def _servir_spool(spool):
+    """Gerador da resposta: entrega o spool em blocos e o fecha no fim — também
+    quando o cliente desiste no meio (o `finally` roda no `close()` do gerador).
+    Se o cliente sumir ANTES do 1º bloco, o gerador nunca inicia e o `finally`
+    não roda: aí o arquivo fecha no descarte do objeto (e o `TemporaryFile` do
+    spool já nasce sem nome no Linux — não sobra órfão no disco)."""
+    try:
+        while True:
+            bloco = spool.read(svc.BLOCO_TRANSFERENCIA)
+            if not bloco:
+                break
+            yield bloco
+    finally:
+        spool.close()
+
+
+@router.get("/utilitarios/arquivo/baixar")
+async def utilitarios_baixar_arquivo(servidor: str = Query("datastage"),
+                                     diretorio: str | None = Query(None),
+                                     nome: str | None = Query(None),
+                                     user: dict = Depends(require_tela_utilitarios)):
+    """Download de um arquivo abaixo de uma raiz — QUALQUER arquivo, binário
+    incluído (sem o teste de texto do `ler`), até TRANSFERENCIA_MAX_BYTES. Mesma
+    permissão da leitura: ter a tela.
+
+    O arquivo desce inteiro para um spool ANTES de a resposta começar: o
+    Content-Length é exato, o sha256 vai à auditoria e a vaga SSH é liberada
+    cedo (o nginx bufferizaria a resposta de qualquer forma). `ok` na auditoria
+    = a API leu o arquivo do servidor; a entrega ao navegador não é confirmável
+    daqui. Erros saem em JSON `{detail}` como o resto da API."""
+    t0 = time.time()
+    usuario = str(user.get("matricula") or "?")
+    pedido_bruto = f"{str(diretorio or '').rstrip('/')}/{str(nome or '')}"
+    servidor = str(servidor or "datastage")
+
+    def negar(status: int, detalhe: str, resultado: str = "erro", caminho: str = pedido_bruto,
+              detail=None):
+        _auditar(usuario=usuario, servidor=servidor, acao="baixar", caminho=caminho,
+                 resultado=resultado, detalhe=detalhe, duracao_ms=_ms(t0))
+        raise HTTPException(status_code=status, detail=detail if detail is not None else detalhe)
+
+    # `detail=e.detail` sempre: o `interno` (erro cru, host:porta) é da
+    # auditoria, nunca da resposta — mesmo que hoje nenhum erro pré-SSH o tenha.
+    try:
+        servidor = svc.servidor_valido(servidor)
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
+
+    cfg = _config_do_banco()
+    raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
+    if not raizes:
+        negar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
+                   "Admin › Utilitários.", "negado")
+    # Validação e conferência LEXICAL antes de qualquer SSH (403 sem revelar existência).
+    try:
+        caminho, _raiz = svc.preparar_leitura(diretorio, nome, raizes)
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
+
+    if not _VAGAS_TRANSFERENCIA.acquire(blocking=False):
+        negar(503, "Há transferências em andamento — tente de novo em instantes.", caminho=caminho)
+    spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORIA)
+    try:
+        try:
+            resultado = await _no_servidor(
+                _baixar_sync, servidor, caminho, raizes, svc.TRANSFERENCIA_MAX_BYTES, spool,
+                timeout=_TIMEOUT_TRANSFERENCIA_S)
+        finally:
+            _VAGAS_TRANSFERENCIA.release()
+    except svc.ArquivoError as e:
+        # Fechar o spool também derruba a thread que ficou presa num 504: o
+        # próximo `write` dela falha em vez de encher o disco por mais 50 MB.
+        spool.close()
+        negar(e.status, e.interno or e.detail, e.resultado, caminho=caminho, detail=_detalhe_http(e))
+    except Exception as e:
+        spool.close()
+        log.exception("Utilitários: falha inesperada ao baixar %s", caminho)
+        negar(502, f"inesperado: {e!r}", caminho=caminho,
+              detail="Falha ao baixar o arquivo — detalhe registrado no log da API.")
+
+    resultado["duracao_ms"] = _ms(t0)
+    _auditar(usuario=usuario, servidor=servidor, acao="baixar", caminho=resultado["caminho"],
+             resultado="ok", tamanho=resultado["tamanho_bytes"], sha256=resultado["sha256"],
+             duracao_ms=resultado["duracao_ms"])
+    spool.seek(0)
+    cabecalhos = {
+        # O nome PEDIDO (validado), não o real: com link, o real é o alvo.
+        "Content-Disposition": svc.content_disposition(posixpath.basename(caminho)),
+        "Content-Length": str(resultado["tamanho_bytes"]),
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "X-Orquestra-Sha256": resultado["sha256"],
+    }
+    return StreamingResponse(_servir_spool(spool), media_type="application/octet-stream",
+                             headers=cabecalhos)
 
 
 # ── listar pasta (F6 — navegador) ────────────────────────────────────────────
@@ -416,7 +540,7 @@ async def utilitarios_gravar_arquivo(body: dict = Body(...),
         servidor = svc.servidor_valido(body.get("servidor"))
         cod = svc.codificacao_valida(body.get("codificacao")) or "utf-8"
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado)
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
     conteudo = body.get("conteudo")
     if not isinstance(conteudo, str):
         negar(422, "'conteudo' precisa ser texto.")
@@ -434,7 +558,7 @@ async def utilitarios_gravar_arquivo(body: dict = Body(...),
     try:
         caminho, _raiz = svc.preparar_gravacao(diretorio, nome, extensao, raizes, cfg["extensoes"])
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado)
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
 
     texto = svc.normalizar_conteudo(conteudo)
     if "\0" in texto:
