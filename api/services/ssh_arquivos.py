@@ -635,10 +635,11 @@ def baixar_arquivo(sftp, caminho: str, raizes, *, teto_bytes: int, destino) -> d
                     break
                 try:
                     destino.write(bloco)
-                except OSError as e:
-                    # Erro LOCAL (o /tmp da API cheio no rollover do spool) não
-                    # pode sair como "sem espaço no servidor": o operador iria
-                    # olhar o disco do DataStage, que está bom.
+                except (OSError, ValueError) as e:
+                    # Erro LOCAL (o /tmp da API cheio no rollover do spool, ou o
+                    # spool já fechado por um 504 — ValueError) não pode sair
+                    # como "sem espaço no servidor": o operador iria olhar o
+                    # disco do DataStage, que está bom.
                     raise ArquivoError(
                         502, "Falha ao guardar o arquivo temporário na API — detalhe registrado "
                              "no log da API.", interno=f"spool: {e!r}") from e
@@ -930,13 +931,17 @@ def _gravar_de(sftp, caminho: str, raizes, origem, tamanho: int, *, sobrescrever
     resumo = hashlib.sha256()
     escritos = 0
     try:
-        with sftp.open(tmp, "wb") as f:
+        # `x` = SFTP_FLAG_EXCL: o `.tmp` tem de ser criado AGORA, por nós. Um
+        # link plantado com esse nome por quem escreve na pasta faria o `open`
+        # seguir para outro arquivo (auditoria de segurança da F3; o paramiko
+        # 3.5 e o sftp-server do OpenSSH honram a flag).
+        with sftp.open(tmp, "wxb") as f:
             while True:
                 try:
                     bloco = origem.read(BLOCO_TRANSFERENCIA)
-                except OSError as e:
-                    # Erro LOCAL (o spool da API) não pode sair como erro do
-                    # servidor — o operador iria olhar o disco do DataStage.
+                except (OSError, ValueError) as e:
+                    # Erro LOCAL (o spool da API, ou o spool já fechado por um
+                    # 504 — ValueError) não pode sair como erro do servidor.
                     raise ArquivoError(
                         502, "Falha ao ler o arquivo temporário na API — detalhe registrado "
                              "no log da API.", interno=f"spool: {e!r}") from e

@@ -462,3 +462,48 @@ Registrado pelas revisões da F1 (adversarial + auditoria de segurança, 2026-09
     uvicorn 0.32.1). A revisão conferiu `StreamingResponse`, `Content-Length` explícito e
     desconexão do cliente na fonte das wheels. Regra: mudança que dependa de comportamento
     do framework se confere na wheel, não no `pip` local.
+
+Registrado pelas revisões da F3 (adversarial + auditoria de segurança, 2026-09-07):
+
+13. **Porta 8000 publicada em todas as interfaces** (`docker-compose.yaml`): quem alcança a
+    API sem o nginx fala com o uvicorn, que não tem timeout de leitura de corpo. A F3 tomou
+    duas medidas (vaga só depois do corpo inteiro no spool; 408 se nenhum pedaço chega em
+    60 s), mas o **checklist de deploy** deve conferir se a 8000 é alcançável na rede de
+    produção e, se for, publicar `127.0.0.1:8000:8000` (o nginx fala pela rede do compose).
+14. **Resposta com corpo pendente vira 502 HTML do nginx** (provado com a imagem de
+    produção + nginx 1.27): a F3 é o primeiro endpoint do repo que responde antes de ler o
+    corpo. Solução: erros que cabem no teto **drenam** o corpo antes de responder; o 413
+    acima do teto e o 411 sem tamanho saem na hora (corrida documentada — a F4 pré-checa o
+    tamanho pelo `transferencia_max_kb`, então o 413 só vem de `curl`). A F4 precisa
+    tolerar `detail` não-JSON (502/413 HTML do nginx acima de 64 MB).
+15. **Cancelar na F4 depois de o corpo chegar ao nginx**: com `proxy_request_buffering`
+    o nginx já reenviou tudo; a API grava o arquivo e audita `ok` enquanto o modal diz
+    "cancelado". O Cancelar só vale durante o envio ao nginx. A F4 deve dizer isso no
+    modal ("cancelado antes de chegar ao servidor" × "o envio já tinha chegado: confira na
+    pasta") e o smoke §7 k passa a provar "nenhuma escrita parcial", não rollback.
+16. **Lista de extensões é uma só para editar texto e enviar binário**: com a semente
+    (só texto, sem `sh`) o upload não abre exposição nova de execução — mas um admin que
+    inclua `jar`/`so`/`class`/`zip` libera binários executáveis sob as raízes, e a
+    sobrescrita preserva `+x`. **Decisão do usuário**: (a) manter uma lista só e documentar
+    no manual do admin; (b) `permite_envio` por extensão; (c) denylist fixa no upload para o
+    que o Unix/DataStage executa (`sh ksh bash csh pl py rb jar class so o exe dll`).
+    Backlog na F5 com as três opções.
+17. **Disco do servidor sem cota**: 50 MB por pedido, `.bak` a cada sobrescrita nunca
+    expurgado (backlog anterior). Um usuário com `acao_editar` enche o disco em minutos,
+    totalmente auditado. Backlog: cota diária por usuário lida da própria auditoria
+    (`SUM(tamanho_bytes)` de `enviar`/`ok` nas 24 h) — sem migration.
+18. **Desfecho tardio após 504**: a thread SSH pode concluir a troca depois de a API
+    responder 504 (tela diz que falhou, arquivo foi gravado). A F3 registra o desfecho na
+    auditoria (`concluído após o 504 — o arquivo FOI gravado` / `falhou após o 504`) via
+    `tardio` no `_no_servidor`; para as outras operações fica no log. A F4 deve dizer, no
+    504, "confira na pasta antes de reenviar".
+19. **`.tmp` órfão quando o canal SSH morre no meio** (queda de rede, 60 s do canal): o
+    `_apagar_tmp` usa o mesmo canal morto e engole a falha → fica `.<nome>.tmp-<pid>-<hex>`
+    oculto na pasta. Pré-existente na gravação; a F3 multiplica a exposição. Backlog:
+    varredura de `.tmp-` antigos na listagem do navegador ou no expurgo dos `.bak`.
+20. **Janela sem o destino com backup ligado** (`rename(real→bak)` + `posix_rename`): já
+    documentada na spec anterior; `hardlink@openssh.com` (`link` + `posix_rename`) fecharia
+    pelo mesmo `_request` do `statvfs`. Backlog, se algum job tropeçar.
+21. **`.tmp` com `O_EXCL`**: o `_gravar_de` passou a abrir o `.tmp` com `wxb`
+    (`SFTP_FLAG_EXCL`), para um link plantado com o nome do `.tmp` não desviar a escrita.
+    Vale também para a gravação de texto.

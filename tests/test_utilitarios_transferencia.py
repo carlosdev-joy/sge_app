@@ -17,9 +17,11 @@ FakeSftp, a árvore de amostra, o cursor falso e as autenticações:
 """
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
 import io
+import logging
 import os
 import re
 import stat as statmod
@@ -35,6 +37,8 @@ if "pyodbc" not in sys.modules:
     sys.modules["pyodbc"] = MagicMock()
 os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 from api.main import app as _app  # noqa: F401  (ordem de import — ver test_copias.py)
+
+from starlette.requests import ClientDisconnect
 
 from routers import utilitarios as rt
 from services import ssh_arquivos as svc
@@ -787,6 +791,9 @@ class TestEnviarEndpoint:
         assert _put_enviar(client, cur, {**ENVIAR_OK, "nome": "b.txt"}, b"123456").status_code == 413
 
     def test_corpo_menor_que_o_declarado_400_sem_gravar(self, client, auth_dev, sftp_falso):
+        """No HTTP/1.1 real o h11/httptools enquadram pelo Content-Length e o
+        cliente que mente vê 400 do próprio servidor HTTP (ou ClientDisconnect);
+        este ramo é o cinto para o transporte ASGI direto — o TestClient o aciona."""
         cur = _Cursor(REGRAS_CONFIG)
         r = _put_enviar(client, cur, ENVIAR_OK, b"0123456789", headers={"Content-Length": "100"})
         assert r.status_code == 400, r.text
@@ -796,6 +803,7 @@ class TestEnviarEndpoint:
         assert cur.auditoria[0][6] == "erro" and _vagas_livres() == 2
 
     def test_corpo_maior_que_o_declarado_413(self, client, auth_dev, sftp_falso):
+        """Idem: inalcançável no HTTP/1.1 real; prova o cinto pelo transporte ASGI."""
         cur = _Cursor(REGRAS_CONFIG)
         r = _put_enviar(client, cur, ENVIAR_OK, b"0123456789", headers={"Content-Length": "3"})
         assert r.status_code == 413, r.text
@@ -912,3 +920,176 @@ class TestEnviarEndpoint:
         cur = _Cursor(REGRAS_CONFIG, tabelas=0)
         r = _put_enviar(client, cur, ENVIAR_OK, b"x")
         assert r.status_code == 503 and "105" in r.json()["detail"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. Upload (F3) — achados das revisões: ordem, drenagem, vaga, desistência, 504
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestEnviarRevisao:
+    def test_permissao_vem_antes_do_content_length(self, client, auth_operador, sftp_falso):
+        """Operador com corpo chunked ouve 403, não 411."""
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, iter([b"abc"]))
+        assert r.status_code == 403 and cur.auditoria[0][6] == "negado"
+
+    def test_erro_antes_do_corpo_drena_o_corpo_quando_ele_cabe(self, client, auth_operador, sftp_falso, monkeypatch):
+        """Responder com corpo pendente vira 502 HTML do nginx: os erros drenam antes."""
+        drenados = []
+
+        async def _fake(request):
+            drenados.append(request.headers.get("content-length"))
+        monkeypatch.setattr(rt, "_drenar", _fake)
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _put_enviar(client, cur, ENVIAR_OK, b"x" * 10).status_code == 403
+        assert drenados == ["10"]
+
+    def test_422_drena_mas_413_acima_do_teto_e_411_nao(self, client, auth_dev, sftp_falso, monkeypatch):
+        drenados = []
+
+        async def _fake(request):
+            drenados.append(1)
+        monkeypatch.setattr(rt, "_drenar", _fake)
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _put_enviar(client, cur, {**ENVIAR_OK, "nome": "x.exe"}, b"xx").status_code == 422
+        assert drenados == [1]
+        assert _put_enviar(client, cur, ENVIAR_OK, b"x",
+                           headers={"Content-Length": str(svc.TRANSFERENCIA_MAX_BYTES + 1)}).status_code == 413
+        assert _put_enviar(client, cur, ENVIAR_OK, iter([b"abc"])).status_code == 411
+        assert drenados == [1]   # acima do teto e sem tamanho: recusa na hora, sem drenar
+
+    def test_drenar_consome_o_corpo_e_engole_erro(self):
+        class _Req:
+            def __init__(self, pedacos, quebrar=False):
+                self._p, self.lidos, self.quebrar = pedacos, 0, quebrar
+
+            def stream(self):
+                async def gen():
+                    for p in self._p:
+                        self.lidos += len(p)
+                        yield p
+                    if self.quebrar:
+                        raise ClientDisconnect()
+                return gen()
+        req = _Req([b"ab", b"cd"])
+        asyncio.run(rt._drenar(req))
+        assert req.lidos == 4
+        asyncio.run(rt._drenar(_Req([b"ab"], quebrar=True)))   # não levanta
+
+    def test_vaga_so_depois_do_corpo_inteiro_no_spool(self, client, auth_dev, sftp_falso, monkeypatch):
+        """A vaga mede o SFTP, não a rede: um cliente lento não segura vaga."""
+        ordem = []
+        original_cls = rt.tempfile.SpooledTemporaryFile
+
+        class _Spool(original_cls):
+            def write(self, b):
+                ordem.append("corpo")
+                return super().write(b)
+        monkeypatch.setattr(rt.tempfile, "SpooledTemporaryFile", _Spool)
+
+        class _Sem:
+            def acquire(self, blocking=True):
+                ordem.append("vaga")
+                return True
+
+            def release(self):
+                ordem.append("solta")
+        monkeypatch.setattr(rt, "_VAGAS_TRANSFERENCIA", _Sem())
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _put_enviar(client, cur, ENVIAR_OK, b"0123456789").status_code == 200
+        assert ordem[0] == "corpo" and ordem.index("vaga") > ordem.index("corpo") and ordem[-1] == "solta"
+        assert ordem.count("vaga") == 1 and ordem.count("solta") == 1
+
+    def test_sem_vaga_nao_devolve_o_que_nao_tomou(self, client, auth_dev, sftp_falso):
+        """BoundedSemaphore: um release a mais lançaria ValueError (502)."""
+        cur = _Cursor(REGRAS_CONFIG)
+        assert rt._VAGAS_TRANSFERENCIA.acquire(blocking=False)
+        assert rt._VAGAS_TRANSFERENCIA.acquire(blocking=False)
+        try:
+            r = _put_enviar(client, cur, ENVIAR_OK, b"x")
+        finally:
+            rt._VAGAS_TRANSFERENCIA.release()
+            rt._VAGAS_TRANSFERENCIA.release()
+        assert r.status_code == 503 and _vagas_livres() == 2
+
+    def test_cliente_desiste_400_auditado_sem_traceback(self, client, auth_dev, sftp_falso, monkeypatch, caplog):
+        async def _stream(self):
+            yield b"abc"
+            raise ClientDisconnect()
+        monkeypatch.setattr(rt.Request, "stream", _stream)
+        cur = _Cursor(REGRAS_CONFIG)
+        with caplog.at_level(logging.WARNING, logger="orquestra-api"):
+            r = _put_enviar(client, cur, ENVIAR_OK, b"abcdefghij")
+        assert r.status_code == 400
+        assert cur.auditoria[0][6] == "erro" and "desistiu após 3 de 10 bytes" in cur.auditoria[0][7]
+        assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+        assert _vagas_livres() == 2 and "/dados/bi/2026/Relatorio.TXT" not in sftp_falso.arvore
+
+    def test_corpo_que_para_de_chegar_408_sem_tomar_vaga(self, client, auth_dev, sftp_falso, monkeypatch):
+        async def _stream(self):
+            yield b"abc"
+            await asyncio.sleep(0.3)
+            yield b"defghij"
+        monkeypatch.setattr(rt.Request, "stream", _stream)
+        monkeypatch.setattr(rt, "_TIMEOUT_CORPO_S", 0.05)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"abcdefghij")
+        assert r.status_code == 408 and "nenhum dado chegou" in r.json()["detail"]
+        assert cur.auditoria[0][6] == "erro" and _vagas_livres() == 2
+        assert "/dados/bi/2026/Relatorio.TXT" not in sftp_falso.arvore
+
+    def test_504_no_meio_da_escrita_apaga_o_tmp_e_registra_o_desfecho_tardio(self, client, auth_dev, monkeypatch):
+        """A thread sobrevive ao 504: o próximo `read` no spool fechado falha, o
+        `.tmp` some e o desfecho entra na auditoria (achado das duas revisões)."""
+        class _Lento(FakeSftp):
+            def _abrir_para_escrita(self, caminho):
+                escritor = super()._abrir_para_escrita(caminho)
+                original = escritor.write
+
+                def devagar(b):
+                    time.sleep(0.2)
+                    return original(b)
+                escritor.write = devagar
+                return escritor
+        fake = _Lento(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm_de(fake))
+        monkeypatch.setattr(svc, "BLOCO_TRANSFERENCIA", 4)
+        monkeypatch.setattr(rt, "_TIMEOUT_TRANSFERENCIA_S", 0.05)
+        cur = _Cursor(REGRAS_CONFIG)
+        with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+            r = client.put("/utilitarios/arquivo/enviar", params=ENVIAR_OK, content=b"0123456789ab",
+                           headers={"Content-Type": "application/octet-stream"})
+            assert r.status_code == 504
+            assert _vagas_livres() == 2
+            for _ in range(60):
+                if len(cur.auditoria) >= 2:
+                    break
+                time.sleep(0.05)
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+        assert "/dados/bi/2026/Relatorio.TXT" not in fake.arvore
+        assert len(cur.auditoria) == 2, cur.auditoria
+        assert cur.auditoria[0][6] == "erro" and "não respondeu" in cur.auditoria[0][7]
+        assert cur.auditoria[1][6] == "erro" and "após o 504" in cur.auditoria[1][7]
+
+    def test_tmp_e_criado_com_exclusividade(self):
+        class _Modos(FakeSftp):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.modos_abertura = []
+
+            def open(self, caminho, modo="rb"):
+                self.modos_abertura.append((caminho, modo))
+                return super().open(caminho, modo)
+        fake = _Modos(ARVORE)
+        _enviar(fake, "/dados/bi/2026/x.bin", b"abc")
+        assert [m for c, m in fake.modos_abertura if ".tmp-" in c] == ["wxb"]
+        svc.gravar_arquivo(fake, "/dados/bi/2026/y.txt", RAIZES, b"oi\n", sobrescrever=False, backup=True, marca="t")
+        assert [m for c, m in fake.modos_abertura if ".tmp-" in c] == ["wxb", "wxb"]
+
+    def test_spool_fechado_no_download_vira_502_local(self, sftp):
+        """ValueError do spool fechado por um 504 não é erro do servidor."""
+        fechado = io.BytesIO()
+        fechado.close()
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.baixar_arquivo(sftp, "/dados/bi/consulta.sql", RAIZES, teto_bytes=TETO, destino=fechado)
+        assert ei.value.status == 502 and "temporário na API" in ei.value.detail

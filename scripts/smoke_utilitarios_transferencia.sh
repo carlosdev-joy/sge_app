@@ -124,20 +124,44 @@ r=$(enviar "$PASTA" RELATORIO.TXT "$TMP/v2.txt"); res "$(status "$r")" 200 "RELA
 res "$(corpo "$r" | jq_ "d['caminho'].endswith('/RELATORIO.TXT')")" True "nome mantido como está"
 if [ -n "$(no_srv 'echo ok')" ]; then no_srv "rm -f '$PASTA/RELATORIO.TXT'"; else SOBRAS="$SOBRAS $PASTA/RELATORIO.TXT"; fi
 
-echo "== j) Content-Length acima do teto → 413 antes do corpo; corpo que mente → 400/413 =="
-t0=$(date +%s); r=$(enviar "$PASTA" grande.txt "$TMP/v2.txt" false -H "Content-Length: $((teto_kb*1024+1))" --max-time 8); t1=$(date +%s)
-res "$(status "$r")" 413 "Content-Length de 50 MB + 1"; res "$([ $((t1-t0)) -le 3 ] && echo rapido)" rapido "recusado sem ler o corpo (≤ 3 s)"
-r=$(enviar "$PASTA" chunked.txt "$TMP/v2.txt" false -H "Transfer-Encoding: chunked" -H "Content-Length:"); res "$(status "$r")" 411 "sem Content-Length (chunked)"
-[ -n "$(no_srv 'echo ok')" ] && res "$(no_srv "ls -a '$PASTA'" | grep -c 'grande.txt\|chunked.txt')" 0 "nada gravado"
+echo "== j) Content-Length acima do teto → 413 antes do corpo; sem Content-Length → 411 =="
+# Só direto na API: o nginx bufferiza o corpo e reenvia com Content-Length (um chunked
+# vira 200 e um Content-Length mentiroso vira 400 do próprio nginx após o timeout).
+if printf '%s' "$B" | grep -q '/orquestra'; then
+  echo "  (atrás do nginx: passo j pulado — rode com ORQ_URL apontando direto para a API, porta 8000)"
+else
+  t0=$(date +%s); r=$(enviar "$PASTA" grande.txt "$TMP/v2.txt" false -H "Content-Length: $((teto_kb*1024+1))" --max-time 8); t1=$(date +%s)
+  res "$(status "$r")" 413 "Content-Length de 50 MB + 1"; res "$([ $((t1-t0)) -le 3 ] && echo rapido)" rapido "recusado sem ler o corpo (≤ 3 s)"
+  r=$(enviar "$PASTA" chunked.txt "$TMP/v2.txt" false -H "Transfer-Encoding: chunked" -H "Content-Length:"); res "$(status "$r")" 411 "sem Content-Length (chunked)"
+  if [ -n "$(no_srv 'echo ok')" ]; then
+    res "$(no_srv "ls -a '$PASTA'" | grep -c 'grande.txt\|chunked.txt')" 0 "nada gravado"
+    no_srv "rm -f '$PASTA/grande.txt' '$PASTA/chunked.txt'"
+  fi
+fi
 
-echo "== k) cliente desiste no meio do envio: nada gravado, nenhum .tmp =="
-if [ -n "$(no_srv 'echo ok')" ]; then
+echo "== k) cliente desiste no meio do envio: nenhuma escrita parcial (o SSH só começa com o corpo inteiro) =="
+if printf '%s' "$B" | grep -q '/orquestra'; then
+  echo "  (atrás do nginx: passo k pulado — o proxy recebe o corpo inteiro antes de chamar a API; cancelar no navegador depois disso GRAVA o arquivo)"
+elif [ -n "$(no_srv 'echo ok')" ]; then
   head -c $((30*1024*1024)) /dev/urandom > "$TMP/smoke_30mb.bin"
   ( enviar "$PASTA" smoke_30mb.txt "$TMP/smoke_30mb.bin" false --limit-rate 5M --max-time 2 >/dev/null 2>&1 ) ; sleep 2
   res "$(no_srv "ls -a '$PASTA'" | grep -c 'smoke_30mb')" 0 "nem o arquivo nem o .tmp existem"
   res "$(enviar "$PASTA" depois.txt "$TMP/v2.txt" | tail -n1)" 200 "envio normal depois da desistência"
   no_srv "rm -f '$PASTA/depois.txt'"
 else echo "  (sem acesso ao servidor de arquivos: passo k NÃO executado — interrompa um envio grande e confira que não ficou .tmp na pasta)"; fi
+
+echo "== k2) rollback de verdade: rename do original recusado (subpasta 1777 de outro dono) → 403, original íntegro, sem .tmp =="
+# Como /tmp: pasta 1777 do root, arquivo do root. O usuário SSH cria o .tmp (pode), mas o
+# rename do original para .bak é EPERM (sticky: não é dono do arquivo nem da pasta).
+# (Sticky na pasta do PRÓPRIO usuário não prova nada: o dono da pasta renomeia tudo.)
+if [ -n "$(no_srv 'echo ok')" ]; then
+  no_srv "mkdir -p '$PASTA/smoke_sticky' && chown root:root '$PASTA/smoke_sticky' && chmod 1777 '$PASTA/smoke_sticky' && printf 'alheio\n' > '$PASTA/smoke_sticky/alheio.txt'"
+  r=$(enviar "$PASTA/smoke_sticky" alheio.txt "$TMP/v2.txt" true); res "$(status "$r")" 403 "sobrescrever arquivo de outro dono em pasta sticky"
+  printf '  %s\n' "$(corpo "$r" | jq_ "d['detail']")"
+  res "$(no_srv "cat '$PASTA/smoke_sticky/alheio.txt'")" alheio "original íntegro"
+  res "$(no_srv "ls -a '$PASTA/smoke_sticky'" | grep -c '\.tmp-\|\.bak-')" 0 "nenhum .tmp nem .bak sobrou"
+  no_srv "rm -rf '$PASTA/smoke_sticky'"
+else echo "  (sem acesso ao servidor de arquivos: passo k2 NÃO executado)"; fi
 
 echo "== l) operador → PUT enviar 403: exige credencial de operador (UI/F4) =="
 

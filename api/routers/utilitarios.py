@@ -46,8 +46,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+from functools import partial
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
+from starlette.requests import ClientDisconnect
 
 from db import get_db_conn
 from deps import PERM_EDITAR, get_admin_user, require_tela_utilitarios
@@ -80,18 +83,36 @@ _VAGAS_TRANSFERENCIA = threading.BoundedSemaphore(2)
 # O arquivo transferido passa por um spool: até 8 MB em memória, o resto em
 # arquivo temporário do container — nunca 50 MB numa `bytes` por pedido.
 _SPOOL_MEMORIA = 8 * 1024 * 1024
+# Upload: quanto tempo o corpo pode ficar SEM chegar um pedaço. O uvicorn não
+# tem timeout de leitura de corpo; sem isto um cliente gotejando direto na
+# porta 8000 seguraria spool e conexão por horas (revisão da F3).
+_TIMEOUT_CORPO_S = 60
 
 
-async def _no_servidor(fn, *args, timeout: float | None = None):
+def _desfecho_tardio(fut) -> None:
+    """A thread presa num 504 terminou depois: fica no log, não some."""
+    exc = fut.exception() if not fut.cancelled() else None
+    if exc is None:
+        log.warning("Utilitários: a operação SSH que estourou o teto TERMINOU depois do 504.")
+    else:
+        log.warning("Utilitários: a operação SSH que estourou o teto falhou depois do 504: %r", exc)
+
+
+async def _no_servidor(fn, *args, timeout: float | None = None, tardio=None):
     """Roda `fn` (bloqueante, SSH) no executor dedicado, com teto de tempo.
 
     Passado o teto a requisição é liberada com 504; a thread presa termina por
-    conta do timeout de canal (60 s) e do keepalive — não há como matá-la."""
+    conta do timeout de canal (60 s) e do keepalive — não há como matá-la. O
+    que ela fizer DEPOIS do 504 (gravar o arquivo, falhar) não some: `tardio`
+    (ou o log, por padrão) recebe o future quando ela acaba — o `shield`
+    mantém o future vivo depois do cancelamento do `wait_for`."""
     teto = _TIMEOUT_S if timeout is None else timeout
     loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(_EXECUTOR, fn, *args)
     try:
-        return await asyncio.wait_for(loop.run_in_executor(_EXECUTOR, fn, *args), timeout=teto)
+        return await asyncio.wait_for(asyncio.shield(fut), timeout=teto)
     except asyncio.TimeoutError:
+        fut.add_done_callback(tardio or _desfecho_tardio)
         raise svc.ArquivoError(504, f"O servidor não respondeu em {teto} s.")
 
 
@@ -436,7 +457,9 @@ def _enviar_sync(servidor: str, caminho: str, raizes: list[str], origem, tamanho
 
 def _tamanho_declarado(request: Request) -> int:
     """O Content-Length, ANTES de ler um byte do corpo. Sem ele (corpo chunked)
-    é 411: o teto tem de valer antes de o corpo ocupar disco; inválido é 422."""
+    é 411: o teto tem de valer antes de o corpo ocupar disco; inválido é 422.
+    (Atrás do nginx, que bufferiza e reenvia com Content-Length, o 411 não
+    acontece; ele vale para quem fala direto com a API.)"""
     bruto = request.headers.get("content-length")
     if bruto is None:
         raise svc.ArquivoError(
@@ -448,6 +471,34 @@ def _tamanho_declarado(request: Request) -> int:
     if n < 0:
         raise svc.ArquivoError(422, "Content-Length inválido.")
     return n
+
+
+async def _proximo_pedaco(iterador, teto_s: float) -> bytes | None:
+    """Um pedaço do corpo, ou None no fim; 408 se nada chegar em `teto_s`."""
+    try:
+        return await asyncio.wait_for(iterador.__anext__(), timeout=teto_s)
+    except StopAsyncIteration:
+        return None
+    except asyncio.TimeoutError:
+        raise svc.ArquivoError(
+            408, f"O envio parou: nenhum dado chegou em {teto_s:g} s — tente de novo.") from None
+
+
+async def _drenar(request: Request) -> None:
+    """Consome (e descarta) o corpo antes de uma resposta de erro.
+
+    Responder com corpo pendente faz o uvicorn fechar o socket com bytes não
+    lidos; o nginx, ainda escrevendo o corpo para o upstream, troca a resposta
+    por um `502 Bad Gateway` em HTML (revisão da F3, provado com a imagem de
+    produção). Só vale quando o corpo cabe (Content-Length dentro do teto): um
+    corpo acima do teto ou sem tamanho não é drenado — ali o 413/411 sai na
+    hora e a corrida é documentada."""
+    try:
+        iterador = request.stream().__aiter__()
+        while await _proximo_pedaco(iterador, _TIMEOUT_CORPO_S) is not None:
+            pass
+    except Exception:  # noqa: BLE001 — a resposta que importa é a do erro original
+        pass
 
 
 @router.put("/utilitarios/arquivo/enviar")
@@ -462,10 +513,13 @@ async def utilitarios_enviar_arquivo(request: Request,
     nome e pasta na query; o nome é mantido como está e só a extensão (a
     última) precisa estar na lista do admin. Exige a tela E `acao_editar`.
 
-    413 pelo Content-Length ANTES de tocar o corpo; o corpo desce para um spool
-    contando bytes (passou do declarado = 413, acabou antes = 400); só então a
-    thread SSH grava — `.tmp` + backup + rename atômico + modo preservado, o
-    mesmo miolo da gravação de texto. Corpo vazio cria arquivo de 0 bytes."""
+    Ordem: permissão → validação lexical → Content-Length (413 acima do teto
+    SEM ler o corpo) → o corpo desce para um spool contando bytes (400/413 se
+    não bater com o declarado, 408 se parar de chegar) → só então a VAGA de
+    transferência (ela mede o SFTP, não a rede) e a thread SSH: `.tmp` + backup
+    + rename atômico + modo preservado, o mesmo miolo da gravação de texto.
+    Erros antes do corpo drenam o corpo antes de responder (ver `_drenar`).
+    Corpo vazio cria arquivo de 0 bytes."""
     t0 = time.time()
     usuario = str(user.get("matricula") or "?")
     pedido_bruto = f"{str(diretorio or '').rstrip('/')}/{str(nome or '')}"
@@ -477,44 +531,76 @@ async def utilitarios_enviar_arquivo(request: Request,
                  resultado=resultado, detalhe=detalhe, duracao_ms=_ms(t0))
         raise HTTPException(status_code=status, detail=detail if detail is not None else detalhe)
 
+    # O tamanho declarado é lido primeiro (sem tocar o corpo): é ele que diz se
+    # o corpo pode ser drenado antes de uma recusa (cabe no teto) ou se a recusa
+    # sai na hora. A recusa por Content-Length ausente/inválido só é emitida
+    # DEPOIS da permissão: quem não pode enviar ouve 403, não 411.
+    teto = svc.TRANSFERENCIA_MAX_BYTES
+    erro_tamanho: svc.ArquivoError | None = None
+    tamanho = -1
+    try:
+        tamanho = _tamanho_declarado(request)
+    except svc.ArquivoError as e:
+        erro_tamanho = e
+    drenavel = erro_tamanho is None and tamanho <= teto
+
+    async def recusar(status: int, detalhe: str, resultado: str = "erro", caminho: str = pedido_bruto,
+                      detail=None):
+        if drenavel:
+            await _drenar(request)
+        negar(status, detalhe, resultado, caminho, detail)
+
     if PERM_EDITAR not in user.get("permissoes", []):
-        negar(403, "Enviar arquivo exige a permissão de cadastrar/editar (acao_editar).", "negado")
+        await recusar(403, "Enviar arquivo exige a permissão de cadastrar/editar (acao_editar).", "negado")
     try:
         servidor = svc.servidor_valido(servidor)
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
+        await recusar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
 
     cfg = _config_do_banco()
     raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
     if not raizes:
-        negar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
-                   "Admin › Utilitários.", "negado")
+        await recusar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
+                           "Admin › Utilitários.", "negado")
     try:
         caminho, _raiz = svc.preparar_envio(diretorio, nome, raizes, cfg["extensoes"])
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
+        await recusar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
 
-    # 413 cedo: pelo tamanho declarado, sem ler o corpo.
-    try:
-        tamanho = _tamanho_declarado(request)
-    except svc.ArquivoError as e:
-        negar(e.status, e.detail, caminho=caminho)
-    teto = svc.TRANSFERENCIA_MAX_BYTES
-    if tamanho > teto:
+    # 411/422 do Content-Length e o 413 cedo: sem ler (nem drenar) o corpo.
+    if erro_tamanho is not None:
+        negar(erro_tamanho.status, erro_tamanho.detail, caminho=caminho)
+    if not drenavel:
         negar(413, f"Arquivo de {svc.formatar_tamanho(tamanho)} ({tamanho} bytes), acima do teto de "
                    f"{svc.formatar_tamanho(teto)} para envio.", caminho=caminho)
 
-    if not _VAGAS_TRANSFERENCIA.acquire(blocking=False):
-        negar(503, "Há transferências em andamento — tente de novo em instantes.", caminho=caminho)
+    def tardio(fut) -> None:
+        # A thread SSH terminou DEPOIS do 504: o arquivo pode ter sido gravado
+        # com a tela dizendo que falhou. Fica na auditoria, fora do loop.
+        exc = fut.exception() if not fut.cancelled() else None
+        detalhe = ("concluído após o 504 — o arquivo FOI gravado" if exc is None
+                   else f"falhou após o 504: {exc!r}")
+        _desfecho_tardio(fut)
+        asyncio.get_running_loop().run_in_executor(None, partial(
+            _auditar, usuario=usuario, servidor=servidor, acao="enviar", caminho=caminho,
+            resultado="ok" if exc is None else "erro", detalhe=detalhe, duracao_ms=_ms(t0)))
+
     spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORIA)
+    vaga = False
+    recebidos = 0
     try:
         try:
-            recebidos = 0
-            async for pedaco in request.stream():
+            iterador = request.stream().__aiter__()
+            while True:
+                pedaco = await _proximo_pedaco(iterador, _TIMEOUT_CORPO_S)
+                if pedaco is None:
+                    break
                 if not pedaco:
                     continue
                 recebidos += len(pedaco)
                 if recebidos > tamanho:
+                    # Inalcançável no HTTP/1.1 real (h11/httptools enquadram pelo
+                    # Content-Length); fica como cinto para outros transportes.
                     raise svc.ArquivoError(
                         413, f"O corpo passou do tamanho declarado no Content-Length ({tamanho} bytes).")
                 spool.write(pedaco)
@@ -522,16 +608,26 @@ async def utilitarios_enviar_arquivo(request: Request,
                 raise svc.ArquivoError(
                     400, f"Corpo incompleto: chegaram {recebidos} de {tamanho} bytes — tente de novo.")
             spool.seek(0)
+            # A vaga só agora, com o corpo inteiro em mãos: ela limita o SFTP,
+            # não a rede — um cliente lento não segura vaga (revisão da F3).
+            if not _VAGAS_TRANSFERENCIA.acquire(blocking=False):
+                raise svc.ArquivoError(503, "Há transferências em andamento — tente de novo em instantes.")
+            vaga = True
             # Única por pedido (pid + aleatório): duas threads do mesmo worker no
             # mesmo instante não podem disputar o mesmo `.tmp`.
             marca = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
             resultado = await _no_servidor(
                 _enviar_sync, servidor, caminho, raizes, spool, tamanho, bool(sobrescrever),
-                cfg["backup_ao_sobrescrever"], marca, timeout=_TIMEOUT_TRANSFERENCIA_S)
+                cfg["backup_ao_sobrescrever"], marca, timeout=_TIMEOUT_TRANSFERENCIA_S, tardio=tardio)
         finally:
-            _VAGAS_TRANSFERENCIA.release()
+            if vaga:
+                _VAGAS_TRANSFERENCIA.release()
             # Também derruba a thread presa num 504: o próximo `read` dela falha.
             spool.close()
+    except ClientDisconnect:
+        # Quem cancela no meio não recebe resposta nenhuma; o que importa é o
+        # rastro legível, sem traceback enterrando erros reais no log.
+        negar(400, f"o cliente desistiu após {recebidos} de {tamanho} bytes", caminho=caminho)
     except svc.ArquivoError as e:
         negar(e.status, e.interno or e.detail, e.resultado, caminho=caminho, detail=_detalhe_http(e))
     except Exception as e:
