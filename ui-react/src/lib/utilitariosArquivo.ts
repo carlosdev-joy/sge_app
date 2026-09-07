@@ -113,16 +113,17 @@ const POR_STATUS: Record<number, string> = {
   504: 'O servidor não respondeu a tempo.',
 }
 
-/** Erro do `apiFetch` → {status, mensagem}. O `detail` da API já vem em pt-BR e
- *  nomeia a causa (fora das raízes, binário, teto…); é ele que vale quando existe. */
-export function erroLeitura(e: unknown): ErroLeitura {
+/** Erro do `apiFetch` → {status, mensagem}, com as frases por status de quem
+ *  chama. O `detail` da API já vem em pt-BR e nomeia a causa (fora das raízes,
+ *  binário, teto…); é ele que vale quando existe. */
+export function erroDaApi(e: unknown, porStatus: Record<number, string>): ErroLeitura {
   const err = e as { status?: number; detail?: unknown; message?: string } | null
   const status = typeof err?.status === 'number' ? err.status : null
   const detail = err?.detail
   if (typeof detail === 'string' && detail.trim()) return { status, mensagem: detail }
   const lista = mensagensDoDetail(detail)
   if (lista) return { status, mensagem: lista }
-  if (status !== null && POR_STATUS[status]) return { status, mensagem: POR_STATUS[status] }
+  if (status !== null && porStatus[status]) return { status, mensagem: porStatus[status] }
   // Só com status HTTP: sem ele é falha de rede, e o `message` do fetch vem em
   // inglês do navegador ("Failed to fetch") — não é frase para o usuário.
   if (status !== null && typeof err?.message === 'string' && err.message.trim()
@@ -130,6 +131,11 @@ export function erroLeitura(e: unknown): ErroLeitura {
     return { status, mensagem: err.message }
   }
   return { status, mensagem: 'Não foi possível falar com a API.' }
+}
+
+/** Erro da leitura (`POST /utilitarios/arquivo/ler`) → {status, mensagem}. */
+export function erroLeitura(e: unknown): ErroLeitura {
+  return erroDaApi(e, POR_STATUS)
 }
 
 /** Resumo do rodapé do modal, em frases curtas. */

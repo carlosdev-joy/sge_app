@@ -8,8 +8,14 @@
 // servida por HTTP e a API de clipboard só existe em HTTPS. O botão diz o que
 // aconteceu (copiado / use Ctrl+C / não copiou) e, quando não copiou,
 // seleciona o texto para o Ctrl+C do usuário pegar o conteúdo CERTO.
+//
+// Baixar (spec docs/spec-utilitarios-transferencia.md, F2): ao lado de Copiar
+// quando há conteúdo, e como saída quando a leitura recusou por "não é texto"
+// (415) ou pelo teto (413) — são os arquivos que o download alcança e a
+// leitura não. O download é da página (`onBaixar`); aqui só o gesto. Botões
+// type="button": o modal renderiza inline, dentro da árvore da página.
 import { useRef, useState, type FormEvent } from 'react'
-import { Check, Copy, AlertTriangle, FileText, RefreshCw } from 'lucide-react'
+import { Check, Copy, AlertTriangle, Download, FileText, RefreshCw } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
@@ -19,6 +25,7 @@ import {
   ULTIMAS_LINHAS_MAX, ULTIMAS_LINHAS_PADRAO, resumoConteudo, ultimasLinhas,
   type ConteudoArquivo, type ErroLeitura, type PedidoLeitura,
 } from '../../lib/utilitariosArquivo'
+import { ofereceDownload } from '../../lib/utilitariosTransferencia'
 
 export type EstadoLeitura = 'buscando' | 'pronto' | 'erro'
 
@@ -31,10 +38,14 @@ export interface ModalConteudoArquivoProps {
   onFechar: () => void
   /** Repete o pedido pedindo só as últimas N linhas (saída do 413). */
   onRetentar: (ultimas: number) => void
+  /** Baixa o arquivo do pedido para o computador; sem ele o botão não aparece. */
+  onBaixar?: () => void
+  /** Há um download em curso (um por vez): o botão fica desligado. */
+  baixando?: boolean
 }
 
 export function ModalConteudoArquivo({
-  aberto, pedido, estado, resultado, erro, onFechar, onRetentar,
+  aberto, pedido, estado, resultado, erro, onFechar, onRetentar, onBaixar, baixando = false,
 }: ModalConteudoArquivoProps) {
   const caminhoPedido = pedido ? `${pedido.diretorio.replace(/\/+$/, '')}/${pedido.nome}` : ''
   return (
@@ -52,11 +63,11 @@ export function ModalConteudoArquivo({
         )}
 
         {estado === 'erro' && erro && (
-          <BlocoErro erro={erro} pedido={pedido} onRetentar={onRetentar} />
+          <BlocoErro erro={erro} pedido={pedido} onRetentar={onRetentar} onBaixar={onBaixar} baixando={baixando} />
         )}
 
         {estado === 'pronto' && resultado && (
-          <BlocoConteudo resultado={resultado} />
+          <BlocoConteudo resultado={resultado} onBaixar={onBaixar} baixando={baixando} />
         )}
 
         <div className="flex justify-end">
@@ -67,10 +78,12 @@ export function ModalConteudoArquivo({
   )
 }
 
-function BlocoErro({ erro, pedido, onRetentar }: {
+function BlocoErro({ erro, pedido, onRetentar, onBaixar, baixando }: {
   erro: ErroLeitura
   pedido: PedidoLeitura | null
   onRetentar: (ultimas: number) => void
+  onBaixar?: () => void
+  baixando: boolean
 }) {
   const [ultimas, setUltimas] = useState(String(pedido?.ultimas_linhas ?? ULTIMAS_LINHAS_PADRAO))
   const n = ultimasLinhas(ultimas)
@@ -85,6 +98,19 @@ function BlocoErro({ erro, pedido, onRetentar }: {
         <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />
         <p className="text-sm text-red-700 dark:text-red-300">{erro.mensagem}</p>
       </div>
+      {onBaixar && ofereceDownload(erro.status) && (
+        <div className="flex items-center gap-3 flex-wrap" data-saida="baixar">
+          <p className="text-xs text-dim">
+            {acimaDoTeto
+              ? 'Ou baixe o arquivo inteiro para o seu computador.'
+              : 'Dá para baixar o arquivo inteiro para o seu computador.'}
+          </p>
+          <Button type="button" size="sm" variant="secondary" onClick={onBaixar} disabled={baixando}
+            title="Baixa o arquivo como está no servidor, sem abrir" data-acao="baixar-arquivo">
+            <Download size={13} /> Baixar o arquivo
+          </Button>
+        </div>
+      )}
       {acimaDoTeto && (
         <form onSubmit={retentar} className="flex items-end gap-3 flex-wrap" data-form="ultimas-linhas">
           <div className="w-44">
@@ -101,7 +127,11 @@ function BlocoErro({ erro, pedido, onRetentar }: {
   )
 }
 
-function BlocoConteudo({ resultado }: { resultado: ConteudoArquivo }) {
+function BlocoConteudo({ resultado, onBaixar, baixando }: {
+  resultado: ConteudoArquivo
+  onBaixar?: () => void
+  baixando: boolean
+}) {
   const [aviso, setAviso] = useState<ResultadoCopia | null>(null)
   const alvo = useRef<HTMLPreElement | null>(null)
   const relogio = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -141,6 +171,13 @@ function BlocoConteudo({ resultado }: { resultado: ConteudoArquivo }) {
               : <Copy size={13} />}
             Copiar conteúdo
           </Button>
+          {onBaixar && (
+            <Button type="button" size="sm" variant="secondary" onClick={onBaixar} disabled={baixando}
+              data-acao="baixar" title="Baixa o arquivo inteiro para o seu computador, como está no servidor"
+              aria-label="Baixar arquivo">
+              <Download size={13} /> Baixar
+            </Button>
+          )}
         </span>
       </div>
       {/* Fundo fixo escuro: exceção documentada (docs/ui-temas-cores.md, seção 4),

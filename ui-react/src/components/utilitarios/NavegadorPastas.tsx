@@ -14,8 +14,13 @@
 // ⚠️ O Modal da casa renderiza inline, DENTRO do <form> do formulário que o
 // abriu: todo botão aqui é type="button" e Enter no filtro não pode chegar ao
 // form — senão Fechar dispararia uma leitura (achado da revisão da F6).
+//
+// Baixar por linha (spec docs/spec-utilitarios-transferencia.md, F2): um
+// segundo botão, só em arquivo (ou link cujo alvo é arquivo) e só quando a
+// página passou `onBaixar`. Clicar nele NÃO escolhe o arquivo nem fecha o
+// navegador — o usuário pode baixar vários em sequência sem reabrir.
 import { useEffect, useRef, type KeyboardEvent } from 'react'
-import { Folder, FolderOpen, FileText, Link2, ArrowUp, RefreshCw, AlertTriangle, Check, EyeOff, Eye } from 'lucide-react'
+import { Folder, FolderOpen, FileText, Link2, ArrowUp, RefreshCw, AlertTriangle, Check, EyeOff, Eye, Download } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Switch } from '../ui/Switch'
@@ -41,11 +46,15 @@ export interface NavegadorPastasProps {
   /** Clique num arquivo: pasta (lexical) + nome. */
   onEscolherArquivo: (pasta: string, nome: string) => void
   onFechar: () => void
+  /** Baixar um arquivo da lista (pasta lexical + nome); sem ele o ícone não aparece. */
+  onBaixar?: (pasta: string, nome: string) => void
+  /** Há um download em curso (um por vez): os ícones ficam desligados. */
+  baixando?: boolean
 }
 
 export function NavegadorPastas({
   aberto, listagem, carregando, erro, mostrarOcultos, filtro, onFiltro,
-  onNavegar, onMostrarOcultos, onUsarPasta, onEscolherArquivo, onFechar,
+  onNavegar, onMostrarOcultos, onUsarPasta, onEscolherArquivo, onFechar, onBaixar, baixando = false,
 }: NavegadorPastasProps) {
   const painel = useRef<HTMLDivElement>(null)
   const atual = listagem?.caminho ?? null
@@ -57,13 +66,15 @@ export function NavegadorPastas({
 
   // Ao terminar de listar, a lista antiga (e o botão clicado) já não existe e o
   // foco cai no <body> — o Backspace não chegaria ao painel. Devolve o foco.
+  // O mesmo vale para o ícone Baixar: ele vira `disabled` logo após o clique e
+  // o navegador solta o foco no <body> (achado da revisão da F2).
   useEffect(() => {
     if (!aberto || carregando) return
     const el = painel.current
     if (!el) return
     const ativo = document.activeElement
     if (!ativo || ativo === document.body || !el.contains(ativo)) el.focus()
-  }, [aberto, carregando, listagem])
+  }, [aberto, carregando, listagem, baixando])
 
   const subir = () => {
     if (!listagem) return
@@ -141,10 +152,12 @@ export function NavegadorPastas({
                 const arquivo = ehArquivo(e)
                 const tentar = podeTentar(e)
                 const inerte = !desce && !arquivo && !tentar
+                const baixavel = !!onBaixar && arquivo && !!atual
                 return (
-                  <li key={e.nome} data-entrada={e.nome} data-tipo={e.tipo} data-alvo={e.alvo ?? undefined}>
+                  <li key={e.nome} data-entrada={e.nome} data-tipo={e.tipo} data-alvo={e.alvo ?? undefined}
+                    className="flex items-stretch">
                     <button type="button" onClick={() => abrir(e)} disabled={inerte}
-                      className="w-full flex items-center gap-3 px-3 py-1.5 text-left hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="flex-1 min-w-0 flex items-center gap-3 px-3 py-1.5 text-left hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed"
                       title={inerte ? 'Fora dos diretórios liberados ou link quebrado'
                         : tentar ? 'Link não verificado: clique para tentar abrir'
                           : desce ? 'Entrar (Enter)' : 'Escolher este arquivo'}>
@@ -157,6 +170,14 @@ export function NavegadorPastas({
                       <span className="text-[11px] text-dim shrink-0">{descricaoEntrada(e)}</span>
                       {e.modificado_em && <span className="text-[11px] text-dim shrink-0 hidden md:inline">{e.modificado_em}</span>}
                     </button>
+                    {baixavel && (
+                      <button type="button" onClick={() => onBaixar(atual, e.nome)} disabled={baixando}
+                        aria-label={`Baixar ${e.nome}`} title="Baixar este arquivo para o seu computador"
+                        data-acao="baixar-linha"
+                        className="px-2.5 shrink-0 text-dim hover:text-[#1A5FA8] dark:hover:text-blue-400 hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed">
+                        <Download size={13} />
+                      </button>
+                    )}
                   </li>
                 )
               })}

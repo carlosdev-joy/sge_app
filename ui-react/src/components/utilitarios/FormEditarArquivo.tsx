@@ -21,6 +21,7 @@ import { useNavegadorPastas, type ListarPasta } from './useNavegadorPastas'
 import type { ServidorUtil } from '../../lib/utilitariosAdmin'
 import { avisoPasta } from '../../lib/utilitariosArquivo'
 import { inicioNavegacao } from '../../lib/utilitariosNavegador'
+import type { PedidoDownload } from '../../lib/utilitariosTransferencia'
 import {
   CODIFICACOES_OPCOES, avisoNomeBase, codificacaoValida, contarBytes, contarLinhas, ehCodificacao, extensaoPadrao,
   extensaoValida, foraDoLatin1, gravacaoPronta, nomeArquivoCompleto, separarNomeExtensao,
@@ -47,11 +48,14 @@ export interface FormEditarArquivoProps {
   onGravar: (pedido: PedidoGravacao) => void
   /** Lista pastas para o navegador; sem ele o botão Navegar… não aparece. */
   onListar?: ListarPasta
+  /** Baixa um arquivo escolhido no navegador; sem ele o ícone não aparece. */
+  onBaixar?: (pedido: PedidoDownload) => void
+  baixando?: boolean
 }
 
 export function FormEditarArquivo({
   servidores, raizesPorServidor, extensoes, podeGravar, gravando, carregando, sujo, onSujo, onCarregar, onGravar,
-  onListar,
+  onListar, onBaixar, baixando,
 }: FormEditarArquivoProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
   const [diretorio, setDiretorio] = useState('')
@@ -211,6 +215,8 @@ export function FormEditarArquivo({
           onUsarPasta={c => { setDiretorio(c); nav.fechar() }}
           onEscolherArquivo={escolherArquivo}
           onFechar={nav.fechar}
+          onBaixar={onBaixar ? (p, n) => onBaixar({ servidor, diretorio: p, nome: n }) : undefined}
+          baixando={baixando}
         />
       )}
     </form>
