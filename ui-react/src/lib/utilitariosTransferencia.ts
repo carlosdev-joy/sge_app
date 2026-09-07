@@ -197,6 +197,7 @@ export function urlEnviar(p: PedidoEnvio): string {
 
 const POR_STATUS_ENVIO: Record<number, string> = {
   400: 'O envio chegou incompleto ao servidor — tente de novo.',
+  500: 'Falha na API do Orquestra — tente de novo em instantes.',
   401: 'Sua sessão expirou — entre de novo.',
   403: 'Sem permissão para enviar para este caminho.',
   404: 'Pasta não encontrada.',
@@ -259,4 +260,25 @@ export function fraseCancelamento(chegouInteiro: boolean): string {
   return chegouInteiro
     ? 'O envio foi cancelado, mas o arquivo já tinha chegado inteiro ao servidor: confira na pasta — ele pode ter sido gravado.'
     : 'Envio cancelado antes de terminar: nada foi gravado no servidor.'
+}
+
+/** O que a região `aria-live` do modal de envio diz. Só em MARCOS enquanto o
+ *  corpo sobe (25/50/75/100 %), a virada para "gravando", e o desfecho —
+ *  mesma regra da faixa de download (revisão da F4). */
+export function anuncioEnvio(
+  estado: EstadoEnvio, progresso: { enviado: number; total: number } | null,
+  erro: ErroEnvio | null, chegouInteiro: boolean,
+): string {
+  switch (estado) {
+    case 'enviando': {
+      if (envioChegouInteiro(progresso)) return 'Enviado ao servidor; gravando… aguarde.'
+      const pct = progresso ? percentual(progresso.enviado, progresso.total) : null
+      const marco = pct === null ? 0 : Math.floor(pct / 25) * 25
+      return marco ? `Enviando… ${marco}%` : 'Enviando…'
+    }
+    case 'existe': return erro?.mensagem ?? 'O arquivo já existe.'
+    case 'pronto': return 'Arquivo enviado.'
+    case 'cancelado': return fraseCancelamento(chegouInteiro)
+    case 'erro': return erro?.mensagem ?? 'Não foi possível enviar o arquivo.'
+  }
 }

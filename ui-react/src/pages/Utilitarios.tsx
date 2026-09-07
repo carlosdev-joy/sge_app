@@ -230,7 +230,17 @@ export default function Utilitarios() {
     })
     envioRef.current = envio
     envio.promessa
-      .then(r => { if (serieE.current === minha) { setResultadoE(r); setErroE(null) } })
+      .then(r => {
+        if (serieE.current !== minha) return
+        // 2xx sem JSON (nunca acontece com a API do repo): sem isto o modal
+        // ficaria preso em "enviando" sem saída.
+        if (!r || typeof r !== 'object') {
+          setResultadoE(null)
+          setErroE({ status: null, mensagem: 'A API respondeu sem o resultado — confira na pasta antes de reenviar.' })
+          return
+        }
+        setResultadoE(r); setErroE(null)
+      })
       .catch((e: ErroEnvioTransporte) => {
         if (serieE.current !== minha) return
         if (e?.cancelado) return  // `cancelarEnvio` já registrou o que importa
@@ -252,9 +262,11 @@ export default function Utilitarios() {
     serieE.current++
     setPedidoE(null); setResultadoE(null); setErroE(null); setCanceladoE(null); setProgressoE(null)
   }
+  // O último ramo (`'erro'` sem `erroE`) é inalcançável — o `.then` acima
+  // garante resultado ou erro — mas, se um dia for, o modal mostra Fechar.
   const estadoE: EstadoEnvio = enviandoE ? 'enviando'
     : canceladoE ? 'cancelado'
-      : erroE?.status === 409 ? 'existe' : erroE ? 'erro' : resultadoE ? 'pronto' : 'enviando'
+      : erroE?.status === 409 ? 'existe' : erroE ? 'erro' : resultadoE ? 'pronto' : 'erro'
 
   // Troca de aba com texto não gravado no editor: pergunta antes de descartar.
   const mudarAba = (id: string) => {

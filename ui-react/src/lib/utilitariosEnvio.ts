@@ -47,7 +47,10 @@ export type ProgressoEnvio = (enviado: number, total: number) => void
 
 function erroDe(status: number, corpo: unknown, mensagemPadrao?: string): ErroEnvioTransporte {
   const detail = corpo && typeof corpo === 'object' && 'detail' in corpo ? (corpo as { detail: unknown }).detail : undefined
-  const err = new Error(typeof detail === 'string' ? detail : (mensagemPadrao ?? `${status}`)) as ErroEnvioTransporte
+  // Sem `detail`, a mensagem é "<status> " COM o espaço: é a régua que a
+  // tradução (`erroDaApi`) usa para reconhecer "só o status" e cair na frase
+  // genérica — sem ele, um 500 em texto puro mostraria "500" cru no modal.
+  const err = new Error(typeof detail === 'string' ? detail : (mensagemPadrao ?? `${status} `)) as ErroEnvioTransporte
   err.status = status
   err.detail = detail
   return err

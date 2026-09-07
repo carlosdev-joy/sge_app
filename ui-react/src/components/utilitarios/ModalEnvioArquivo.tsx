@@ -6,16 +6,22 @@
 //
 // Cancelar só aparece enquanto o corpo ainda está subindo: depois que chegou
 // inteiro (ao nginx ou à API) o servidor pode gravar mesmo assim — e a frase
-// do cancelamento diz isso (spec §8.15). O 504 pede para conferir a pasta
-// antes de reenviar (§8.18). Botões type="button": o modal renderiza inline.
+// do cancelamento diz isso (spec §8.15). Nessa fase o X, o Esc e o backdrop
+// também NÃO abortam (achado da revisão da F4: abortar ali perdia o resultado
+// de um arquivo que o servidor gravou de qualquer forma); o modal só fecha
+// quando o servidor responde. O 504 pede para conferir a pasta antes de
+// reenviar (§8.18). Região `aria-live` sr-only com marcos, como na faixa de
+// download. Botões type="button": o modal renderiza inline.
 import { AlertTriangle, CheckCircle2, Upload, XCircle } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { formatarTamanho } from '../../lib/utilitariosArquivo'
 import {
-  envioChegouInteiro, fraseCancelamento, percentual, resumoEnvio, textoProgresso,
+  anuncioEnvio, envioChegouInteiro, fraseCancelamento, percentual, resumoEnvio, textoProgresso,
   type ErroEnvio, type EstadoEnvio, type PedidoEnvio, type ResultadoEnvio,
 } from '../../lib/utilitariosTransferencia'
+
+const NADA = () => { /* o corpo já subiu: fechar aqui só perderia o resultado */ }
 
 export interface ModalEnvioArquivoProps {
   aberto: boolean
@@ -38,9 +44,15 @@ export function ModalEnvioArquivo({
   const caminhoPedido = pedido ? `${pedido.diretorio.replace(/\/+$/, '')}/${pedido.nome}` : ''
   const pct = progresso ? percentual(progresso.enviado, progresso.total) : null
   const subiuTudo = envioChegouInteiro(progresso)
+  // Enquanto sobe, fechar = cancelar; depois que subiu inteiro, fechar não faz
+  // nada (o servidor vai responder); fora do envio, fechar é fechar.
+  const aoFechar = estado === 'enviando' ? (subiuTudo ? NADA : onCancelar) : onFechar
   return (
-    <Modal open={aberto} onClose={estado === 'enviando' ? onCancelar : onFechar} title="Enviar arquivo" size="lg">
+    <Modal open={aberto} onClose={aoFechar} title="Enviar arquivo" size="lg">
       <div className="flex flex-col gap-3" data-estado={estado}>
+        <div aria-live="polite" className="sr-only" data-anuncio>
+          {aberto ? anuncioEnvio(estado, progresso, erro, chegouInteiro) : ''}
+        </div>
         <p className="text-xs text-dim font-mono break-all" data-caminho>{resultado?.caminho ?? caminhoPedido}</p>
 
         {estado === 'enviando' && (
@@ -49,7 +61,7 @@ export function ModalEnvioArquivo({
               <Upload size={16} className="text-[#1A5FA8] dark:text-blue-400 shrink-0" />
               <span data-frase-envio>
                 {subiuTudo
-                  ? 'Enviado ao servidor; gravando…'
+                  ? 'Enviado ao servidor; gravando… aguarde a resposta (até 4 min numa gravação lenta).'
                   : `Enviando… ${progresso ? textoProgresso(progresso.enviado, progresso.total) : ''}`.trim()}
               </span>
             </div>

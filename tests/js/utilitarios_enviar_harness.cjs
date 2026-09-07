@@ -158,9 +158,22 @@ saida.puras = {
     timeout504: T.erroEnvio({ status: 504, message: 'O servidor não respondeu em 240 s.', detail: 'O servidor não respondeu em 240 s.' }),
     ocupado503: T.erroEnvio({ status: 503, detail: 'Há transferências em andamento — tente de novo em instantes.' }),
     parou408: T.erroEnvio({ status: 408, message: '408', detail: undefined }),
+    // 500 em texto puro (fora do mapa): a régua "<status> " cai na frase genérica, não em "500" cru.
+    cru500: T.erroEnvio({ status: 500, message: '500 ', detail: undefined }),
+    cru599: T.erroEnvio({ status: 599, message: '599 ', detail: undefined }),
     rede: T.erroEnvio(new Error('Falha de rede no envio')),
   },
   resumo: T.resumoEnvio({ caminho: '/x', tamanho_bytes: 3145728, sha256: 'abcdef0123456789', criado: false, backup: '/x.bak-1', duracao_ms: 1234 }),
+  anuncio: [
+    T.anuncioEnvio('enviando', null, null, false),
+    T.anuncioEnvio('enviando', { enviado: 24, total: 100 }, null, false),
+    T.anuncioEnvio('enviando', { enviado: 50, total: 100 }, null, false),
+    T.anuncioEnvio('enviando', { enviado: 100, total: 100 }, null, false),
+    T.anuncioEnvio('existe', null, { status: 409, mensagem: 'O arquivo já existe.' }, false),
+    T.anuncioEnvio('pronto', null, null, false),
+    T.anuncioEnvio('cancelado', null, null, true),
+    T.anuncioEnvio('erro', null, { status: 504, mensagem: 'Não respondeu.' }, false),
+  ],
   chegouInteiro: [T.envioChegouInteiro(null), T.envioChegouInteiro({ enviado: 5, total: 15 }), T.envioChegouInteiro({ enviado: 15, total: 15 }), T.envioChegouInteiro({ enviado: 0, total: 0 })],
   cancelamento: [T.fraseCancelamento(false), T.fraseCancelamento(true)],
 }
@@ -209,6 +222,7 @@ async function transporte() {
   r.html502 = await enviar({ status: 502, body: '<html><body><h1>502 Bad Gateway</h1></body></html>' })
   r.api504 = await enviar({ status: 504, body: JSON.stringify({ detail: 'O servidor não respondeu em 240 s.' }) })
   r.rede = await enviar({ evento: 'error' })
+  r.texto500 = await enviar({ status: 500, body: 'Internal Server Error' })
   r.cancelado = await enviar({ evento: 'abort', progresso: [[5, 15]] })
   r.expirou = await enviar({ status: 401, body: JSON.stringify({ detail: 'Not authenticated' }) })
   r.semToken = await enviar({ status: 200, body: '{}' }, { token: () => null })
@@ -279,6 +293,10 @@ const ARQ_GRANDE = { name: 'grande.txt', size: TETO_KB * 1024 + 1 }
 
 // ── 4. modal ───────────────────────────────────────────────────────────────
 const RESULTADO = { caminho: '/dados/bi/Relatorio.TXT', tamanho_bytes: 3145728, sha256: 'abcdef0123456789', criado: true, backup: null, duracao_ms: 1234 }
+// O backdrop do Modal da casa é o div com o fundo escuro; o X é o botão com aria-label Fechar.
+const backdrop = (tela) => tela.achar(n => n.tag === 'div' && /bg-black\/70/.test(n.props.className || ''))[0]
+const xDoModal = (tela) => tela.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Fechar')[0]
+const anuncio = (tela) => textoDe(porAttr(tela, 'aria-live')[0])
 function montarModal(props) {
   const chamadas = { fechar: 0, cancelar: 0, sobrescrever: 0 }
   const tela = mini.montar(el(ModalEnvioArquivo, Object.assign({
@@ -297,11 +315,18 @@ function montarModal(props) {
                    cancelar: porAcao(tela, 'cancelar-envio').length, fechar: porAcao(tela, 'fechar').length, todosTypeButton: todosTypeButton(tela) }
     tela.clicar(porAcao(tela, 'cancelar-envio')[0])
     r.enviando.cancelou = chamadas.cancelar
+    // X do cabeçalho e backdrop do Modal enquanto sobe: cancelam.
+    tela.clicar(backdrop(tela)); tela.clicar(xDoModal(tela))
+    r.enviando.fecharCancela = chamadas.cancelar
+    r.enviando.anuncio = anuncio(tela)
   }
   {
-    const { tela } = montarModal({ progresso: { enviado: 15, total: 15 } })
+    const { tela, chamadas } = montarModal({ progresso: { enviado: 15, total: 15 } })
     r.subiuTudo = { frase: textoDe(porAttr(tela, 'data-frase-envio')[0]), cancelar: porAcao(tela, 'cancelar-envio').length,
-                    preenchido: String(porAttr(tela, 'data-preenchido')[0].props['data-preenchido']) }
+                    preenchido: String(porAttr(tela, 'data-preenchido')[0].props['data-preenchido']), anuncio: anuncio(tela) }
+    // Depois que o corpo subiu: X, backdrop (e o Esc, que chama o mesmo onClose) NÃO abortam nem fecham.
+    tela.clicar(backdrop(tela)); tela.clicar(xDoModal(tela))
+    r.subiuTudo.fecharNaoFaz = { cancelar: chamadas.cancelar, fechar: chamadas.fechar }
   }
   {
     const { tela } = montarModal({ progresso: null })
@@ -310,7 +335,7 @@ function montarModal(props) {
   {
     const { tela, chamadas } = montarModal({ estado: 'cancelado', chegouInteiro: false })
     r.canceladoAntes = { atributo: porAttr(tela, 'data-cancelado')[0].props['data-cancelado'], frase: tela.texto.includes('antes de terminar'),
-                         fechar: porAcao(tela, 'fechar').length, cancelar: porAcao(tela, 'cancelar-envio').length }
+                         fechar: porAcao(tela, 'fechar').length, cancelar: porAcao(tela, 'cancelar-envio').length, anuncio: anuncio(tela) }
     tela.clicar(porAcao(tela, 'fechar')[0]); r.canceladoAntes.fechou = chamadas.fechar
     const chegou = montarModal({ estado: 'cancelado', chegouInteiro: true }).tela
     r.canceladoChegou = { atributo: porAttr(chegou, 'data-cancelado')[0].props['data-cancelado'], frase: chegou.texto.includes('confira na pasta') }
@@ -324,17 +349,25 @@ function montarModal(props) {
     tela.clicar(porAcao(tela, 'cancelar')[0]); r.existe.cancelouFecha = chamadas.fechar
   }
   {
-    const { tela } = montarModal({ estado: 'pronto', resultado: RESULTADO })
-    r.pronto = { caminho: textoDe(porAttr(tela, 'data-caminho')[0]), resumo: textoDe(porAttr(tela, 'data-resumo')[0]), fechar: porAcao(tela, 'fechar').length }
+    const { tela, chamadas } = montarModal({ estado: 'pronto', resultado: RESULTADO })
+    r.pronto = { caminho: textoDe(porAttr(tela, 'data-caminho')[0]), resumo: textoDe(porAttr(tela, 'data-resumo')[0]), fechar: porAcao(tela, 'fechar').length,
+                 anuncio: anuncio(tela) }
+    // Fora do envio, X/backdrop fecham.
+    tela.clicar(backdrop(tela)); r.pronto.fechouPeloBackdrop = chamadas.fechar
   }
   {
     const { tela } = montarModal({ estado: 'erro', erro: T.erroEnvio({ status: 504, detail: 'O servidor não respondeu em 240 s.' }) })
-    r.erro504 = { atributo: porAttr(tela, 'data-erro')[0].props['data-erro'], confira: tela.texto.includes('Confira na pasta') }
+    r.erro504 = { atributo: porAttr(tela, 'data-erro')[0].props['data-erro'], confira: tela.texto.includes('Confira na pasta'), anuncio: anuncio(tela) }
   }
   {
     const { tela } = montarModal({ aberto: false })
     r.fechado = porAttr(tela, 'data-estado').length
   }
+  r.liveSempre = ['enviando', 'existe', 'pronto', 'cancelado', 'erro'].every(estado => {
+    const { tela } = montarModal({ estado, resultado: RESULTADO, erro: { status: 409, mensagem: 'x', existente: { tamanho_bytes: 1, modificado_em: null } } })
+    const live = porAttr(tela, 'aria-live')
+    return live.length === 1 && /\bsr-only\b/.test(live[0].props.className || '')
+  })
   saida.modal = r
 }
 

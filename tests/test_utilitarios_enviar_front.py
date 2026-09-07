@@ -92,6 +92,19 @@ def test_erro_do_envio_traduzido(cen):
     assert "transferências em andamento" in e["ocupado503"]["mensagem"]
     assert "parou no meio" in e["parou408"]["mensagem"]
     assert e["rede"] == {"status": None, "mensagem": "Não foi possível falar com a API."}
+    # Status fora do mapa com corpo em texto puro: a régua "<status> " cai na frase
+    # genérica em vez de mostrar "599" cru (achado da revisão da F4).
+    assert e["cru500"] == {"status": 500, "mensagem": "Falha na API do Orquestra — tente de novo em instantes."}
+    assert e["cru599"] == {"status": 599, "mensagem": "Não foi possível falar com a API."}
+
+
+def test_anuncio_ao_vivo_do_envio_so_em_marcos(cen):
+    a = cen["puras"]["anuncio"]
+    assert a[0] == "Enviando…" and a[1] == "Enviando…"           # sem progresso / 24 %
+    assert a[2] == "Enviando… 50%"
+    assert a[3] == "Enviado ao servidor; gravando… aguarde."
+    assert a[4] == "O arquivo já existe." and a[5] == "Arquivo enviado."
+    assert "confira na pasta" in a[6] and a[7] == "Não respondeu."
 
 
 def test_resumo_chegou_inteiro_e_frases_do_cancelamento(cen):
@@ -115,13 +128,14 @@ def test_put_cru_com_authorization_progresso_e_resultado(cen):
 def test_erros_do_transporte(cen):
     t = cen["transporte"]
     assert t["conflito"]["erro"]["status"] == 409 and t["conflito"]["erro"]["detail"]["existente"]["tamanho_bytes"] == 10
-    assert t["html502"]["erro"] == {"status": 502, "detail": None, "message": "502", "cancelado": False}   # HTML não vira detail
+    assert t["html502"]["erro"] == {"status": 502, "detail": None, "message": "502 ", "cancelado": False}   # HTML não vira detail; "<status> " é a régua
     assert t["api504"]["erro"]["status"] == 504 and t["api504"]["erro"]["detail"] == "O servidor não respondeu em 240 s."
     assert t["rede"]["erro"]["status"] is None and t["rede"]["erro"]["cancelado"] is False
     c = t["cancelado"]
     assert c["abort"] == 1 and c["erro"]["cancelado"] is True and c["progresso"] == [[5, 15]] and c["resultado"] is None
     e = t["expirou"]
     assert e["expirou"] == 1 and e["erro"]["status"] == 401
+    assert t["texto500"]["erro"] == {"status": 500, "detail": None, "message": "500 ", "cancelado": False}
 
 
 # ═══════════ 3. formulário ═════════════════════════════════════════════════
@@ -163,19 +177,32 @@ def test_modal_enviando_com_barra_e_cancelar_que_some_quando_o_corpo_subiu(cen):
     assert e["caminho"] == "/dados/bi/Relatorio.TXT" and e["frase"] == "Enviando… 5 B de 15 B"
     assert e["valuenow"] == 33 and e["preenchido"] == "33"
     assert e["cancelar"] == 1 and e["fechar"] == 0 and e["cancelou"] == 1 and e["todosTypeButton"] is True
-    assert m["subiuTudo"] == {"frase": "Enviado ao servidor; gravando…", "cancelar": 0, "preenchido": "100"}
+    assert e["fecharCancela"] == 3 and e["anuncio"] == "Enviando… 25%"      # X e backdrop cancelam enquanto sobe
+    s = m["subiuTudo"]
+    assert s["frase"].startswith("Enviado ao servidor; gravando…") and "até 4 min" in s["frase"]
+    assert s["cancelar"] == 0 and s["preenchido"] == "100"
+    assert s["anuncio"] == "Enviado ao servidor; gravando… aguarde."
+    # Depois que o corpo subiu, X/backdrop/Esc NÃO abortam nem fecham: o servidor
+    # vai gravar de qualquer forma e o resultado não pode se perder (achado médio).
+    assert s["fecharNaoFaz"] == {"cancelar": 0, "fechar": 0}
     assert m["semProgresso"] == {"frase": "Enviando…", "preenchido": "indeterminado"}
+    assert m["liveSempre"] is True                                          # região viva sr-only em todo estado
 
 
 def test_modal_cancelado_existe_pronto_erro(cen):
     m = cen["modal"]
-    assert m["canceladoAntes"] == {"atributo": "antes", "frase": True, "fechar": 1, "cancelar": 0, "fechou": 1}
+    ca = m["canceladoAntes"]
+    assert {k: ca[k] for k in ("atributo", "frase", "fechar", "cancelar", "fechou")} == \
+        {"atributo": "antes", "frase": True, "fechar": 1, "cancelar": 0, "fechou": 1}
     assert m["canceladoChegou"] == {"atributo": "chegou", "frase": True}
     assert m["existe"] == {"mensagem": True, "tamanho": True, "data": True, "fechar": 0, "todosTypeButton": True,
                            "sobrescreveu": 1, "cancelouFecha": 1}
     assert m["pronto"]["caminho"] == "/dados/bi/Relatorio.TXT" and m["pronto"]["fechar"] == 1
     assert "arquivo criado" in m["pronto"]["resumo"] and "3,0 MB" in m["pronto"]["resumo"]
-    assert m["erro504"] == {"atributo": 504, "confira": True}
+    assert m["pronto"]["fechouPeloBackdrop"] == 1 and m["pronto"]["anuncio"] == "Arquivo enviado."
+    assert m["canceladoAntes"]["anuncio"].startswith("Envio cancelado antes")
+    assert m["erro504"]["atributo"] == 504 and m["erro504"]["confira"] is True
+    assert "Confira na pasta" in m["erro504"]["anuncio"]
     assert m["fechado"] == 0
 
 
@@ -197,6 +224,7 @@ def test_pagina_tem_as_tres_abas_e_o_fluxo_do_envio():
     assert "tetoKb={cfg.transferencia_max_kb ?? TETO_TRANSFERENCIA_KB_PADRAO}" in pagina
     assert "<ModalEnvioArquivo" in pagina and 'storageKey="utilitarios_ver_v4"' in pagina
     assert "if (enviandoE) return" in pagina                               # fechar não vale enquanto sobe
+    assert "typeof r !== 'object'" in pagina, "2xx sem JSON não pode prender o modal em 'enviando'"
     assert "chega na F" not in pagina
 
 
@@ -209,7 +237,9 @@ def test_formulario_nao_submete_e_o_seletor_e_acessivel():
     modal = _sem_comentarios(MODAL.read_text(encoding="utf-8"))
     for tag in re.findall(r"<Button\b[^>]*>", modal, flags=re.S):
         assert 'type="button"' in tag, tag[:80]
-    assert "estado === 'enviando' ? onCancelar : onFechar" in modal, "fechar o modal enquanto sobe = cancelar"
+    assert "estado === 'enviando' ? (subiuTudo ? NADA : onCancelar) : onFechar" in modal, \
+        "fechar enquanto sobe = cancelar; depois que subiu inteiro, fechar não aborta"
+    assert 'aria-live="polite" className="sr-only"' in modal
 
 
 def test_transporte_e_xhr_cru_com_a_sessao_da_api():
