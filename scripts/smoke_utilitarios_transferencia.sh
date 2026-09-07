@@ -7,11 +7,12 @@
 #         PASTA=/dados/bi/2026 ARQ=consulta.sql BIN=/dados/bi/imagem.bin \
 #         scripts/smoke_utilitarios_transferencia.sh
 #       (sem variáveis, lê .env.dev e usa a árvore do sshd-amostra)
-# Download (F1): itens b, c, e, f, m e n. Upload (F3): g, h, i, j, k e l pela API.
-# a, d, a parte visual de g/h/k e o l com credencial de operador exigem o
-# navegador ou outra credencial — marcados "UI". Os itens e, h, k e m criam ou
+# Download (F1/F2): itens b, c, e, f, m e n. Upload (F3/F4): g, h, i, j, k, k2 e l pela
+# API. Os itens a e d (tela), a parte visual de g/h/k e o l (credencial de operador)
+# ficam marcados "UI" com o roteiro impresso. Os itens e, h, k, k2 e m criam ou
 # conferem arquivos no servidor e por isso exigem acesso a ele (`docker exec` no
 # DEV); sem acesso, o script diz o que fazer à mão e o que sobrou para apagar.
+# Resultado no DEV (2026-09-07, F5): 54 conferências ok, 0 falhas.
 set -u
 cd "$(dirname "$0")/.."
 if [ -z "${ORQ_USER:-}" ] && [ -f .env.dev ]; then set -a; . ./.env.dev 2>/dev/null; set +a; fi
@@ -39,7 +40,7 @@ cab() { grep -i "^$2:" "$1.h" | tr -d '\r' | sed 's/^[^:]*: //'; }
 ao_sair() { rm -rf "$TMP"; [ -n "$SOBRAS" ] && printf '  ⚠️ sem acesso ao servidor de arquivos, ficou para apagar à mão:%s\n' "$SOBRAS"; return 0; }
 trap ao_sair EXIT
 
-echo "== a) aba Enviar arquivo por perfil: UI (F4) =="
+echo "== a) UI: com desenvolvedor, a tela Utilitários tem a 3ª aba Enviar arquivo; com operador, a aba aparece desabilitada com a explicação (sem relogin: não há permissão nova) =="
 r=$(call GET /utilitarios/config); res "$(status "$r")" 200 "config com a tela liberada"
 res "$(corpo "$r" | jq_ "d.get('transferencia_max_kb')")" 51200 "teto de transferência no config (51200 KB)"
 teto_kb=$(corpo "$r" | jq_ "d.get('transferencia_max_kb')")
@@ -70,7 +71,7 @@ res "$(baixar "$(dirname "$BIN")" "$(basename "$BIN")" "$TMP/c.out")" 200 "baixa
 res "$(cab "$TMP/c.out" x-orquestra-sha256)" "$(sha "$TMP/c.out")" "sha256 do binário confere"
 [ -n "$(no_srv 'echo ok')" ] && res "$(sha "$TMP/c.out")" "$(no_srv "sha256sum '$BIN'" | cut -c1-64)" "sha256 = servidor"
 
-echo "== d) Baixar pelo navegador de pastas: UI (F2) =="
+echo "== d) UI: Navegar… → ícone ⬇ numa linha de arquivo → download; o formulário não muda e o navegador continua aberto; a faixa no canto mostra o progresso ACIMA do modal =="
 
 echo "== e) acima de 50 MB → 413 sem baixar =="
 if [ -n "$(no_srv 'echo ok')" ]; then
@@ -163,7 +164,8 @@ if [ -n "$(no_srv 'echo ok')" ]; then
   no_srv "rm -rf '$PASTA/smoke_sticky'"
 else echo "  (sem acesso ao servidor de arquivos: passo k2 NÃO executado)"; fi
 
-echo "== l) operador → PUT enviar 403: exige credencial de operador (UI/F4) =="
+echo "== l) UI/credencial de operador: a aba Enviar arquivo aparece desabilitada; PUT /utilitarios/arquivo/enviar direto → 403 auditado como negado =="
+echo "== k3) UI: enviar ~40 MB e clicar Cancelar no meio → modal 'cancelado antes de terminar', nada no servidor; cancelar DEPOIS de subir inteiro é impossível (o botão some, X/Esc não interrompem) e o resultado chega =="
 
 echo "== m) transferências em paralelo: vagas esgotadas respondem 503 na hora =="
 if [ -n "$(no_srv 'echo ok')" ]; then
