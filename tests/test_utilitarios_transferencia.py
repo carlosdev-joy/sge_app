@@ -67,6 +67,31 @@ class TestContentDisposition:
     def test_nome_vazio_ganha_resgate(self):
         assert svc.content_disposition("") == "attachment; filename=\"arquivo\"; filename*=UTF-8''"
 
+    def test_caractere_de_formato_invisivel_vira_sublinhado_nos_dois_nomes(self):
+        """U+202E inverte a leitura: "‮txt.exe" seria mostrado como "exe.txt"."""
+        cd = svc.content_disposition("‮txt.exe")
+        assert 'filename="_txt.exe"' in cd
+        assert cd.endswith("filename*=UTF-8''_txt.exe")
+        assert "%E2%80%AE" not in cd
+
+    def test_cr_lf_nao_chegam_crus_ao_cabecalho(self):
+        cd = svc.content_disposition("a\r\nX-Injected: 1")
+        assert "\r" not in cd and "\n" not in cd
+        assert 'filename="a__X-Injected: 1"' in cd
+
+
+class TestValidarNomeFormatoInvisivel:
+    @pytest.mark.parametrize("nome", ["‮txt.exe", "carga​.txt", "x­.bin"])
+    def test_recusa_categoria_cf(self, nome):
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.validar_nome(nome)
+        assert ei.value.status == 422
+        assert "invisíveis" in ei.value.detail
+
+    def test_acento_e_emoji_continuam_valendo(self):
+        assert svc.validar_nome("relatório ção.txt") == "relatório ção.txt"
+        assert svc.validar_nome("carga_😀.bin") == "carga_😀.bin"
+
     def test_teto_e_bloco_da_spec(self):
         assert svc.TRANSFERENCIA_MAX_BYTES == 50 * 1024 * 1024
         assert svc.BLOCO_TRANSFERENCIA == 256 * 1024
@@ -155,6 +180,21 @@ class TestBaixarArquivo:
         assert ei.value.status == 413
         assert s.abertos == 0
         assert "acima do teto" in ei.value.detail and "download" in ei.value.detail
+        # No limite os dois arredondam para o mesmo "KB": os bytes exatos desempatam.
+        assert f"({tam} bytes)" in ei.value.detail
+
+    def test_erro_local_do_spool_e_502_da_api_nao_do_servidor(self, sftp):
+        """`/tmp` da API cheio no rollover do spool NÃO pode virar "sem espaço
+        no servidor" (507): o operador iria olhar o disco errado."""
+        class _Cheio(io.BytesIO):
+            def write(self, b):
+                raise OSError(errno.ENOSPC, "No space left on device")
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.baixar_arquivo(sftp, "/dados/bi/consulta.sql", RAIZES, teto_bytes=TETO, destino=_Cheio())
+        assert ei.value.status == 502
+        assert "temporário na API" in ei.value.detail
+        assert "servidor" not in ei.value.detail.split("—")[0]
+        assert ei.value.interno and ei.value.interno.startswith("spool:")
 
     def test_pasta_422(self, sftp):
         with pytest.raises(svc.ArquivoError) as ei:
@@ -245,6 +285,7 @@ class TestBaixarEndpoint:
         assert r.headers["content-disposition"] == (
             "attachment; filename=\"imagem.bin\"; filename*=UTF-8''imagem.bin")
         assert r.headers["cache-control"] == "no-store"
+        assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["x-orquestra-sha256"] == hashlib.sha256(original).hexdigest()
         assert len(cur.auditoria) == 1
         usuario, servidor, acao, caminho, tamanho, sha, resultado, detalhe, dur = cur.auditoria[0]
@@ -423,13 +464,73 @@ class TestBaixarEndpoint:
         assert _vagas_livres() == 2
 
     def test_spool_acima_da_memoria_vai_para_o_disco_e_desce_inteiro(self, client, auth_operador, sftp_falso, monkeypatch):
+        """Intercepta o construtor: sem isto o teste passaria mesmo se o spool
+        nunca rolasse para o disco (achado da revisão adversarial)."""
         monkeypatch.setattr(rt, "_SPOOL_MEMORIA", 1024)
+        criados: list[tuple] = []
+        original_cls = rt.tempfile.SpooledTemporaryFile
+
+        def _spool(*a, **kw):
+            s = original_cls(*a, **kw)
+            criados.append((s, kw.get("max_size")))
+            return s
+        monkeypatch.setattr(rt.tempfile, "SpooledTemporaryFile", _spool)
         cur = _Cursor(REGRAS_CONFIG)
         original = ARVORE["/dados/bi/logs/grande.log"]
         r = _get_baixar(client, cur, {"diretorio": "/dados/bi/logs", "nome": "grande.log"})
         assert r.status_code == 200
         assert r.content == original
         assert r.headers["content-length"] == str(len(original))
+        assert len(criados) == 1
+        spool, max_size = criados[0]
+        assert max_size == 1024
+        assert spool._rolled is True  # noqa: SLF001  (65 KB > 1 KB: foi para o disco)
+        assert spool.closed  # o gerador fechou no fim
+
+    def test_spool_pequeno_fica_em_memoria_e_tambem_fecha(self, client, auth_operador, sftp_falso, monkeypatch):
+        criados: list = []
+        original_cls = rt.tempfile.SpooledTemporaryFile
+
+        def _spool(*a, **kw):
+            s = original_cls(*a, **kw)
+            criados.append(s)
+            return s
+        monkeypatch.setattr(rt.tempfile, "SpooledTemporaryFile", _spool)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _get_baixar(client, cur, {"diretorio": "/dados/bi", "nome": "consulta.sql"})
+        assert r.status_code == 200
+        assert criados[0]._rolled is False  # noqa: SLF001
+        assert criados[0].closed
+
+    def test_erro_pre_ssh_nao_vaza_o_interno_na_resposta(self, client, auth_operador, sftp_falso, monkeypatch):
+        """`interno` é da auditoria; a resposta leva só o `detail` (auditoria de segurança)."""
+        def _boom(*a, **kw):
+            raise svc.ArquivoError(422, "frase pública", interno="segredo host:22")
+        monkeypatch.setattr(svc, "preparar_leitura", _boom)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _get_baixar(client, cur, {"diretorio": "/dados/bi", "nome": "x.bin"})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "frase pública"
+        assert cur.auditoria[0][7] == "segredo host:22"
+
+    def test_gravar_tambem_nao_vaza_o_interno_pre_ssh(self, client, auth_dev, sftp_falso, monkeypatch):
+        from tests.test_utilitarios_arquivos import _post_gravar
+
+        def _boom(*a, **kw):
+            raise svc.ArquivoError(422, "frase pública", interno="segredo host:22")
+        monkeypatch.setattr(svc, "preparar_gravacao", _boom)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _post_gravar(client, cur, {"diretorio": "/dados/bi", "nome": "x", "extensao": "txt", "conteudo": "a"})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "frase pública"
+        assert cur.auditoria[0][7] == "segredo host:22"
+
+    def test_nome_com_formato_invisivel_422_no_endpoint(self, client, auth_operador, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _get_baixar(client, cur, {"diretorio": "/dados/bi", "nome": "‮txt.exe"})
+        assert r.status_code == 422
+        assert "invisíveis" in r.json()["detail"]
+        assert cur.auditoria[0][6] == "erro"
 
     def test_consulta_403(self, client, auth_consulta):
         cur = _Cursor(REGRAS_CONFIG)

@@ -45,6 +45,7 @@ import os
 import posixpath
 import re
 import stat as statmod
+import unicodedata
 import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -249,6 +250,11 @@ def validar_nome(bruto) -> str:
         # Quebra de linha ou ESC no nome vira arquivo que engana o `ls` de quem
         # opera o servidor; na F1 só lia, na F4 CRIA.
         raise ArquivoError(422, "Nome de arquivo inválido: sem caracteres de controle.")
+    if any(unicodedata.category(c) == "Cf" for c in s):
+        # Formato invisível (U+202E inverte a leitura: "‮txt.exe" aparece
+        # como "exe.txt" no download; U+200B some). Achado da auditoria de
+        # segurança da transferência: quem cria o arquivo engana quem baixa.
+        raise ArquivoError(422, "Nome de arquivo inválido: sem caracteres invisíveis de formatação.")
     if len(s.encode("utf-8")) > LIMITE_NOME_BYTES:
         raise ArquivoError(422, f"Nome longo demais (máximo {LIMITE_NOME_BYTES} bytes).")
     return s
@@ -391,7 +397,10 @@ def content_disposition(nome: str) -> str:
     """Cabeçalho do download (RFC 6266): `filename` ASCII de resgate para cliente
     antigo (não-ASCII, aspas e barra invertida viram `_`) e `filename*` em UTF-8
     percent-encoded (RFC 5987), que é o que o navegador usa quando existe. Só
-    ASCII sai daqui — cabeçalho HTTP não carrega UTF-8 cru."""
+    ASCII sai daqui — cabeçalho HTTP não carrega UTF-8 cru. Caractere de
+    formato invisível (categoria Cf: U+202E e afins) vira `_` nos DOIS nomes,
+    para a função ser segura sozinha, sem depender do `validar_nome`."""
+    nome = "".join("_" if unicodedata.category(c) == "Cf" else c for c in nome)
     ascii_ = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in nome) or "arquivo"
     return f'attachment; filename="{ascii_}"; filename*=UTF-8\'\'{urllib.parse.quote(nome, safe="")}'
 
@@ -605,9 +614,11 @@ def baixar_arquivo(sftp, caminho: str, raizes, *, teto_bytes: int, destino) -> d
         raise ArquivoError(422, f"{real} é uma pasta, não um arquivo.")
     tamanho = int(getattr(st, "st_size", 0) or 0)
     if tamanho > teto_bytes:
+        # Os bytes exatos entram porque, no limite, "50,0 MB acima do teto de
+        # 50,0 MB" (50 MB + 1 byte) confunde quem lê.
         raise ArquivoError(
             413,
-            f"Arquivo de {formatar_tamanho(tamanho)}, acima do teto de "
+            f"Arquivo de {formatar_tamanho(tamanho)} ({tamanho} bytes), acima do teto de "
             f"{formatar_tamanho(teto_bytes)} para download.")
 
     resumo = hashlib.sha256()
@@ -621,7 +632,15 @@ def baixar_arquivo(sftp, caminho: str, raizes, *, teto_bytes: int, destino) -> d
                 bloco = f.read(min(BLOCO_TRANSFERENCIA, tamanho - lidos))
                 if not bloco:
                     break
-                destino.write(bloco)
+                try:
+                    destino.write(bloco)
+                except OSError as e:
+                    # Erro LOCAL (o /tmp da API cheio no rollover do spool) não
+                    # pode sair como "sem espaço no servidor": o operador iria
+                    # olhar o disco do DataStage, que está bom.
+                    raise ArquivoError(
+                        502, "Falha ao guardar o arquivo temporário na API — detalhe registrado "
+                             "no log da API.", interno=f"spool: {e!r}") from e
                 resumo.update(bloco)
                 lidos += len(bloco)
     except (OSError, UnicodeDecodeError) as e:

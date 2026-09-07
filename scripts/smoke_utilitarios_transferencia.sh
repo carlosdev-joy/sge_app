@@ -42,7 +42,15 @@ echo "== b) baixar um texto pequeno: sha256 igual ao do servidor =="
 st=$(baixar "$(dirname "$PASTA/$ARQ")" "$ARQ" "$TMP/b.out"); [ "$st" = 200 ] || st=$(baixar "$RAIZ" "$ARQ" "$TMP/b.out")
 res "$st" 200 "baixar $ARQ"
 res "$(cab "$TMP/b.out" content-type)" "application/octet-stream" "content-type"
-res "$(cab "$TMP/b.out" content-disposition)" "attachment; filename=\"$ARQ\"; filename*=UTF-8''$ARQ" "content-disposition"
+# O esperado segue a mesma régua da API (RFC 6266/5987): nome com espaço, acento ou `%` não é falha falsa.
+esperado_cd=$(python3 - "$ARQ" <<'PY'
+import sys, urllib.parse as u
+n = sys.argv[1]
+a = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in n) or "arquivo"
+print("attachment; filename=\"%s\"; filename*=UTF-8''%s" % (a, u.quote(n, safe="")))
+PY
+)
+res "$(cab "$TMP/b.out" content-disposition)" "$esperado_cd" "content-disposition"
 res "$(cab "$TMP/b.out" content-length)" "$(stat -c %s "$TMP/b.out")" "content-length = bytes recebidos"
 res "$(cab "$TMP/b.out" x-orquestra-sha256)" "$(sha "$TMP/b.out")" "x-orquestra-sha256 = sha256 do corpo"
 if [ -n "$(no_srv 'echo ok')" ]; then
@@ -70,8 +78,11 @@ else echo "  (sem acesso ao servidor de arquivos: passo e NÃO executado — cri
 echo "== f) fora das raízes → 403 e auditoria negado =="
 res "$(baixar /etc passwd "$TMP/f.out")" 403 "/etc/passwd"
 res "$(baixar "$RAIZ/../../etc" passwd "$TMP/f2.out")" 403 "$RAIZ/../../etc/passwd"
-res "$(baixar "$RAIZ/link_fora" segredo.txt "$TMP/f3.out")" 403 "link para fora da raiz"
 res "$(baixar "$RAIZ" nao_existe_smoke.bin "$TMP/f4.out")" 404 "arquivo inexistente dentro da raiz"
+# O link para fora existe só na árvore do sshd-amostra (em produção seria 404, não 403).
+if [ -n "$(no_srv 'echo ok')" ] && [ -n "$(no_srv "test -L '$RAIZ/link_fora' && echo 1")" ]; then
+  res "$(baixar "$RAIZ/link_fora" segredo.txt "$TMP/f3.out")" 403 "link para fora da raiz"
+else echo "  ($RAIZ/link_fora não existe neste servidor: passo do link pulado — em produção, crie um symlink para fora sob a raiz e espere 403)"; fi
 
 echo "== g–l) upload: F3/F4 =="
 
@@ -86,6 +97,9 @@ if [ -n "$(no_srv 'echo ok')" ]; then
   res "$((c200+c503))" "$n" "todo pedido foi 200 ou 503 (nenhum outro status)"
   [ "$c503" -ge 1 ] || echo "  ⚠️ nenhum 503: as vagas são por worker (2 × workers do uvicorn) e os pedidos podem não ter coincidido — não é falha"
   for f in "$TMP"/m*.out; do [ "$(cat "${f%.out}.st")" = 200 ] && res "$(sha "$f")" "$(no_srv "sha256sum '$PASTA/smoke_20mb.bin'" | cut -c1-64)" "$(basename "$f") íntegro"; done
+  # Cliente que desiste no meio (fecha depois de 64 KB): a API segue servindo e a vaga volta.
+  curl -s -u "$AUTH" -G "$B/utilitarios/arquivo/baixar" --data-urlencode "diretorio=$PASTA" --data-urlencode "nome=smoke_20mb.bin" 2>/dev/null | head -c 65536 > /dev/null
+  sleep 1; res "$(baixar "$PASTA" smoke_20mb.bin "$TMP/m_depois.out")" 200 "download normal depois de um cliente desistir no meio"
   no_srv "rm -f '$PASTA/smoke_20mb.bin'"
 else echo "  (sem acesso ao servidor de arquivos: passo m NÃO executado — dispare 6 downloads de um arquivo de ~20 MB em paralelo: espera 200 e 503, nada mais)"; fi
 

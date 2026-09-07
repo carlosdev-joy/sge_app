@@ -73,7 +73,9 @@ _TIMEOUT_S = 90
 _TIMEOUT_TRANSFERENCIA_S = 240
 # No máximo 2 transferências por worker ao mesmo tempo: a 3ª ouve "ocupado" na
 # hora em vez de esperar na fila do executor, e sobram 2 threads para ler,
-# listar e gravar. É por worker do uvicorn, não por instância (documentado).
+# listar e gravar — fora a janela de até 60 s depois de um 504, em que a thread
+# presa ainda ocupa o executor com a vaga já devolvida. É por worker do
+# uvicorn, não por instância, e limita o SFTP, não respostas em voo (spec §8).
 _VAGAS_TRANSFERENCIA = threading.BoundedSemaphore(2)
 # O arquivo transferido passa por um spool: até 8 MB em memória, o resto em
 # arquivo temporário do container — nunca 50 MB numa `bytes` por pedido.
@@ -328,7 +330,10 @@ def _baixar_sync(servidor: str, caminho: str, raizes: list[str], teto_bytes: int
 
 def _servir_spool(spool):
     """Gerador da resposta: entrega o spool em blocos e o fecha no fim — também
-    quando o cliente desiste no meio (o `finally` roda no `close()` do gerador)."""
+    quando o cliente desiste no meio (o `finally` roda no `close()` do gerador).
+    Se o cliente sumir ANTES do 1º bloco, o gerador nunca inicia e o `finally`
+    não roda: aí o arquivo fecha no descarte do objeto (e o `TemporaryFile` do
+    spool já nasce sem nome no Linux — não sobra órfão no disco)."""
     try:
         while True:
             bloco = spool.read(svc.BLOCO_TRANSFERENCIA)
@@ -364,10 +369,12 @@ async def utilitarios_baixar_arquivo(servidor: str = Query("datastage"),
                  resultado=resultado, detalhe=detalhe, duracao_ms=_ms(t0))
         raise HTTPException(status_code=status, detail=detail if detail is not None else detalhe)
 
+    # `detail=e.detail` sempre: o `interno` (erro cru, host:porta) é da
+    # auditoria, nunca da resposta — mesmo que hoje nenhum erro pré-SSH o tenha.
     try:
         servidor = svc.servidor_valido(servidor)
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado)
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
 
     cfg = _config_do_banco()
     raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
@@ -378,7 +385,7 @@ async def utilitarios_baixar_arquivo(servidor: str = Query("datastage"),
     try:
         caminho, _raiz = svc.preparar_leitura(diretorio, nome, raizes)
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado)
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
 
     if not _VAGAS_TRANSFERENCIA.acquire(blocking=False):
         negar(503, "Há transferências em andamento — tente de novo em instantes.", caminho=caminho)
@@ -411,6 +418,7 @@ async def utilitarios_baixar_arquivo(servidor: str = Query("datastage"),
         "Content-Disposition": svc.content_disposition(posixpath.basename(caminho)),
         "Content-Length": str(resultado["tamanho_bytes"]),
         "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
         "X-Orquestra-Sha256": resultado["sha256"],
     }
     return StreamingResponse(_servir_spool(spool), media_type="application/octet-stream",
@@ -532,7 +540,7 @@ async def utilitarios_gravar_arquivo(body: dict = Body(...),
         servidor = svc.servidor_valido(body.get("servidor"))
         cod = svc.codificacao_valida(body.get("codificacao")) or "utf-8"
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado)
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
     conteudo = body.get("conteudo")
     if not isinstance(conteudo, str):
         negar(422, "'conteudo' precisa ser texto.")
@@ -550,7 +558,7 @@ async def utilitarios_gravar_arquivo(body: dict = Body(...),
     try:
         caminho, _raiz = svc.preparar_gravacao(diretorio, nome, extensao, raizes, cfg["extensoes"])
     except svc.ArquivoError as e:
-        negar(e.status, e.interno or e.detail, e.resultado)
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
 
     texto = svc.normalizar_conteudo(conteudo)
     if "\0" in texto:

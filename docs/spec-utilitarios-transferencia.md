@@ -433,3 +433,32 @@ trabalho novo.
    backlog.
 6. **`permite_gravar` por raiz**: o upload aumenta o alcance de quem tem `acao_editar`.
    Recomendação: subir o item 1 do backlog anterior para logo depois desta spec.
+
+Registrado pelas revisões da F1 (adversarial + auditoria de segurança, 2026-09-07):
+
+7. **Raízes de produção × binários**: o download entrega o que o teste de texto barrava
+   (hashed files do DataStage, `RT_CONFIG*`, `RT_LOG*`, dumps) e o teto de 50 MB não segue
+   o `tamanho_max_kb` da leitura. `RAIZES_PROIBIDAS` não cobre a instalação do
+   InformationServer. **Antes do deploy**: `SELECT servidor, caminho FROM
+   dbo.etl_utilitario_raiz WHERE ativo = 1` e confirmar que nenhuma raiz cobre instalação
+   ou projeto do DS. O manual do admin (F5) diz isso.
+8. **`/tmp` gravável no container da API**: o spool acima de 8 MB vai para
+   `tempfile.TemporaryFile` (sem nome no Linux, sem órfão). Deploy com `read_only`/`tmpfs`
+   precisaria de `/tmp` montado. Item do checklist de deploy.
+9. **A vaga limita o SFTP, não respostas em voo**: a vaga é devolvida antes de servir o
+   spool. Com `proxy_buffering` o nginx drena os 50 MB em menos de 1 s e o custo migra
+   para o `proxy_temp` dele (cliente lento segura 50 MB por conexão, como já acontecia
+   com o `ler` de 16 MB). Sem rate limit; aceito. Endurecimento possível: segundo
+   semáforo de "spools vivos" e `proxy_max_temp_file_size 64m` + `send_timeout` no
+   nginx de produção (que está à frente do repo).
+10. **Caminho no access log**: por ser `GET`, `diretorio` e `nome` aparecem no access log
+    do uvicorn e do nginx (o `ler`, `POST`, não deixava). Vira dado pessoal só se nomes
+    sob as raízes carregarem CPF/matrícula. A confirmar com as raízes de produção.
+11. **Janela após 504**: a vaga volta na hora, mas a thread presa ocupa o executor por até
+    60 s (timeout de canal). Dois 504 seguidos + duas transferências = 4 threads e o
+    `ler`/`listar` esperam. Aceito (risco 2).
+12. **Ambiente de teste ≠ wheels de produção**: os testes locais rodam com starlette/
+    fastapi mais novos que as wheels (`api/wheels/`: starlette 0.41.3, fastapi 0.115.5,
+    uvicorn 0.32.1). A revisão conferiu `StreamingResponse`, `Content-Length` explícito e
+    desconexão do cliente na fonte das wheels. Regra: mudança que dependa de comportamento
+    do framework se confere na wheel, não no `pip` local.
