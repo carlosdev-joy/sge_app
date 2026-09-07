@@ -96,3 +96,15 @@ export function fraseTransferencia(t: EstadoTransferencia): string {
     case 'erro': return `Não foi possível baixar ${t.nome}: ${t.mensagem}`
   }
 }
+
+/** O que a região `aria-live` diz. Só em MARCOS (conectando, 25/50/75/100 % e
+ *  o desfecho): a frase visível muda a cada bloco de 256 KB — 200 vezes num
+ *  arquivo de 50 MB — e um leitor de tela anunciando cada uma inundaria a fila
+ *  "polite" (achado da revisão da F2). */
+export function anuncioTransferencia(t: EstadoTransferencia | null): string {
+  if (!t) return ''
+  if (t.fase !== 'baixando') return fraseTransferencia(t)
+  const pct = percentual(t.feito, t.total)
+  const marco = pct === null ? 0 : Math.floor(pct / 25) * 25
+  return marco ? `Baixando ${t.nome}… ${marco}%` : `Baixando ${t.nome}…`
+}

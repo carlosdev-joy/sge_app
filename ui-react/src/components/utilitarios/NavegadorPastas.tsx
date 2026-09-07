@@ -66,13 +66,15 @@ export function NavegadorPastas({
 
   // Ao terminar de listar, a lista antiga (e o botão clicado) já não existe e o
   // foco cai no <body> — o Backspace não chegaria ao painel. Devolve o foco.
+  // O mesmo vale para o ícone Baixar: ele vira `disabled` logo após o clique e
+  // o navegador solta o foco no <body> (achado da revisão da F2).
   useEffect(() => {
     if (!aberto || carregando) return
     const el = painel.current
     if (!el) return
     const ativo = document.activeElement
     if (!ativo || ativo === document.body || !el.contains(ativo)) el.focus()
-  }, [aberto, carregando, listagem])
+  }, [aberto, carregando, listagem, baixando])
 
   const subir = () => {
     if (!listagem) return

@@ -154,6 +154,19 @@ saida.puras = {
     T.fraseTransferencia({ fase: 'pronto', nome: 'a.bin', total: 15 }),
     T.fraseTransferencia({ fase: 'erro', nome: 'a.bin', status: 413, mensagem: 'acima do teto' }),
   ],
+  // O leitor de tela só ouve marcos: 0–24 % sem número, depois 25/50/75/100.
+  anuncio: [
+    T.anuncioTransferencia(null),
+    T.anuncioTransferencia({ fase: 'conectando', nome: 'a.bin' }),
+    T.anuncioTransferencia({ fase: 'baixando', nome: 'a.bin', feito: 0, total: 100 }),
+    T.anuncioTransferencia({ fase: 'baixando', nome: 'a.bin', feito: 24, total: 100 }),
+    T.anuncioTransferencia({ fase: 'baixando', nome: 'a.bin', feito: 25, total: 100 }),
+    T.anuncioTransferencia({ fase: 'baixando', nome: 'a.bin', feito: 74, total: 100 }),
+    T.anuncioTransferencia({ fase: 'baixando', nome: 'a.bin', feito: 100, total: 100 }),
+    T.anuncioTransferencia({ fase: 'baixando', nome: 'a.bin', feito: 5, total: null }),
+    T.anuncioTransferencia({ fase: 'pronto', nome: 'a.bin', total: 15 }),
+    T.anuncioTransferencia({ fase: 'erro', nome: 'a.bin', status: 413, mensagem: 'acima do teto' }),
+  ],
 }
 
 // ── 2. baixarArquivo com ambiente injetado ─────────────────────────────────
@@ -328,14 +341,24 @@ const baixarDe = (tela, nome) => { const li = liDe(tela, nome); return li && li.
 function montarBarra(estado) {
   const chamadas = { fechar: 0 }
   const tela = mini.montar(el(BarraTransferencia, { estado, onFechar: () => { chamadas.fechar++ } }))
-  const live = porAttr(tela, 'aria-live')[0]
+  const raiz = porAttr(tela, 'data-transferencia')[0]
+  const live = porAttr(tela, 'aria-live')
+  const painel = porAttr(tela, 'data-painel-transferencia')
   const barra = porAttr(tela, 'data-barra')[0]
   const preenchido = porAttr(tela, 'data-preenchido')[0]
   return {
     tela, chamadas,
     r: {
-      live: !!live, fase: live && live.props['data-transferencia'],
-      painel: porAttr(tela, 'data-painel-transferencia').length,
+      fase: raiz && raiz.props['data-transferencia'],
+      // UMA região viva, sempre presente, só para leitor de tela, sem role=status aninhado.
+      live: live.length, liveSrOnly: !!(live[0] && /\bsr-only\b/.test(live[0].props.className || '')),
+      anuncio: live[0] ? textoDe(live[0]) : null,
+      roleStatus: tela.achar(n => n.props && n.props.role === 'status').length,
+      painel: painel.length,
+      // Acima do Modal (z-50) e fora do trap de foco do overlay.
+      // (`\b` não vale depois de `]`: os dois lados são não-palavra)
+      acimaDoModal: !!(painel[0] && /(^|\s)z-\[60\](\s|$)/.test(painel[0].props.className || '')),
+      foraDoTrap: !!(painel[0] && painel[0].props['data-modal-exempt'] !== undefined),
       frase: porAttr(tela, 'data-frase').map(textoDe)[0] ?? null,
       barra: !!barra, valuenow: barra ? (barra.props['aria-valuenow'] ?? null) : null,
       preenchido: preenchido ? String(preenchido.props['data-preenchido']) : null,

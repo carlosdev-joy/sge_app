@@ -3,12 +3,21 @@
 // barra de progresso), o resultado ("Baixado …") ou o erro, com Fechar.
 // Apresentação pura: o estado vem da página; daqui sai só o gesto de fechar.
 //
-// A região `aria-live` existe SEMPRE e só o texto muda: leitor de tela não
-// anuncia região que nasce junto com o conteúdo (mesma regra do aviso de
-// Copiar). Todo botão é type="button" — a faixa pode ser renderizada dentro de
-// uma árvore com <form>.
+// ⚠️ z-[60] e data-modal-exempt: os três botões que disparam o download vivem
+// DENTRO de um Modal (z-50, backdrop preto a 70%) que continua aberto depois
+// do clique — com z-40 a faixa nascia atrás do véu, e o Fechar dela caía no
+// backdrop e fechava o MODAL (achado grave da revisão da F2). O Toast fica
+// acima (z-[100]). O data-modal-exempt tira a faixa do trap de foco do
+// overlay (ver ui/overlay.ts), senão clicar em Fechar devolvia o foco ao modal.
+//
+// A região `aria-live` existe SEMPRE, é só para leitor de tela (sr-only) e só
+// muda em marcos (25/50/75/100 %) — o painel visível muda a cada bloco. Não há
+// role="status" dentro dela: região viva dentro de região viva anuncia duas
+// vezes. Todo botão é type="button" — a faixa pode estar dentro de um <form>.
 import { Download, Check, AlertTriangle, RefreshCw, X } from 'lucide-react'
-import { fraseTransferencia, percentual, type EstadoTransferencia } from '../../lib/utilitariosTransferencia'
+import {
+  anuncioTransferencia, fraseTransferencia, percentual, type EstadoTransferencia,
+} from '../../lib/utilitariosTransferencia'
 
 export interface BarraTransferenciaProps {
   estado: EstadoTransferencia | null
@@ -20,10 +29,11 @@ export function BarraTransferencia({ estado, onFechar }: BarraTransferenciaProps
   const pct = estado?.fase === 'baixando' ? percentual(estado.feito, estado.total) : null
   const emCurso = estado?.fase === 'conectando' || estado?.fase === 'baixando'
   return (
-    <div aria-live="polite" data-transferencia={estado?.fase ?? 'nenhuma'}>
+    <div data-transferencia={estado?.fase ?? 'nenhuma'}>
+      <div aria-live="polite" className="sr-only" data-anuncio>{anuncioTransferencia(estado)}</div>
       {estado && (
-        <div className="fixed bottom-4 right-4 z-40 w-[min(26rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg p-3 flex flex-col gap-2"
-          role="status" data-painel-transferencia>
+        <div className="fixed bottom-4 right-4 z-[60] w-[min(26rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg p-3 flex flex-col gap-2"
+          data-painel-transferencia data-modal-exempt>
           <div className="flex items-start gap-2">
             {estado.fase === 'pronto' && <Check size={16} className="text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />}
             {estado.fase === 'erro' && <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />}

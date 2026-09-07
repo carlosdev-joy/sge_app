@@ -99,6 +99,19 @@ def test_erro_e_frases(cen):
     assert f[4] == "Não foi possível baixar a.bin: acima do teto"
 
 
+def test_anuncio_ao_vivo_so_em_marcos(cen):
+    """A frase visível muda a cada bloco; o leitor de tela só ouve 25/50/75/100 %."""
+    a = cen["puras"]["anuncio"]
+    assert a[0] == ""
+    assert a[1] == "Conectando ao servidor e lendo a.bin…"
+    assert a[2] == "Baixando a.bin…" and a[3] == "Baixando a.bin…"     # 0 % e 24 %: sem número
+    assert a[4] == "Baixando a.bin… 25%" and a[5] == "Baixando a.bin… 50%"
+    assert a[6] == "Baixando a.bin… 100%"
+    assert a[7] == "Baixando a.bin…"                                    # sem total: nunca um número
+    assert a[8] == "Baixado a.bin (15 B)."
+    assert a[9] == "Não foi possível baixar a.bin: acima do teto"
+
+
 # ═══════════ 2. baixarArquivo ══════════════════════════════════════════════
 
 def test_download_conta_bytes_entrega_o_blob_com_o_nome_do_cabecalho(cen):
@@ -177,20 +190,28 @@ def test_navegador_baixa_por_linha_sem_escolher_nem_fechar(cen):
 
 def test_faixa_de_transferencia(cen):
     b = cen["barra"]
-    assert b["nenhuma"]["live"] is True and b["nenhuma"]["fase"] == "nenhuma"
-    assert b["nenhuma"]["painel"] == 0 and b["nenhuma"]["frase"] is None
+    n = b["nenhuma"]
+    assert n["fase"] == "nenhuma" and n["painel"] == 0 and n["frase"] is None
+    assert n["live"] == 1 and n["liveSrOnly"] is True and n["anuncio"] == ""   # a região viva existe SEMPRE
     c = b["conectando"]
     assert c["painel"] == 1 and c["frase"] == "Conectando ao servidor e lendo a.bin…"
+    assert c["anuncio"] == "Conectando ao servidor e lendo a.bin…"
     assert c["barra"] is True and c["preenchido"] == "indeterminado" and c["fechar"] == 0
     d = b["baixando"]
     assert d["frase"] == "Baixando a.bin… 5 B de 15 B" and d["valuenow"] == 33 and d["preenchido"] == "33"
+    assert d["anuncio"] == "Baixando a.bin… 25%"                                # o marco, não o bloco
     assert d["fechar"] == 0
     assert b["baixandoSemTotal"]["preenchido"] == "indeterminado"
     p = b["pronto"]
     assert p["frase"] == "Baixado a.bin (15 B)." and p["barra"] is False and p["fechar"] == 1 and p["fechou"] == 1
     e = b["erro"]
     assert e["fase"] == "erro" and "acima do teto" in e["frase"] and e["fechar"] == 1
-    assert all(v["todosTypeButton"] for v in b.values())
+    for v in b.values():
+        assert v["todosTypeButton"] and v["live"] == 1 and v["roleStatus"] == 0
+    # Os botões de Baixar vivem DENTRO de um Modal (z-50 + backdrop) que segue
+    # aberto: a faixa tem de ficar acima dele e fora do trap de foco.
+    for fase in ("conectando", "baixando", "pronto", "erro"):
+        assert b[fase]["acimaDoModal"] is True and b[fase]["foraDoTrap"] is True, fase
 
 
 # ═══════════ 6. anti-drift (sem Node) ══════════════════════════════════════
@@ -225,6 +246,20 @@ def test_pagina_e_dona_do_download_com_numero_de_serie():
     assert pagina.count("onBaixar={baixar}") == 2          # os dois formulários (navegador)
     assert "onBaixar={baixarDoModal}" in pagina and "<BarraTransferencia" in pagina
     assert 'storageKey="utilitarios_ver_v3"' in pagina     # o banner reaparece uma vez com a novidade
+
+
+def test_faixa_acima_do_modal_e_abaixo_do_toast():
+    """A ordem de empilhamento é uma premissa entre três arquivos: se o Modal
+    ou o Toast mudarem de camada, este teste avisa antes da tela."""
+    modal = _sem_comentarios((SRC / "components" / "ui" / "Modal.tsx").read_text(encoding="utf-8"))
+    toast = _sem_comentarios((SRC / "components" / "ui" / "Toast.tsx").read_text(encoding="utf-8"))
+    barra = _sem_comentarios(BARRA.read_text(encoding="utf-8"))
+    assert "z-50" in modal and "z-[100]" in toast
+    assert "z-[60]" in barra and "data-modal-exempt" in barra
+    assert 'role="status"' not in barra           # região viva dentro de região viva anuncia duas vezes
+    navegador = _sem_comentarios(NAVEGADOR.read_text(encoding="utf-8"))
+    assert re.search(r"\[aberto, carregando, listagem, baixando\]", navegador), \
+        "o foco tem de voltar ao painel quando o ícone Baixar vira disabled"
 
 
 def test_todo_botao_novo_e_type_button():
