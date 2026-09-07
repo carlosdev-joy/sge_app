@@ -1055,13 +1055,17 @@ class TestEnviarRevisao:
         monkeypatch.setattr(svc, "conexao_sftp", _cm_de(fake))
         monkeypatch.setattr(svc, "BLOCO_TRANSFERENCIA", 4)
         monkeypatch.setattr(rt, "_TIMEOUT_TRANSFERENCIA_S", 0.05)
+        # Threads presas dos OUTROS testes de 504 (dormem até 0,5 s) ainda ocupam o
+        # executor de 4 threads: espera-as terminar, senão esta vai para a fila e
+        # o desfecho tardio chega depois do prazo (flake vista na suíte inteira).
+        time.sleep(0.6)
         cur = _Cursor(REGRAS_CONFIG)
         with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
             r = client.put("/utilitarios/arquivo/enviar", params=ENVIAR_OK, content=b"0123456789ab",
                            headers={"Content-Type": "application/octet-stream"})
-            assert r.status_code == 504
+            assert r.status_code == 504, r.text
             assert _vagas_livres() == 2
-            for _ in range(60):
+            for _ in range(200):  # até 10 s: a suíte inteira carrega a máquina
                 if len(cur.auditoria) >= 2:
                     break
                 time.sleep(0.05)

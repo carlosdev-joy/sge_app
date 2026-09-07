@@ -243,9 +243,11 @@ def test_download_passa_pela_api_bruta_e_revoga_a_url():
 def test_pagina_e_dona_do_download_com_numero_de_serie():
     pagina = _sem_comentarios(PAGINA.read_text(encoding="utf-8"))
     assert "baixarArquivo(p, " in pagina and "serieT.current === minha" in pagina
-    assert pagina.count("onBaixar={baixar}") == 2          # os dois formulários (navegador)
+    assert pagina.count("onBaixar={baixar}") == 3          # os três formulários (navegador): ver, editar, enviar
     assert "onBaixar={baixarDoModal}" in pagina and "<BarraTransferencia" in pagina
-    assert 'storageKey="utilitarios_ver_v3"' in pagina     # o banner reaparece uma vez com a novidade
+    # O banner reaparece uma vez a cada novidade (v3 = download, v4 = envio); a chave só sobe.
+    versao = re.search(r'storageKey="utilitarios_ver_v(\d+)"', pagina)
+    assert versao and int(versao.group(1)) >= 3
 
 
 def test_faixa_acima_do_modal_e_abaixo_do_toast():

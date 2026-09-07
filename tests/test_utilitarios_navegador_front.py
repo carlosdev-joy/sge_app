@@ -180,7 +180,7 @@ def test_editar_arquivo_separa_nome_e_extensao_do_arquivo_escolhido(cen):
 def test_navegar_esta_nas_duas_abas_e_a_pagina_lista():
     pagina = _sem_comentarios(PAGINA.read_text(encoding="utf-8"))
     assert "/utilitarios/pasta/listar" in pagina
-    assert pagina.count("onListar={listarPasta}") == 2, "as duas abas recebem o listar"
+    assert pagina.count("onListar={listarPasta}") == 3, "as três abas (ver, editar, enviar) recebem o listar"
     campo = _sem_comentarios(CAMPO.read_text(encoding="utf-8"))
     assert "data-acao=\"navegar\"" in campo
     for f in ("FormVerArquivo.tsx", "FormEditarArquivo.tsx"):

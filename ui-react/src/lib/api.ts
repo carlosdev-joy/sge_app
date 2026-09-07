@@ -1,7 +1,14 @@
-const BASE = '/orquestra'
+export const BASE = '/orquestra'
 
-function currentToken(): string | null {
+export function currentToken(): string | null {
   return localStorage.getItem('orquestra_token')
+}
+
+/** Sessão expirada (401): limpa o token e manda ao login. Um lugar só — o
+ *  `apiFetchBruto` e o upload por XHR (`lib/utilitariosEnvio.ts`) usam. */
+export function expirarSessao(): void {
+  localStorage.removeItem('orquestra_token')
+  window.location.href = '/login'
 }
 
 /** Erro que `apiFetch`/`apiFetchBruto` lançam: `status` e `detail` crus para o
@@ -23,8 +30,7 @@ export async function apiFetchBruto(path: string, opts?: RequestInit): Promise<R
     },
   })
   if (res.status === 401) {
-    localStorage.removeItem('orquestra_token')
-    window.location.href = '/login'
+    expirarSessao()
     throw new Error('Unauthorized')
   }
   if (!res.ok) {

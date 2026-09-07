@@ -44,6 +44,8 @@ export interface ConfigUtil {
   tamanho_max_kb: number
   backup_ao_sobrescrever: boolean
   pode_gravar: boolean
+  /** Teto do download/upload em KB (F1 da transferência); ausente numa API antiga. */
+  transferencia_max_kb?: number
 }
 
 // Espelhos do backend.
