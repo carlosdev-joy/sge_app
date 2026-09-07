@@ -19,6 +19,7 @@ import {
   type PedidoLeitura,
 } from '../../lib/utilitariosArquivo'
 import { inicioNavegacao } from '../../lib/utilitariosNavegador'
+import type { PedidoDownload } from '../../lib/utilitariosTransferencia'
 
 export interface FormVerArquivoProps {
   servidores: ServidorUtil[]
@@ -28,9 +29,14 @@ export interface FormVerArquivoProps {
   onIniciar: (pedido: PedidoLeitura) => void
   /** Lista pastas para o navegador; sem ele o botão Navegar… não aparece. */
   onListar?: ListarPasta
+  /** Baixa um arquivo escolhido no navegador; sem ele o ícone não aparece. */
+  onBaixar?: (pedido: PedidoDownload) => void
+  baixando?: boolean
 }
 
-export function FormVerArquivo({ servidores, raizesPorServidor, iniciando, onIniciar, onListar }: FormVerArquivoProps) {
+export function FormVerArquivo({
+  servidores, raizesPorServidor, iniciando, onIniciar, onListar, onBaixar, baixando,
+}: FormVerArquivoProps) {
   const [servidor, setServidor] = useState(servidores[0]?.id ?? 'datastage')
   const [diretorio, setDiretorio] = useState('')
   const [nome, setNome] = useState('')
@@ -89,6 +95,8 @@ export function FormVerArquivo({ servidores, raizesPorServidor, iniciando, onIni
           onUsarPasta={c => { setDiretorio(c); nav.fechar() }}
           onEscolherArquivo={(p, n) => { setDiretorio(p); setNome(n); nav.fechar() }}
           onFechar={nav.fechar}
+          onBaixar={onBaixar ? (p, n) => onBaixar({ servidor, diretorio: p, nome: n }) : undefined}
+          baixando={baixando}
         />
       )}
     </form>

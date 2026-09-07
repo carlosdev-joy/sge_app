@@ -4,6 +4,12 @@
 // (servidores, raízes ativas, extensões, teto, pode_gravar), chama
 // `POST /utilitarios/arquivo/ler` e `POST /utilitarios/arquivo/gravar`, e passa
 // estado para os componentes de apresentação.
+//
+// Download (spec docs/spec-utilitarios-transferencia.md, F2): a página também
+// é dona do download em curso — UM por vez, com número de série contra a
+// resposta de um download já dispensado — e passa `onBaixar` ao modal de
+// conteúdo e aos navegadores de pastas; a faixa de transferência mostra o
+// progresso, o resultado ou o erro.
 import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Wrench, AlertTriangle } from 'lucide-react'
@@ -19,12 +25,15 @@ import { FormVerArquivo } from '../components/utilitarios/FormVerArquivo'
 import { ModalConteudoArquivo, type EstadoLeitura } from '../components/utilitarios/ModalConteudoArquivo'
 import { FormEditarArquivo, type CarregadoExistente } from '../components/utilitarios/FormEditarArquivo'
 import { ModalGravacaoArquivo, type EstadoGravacao } from '../components/utilitarios/ModalGravacaoArquivo'
+import { BarraTransferencia } from '../components/utilitarios/BarraTransferencia'
 import { mensagemErro, migrationPendente, type ConfigUtil } from '../lib/utilitariosAdmin'
 import { erroLeitura, type ConteudoArquivo, type ErroLeitura, type PedidoLeitura } from '../lib/utilitariosArquivo'
 import {
   erroGravacao, nomeArquivoCompleto,
   type ErroGravacao, type PedidoGravacao, type ResultadoGravacao,
 } from '../lib/utilitariosGravacao'
+import { emCurso, erroTransferencia, type EstadoTransferencia, type PedidoDownload } from '../lib/utilitariosTransferencia'
+import { baixarArquivo } from '../lib/utilitariosDownload'
 import type { Listagem } from '../lib/utilitariosNavegador'
 import type { ListarPasta } from '../components/utilitarios/useNavegadorPastas'
 
@@ -158,6 +167,31 @@ export default function Utilitarios() {
     iniciar(pedidoLeitura)
   }
 
+  // ── download ───────────────────────────────────────────────────────────────
+  const [transferencia, setTransferencia] = useState<EstadoTransferencia | null>(null)
+  const serieT = useRef(0)
+  const baixando = emCurso(transferencia)
+
+  const baixar = (p: PedidoDownload) => {
+    if (baixando) return  // um por vez: o botão já está desligado, isto é o cinto
+    const minha = ++serieT.current
+    const nome = p.nome.trim()
+    setTransferencia({ fase: 'conectando', nome })
+    baixarArquivo(p, (feito, total) => {
+      if (serieT.current === minha) setTransferencia({ fase: 'baixando', nome, feito, total })
+    })
+      .then(r => { if (serieT.current === minha) setTransferencia({ fase: 'pronto', nome: r.nome, total: r.total }) })
+      .catch(e => {
+        if (serieT.current !== minha) return
+        const erro = erroTransferencia(e)
+        setTransferencia({ fase: 'erro', nome, status: erro.status, mensagem: erro.mensagem })
+      })
+  }
+  const fecharTransferencia = () => { serieT.current++; setTransferencia(null) }
+  // Baixar de dentro do modal de conteúdo: o arquivo do pedido em curso, pelo
+  // caminho DIGITADO (lexical) — com raiz-symlink, o real cairia fora das raízes.
+  const baixarDoModal = () => { if (pedido) baixar({ servidor: pedido.servidor, diretorio: pedido.diretorio, nome: pedido.nome }) }
+
   // Troca de aba com texto não gravado no editor: pergunta antes de descartar.
   const mudarAba = (id: string) => {
     if (id === aba) return
@@ -199,11 +233,13 @@ export default function Utilitarios() {
     <div className="flex flex-col gap-4">
       <Cabecalho />
 
-      <InfoBanner storageKey="utilitarios_ver_v2">
+      <InfoBanner storageKey="utilitarios_ver_v3">
         <strong>Ver arquivo</strong>: informe a pasta e o nome e clique em Iniciar — o conteúdo abre num modal, com
-        botão para copiar. <strong>Criar/editar arquivo</strong>: escreva no editor, escolha a extensão e a pasta e
-        grave; para alterar um arquivo que já existe, use "Carregar existente". Só pastas abaixo dos diretórios
-        liberados pelo admin; toda leitura e gravação fica registrada.
+        botões para copiar e para <strong>baixar</strong> o arquivo para o seu computador (o Baixar também está em
+        cada arquivo do navegador de pastas, e vale para binários). <strong>Criar/editar arquivo</strong>: escreva
+        no editor, escolha a extensão e a pasta e grave; para alterar um arquivo que já existe, use "Carregar
+        existente". Só pastas abaixo dos diretórios liberados pelo admin; toda leitura, download e gravação fica
+        registrada.
       </InfoBanner>
 
       {semRaiz && (
@@ -245,6 +281,8 @@ export default function Utilitarios() {
           iniciando={leitura.isPending}
           onIniciar={iniciar}
           onListar={listarPasta}
+          onBaixar={baixar}
+          baixando={baixando}
         />
       )}
 
@@ -261,6 +299,8 @@ export default function Utilitarios() {
           onCarregar={carregar}
           onGravar={gravar}
           onListar={listarPasta}
+          onBaixar={baixar}
+          baixando={baixando}
         />
       )}
 
@@ -272,7 +312,11 @@ export default function Utilitarios() {
         erro={erro}
         onFechar={fechar}
         onRetentar={retentar}
+        onBaixar={baixarDoModal}
+        baixando={baixando}
       />
+
+      <BarraTransferencia estado={transferencia} onFechar={fecharTransferencia} />
 
       <ModalGravacaoArquivo
         aberto={pedidoG !== null}
