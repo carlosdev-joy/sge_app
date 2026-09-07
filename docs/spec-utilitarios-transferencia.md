@@ -1,5 +1,5 @@
 # Spec: Utilitários — transferência de arquivos (download e upload) — Orquestra
-Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F3); F1 = PR #364, F2 = PR #365 mergeadas
+Data: 2026-09-07 · Status: **concluída** — F1 = PR #364, F2 = PR #365, F3 = PR #366, F4 = PR #367 mergeadas (2026-09-07); F5 (manual, release note, smoke, backlog) na PR de fecho
 
 Extensão da spec `docs/spec-utilitarios-arquivos.md` (F1–F7 em produção). Aquela spec
 deixou **explicitamente fora** "download para o PC" e "upload do PC" (§2, OUT). Esta spec
@@ -378,10 +378,12 @@ Sem migration. Valores novos na coluna existente:
 
 > **Script**: `scripts/smoke_utilitarios_transferencia.sh` (mesmas variáveis do smoke
 > anterior: `ORQ_URL`, `ORQ_USER`, `ORQ_PASS`, `RAIZ`, `PASTA`; mais `BIN` = um arquivo
-> binário conhecido abaixo da raiz) cobre b, c, e, f, g, h, i, j, l, m e n pela API com
-> `curl` e `sha256sum`. Com acesso ao servidor de arquivos, confere modo (`ls -l`), `.bak`
-> e ausência de `.tmp`; sem ele, avisa o que apagar à mão. a, d, k e a parte visual de g e h
-> são "UI". Nunca imprime credenciais.
+> binário conhecido abaixo da raiz) cobre b, c, e, f, g, h, i, j, k, k2, m e n pela API
+> com `curl` e `sha256sum`. Com acesso ao servidor de arquivos, confere modo (`stat`),
+> `.bak`, ausência de `.tmp` e o rollback de verdade (k2: subpasta `1777` de outro dono);
+> sem ele, avisa o que apagar à mão. j e k só direto na API (atrás do nginx o proxy
+> bufferiza o corpo). a, d, k3 e l são "UI" com o roteiro impresso. Nunca imprime
+> credenciais. **Resultado no DEV (2026-09-07, F5): 54 conferências ok, 0 falhas.**
 
 a) Sem relogin (não há permissão nova): com `desenvolvedor`, a tela Utilitários mostra a
    3ª aba **Enviar arquivo**; com `operador`, a aba aparece desabilitada com a explicação.

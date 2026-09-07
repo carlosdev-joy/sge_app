@@ -146,14 +146,24 @@ codificação** (`utf-8` ou `latin-1`, detectada) e a data de modificação, e o
 botão **Copiar conteúdo** — que diz *copiado*, *use Ctrl+C* (o texto já fica
 selecionado: basta teclar Ctrl+C) ou *não copiou*.
 
+**Baixar** (ao lado de Copiar) salva o arquivo inteiro no seu computador, como
+está no servidor — vale também para **binários** e para arquivos acima do teto
+de leitura: quando o Ver arquivo recusa com "não é texto" ou "acima do teto",
+o próprio modal oferece **Baixar o arquivo**. O download vai até **50 MB**;
+acima disso a resposta é "acima do teto de download". Uma faixa no canto
+inferior direito mostra *conectando* → *baixando X de Y* → *baixado* (ou o
+erro), um download por vez; o navegador salva com o nome do arquivo no
+servidor (acentos preservados).
+
 **Navegar…** (ao lado do campo Pasta) abre o navegador de pastas: a primeira
 tela lista as raízes liberadas (com uma só, já abre nela); clique numa pasta
 para descer, **Subir** ou **Backspace** para voltar (nunca acima da raiz), a
 trilha no topo leva a qualquer nível. **Usar esta pasta** preenche o campo
-Pasta; clicar num **arquivo** preenche pasta e nome. Arquivos e pastas ocultos
-(nome começando com `.`) ficam escondidos — ligue *mostrar ocultos* se
-precisar. Um link que aponta para fora dos diretórios liberados aparece
-apagado, sem abrir.
+Pasta; clicar num **arquivo** preenche pasta e nome, e o **ícone de download**
+na ponta da linha baixa aquele arquivo sem fechar o navegador (dá para baixar
+vários em sequência). Arquivos e pastas ocultos (nome começando com `.`) ficam
+escondidos — ligue *mostrar ocultos* se precisar. Um link que aponta para fora
+dos diretórios liberados aparece apagado, sem abrir.
 
 Mensagens que você pode ver e o que fazem:
 
@@ -501,6 +511,55 @@ Mensagens que você pode ver:
 
 Trocar de aba com texto por gravar pergunta antes de descartar.
 
+### 3.8 Utilitários — enviar um arquivo do seu computador para o servidor
+Menu **Operação → Utilitários**, aba **Enviar arquivo**. Para levar ao servidor
+do DataStage um arquivo que está na sua máquina — uma planilha de parâmetros,
+um `.dsx` exportado, um arquivo de carga — sem cliente SFTP. Mesma permissão
+da gravação: quem só lê vê o formulário desabilitado. Só abaixo dos
+diretórios liberados e só com **extensão da lista do administrador** (§4.7);
+o conteúdo pode ser **binário**.
+
+1. **Pasta**: como nas outras abas (ou **Navegar…**). Precisa existir.
+2. **Escolher arquivo…**: abre o seletor do seu computador. Ao lado aparece o
+   nome e o tamanho escolhidos; o teto é **50 MB** por envio.
+3. **Nome no servidor**: começa igual ao nome do arquivo escolhido e fica como
+   você digitar (maiúsculas e espaços inclusive); só a **última** extensão
+   precisa estar na lista, comparada em minúsculas (`RELATORIO.TXT` entra com
+   `txt` liberada; `README`, sem extensão, não entra). Pelo navegador, clicar
+   num arquivo existente preenche pasta e nome — é o jeito de "ir por cima"
+   daquele arquivo.
+4. **Enviar**: abre o modal com a **barra de progresso** e o botão
+   **Cancelar**. Enter num campo não envia nada.
+
+**Quando o arquivo já existe**, o modal mostra tamanho e data do atual e pede
+**Sobrescrever** — o mesmo arquivo sobe de novo; o original vira
+`nome.ext.bak-<data-hora>` na mesma pasta (se a cópia de segurança estiver
+ligada no Admin), o novo entra de uma vez e as permissões do arquivo são
+preservadas. Um arquivo **novo** nasce sem permissão de execução.
+
+**Cancelar** só vale enquanto o arquivo está subindo. Assim que ele chega
+inteiro, o botão some e o modal diz *gravando… aguarde*: nessa fase o servidor
+vai gravar de qualquer forma, e fechar o modal (X, Esc ou clique fora) não
+interrompe nada — a resposta chega em segundos (até 4 minutos numa gravação
+muito lenta). Se você cancelou antes disso, nada foi gravado.
+
+Ao terminar: caminho real, criado ou sobrescrito, tamanho, hash SHA-256 e a
+cópia de segurança.
+
+Mensagens que você pode ver:
+
+| Mensagem | O que significa |
+|---|---|
+| **Extensão X não está na lista do admin.** / **Arquivo sem extensão** | Só entram extensões liberadas em Admin › Utilitários; renomeie ou peça a inclusão. |
+| **Arquivo de X, acima do teto de 50,0 MB para envio.** | Divida o arquivo ou envie por outro meio; o teto é fixo. |
+| **O arquivo já existe. Confirme para gravar por cima.** | Escolha Sobrescrever ou Cancelar. |
+| **O servidor recusou gravar em /…: o sistema de arquivos está montado somente leitura.** | A pasta é de uma montagem sem escrita; escolha outra pasta. |
+| **O usuário SSH não tem permissão para gravar em /…** | A conta do Orquestra não escreve nessa pasta (ou não pode substituir um arquivo de outro dono). |
+| **Há transferências em andamento — tente de novo em instantes.** | Duas transferências ao mesmo tempo por instância da API; espere uma terminar. |
+| **O envio parou no meio** / **O envio chegou incompleto** | A conexão caiu durante o envio; envie de novo. |
+| **O servidor não respondeu a tempo. Confira na pasta antes de reenviar…** | A gravação pode ter terminado depois da resposta: veja pela aba Ver arquivo ou pelo navegador antes de mandar de novo. |
+| **O envio foi cancelado, mas o arquivo já tinha chegado inteiro…** | Você cancelou depois de o arquivo subir; confira na pasta — ele pode ter sido gravado. |
+
 ---
 
 ## 4. Perfil Administrador
@@ -540,9 +599,9 @@ Lembretes:
 - Dependências novas chegam via Git (`wheels/`), nunca via pip/internet no servidor.
 
 ### 4.7 Utilitários (Admin → Sistema → Utilitários)
-É aqui que se decide **o que** a tela Utilitários (§2.5 e §3.7) alcança no
-servidor do DataStage. Nada vem de fábrica: sem raiz cadastrada, ninguém lê
-nem grava.
+É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança
+no servidor do DataStage. Nada vem de fábrica: sem raiz cadastrada, ninguém
+lê, baixa, grava nem envia.
 
 **Diretórios-raiz.** Cadastre a pasta absoluta (ex.: `/dados/bi`) — tudo
 abaixo dela fica navegável. Pode haver várias raízes. Pastas do sistema
@@ -558,24 +617,34 @@ Na linha de cada raiz:
 - **Desativar** / **Reativar** — raiz desativada não abre mais nada abaixo
   dela; o histórico de auditoria fica.
 
-> ⚠️ **Toda raiz ativa vale para ler E gravar.** Não cadastre diretórios de
-> projeto que contenham `.param` com credencial de banco: quem tem a permissão
-> de cadastrar/editar poderia sobrescrevê-los. Enquanto não existir "raiz só de
-> leitura", a decisão é não cadastrar.
+> ⚠️ **Toda raiz ativa vale para ler, baixar, gravar E enviar.** Não cadastre
+> diretórios de projeto que contenham `.param` com credencial de banco: quem
+> tem a permissão de cadastrar/editar poderia sobrescrevê-los. E lembre que o
+> **download entrega qualquer arquivo** abaixo da raiz, inclusive binários que
+> o Ver arquivo recusava (hashed files do DataStage, dumps): não cadastre a
+> instalação nem as pastas de projeto do InformationServer. Enquanto não
+> existir "raiz só de leitura", a decisão é não cadastrar.
 
-**Extensões graváveis.** A lista do que a aba Criar/editar pode gravar
-(`txt`, `sql`, `param`, `cfg`, `conf`, `properties`, `csv`, `json`, `yml`…);
-ler não depende dela. Incluir uma extensão de **script** (`sh`, `bash`, `ksh`,
-`csh`, `zsh`, `py`, `pl`) pede confirmação: permite gravar scripts que um job
-pode executar.
+**Extensões graváveis e enviáveis.** Uma lista só, que vale para a aba
+Criar/editar **e** para a aba Enviar arquivo (`txt`, `sql`, `param`, `cfg`,
+`conf`, `properties`, `csv`, `json`, `yml`…); ler e baixar não dependem dela.
+No envio, só a **última** extensão do nome conta, comparada em minúsculas
+(`RELATORIO.TXT` entra com `txt`). Incluir uma extensão de **script** (`sh`,
+`bash`, `ksh`, `csh`, `zsh`, `py`, `pl`) pede confirmação: permite gravar
+scripts que um job pode executar. Incluir extensão de **binário executável**
+(`jar`, `so`, `class`, `exe`) libera o envio desses arquivos pela tela — e a
+sobrescrita preserva a permissão de execução do arquivo que já existia. Um
+arquivo novo nunca nasce executável.
 Excluir pede confirmação e vale na hora — quem já está com o editor aberto
 recebe "extensão não liberada" ao gravar.
 
 **Limites.** *Teto por arquivo (KB)* — acima disso a leitura pede "últimas N
-linhas" e a gravação é recusada (padrão 2.048 KB, máximo 16.384). *Guardar
-cópia de segurança ao sobrescrever* — liga o `.bak-<data-hora>` na mesma pasta
-(ligado por padrão). Lembre que ninguém expurga os `.bak`: combine a limpeza
-com a sustentação.
+linhas" e a gravação de texto é recusada (padrão 2.048 KB, máximo 16.384).
+O **teto do download e do envio é fixo em 50 MB** e não segue esse valor.
+*Guardar cópia de segurança ao sobrescrever* — liga o `.bak-<data-hora>` na
+mesma pasta (ligado por padrão), na gravação e no envio. Lembre que ninguém
+expurga os `.bak` e que um envio de 50 MB sobrescrito com cópia ocupa 100 MB:
+combine a limpeza com a sustentação.
 
 **Permissão.** Em Admin → Usuários & Perfis, a tela **Utilitários** é um
 checkbox por perfil (admin, desenvolvedor e operador já vêm marcados pela
@@ -583,9 +652,15 @@ migration 105). Gravar exige, além da tela, a ação **Cadastrar/Editar**. A
 permissão só aparece para o usuário depois de **sair e entrar de novo**.
 
 **Auditoria.** `dbo.etl_utilitario_arquivo_log`: matrícula, servidor, ação
-(`ler`, `listar`, `gravar`, `testar`, `raiz`), caminho real no servidor,
-tamanho, hash SHA-256, resultado (`ok`, `negado`, `erro`), detalhe e duração.
-Sem conteúdo de arquivo. Consulta útil:
+(`ler`, `listar`, `gravar`, `testar`, `raiz`, `baixar`, `enviar`), caminho
+real no servidor, tamanho, hash SHA-256, resultado (`ok`, `negado`, `erro`),
+detalhe e duração. Sem conteúdo de arquivo. No `baixar`, `ok` quer dizer que a
+API leu o arquivo do servidor (a entrega ao navegador não é confirmável). No
+`enviar`, o detalhe diz `criado` ou `sobrescrito; backup …`; um envio que
+estourou o tempo (504) ganha uma **segunda linha** quando a gravação termina
+depois — `concluído após o 504 — o arquivo FOI gravado` ou `falhou após o
+504` — para a auditoria dizer a verdade que a tela não pôde dizer. Consulta
+útil:
 ```sql
 SELECT TOP 50 executado_em, usuario, acao, resultado, caminho, LEFT(detalhe, 120) AS detalhe
 FROM dbo.etl_utilitario_arquivo_log ORDER BY id DESC
@@ -617,6 +692,10 @@ ler".
 **Apertei F5 e continuei logado — é normal?** Sim. A sessão usa um token salvo no navegador (a senha nunca fica armazenada) e expira automaticamente após o período configurado (padrão 12h). Para encerrar antes, use Sair.
 
 **Utilitários diz "Fora dos diretórios liberados", mas a pasta existe.** Existir não basta: a pasta precisa estar abaixo de uma raiz cadastrada e ativa em Admin → Sistema → Utilitários (§4.7). Se o caminho passa por um link que sai da raiz, a resposta é a mesma.
+
+**Cancelei o envio e o arquivo apareceu no servidor mesmo assim.** O Cancelar só interrompe enquanto o arquivo está subindo do seu computador. Depois que ele chega inteiro (o botão some e o modal diz *gravando… aguarde*), o servidor grava de qualquer forma — por isso a mensagem de cancelamento pede para conferir na pasta. Para desfazer, sobrescreva com a versão certa: a cópia de segurança `.bak-<data-hora>` guarda o que estava lá antes (§3.8).
+
+**O Enviar arquivo diz "somente leitura" numa pasta que existe.** A pasta é uma montagem sem escrita no servidor (no ambiente de DEV, a pasta extra montada do disco da VPS é assim de propósito). Use uma pasta abaixo de uma raiz gravável — no DEV, `/dados/bi` ou `/dados/param`.
 
 **Utilitários: o acento veio errado.** O rodapé do modal mostra a codificação detectada (`utf-8` ou `latin-1`). Ao editar, escolha a mesma codificação antes de gravar — "Carregar existente" já faz isso.
 
