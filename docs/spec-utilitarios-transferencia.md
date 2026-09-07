@@ -1,5 +1,5 @@
 # Spec: Utilitários — transferência de arquivos (download e upload) — Orquestra
-Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F1)
+Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F3); F1 = PR #364, F2 = PR #365 mergeadas
 
 Extensão da spec `docs/spec-utilitarios-arquivos.md` (F1–F7 em produção). Aquela spec
 deixou **explicitamente fora** "download para o PC" e "upload do PC" (§2, OUT). Esta spec

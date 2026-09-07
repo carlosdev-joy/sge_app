@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import logging
 import os
 import posixpath
@@ -779,6 +780,45 @@ def preparar_gravacao(diretorio, nome, extensao, raizes, extensoes) -> tuple[str
     return caminho, raiz
 
 
+# ── Envio (upload — spec docs/spec-utilitarios-transferencia.md, F3) ────────
+
+def extensao_para_envio(nome: str, permitidas) -> str:
+    """A extensão de um nome COMPLETO vindo do PC: o que vem depois do ÚLTIMO
+    ponto, comparado em minúsculas com a lista do admin. O nome é mantido como
+    está (`RELATORIO.TXT` continua `RELATORIO.TXT`; só a comparação baixa a
+    caixa). Sem ponto (`README`), ponto só no início (`.bashrc`) ou ponto no fim
+    (`x.`) = sem extensão → 422. `x.txt.sh` é `sh`."""
+    ext = extensao_de(nome)
+    if ext is None:
+        raise ArquivoError(
+            422, "Arquivo sem extensão — só entram arquivos com extensão da lista do admin "
+                 "(Admin › Utilitários).")
+    if not EXTENSAO_RE.match(ext) or ext not in set(permitidas or ()):
+        raise ArquivoError(
+            422, f"Extensão '{ext}' não liberada — o admin inclui em Admin › Utilitários.")
+    return ext
+
+
+def preparar_envio(diretorio, nome, raizes, extensoes) -> tuple[str, str]:
+    """Valida e confere LEXICALMENTE antes do SSH. Devolve (caminho, raiz).
+
+    Como `preparar_gravacao`, mas o nome chega completo (com a extensão, na
+    caixa em que está no PC). 422 em entrada inválida; 403 (`negado`) fora das
+    raízes."""
+    completo = validar_nome(nome)
+    extensao_para_envio(completo, extensoes)
+    if len(completo.encode("utf-8")) > LIMITE_NOME_BYTES - RESERVA_SUFIXOS_BYTES:
+        raise ArquivoError(
+            422,
+            f"Nome longo demais para gravar (máximo {LIMITE_NOME_BYTES - RESERVA_SUFIXOS_BYTES} "
+            "bytes): o servidor precisa de espaço para o .tmp e o .bak.")
+    caminho = montar_caminho(normalizar_diretorio(diretorio), completo)
+    raiz = raiz_de(caminho, raizes)
+    if raiz is None:
+        raise ArquivoError(403, "Fora dos diretórios liberados.", resultado="negado")
+    return caminho, raiz
+
+
 def _substituir(sftp, tmp: str, destino: str) -> None:
     """`tmp` vira `destino` de uma vez. `posix_rename` (extensão do OpenSSH)
     sobrescreve atomicamente; sem ela, remove e renomeia (janela mínima)."""
@@ -796,14 +836,33 @@ def _substituir(sftp, tmp: str, destino: str) -> None:
 
 def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bool,
                    backup: bool, marca: str, agora: datetime | None = None) -> dict:
-    """Grava `dados` em `caminho` (já validado por `preparar_gravacao`).
+    """Grava `dados` (texto já codificado) em `caminho` — ver `_gravar_de`."""
+    return _gravar_de(sftp, caminho, raizes, io.BytesIO(dados), len(dados),
+                      sobrescrever=sobrescrever, backup=backup, marca=marca, agora=agora)
+
+
+def enviar_arquivo(sftp, caminho: str, raizes, origem, tamanho: int, *, sobrescrever: bool,
+                   backup: bool, marca: str, agora: datetime | None = None) -> dict:
+    """Upload: grava `tamanho` bytes de `origem` (file-like já conferido pelo
+    router — o corpo inteiro num spool local) em `caminho` (validado por
+    `preparar_envio`). Mesmo miolo da gravação de texto: 409, `.tmp`, backup,
+    rename atômico, modo preservado. Sem teste de texto: binário sobe."""
+    return _gravar_de(sftp, caminho, raizes, origem, tamanho,
+                      sobrescrever=sobrescrever, backup=backup, marca=marca, agora=agora)
+
+
+def _gravar_de(sftp, caminho: str, raizes, origem, tamanho: int, *, sobrescrever: bool,
+               backup: bool, marca: str, agora: datetime | None = None) -> dict:
+    """Grava `tamanho` bytes lidos de `origem` (file-like) em `caminho`, em
+    blocos — nunca o arquivo inteiro numa `bytes` (o upload chega a 50 MB).
 
     Ordem: pasta resolvida de cima para baixo (symlink para fora barra aqui) →
     destino existe? (409 sem `sobrescrever`; symlink de destino também é
     conferido) → escreve num `.tmp` na MESMA pasta → cópia de segurança do
     original (rename) → `tmp` vira o destino de uma vez. Quem lê o arquivo no
     meio vê o antigo ou o novo, nunca metade. Falha no meio: o original volta,
-    o `.tmp` some."""
+    o `.tmp` some. Bytes gravados ≠ `tamanho` (spool que mudou) também é falha,
+    com o `.tmp` apagado — arquivo pela metade nunca vira o destino."""
     pasta, nome = posixpath.split(caminho)
     real_pasta = resolver_real(sftp, pasta, raizes)
     st_pasta = _stat(sftp, real_pasta)
@@ -868,18 +927,41 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
         return ArquivoError(502, "Falha ao gravar no servidor — detalhe registrado no log da API.",
                             interno=f"{real}: {e!r}")
 
+    resumo = hashlib.sha256()
+    escritos = 0
     try:
         with sftp.open(tmp, "wb") as f:
-            f.write(dados)
+            while True:
+                try:
+                    bloco = origem.read(BLOCO_TRANSFERENCIA)
+                except OSError as e:
+                    # Erro LOCAL (o spool da API) não pode sair como erro do
+                    # servidor — o operador iria olhar o disco do DataStage.
+                    raise ArquivoError(
+                        502, "Falha ao ler o arquivo temporário na API — detalhe registrado "
+                             "no log da API.", interno=f"spool: {e!r}") from e
+                if not bloco:
+                    break
+                f.write(bloco)
+                resumo.update(bloco)
+                escritos += len(bloco)
         if modo_antigo is not None:
             # Sobrescrever troca o inode: sem isto um arquivo 0775 do grupo (ou
             # um .sh com +x) sairia 0644 e o job que escreve nele passaria a
             # falhar. O dono não dá para preservar por SFTP: passa a ser o
             # usuário SSH (documentado na spec).
             sftp.chmod(tmp, modo_antigo)
+    except ArquivoError:
+        _apagar_tmp()
+        raise
     except Exception as e:
         _apagar_tmp()
         raise _erro_gravacao(e) from e
+    if escritos != tamanho:
+        _apagar_tmp()
+        raise ArquivoError(
+            502, "O conteúdo recebido não bate com o tamanho esperado — tente de novo.",
+            interno=f"{real}: esperava {tamanho} bytes, gravou {escritos}")
 
     backup_criado: str | None = None
     try:
@@ -911,8 +993,8 @@ def gravar_arquivo(sftp, caminho: str, raizes, dados: bytes, *, sobrescrever: bo
 
     return {
         "caminho": real,
-        "tamanho_bytes": len(dados),
-        "sha256": hashlib.sha256(dados).hexdigest(),
+        "tamanho_bytes": escritos,
+        "sha256": resumo.hexdigest(),
         "criado": existente is None,
         "backup": backup_criado,
     }

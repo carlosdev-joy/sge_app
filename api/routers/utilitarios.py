@@ -46,7 +46,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 
 from db import get_db_conn
@@ -423,6 +423,130 @@ async def utilitarios_baixar_arquivo(servidor: str = Query("datastage"),
     }
     return StreamingResponse(_servir_spool(spool), media_type="application/octet-stream",
                              headers=cabecalhos)
+
+
+# ── enviar arquivo (transferência F3 — spec docs/spec-utilitarios-transferencia.md) ──
+
+def _enviar_sync(servidor: str, caminho: str, raizes: list[str], origem, tamanho: int,
+                 sobrescrever: bool, backup: bool, marca: str) -> dict:
+    with svc.conexao_sftp(servidor) as sftp:
+        return svc.enviar_arquivo(sftp, caminho, raizes, origem, tamanho, sobrescrever=sobrescrever,
+                                  backup=backup, marca=marca)
+
+
+def _tamanho_declarado(request: Request) -> int:
+    """O Content-Length, ANTES de ler um byte do corpo. Sem ele (corpo chunked)
+    é 411: o teto tem de valer antes de o corpo ocupar disco; inválido é 422."""
+    bruto = request.headers.get("content-length")
+    if bruto is None:
+        raise svc.ArquivoError(
+            411, "Envie o Content-Length: o tamanho do arquivo precisa vir antes do corpo.")
+    try:
+        n = int(bruto.strip())
+    except ValueError:
+        raise svc.ArquivoError(422, "Content-Length inválido.") from None
+    if n < 0:
+        raise svc.ArquivoError(422, "Content-Length inválido.")
+    return n
+
+
+@router.put("/utilitarios/arquivo/enviar")
+async def utilitarios_enviar_arquivo(request: Request,
+                                     servidor: str = Query("datastage"),
+                                     diretorio: str | None = Query(None),
+                                     nome: str | None = Query(None),
+                                     sobrescrever: bool = Query(False),
+                                     user: dict = Depends(require_tela_utilitarios)):
+    """Upload de um arquivo do PC para abaixo de uma raiz. Corpo CRU
+    (`application/octet-stream`, sem multipart — o build da API é pip offline);
+    nome e pasta na query; o nome é mantido como está e só a extensão (a
+    última) precisa estar na lista do admin. Exige a tela E `acao_editar`.
+
+    413 pelo Content-Length ANTES de tocar o corpo; o corpo desce para um spool
+    contando bytes (passou do declarado = 413, acabou antes = 400); só então a
+    thread SSH grava — `.tmp` + backup + rename atômico + modo preservado, o
+    mesmo miolo da gravação de texto. Corpo vazio cria arquivo de 0 bytes."""
+    t0 = time.time()
+    usuario = str(user.get("matricula") or "?")
+    pedido_bruto = f"{str(diretorio or '').rstrip('/')}/{str(nome or '')}"
+    servidor = str(servidor or "datastage")
+
+    def negar(status: int, detalhe: str, resultado: str = "erro", caminho: str = pedido_bruto,
+              detail=None):
+        _auditar(usuario=usuario, servidor=servidor, acao="enviar", caminho=caminho,
+                 resultado=resultado, detalhe=detalhe, duracao_ms=_ms(t0))
+        raise HTTPException(status_code=status, detail=detail if detail is not None else detalhe)
+
+    if PERM_EDITAR not in user.get("permissoes", []):
+        negar(403, "Enviar arquivo exige a permissão de cadastrar/editar (acao_editar).", "negado")
+    try:
+        servidor = svc.servidor_valido(servidor)
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
+
+    cfg = _config_do_banco()
+    raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
+    if not raizes:
+        negar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
+                   "Admin › Utilitários.", "negado")
+    try:
+        caminho, _raiz = svc.preparar_envio(diretorio, nome, raizes, cfg["extensoes"])
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado, detail=e.detail)
+
+    # 413 cedo: pelo tamanho declarado, sem ler o corpo.
+    try:
+        tamanho = _tamanho_declarado(request)
+    except svc.ArquivoError as e:
+        negar(e.status, e.detail, caminho=caminho)
+    teto = svc.TRANSFERENCIA_MAX_BYTES
+    if tamanho > teto:
+        negar(413, f"Arquivo de {svc.formatar_tamanho(tamanho)} ({tamanho} bytes), acima do teto de "
+                   f"{svc.formatar_tamanho(teto)} para envio.", caminho=caminho)
+
+    if not _VAGAS_TRANSFERENCIA.acquire(blocking=False):
+        negar(503, "Há transferências em andamento — tente de novo em instantes.", caminho=caminho)
+    spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORIA)
+    try:
+        try:
+            recebidos = 0
+            async for pedaco in request.stream():
+                if not pedaco:
+                    continue
+                recebidos += len(pedaco)
+                if recebidos > tamanho:
+                    raise svc.ArquivoError(
+                        413, f"O corpo passou do tamanho declarado no Content-Length ({tamanho} bytes).")
+                spool.write(pedaco)
+            if recebidos != tamanho:
+                raise svc.ArquivoError(
+                    400, f"Corpo incompleto: chegaram {recebidos} de {tamanho} bytes — tente de novo.")
+            spool.seek(0)
+            # Única por pedido (pid + aleatório): duas threads do mesmo worker no
+            # mesmo instante não podem disputar o mesmo `.tmp`.
+            marca = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+            resultado = await _no_servidor(
+                _enviar_sync, servidor, caminho, raizes, spool, tamanho, bool(sobrescrever),
+                cfg["backup_ao_sobrescrever"], marca, timeout=_TIMEOUT_TRANSFERENCIA_S)
+        finally:
+            _VAGAS_TRANSFERENCIA.release()
+            # Também derruba a thread presa num 504: o próximo `read` dela falha.
+            spool.close()
+    except svc.ArquivoError as e:
+        negar(e.status, e.interno or e.detail, e.resultado, caminho=caminho, detail=_detalhe_http(e))
+    except Exception as e:
+        log.exception("Utilitários: falha inesperada ao enviar %s", caminho)
+        negar(502, f"inesperado: {e!r}", caminho=caminho,
+              detail="Falha ao enviar o arquivo — detalhe registrado no log da API.")
+
+    resultado["duracao_ms"] = _ms(t0)
+    partes = ["criado" if resultado["criado"] else "sobrescrito"]
+    if resultado["backup"]:
+        partes.append(f"backup {resultado['backup']}")
+    _auditar(usuario=usuario, servidor=servidor, acao="enviar", caminho=resultado["caminho"],
+             resultado="ok", tamanho=resultado["tamanho_bytes"], sha256=resultado["sha256"],
+             detalhe="; ".join(partes), duracao_ms=resultado["duracao_ms"])
+    return resultado
 
 
 # ── listar pasta (F6 — navegador) ────────────────────────────────────────────

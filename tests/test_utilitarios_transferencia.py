@@ -1,17 +1,19 @@
-"""Utilitários — transferência de arquivos, F1: download pela API
+"""Utilitários — transferência de arquivos: F1 (download) e F3 (upload) pela API
 (spec docs/spec-utilitarios-transferencia.md).
 
 Mesmas três camadas de tests/test_utilitarios_arquivos.py — de onde vêm o
 FakeSftp, a árvore de amostra, o cursor falso e as autenticações:
 
-  1. função PURA `content_disposition` (o nome do arquivo num cabeçalho HTTP);
-  2. `baixar_arquivo` sobre o SFTP em memória: binário desce, o 413 acontece
-     ANTES de abrir o arquivo, arquivo que encolheu no meio é 502, e a política
-     de caminho é a mesma do `ler` (link para fora barra, link para outra raiz
-     passa);
-  3. `GET /utilitarios/arquivo/baixar`: cabeçalhos, auditoria `baixar` em toda
-     saída, vaga de transferência (503 na hora, devolvida em sucesso, erro e
-     504), spool que vai para o disco, degradações (sem SSH, sem migration).
+  1. funções PURAS: `content_disposition` (o nome do arquivo num cabeçalho
+     HTTP), `extensao_para_envio`/`preparar_envio` (nome completo vindo do PC);
+  2. `baixar_arquivo` e `enviar_arquivo` sobre o SFTP em memória: binário desce
+     e sobe, o 413 acontece ANTES de abrir o arquivo, arquivo que encolheu no
+     meio é 502, spool que mente é 502 sem deixar `.tmp`, erro LOCAL não vira
+     erro do servidor, e a política de caminho é a mesma do `ler`/`gravar`;
+  3. `GET /utilitarios/arquivo/baixar` e `PUT /utilitarios/arquivo/enviar`:
+     cabeçalhos, 411/413 pelo Content-Length ANTES do corpo, corpo que mente
+     (400/413), auditoria em toda saída, vaga de transferência (503 na hora,
+     devolvida em sucesso, erro e 504), spool que vai para o disco, degradações.
 """
 from __future__ import annotations
 
@@ -553,3 +555,360 @@ class TestBaixarEndpoint:
             r = client.get("/utilitarios/config")
         assert r.status_code == 200
         assert r.json()["transferencia_max_kb"] == 51200
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. Upload (F3) — funções puras
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPrepararEnvio:
+    def test_extensao_e_a_ultima_comparada_em_minusculas_e_o_nome_fica_como_esta(self):
+        assert svc.extensao_para_envio("Relatorio.TXT", ["txt"]) == "txt"
+        assert svc.extensao_para_envio("dados.tar.gz", ["gz"]) == "gz"
+        caminho, raiz = svc.preparar_envio("/dados/bi/2026/", " Relatorio.TXT ", RAIZES, ["txt"])
+        assert (caminho, raiz) == ("/dados/bi/2026/Relatorio.TXT", "/dados/bi")
+
+    @pytest.mark.parametrize("nome", ["README", ".bashrc", "arquivo.", "sem_ponto"])
+    def test_sem_extensao_422(self, nome):
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.extensao_para_envio(nome, ["txt", "sh"])
+        assert ei.value.status == 422 and "sem extensão" in ei.value.detail
+
+    def test_extensao_fora_da_lista_422_nomeando_a_ultima(self):
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.extensao_para_envio("x.txt.sh", ["txt"])
+        assert ei.value.status == 422 and "'sh' não liberada" in ei.value.detail
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.extensao_para_envio("relatório.ção", ["ção"])   # fora da régua do servidor
+        assert ei.value.status == 422
+
+    def test_preparar_envio_fora_das_raizes_403_negado_e_nome_ruim_422(self):
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.preparar_envio("/etc", "x.txt", RAIZES, ["txt"])
+        assert ei.value.status == 403 and ei.value.resultado == "negado"
+        for ruim in ("a/b.txt", "..", "‮txt.exe", "x\ny.txt", ""):
+            with pytest.raises(svc.ArquivoError) as ei:
+                svc.preparar_envio("/dados/bi", ruim, RAIZES, ["txt", "exe"])
+            assert ei.value.status == 422, ruim
+
+    def test_nome_longo_deixa_espaco_para_tmp_e_bak(self):
+        ok = "a" * (255 - 40 - 4) + ".txt"
+        assert svc.preparar_envio("/dados/bi", ok, RAIZES, ["txt"])[0].endswith(ok)
+        with pytest.raises(svc.ArquivoError) as ei:
+            svc.preparar_envio("/dados/bi", "a" * (255 - 40 - 3) + ".txt", RAIZES, ["txt"])
+        assert ei.value.status == 422 and ".tmp e o .bak" in ei.value.detail
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. Upload (F3) — serviço sobre o SFTP em memória
+# ═══════════════════════════════════════════════════════════════════════════
+
+BINARIO = bytes(range(256)) * 40 + b"\x00\x00fim"
+
+
+def _enviar(fake, caminho, dados=BINARIO, *, tamanho=None, origem=None, **kw):
+    kw.setdefault("sobrescrever", False)
+    kw.setdefault("backup", True)
+    origem = io.BytesIO(dados) if origem is None else origem
+    return svc.enviar_arquivo(fake, caminho, RAIZES, origem, len(dados) if tamanho is None else tamanho,
+                              marca="t", **kw)
+
+
+class TestEnviarArquivo:
+    def test_binario_sobe_em_blocos_com_sha256_sem_deixar_tmp(self, monkeypatch):
+        monkeypatch.setattr(svc, "BLOCO_TRANSFERENCIA", 7)
+        fake = FakeSftp(ARVORE)
+        r = _enviar(fake, "/dados/bi/2026/Carga.BIN")
+        assert r == {"caminho": "/dados/bi/2026/Carga.BIN", "tamanho_bytes": len(BINARIO),
+                     "sha256": hashlib.sha256(BINARIO).hexdigest(), "criado": True, "backup": None}
+        assert fake.arvore["/dados/bi/2026/Carga.BIN"] == BINARIO
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+        # Arquivo novo nasce com o modo do umask do sshd (o fake registra 0644): nunca +x.
+        assert not (fake.modos.get("/dados/bi/2026/Carga.BIN", 0o644) & 0o111)
+
+    def test_arquivo_vazio(self):
+        fake = FakeSftp(ARVORE)
+        r = _enviar(fake, "/dados/bi/vazio.txt", b"")
+        assert r["tamanho_bytes"] == 0 and fake.arvore["/dados/bi/vazio.txt"] == b""
+
+    def test_existente_409_com_o_que_existe(self):
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as ei:
+            _enviar(fake, "/dados/bi/consulta.sql")
+        assert ei.value.status == 409
+        assert ei.value.extra["existente"]["tamanho_bytes"] == 10
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"
+
+    def test_sobrescreve_com_backup_e_preserva_o_modo(self):
+        fake = FakeSftp(ARVORE, modos={"/dados/bi/consulta.sql": 0o664})
+        r = _enviar(fake, "/dados/bi/consulta.sql", b"SELECT 9;\n", sobrescrever=True)
+        assert r["criado"] is False and r["backup"].startswith("/dados/bi/consulta.sql.bak-")
+        assert fake.arvore[r["backup"]] == b"SELECT 1;\n"
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 9;\n"
+        assert fake.modos["/dados/bi/consulta.sql"] == 0o664
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_falha_so_no_posix_rename_devolve_o_original(self):
+        fake = FakeSftp(ARVORE, falhar_posix_rename=True)
+        with pytest.raises(svc.ArquivoError) as ei:
+            _enviar(fake, "/dados/bi/consulta.sql", b"SELECT 9;\n", sobrescrever=True)
+        assert ei.value.status == 502
+        assert fake.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"
+        assert not [p for p in fake.arvore if ".tmp-" in p or ".bak-" in p]
+
+    def test_spool_menor_que_o_tamanho_502_sem_deixar_tmp_nem_destino(self):
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as ei:
+            _enviar(fake, "/dados/bi/2026/curto.bin", b"abc", tamanho=10)
+        assert ei.value.status == 502 and "não bate" in ei.value.detail
+        assert "esperava 10 bytes, gravou 3" in ei.value.interno
+        assert "/dados/bi/2026/curto.bin" not in fake.arvore
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_erro_local_do_spool_e_502_da_api_nao_do_servidor(self):
+        class _Quebrado(io.BytesIO):
+            def read(self, n=-1):
+                raise OSError(errno.EIO, "Input/output error")
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as ei:
+            _enviar(fake, "/dados/bi/2026/x.bin", b"abc", origem=_Quebrado())
+        assert ei.value.status == 502 and "temporário na API" in ei.value.detail
+        assert ei.value.interno.startswith("spool:")
+        assert not [p for p in fake.arvore if ".tmp-" in p]
+
+    def test_pasta_somente_leitura_diz_a_causa(self):
+        fake = FakeSftp(ARVORE, somente_leitura={"/dados/bi/2026"})
+        with pytest.raises(svc.ArquivoError) as ei:
+            _enviar(fake, "/dados/bi/2026/x.bin", b"abc")
+        assert ei.value.status == 502 and "somente leitura" in ei.value.detail
+
+    def test_link_para_fora_403_e_gravar_arquivo_continua_igual(self):
+        fake = FakeSftp(ARVORE)
+        with pytest.raises(svc.ArquivoError) as ei:
+            _enviar(fake, "/dados/bi/link_fora/x.bin", b"abc")
+        assert ei.value.status == 403 and ei.value.resultado == "negado"
+        r = svc.gravar_arquivo(fake, "/dados/bi/2026/texto.txt", RAIZES, b"oi\n",
+                               sobrescrever=False, backup=True, marca="t")
+        assert r["tamanho_bytes"] == 3 and r["sha256"] == hashlib.sha256(b"oi\n").hexdigest()
+        assert fake.arvore["/dados/bi/2026/texto.txt"] == b"oi\n"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. Upload (F3) — endpoint
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _put_enviar(client, cur, params, content=b"", headers=None):
+    with patch("routers.utilitarios.get_db_conn", return_value=_conn(cur)):
+        return client.put("/utilitarios/arquivo/enviar", params=params, content=content,
+                          headers={"Content-Type": "application/octet-stream", **(headers or {})})
+
+
+ENVIAR_OK = {"diretorio": "/dados/bi/2026", "nome": "Relatorio.TXT"}
+
+
+class TestEnviarEndpoint:
+    def test_dev_envia_binario_com_nome_como_esta_e_audita_com_hash(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)   # extensões: sql, txt
+        r = _put_enviar(client, cur, ENVIAR_OK, BINARIO)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["caminho"] == "/dados/bi/2026/Relatorio.TXT" and j["criado"] is True and j["backup"] is None
+        assert j["tamanho_bytes"] == len(BINARIO) and j["sha256"] == hashlib.sha256(BINARIO).hexdigest()
+        assert isinstance(j["duracao_ms"], int)
+        assert sftp_falso.arvore["/dados/bi/2026/Relatorio.TXT"] == BINARIO
+        usuario, servidor, acao, caminho, tamanho, sha, resultado, detalhe, dur = cur.auditoria[0]
+        assert (acao, resultado, caminho, tamanho, detalhe) == ("enviar", "ok", "/dados/bi/2026/Relatorio.TXT", len(BINARIO), "criado")
+        assert sha == hashlib.sha256(BINARIO).hexdigest()
+        assert _vagas_livres() == 2
+
+    def test_operador_403_negado_antes_de_tudo(self, client, auth_operador, monkeypatch):
+        chamou = []
+
+        @contextmanager
+        def _cm(servidor):
+            chamou.append(servidor)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"x")
+        assert r.status_code == 403 and "acao_editar" in r.json()["detail"]
+        assert chamou == [] and cur.auditoria[0][2] == "enviar" and cur.auditoria[0][6] == "negado"
+
+    def test_extensao_fora_da_lista_e_sem_extensao_422(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, {**ENVIAR_OK, "nome": "script.SH"}, b"x")
+        assert r.status_code == 422 and "'sh' não liberada" in r.json()["detail"]
+        r = _put_enviar(client, cur, {**ENVIAR_OK, "nome": "README"}, b"x")
+        assert r.status_code == 422 and "sem extensão" in r.json()["detail"]
+        assert len(cur.auditoria) == 2 and all(a[6] == "erro" for a in cur.auditoria)
+        assert not [p for p in sftp_falso.arvore if p.endswith(("script.SH", "README"))]
+
+    def test_fora_das_raizes_403_negado_sem_ssh(self, client, auth_dev, monkeypatch):
+        chamou = []
+
+        @contextmanager
+        def _cm(servidor):
+            chamou.append(servidor)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, {**ENVIAR_OK, "diretorio": "/dados/bi/../../etc"}, b"x")
+        assert r.status_code == 403 and chamou == []
+        assert cur.auditoria[0][6] == "negado" and cur.auditoria[0][3] == "/dados/bi/../../etc/Relatorio.TXT"
+
+    def test_content_length_acima_do_teto_413_antes_de_ler_o_corpo(self, client, auth_dev, monkeypatch):
+        chamou = []
+
+        @contextmanager
+        def _cm(servidor):
+            chamou.append(servidor)
+            yield FakeSftp(ARVORE)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm)
+        criados = []
+        original_cls = rt.tempfile.SpooledTemporaryFile
+
+        def _spool(*a, **kw):
+            s = original_cls(*a, **kw)
+            criados.append(s)
+            return s
+        monkeypatch.setattr(rt.tempfile, "SpooledTemporaryFile", _spool)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"x", headers={"Content-Length": str(svc.TRANSFERENCIA_MAX_BYTES + 1)})
+        assert r.status_code == 413, r.text
+        assert "acima do teto" in r.json()["detail"] and f"({svc.TRANSFERENCIA_MAX_BYTES + 1} bytes)" in r.json()["detail"]
+        assert criados == [] and chamou == []       # nem spool, nem SSH: o corpo não foi lido
+        assert cur.auditoria[0][6] == "erro" and cur.auditoria[0][3] == "/dados/bi/2026/Relatorio.TXT"
+        assert _vagas_livres() == 2
+
+    def test_content_length_no_teto_exato_passa(self, client, auth_dev, sftp_falso, monkeypatch):
+        monkeypatch.setattr(svc, "TRANSFERENCIA_MAX_BYTES", 5)
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _put_enviar(client, cur, ENVIAR_OK, b"12345").status_code == 200
+        assert _put_enviar(client, cur, {**ENVIAR_OK, "nome": "b.txt"}, b"123456").status_code == 413
+
+    def test_corpo_menor_que_o_declarado_400_sem_gravar(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"0123456789", headers={"Content-Length": "100"})
+        assert r.status_code == 400, r.text
+        assert "chegaram 10 de 100 bytes" in r.json()["detail"]
+        assert "/dados/bi/2026/Relatorio.TXT" not in sftp_falso.arvore
+        assert not [p for p in sftp_falso.arvore if ".tmp-" in p]
+        assert cur.auditoria[0][6] == "erro" and _vagas_livres() == 2
+
+    def test_corpo_maior_que_o_declarado_413(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"0123456789", headers={"Content-Length": "3"})
+        assert r.status_code == 413, r.text
+        assert "passou do tamanho declarado" in r.json()["detail"]
+        assert "/dados/bi/2026/Relatorio.TXT" not in sftp_falso.arvore and _vagas_livres() == 2
+
+    def test_sem_content_length_411_e_invalido_422(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, iter([b"abc"]))      # chunked: sem Content-Length
+        assert r.status_code == 411, r.text
+        assert "Content-Length" in r.json()["detail"]
+        r = _put_enviar(client, cur, ENVIAR_OK, b"abc", headers={"Content-Length": "abc"})
+        assert r.status_code == 422
+        assert len(cur.auditoria) == 2 and all(a[2] == "enviar" for a in cur.auditoria)
+
+    def test_corpo_vazio_cria_arquivo_de_zero_bytes(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, {**ENVIAR_OK, "nome": "vazio.txt"}, b"")
+        assert r.status_code == 200 and r.json()["tamanho_bytes"] == 0
+        assert sftp_falso.arvore["/dados/bi/2026/vazio.txt"] == b""
+
+    def test_409_e_sobrescrever_com_backup_audita_sobrescrito(self, client, auth_dev, sftp_falso):
+        regras = REGRAS_CONFIG[:2] + [("FROM dbo.etl_app_config", [("utilitarios_arquivo_max_kb", "16"),
+                                                                    ("utilitarios_arquivo_backup", "1")])]
+        cur = _Cursor(regras)
+        params = {"diretorio": "/dados/bi", "nome": "consulta.sql"}
+        r = _put_enviar(client, cur, params, b"SELECT 9;\n")
+        assert r.status_code == 409
+        assert r.json()["detail"]["mensagem"].startswith("O arquivo já existe")
+        assert r.json()["detail"]["existente"]["tamanho_bytes"] == 10
+        assert sftp_falso.arvore["/dados/bi/consulta.sql"] == b"SELECT 1;\n"
+        r = _put_enviar(client, cur, {**params, "sobrescrever": "true"}, b"SELECT 9;\n")
+        assert r.status_code == 200, r.text
+        assert r.json()["criado"] is False and r.json()["backup"].startswith("/dados/bi/consulta.sql.bak-")
+        assert sftp_falso.arvore["/dados/bi/consulta.sql"] == b"SELECT 9;\n"
+        assert cur.auditoria[-1][7].startswith("sobrescrito; backup /dados/bi/consulta.sql.bak-")
+
+    def test_spool_acima_da_memoria_vai_para_o_disco_e_sobe_inteiro(self, client, auth_dev, sftp_falso, monkeypatch):
+        monkeypatch.setattr(rt, "_SPOOL_MEMORIA", 1024)
+        criados = []
+        original_cls = rt.tempfile.SpooledTemporaryFile
+
+        def _spool(*a, **kw):
+            s = original_cls(*a, **kw)
+            criados.append(s)
+            return s
+        monkeypatch.setattr(rt.tempfile, "SpooledTemporaryFile", _spool)
+        cur = _Cursor(REGRAS_CONFIG)
+        grande = BINARIO * 8   # ~82 KB
+        r = _put_enviar(client, cur, {**ENVIAR_OK, "nome": "grande.txt"}, grande)
+        assert r.status_code == 200
+        assert sftp_falso.arvore["/dados/bi/2026/grande.txt"] == grande
+        assert criados[0]._rolled is True and criados[0].closed  # noqa: SLF001
+
+    def test_sem_vaga_503_na_hora(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        assert rt._VAGAS_TRANSFERENCIA.acquire(blocking=False)
+        assert rt._VAGAS_TRANSFERENCIA.acquire(blocking=False)
+        try:
+            r = _put_enviar(client, cur, ENVIAR_OK, b"x")
+        finally:
+            rt._VAGAS_TRANSFERENCIA.release()
+            rt._VAGAS_TRANSFERENCIA.release()
+        assert r.status_code == 503 and "transferências em andamento" in r.json()["detail"]
+        assert cur.auditoria[0][6] == "erro"
+
+    def test_timeout_504_devolve_a_vaga(self, client, auth_dev, monkeypatch):
+        class _Lento(FakeSftp):
+            def normalize(self, caminho):
+                time.sleep(0.3)
+                return super().normalize(caminho)
+        monkeypatch.setattr(svc, "conexao_sftp", _cm_de(_Lento(ARVORE)))
+        monkeypatch.setattr(rt, "_TIMEOUT_TRANSFERENCIA_S", 0.05)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"x")
+        assert r.status_code == 504 and cur.auditoria[0][6] == "erro"
+        assert _vagas_livres() == 2
+        time.sleep(0.5)  # a thread presa termina antes do próximo teste
+
+    def test_inesperado_502_generico(self, client, auth_dev, monkeypatch):
+        class _Quebra(FakeSftp):
+            def normalize(self, caminho):
+                raise RuntimeError("boom")
+        monkeypatch.setattr(svc, "conexao_sftp", _cm_de(_Quebra(ARVORE)))
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"x")
+        assert r.status_code == 502
+        assert r.json()["detail"] == "Falha ao enviar o arquivo — detalhe registrado no log da API."
+        assert cur.auditoria[0][7].startswith("inesperado:") and _vagas_livres() == 2
+
+    def test_pasta_inexistente_404(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, {**ENVIAR_OK, "diretorio": "/dados/bi/nao_existe"}, b"x")
+        assert r.status_code == 404 and cur.auditoria[0][6] == "erro"
+
+    def test_servidor_nao_configurado_503_depois_de_receber_o_corpo(self, client, auth_dev, monkeypatch):
+        """Sem `sftp_falso`: a `conexao_sftp` real recusa antes de importar o paramiko."""
+        monkeypatch.delenv("DS_SSH_HOST", raising=False)
+        monkeypatch.delenv("DS_SSH_USER", raising=False)
+        cur = _Cursor(REGRAS_CONFIG)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"x")
+        assert r.status_code == 503 and "não configurado" in r.json()["detail"]
+        assert cur.auditoria[0][6] == "erro" and _vagas_livres() == 2
+
+    def test_consulta_403_sem_auth_401_sem_migration_503(self, client, auth_consulta):
+        cur = _Cursor(REGRAS_CONFIG)
+        assert _put_enviar(client, cur, ENVIAR_OK, b"x").status_code == 403
+        assert cur.auditoria == []
+
+    def test_sem_auth_401(self, client):
+        assert client.put("/utilitarios/arquivo/enviar", params=ENVIAR_OK, content=b"x").status_code == 401
+
+    def test_sem_migration_105_503(self, client, auth_dev, sftp_falso):
+        cur = _Cursor(REGRAS_CONFIG, tabelas=0)
+        r = _put_enviar(client, cur, ENVIAR_OK, b"x")
+        assert r.status_code == 503 and "105" in r.json()["detail"]

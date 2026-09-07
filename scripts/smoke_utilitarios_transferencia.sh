@@ -7,10 +7,11 @@
 #         PASTA=/dados/bi/2026 ARQ=consulta.sql BIN=/dados/bi/imagem.bin \
 #         scripts/smoke_utilitarios_transferencia.sh
 #       (sem variáveis, lê .env.dev e usa a árvore do sshd-amostra)
-# F1 (download): itens b, c, e, f, m e n. Os itens de upload (g–l) entram na F3;
-# a, d, k e a parte visual dos outros exigem o navegador — marcados "UI".
-# Os itens e e m criam arquivos grandes no servidor e por isso exigem acesso a ele
-# (`docker exec` no DEV); sem acesso, o script diz o que fazer à mão.
+# Download (F1): itens b, c, e, f, m e n. Upload (F3): g, h, i, j, k e l pela API.
+# a, d, a parte visual de g/h/k e o l com credencial de operador exigem o
+# navegador ou outra credencial — marcados "UI". Os itens e, h, k e m criam ou
+# conferem arquivos no servidor e por isso exigem acesso a ele (`docker exec` no
+# DEV); sem acesso, o script diz o que fazer à mão e o que sobrou para apagar.
 set -u
 cd "$(dirname "$0")/.."
 if [ -z "${ORQ_USER:-}" ] && [ -f .env.dev ]; then set -a; . ./.env.dev 2>/dev/null; set +a; fi
@@ -24,6 +25,11 @@ res() { if [ "$1" = "$2" ]; then ok=$((ok+1)); printf '  ✅ %s → %s\n' "$3" "
 call() { local m=$1 p=$2 d=${3:-}; if [ -n "$d" ]; then curl -s -u "$AUTH" -X "$m" "$B$p" -H 'Content-Type: application/json' -d "$d" -w '\n%{http_code}'; else curl -s -u "$AUTH" -X "$m" "$B$p" -w '\n%{http_code}'; fi; }
 # baixar <pasta> <nome> <arquivo-de-saída> → imprime o status; cabeçalhos em <saída>.h
 baixar() { curl -s -u "$AUTH" -G "$B/utilitarios/arquivo/baixar" --data-urlencode "diretorio=$1" --data-urlencode "nome=$2" -o "$3" -D "$3.h" -w '%{http_code}'; }
+# enviar <pasta> <nome> <arquivo-local> [sobrescrever=true] [extra-curl…] → corpo JSON + status na última linha
+enviar() { local p=$1 n=$2 f=$3 s=${4:-false}; shift 4 2>/dev/null || shift $#
+  curl -s -u "$AUTH" -X PUT "$B/utilitarios/arquivo/enviar?servidor=datastage&sobrescrever=$s&diretorio=$(urlenc "$p")&nome=$(urlenc "$n")" \
+    -H 'Content-Type: application/octet-stream' --data-binary "@$f" "$@" -w '\n%{http_code}'; }
+urlenc() { python3 -c 'import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$1"; }
 status() { printf '%s' "$1" | tail -n1; }
 corpo() { printf '%s' "$1" | sed '$d'; }
 jq_() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)" 2>/dev/null; }
@@ -84,7 +90,56 @@ if [ -n "$(no_srv 'echo ok')" ] && [ -n "$(no_srv "test -L '$RAIZ/link_fora' && 
   res "$(baixar "$RAIZ/link_fora" segredo.txt "$TMP/f3.out")" 403 "link para fora da raiz"
 else echo "  ($RAIZ/link_fora não existe neste servidor: passo do link pulado — em produção, crie um symlink para fora sob a raiz e espere 403)"; fi
 
-echo "== g–l) upload: F3/F4 =="
+echo "== g) enviar arquivo novo (3 MB, binário): sha256 confere, sem +x =="
+head -c $((3*1024*1024)) /dev/urandom > "$TMP/smoke_transfer.txt"
+r=$(enviar "$PASTA" smoke_transfer.txt "$TMP/smoke_transfer.txt"); res "$(status "$r")" 200 "enviar smoke_transfer.txt"
+res "$(corpo "$r" | jq_ "str(d['criado'])+' '+str(d['tamanho_bytes'])")" "True $((3*1024*1024))" "criado, 3 MB"
+res "$(corpo "$r" | jq_ "d['sha256']")" "$(sha "$TMP/smoke_transfer.txt")" "sha256 da resposta = sha256 local"
+cam=$(corpo "$r" | jq_ "d['caminho']")
+if [ -n "$(no_srv 'echo ok')" ]; then
+  res "$(no_srv "sha256sum '$cam'" | cut -c1-64)" "$(sha "$TMP/smoke_transfer.txt")" "sha256 no servidor"
+  res "$(no_srv "stat -c %A '$cam'" | grep -c x)" 0 "sem bit de execução"
+  res "$(no_srv "ls -a '$PASTA'" | grep -c '\.tmp-')" 0 "nenhum .tmp sobrou"
+else SOBRAS="$SOBRAS $cam"; fi
+
+echo "== h) enviar de novo: 409; sobrescrever com .bak e modo preservado =="
+r=$(enviar "$PASTA" smoke_transfer.txt "$TMP/smoke_transfer.txt"); res "$(status "$r")" 409 "sem sobrescrever"
+res "$(corpo "$r" | jq_ "str(d['detail']['existente']['tamanho_bytes'])")" "$((3*1024*1024))" "409 traz o tamanho do atual"
+[ -n "$(no_srv 'echo ok')" ] && no_srv "chmod 664 '$cam'"
+printf 'v2\n' > "$TMP/v2.txt"
+r=$(enviar "$PASTA" smoke_transfer.txt "$TMP/v2.txt" true); res "$(status "$r")" 200 "sobrescrever"
+bak=$(corpo "$r" | jq_ "d['backup']"); res "$(corpo "$r" | jq_ "str(d['criado'])+' '+str(d['tamanho_bytes'])")" "False 3" "sobrescrito, 3 bytes"
+if [ -n "$(no_srv 'echo ok')" ]; then
+  res "$(no_srv "sha256sum '$bak'" | cut -c1-64)" "$(sha "$TMP/smoke_transfer.txt")" ".bak tem o conteúdo anterior"
+  res "$(no_srv "cat '$cam'")" "v2" "o arquivo tem o novo"
+  res "$(no_srv "stat -c %a '$cam'")" 664 "modo 664 preservado na sobrescrita"
+  no_srv "rm -f '$cam' '$bak'"
+else SOBRAS="$SOBRAS $bak"; fi
+
+echo "== i) extensão fora da lista / sem extensão / nome com maiúscula =="
+r=$(enviar "$PASTA" qualquer.exe "$TMP/v2.txt"); res "$(status "$r")" 422 "exe recusada"; printf '  %s\n' "$(corpo "$r" | jq_ "d['detail']")"
+r=$(enviar "$PASTA" script.SH "$TMP/v2.txt"); res "$(status "$r")" 422 "SH recusada (compara em minúsculas)"
+r=$(enviar "$PASTA" README "$TMP/v2.txt"); res "$(status "$r")" 422 "sem extensão recusado"
+r=$(enviar "$PASTA" RELATORIO.TXT "$TMP/v2.txt"); res "$(status "$r")" 200 "RELATORIO.TXT aceito com txt na lista"
+res "$(corpo "$r" | jq_ "d['caminho'].endswith('/RELATORIO.TXT')")" True "nome mantido como está"
+if [ -n "$(no_srv 'echo ok')" ]; then no_srv "rm -f '$PASTA/RELATORIO.TXT'"; else SOBRAS="$SOBRAS $PASTA/RELATORIO.TXT"; fi
+
+echo "== j) Content-Length acima do teto → 413 antes do corpo; corpo que mente → 400/413 =="
+t0=$(date +%s); r=$(enviar "$PASTA" grande.txt "$TMP/v2.txt" false -H "Content-Length: $((teto_kb*1024+1))" --max-time 8); t1=$(date +%s)
+res "$(status "$r")" 413 "Content-Length de 50 MB + 1"; res "$([ $((t1-t0)) -le 3 ] && echo rapido)" rapido "recusado sem ler o corpo (≤ 3 s)"
+r=$(enviar "$PASTA" chunked.txt "$TMP/v2.txt" false -H "Transfer-Encoding: chunked" -H "Content-Length:"); res "$(status "$r")" 411 "sem Content-Length (chunked)"
+[ -n "$(no_srv 'echo ok')" ] && res "$(no_srv "ls -a '$PASTA'" | grep -c 'grande.txt\|chunked.txt')" 0 "nada gravado"
+
+echo "== k) cliente desiste no meio do envio: nada gravado, nenhum .tmp =="
+if [ -n "$(no_srv 'echo ok')" ]; then
+  head -c $((30*1024*1024)) /dev/urandom > "$TMP/smoke_30mb.bin"
+  ( enviar "$PASTA" smoke_30mb.txt "$TMP/smoke_30mb.bin" false --limit-rate 5M --max-time 2 >/dev/null 2>&1 ) ; sleep 2
+  res "$(no_srv "ls -a '$PASTA'" | grep -c 'smoke_30mb')" 0 "nem o arquivo nem o .tmp existem"
+  res "$(enviar "$PASTA" depois.txt "$TMP/v2.txt" | tail -n1)" 200 "envio normal depois da desistência"
+  no_srv "rm -f '$PASTA/depois.txt'"
+else echo "  (sem acesso ao servidor de arquivos: passo k NÃO executado — interrompa um envio grande e confira que não ficou .tmp na pasta)"; fi
+
+echo "== l) operador → PUT enviar 403: exige credencial de operador (UI/F4) =="
 
 echo "== m) transferências em paralelo: vagas esgotadas respondem 503 na hora =="
 if [ -n "$(no_srv 'echo ok')" ]; then
@@ -108,13 +163,13 @@ if docker exec orquestra-api true 2>/dev/null; then
   vaz=$(docker exec -i orquestra-api python - <<'PY'
 from db import get_db_conn
 c = get_db_conn(); cur = c.cursor()
-cur.execute("SELECT TOP 12 acao, resultado, LEFT(caminho, 45), tamanho_bytes, LEFT(sha256, 8) FROM dbo.etl_utilitario_arquivo_log WHERE acao = 'baixar' ORDER BY id DESC")
+cur.execute("SELECT TOP 16 acao, resultado, LEFT(caminho, 45), tamanho_bytes, LEFT(sha256, 8) FROM dbo.etl_utilitario_arquivo_log WHERE acao IN ('baixar', 'enviar') ORDER BY id DESC")
 for r in cur.fetchall(): print("  ", tuple(r))
-cur.execute("SELECT COUNT(*) FROM dbo.etl_utilitario_arquivo_log WHERE acao = 'baixar' AND resultado = 'ok' AND (sha256 IS NULL OR tamanho_bytes IS NULL)")
+cur.execute("SELECT COUNT(*) FROM dbo.etl_utilitario_arquivo_log WHERE acao IN ('baixar', 'enviar') AND resultado = 'ok' AND (sha256 IS NULL OR tamanho_bytes IS NULL)")
 print(cur.fetchone()[0])
 PY
 )
-  res "$(printf '%s' "$vaz" | tail -n1)" 0 "todo 'baixar' ok tem tamanho e sha256"; printf '%s\n' "$vaz" | sed '$d'
+  res "$(printf '%s' "$vaz" | tail -n1)" 0 "todo 'baixar'/'enviar' ok tem tamanho e sha256"; printf '%s\n' "$vaz" | sed '$d'
 else echo "  SELECT TOP 20 acao, resultado, caminho, tamanho_bytes, sha256 FROM dbo.etl_utilitario_arquivo_log WHERE acao IN ('baixar','enviar') ORDER BY id DESC"; fi
-echo; echo "RESULTADO: $ok ok, $falha falhas (itens UI e de upload à parte)"
+echo; echo "RESULTADO: $ok ok, $falha falhas (itens UI à parte)"
 [ "$falha" -eq 0 ]
