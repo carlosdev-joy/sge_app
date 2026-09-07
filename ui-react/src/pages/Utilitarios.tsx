@@ -10,6 +10,11 @@
 // resposta de um download já dispensado — e passa `onBaixar` ao modal de
 // conteúdo e aos navegadores de pastas; a faixa de transferência mostra o
 // progresso, o resultado ou o erro.
+//
+// Upload (F4): terceira aba, Enviar arquivo. A página segura o `File` escolhido
+// entre o 409 e o Sobrescrever (o MESMO arquivo sobe de novo com
+// `sobrescrever: true`), o gesto de cancelar do XHR em curso e o progresso;
+// o modal de envio mostra enviando → existe/pronto/cancelado/erro.
 import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Wrench, AlertTriangle } from 'lucide-react'
@@ -26,14 +31,20 @@ import { ModalConteudoArquivo, type EstadoLeitura } from '../components/utilitar
 import { FormEditarArquivo, type CarregadoExistente } from '../components/utilitarios/FormEditarArquivo'
 import { ModalGravacaoArquivo, type EstadoGravacao } from '../components/utilitarios/ModalGravacaoArquivo'
 import { BarraTransferencia } from '../components/utilitarios/BarraTransferencia'
+import { FormEnviarArquivo } from '../components/utilitarios/FormEnviarArquivo'
+import { ModalEnvioArquivo } from '../components/utilitarios/ModalEnvioArquivo'
 import { mensagemErro, migrationPendente, type ConfigUtil } from '../lib/utilitariosAdmin'
 import { erroLeitura, type ConteudoArquivo, type ErroLeitura, type PedidoLeitura } from '../lib/utilitariosArquivo'
 import {
   erroGravacao, nomeArquivoCompleto,
   type ErroGravacao, type PedidoGravacao, type ResultadoGravacao,
 } from '../lib/utilitariosGravacao'
-import { emCurso, erroTransferencia, type EstadoTransferencia, type PedidoDownload } from '../lib/utilitariosTransferencia'
+import {
+  TETO_TRANSFERENCIA_KB_PADRAO, emCurso, envioChegouInteiro, erroEnvio, erroTransferencia,
+  type ErroEnvio, type EstadoEnvio, type EstadoTransferencia, type PedidoDownload, type PedidoEnvio, type ResultadoEnvio,
+} from '../lib/utilitariosTransferencia'
 import { baixarArquivo } from '../lib/utilitariosDownload'
+import { enviarArquivo, type EnvioEmCurso, type ErroEnvioTransporte } from '../lib/utilitariosEnvio'
 import type { Listagem } from '../lib/utilitariosNavegador'
 import type { ListarPasta } from '../components/utilitarios/useNavegadorPastas'
 
@@ -48,14 +59,19 @@ const listarPasta: ListarPasta = (servidor, caminho, mostrarOcultos) => {
 const TABS = [
   { id: 'ver', label: 'Ver arquivo' },
   { id: 'editar', label: 'Criar/editar arquivo' },
+  { id: 'enviar', label: 'Enviar arquivo' },
 ]
 const ABA_CHAVE = 'orq.utilitarios.aba'
+const ABAS_LEMBRADAS = new Set(['editar', 'enviar'])
 
 export default function Utilitarios() {
   const isAdmin = useAuthStore(s => s.isAdmin)
   // Aba lembrada por navegador (`localStorage` LANÇA em janela privada: try/catch dos dois lados).
   const [aba, setAbaEstado] = useState(() => {
-    try { return localStorage.getItem(ABA_CHAVE) === 'editar' ? 'editar' : 'ver' } catch { return 'ver' }
+    try {
+      const lembrada = localStorage.getItem(ABA_CHAVE) ?? ''
+      return ABAS_LEMBRADAS.has(lembrada) ? lembrada : 'ver'
+    } catch { return 'ver' }
   })
   const setAba = (id: string) => {
     setAbaEstado(id)
@@ -192,6 +208,54 @@ export default function Utilitarios() {
   // caminho DIGITADO (lexical) — com raiz-symlink, o real cairia fora das raízes.
   const baixarDoModal = () => { if (pedido) baixar({ servidor: pedido.servidor, diretorio: pedido.diretorio, nome: pedido.nome }) }
 
+  // ── envio (upload) ─────────────────────────────────────────────────────────
+  const [pedidoE, setPedidoE] = useState<PedidoEnvio | null>(null)
+  // O `File` fica na página: o Sobrescrever (saída do 409) reenvia o MESMO arquivo.
+  const [arquivoE, setArquivoE] = useState<File | null>(null)
+  const [progressoE, setProgressoE] = useState<{ enviado: number; total: number } | null>(null)
+  const [resultadoE, setResultadoE] = useState<ResultadoEnvio | null>(null)
+  const [erroE, setErroE] = useState<ErroEnvio | null>(null)
+  const [enviandoE, setEnviandoE] = useState(false)
+  const [canceladoE, setCanceladoE] = useState<{ chegouInteiro: boolean } | null>(null)
+  const envioRef = useRef<EnvioEmCurso | null>(null)
+  const serieE = useRef(0)
+
+  const enviar = (p: PedidoEnvio, arquivo: File) => {
+    if (enviandoE) return
+    const minha = ++serieE.current
+    setPedidoE(p); setArquivoE(arquivo); setResultadoE(null); setErroE(null); setCanceladoE(null)
+    setProgressoE({ enviado: 0, total: arquivo.size }); setEnviandoE(true)
+    const envio = enviarArquivo(p, arquivo, (enviado, total) => {
+      if (serieE.current === minha) setProgressoE({ enviado, total })
+    })
+    envioRef.current = envio
+    envio.promessa
+      .then(r => { if (serieE.current === minha) { setResultadoE(r); setErroE(null) } })
+      .catch((e: ErroEnvioTransporte) => {
+        if (serieE.current !== minha) return
+        if (e?.cancelado) return  // `cancelarEnvio` já registrou o que importa
+        setResultadoE(null); setErroE(erroEnvio(e))
+      })
+      .finally(() => { if (serieE.current === minha) { setEnviandoE(false); envioRef.current = null } })
+  }
+  // Saída do 409: o MESMO arquivo e o mesmo destino, agora com sobrescrever.
+  const sobrescreverEnvio = () => { if (pedidoE && arquivoE) enviar({ ...pedidoE, sobrescrever: true }, arquivoE) }
+  const cancelarEnvio = () => {
+    if (!envioRef.current) return
+    // Se o corpo já tinha subido inteiro, o servidor pode gravar mesmo assim —
+    // a frase do cancelamento diz isso (spec §8.15).
+    setCanceladoE({ chegouInteiro: envioChegouInteiro(progressoE) })
+    envioRef.current.cancelar()
+  }
+  const fecharEnvio = () => {
+    if (enviandoE) return  // enquanto sobe, o gesto é Cancelar
+    serieE.current++
+    setPedidoE(null); setResultadoE(null); setErroE(null); setCanceladoE(null); setProgressoE(null)
+  }
+  const estadoE: EstadoEnvio = enviandoE ? 'enviando'
+    : canceladoE ? 'cancelado'
+      : erroE?.status === 409 ? 'existe' : erroE ? 'erro' : resultadoE ? 'pronto' : 'enviando'
+
   // Troca de aba com texto não gravado no editor: pergunta antes de descartar.
   const mudarAba = (id: string) => {
     if (id === aba) return
@@ -233,13 +297,14 @@ export default function Utilitarios() {
     <div className="flex flex-col gap-4">
       <Cabecalho />
 
-      <InfoBanner storageKey="utilitarios_ver_v3">
+      <InfoBanner storageKey="utilitarios_ver_v4">
         <strong>Ver arquivo</strong>: informe a pasta e o nome e clique em Iniciar — o conteúdo abre num modal, com
         botões para copiar e para <strong>baixar</strong> o arquivo para o seu computador (o Baixar também está em
         cada arquivo do navegador de pastas, e vale para binários). <strong>Criar/editar arquivo</strong>: escreva
         no editor, escolha a extensão e a pasta e grave; para alterar um arquivo que já existe, use "Carregar
-        existente". Só pastas abaixo dos diretórios liberados pelo admin; toda leitura, download e gravação fica
-        registrada.
+        existente". <strong>Enviar arquivo</strong>: escolha um arquivo do seu computador (até o teto, com extensão
+        da lista) e a pasta de destino; se já existir um com esse nome, a tela pede confirmação. Só pastas abaixo dos
+        diretórios liberados pelo admin; toda leitura, download, gravação e envio fica registrado.
       </InfoBanner>
 
       {semRaiz && (
@@ -304,6 +369,21 @@ export default function Utilitarios() {
         />
       )}
 
+      {aba === 'enviar' && (
+        <FormEnviarArquivo
+          servidores={cfg.servidores}
+          raizesPorServidor={raizesPorServidor}
+          extensoes={cfg.extensoes}
+          tetoKb={cfg.transferencia_max_kb ?? TETO_TRANSFERENCIA_KB_PADRAO}
+          podeGravar={cfg.pode_gravar}
+          enviando={enviandoE}
+          onEnviar={enviar}
+          onListar={listarPasta}
+          onBaixar={baixar}
+          baixando={baixando}
+        />
+      )}
+
       <ModalConteudoArquivo
         aberto={pedido !== null}
         pedido={pedido}
@@ -327,6 +407,19 @@ export default function Utilitarios() {
         onFechar={fecharGravacao}
         onSobrescrever={sobrescrever}
         onVerArquivo={verGravado}
+      />
+
+      <ModalEnvioArquivo
+        aberto={pedidoE !== null}
+        pedido={pedidoE}
+        estado={estadoE}
+        progresso={progressoE}
+        resultado={resultadoE}
+        erro={erroE}
+        chegouInteiro={canceladoE?.chegouInteiro ?? false}
+        onFechar={fecharEnvio}
+        onCancelar={cancelarEnvio}
+        onSobrescrever={sobrescreverEnvio}
       />
 
       <Modal open={abaPendente !== null} onClose={() => setAbaPendente(null)} title="Alterações não gravadas" size="sm">
