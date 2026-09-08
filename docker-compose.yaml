@@ -189,6 +189,23 @@ services:
       # aceita qualquer (paridade com o Console). Em produção, defina.
       DS_SSH_KNOWN_HOSTS: "${DS_SSH_KNOWN_HOSTS:-}"
       DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
+      # ── Lineage ISX (spec docs/spec-lineage-isx.md) ────────────────────────
+      # API REST do DataStage (serviços, porta 9443) e istool no servidor do
+      # engine (pelo mesmo SSH das DS_SSH_*). Sem DS_ENGINE/DS_API_*, a
+      # extração responde 503 nomeando o que falta. A credencial do istool fica
+      # num -authfile NO SERVIDOR (DS_ISTOOL_AUTHFILE) — nunca na linha de
+      # comando. DS_API_VERIFY_SSL: true | false (aviso no log) | caminho de CA.
+      DS_ENGINE:            "${DS_ENGINE:-}"
+      DS_API_URL:           "${DS_API_URL:-}"
+      DS_API_USER:          "${DS_API_USER:-}"
+      DS_API_PASSWORD:      "${DS_API_PASSWORD:-}"
+      DS_API_VERIFY_SSL:    "${DS_API_VERIFY_SSL:-true}"
+      DS_ISTOOL_HOME:       "${DS_ISTOOL_HOME:-/opt/IBM/InformationServer}"
+      DS_ISTOOL_LAUNCHER:   "${DS_ISTOOL_LAUNCHER:-Clients/istools/cli/plugins/org.eclipse.equinox.launcher_1.1.0.v20100507.jar}"
+      DS_ISTOOL_DOMAIN:     "${DS_ISTOOL_DOMAIN:-}"
+      DS_ISTOOL_AUTHFILE:   "${DS_ISTOOL_AUTHFILE:-}"
+      DS_ISTOOL_TMP:        "${DS_ISTOOL_TMP:-~/.orquestra/tmp}"
+      DS_ISTOOL_CFG:        "${DS_ISTOOL_CFG:-~/.orquestra/istool_cfg}"
       CORS_ORIGINS:     "${CORS_ORIGINS:-http://orquestra.caixavidaeprevidencia.intranet,http://orquestra.caixavidaeprevidencia.intranet:8090,http://vmlnxprd083,http://vmlnxprd083:8090}"
       # ── ServiceNow (sonda do Admin; espelho dos chamados na spec) ──────────
       # Instância padrão da tela — só a URL. Credencial NUNCA vem daqui: a

@@ -1,0 +1,60 @@
+{
+  "/ibm/iis/ds/api/engines": {
+    "engines": [{"id": "engines/AMOSTRA.DEV", "name": "AMOSTRA.DEV"}]
+  },
+  "/ibm/iis/ds/api/engines/AMOSTRA.DEV/projects": {
+    "projects": [{"name": "BI_VIDA"}, {"name": "BI_CVP"}]
+  },
+  "/ibm/iis/ds/api/folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs/contents": {
+    "id": "folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs/contents",
+    "name": "Jobs",
+    "children": [
+      {"$ref": "folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida/contents", "children": true, "name": "SsdVida"},
+      {"id": "jobdesigns/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CJobRaiz", "jobType": "PARALLEL",
+       "lastModifiedTimestamp": "2026-01-10T10:00:00.000+0000", "name": "JobRaiz"}
+    ]
+  },
+  "/ibm/iis/ds/api/folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida/contents": {
+    "id": "folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida/contents",
+    "name": "SsdVida",
+    "children": [
+      {"$ref": "folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida%5C_Dime/contents", "children": true, "name": "_Dime"}
+    ]
+  },
+  "/ibm/iis/ds/api/folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida%5C_Dime/contents": {
+    "id": "folders/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida%5C_Dime/contents",
+    "name": "_Dime",
+    "children": [
+      {"id": "jobdesigns/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida%5C_Dime%5CSsdVidaDimePessoa02Ftp", "jobType": "PARALLEL",
+       "lastModifiedTimestamp": "2026-08-04T03:37:15.253+0000", "name": "SsdVidaDimePessoa02Ftp"},
+      {"id": "jobdesigns/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida%5C_Dime%5CSeqSsdVidaDime", "jobType": "SEQUENCE",
+       "lastModifiedTimestamp": "2026-08-05T12:00:00.000+0000", "name": "SeqSsdVidaDime"}
+    ]
+  },
+  "/ibm/iis/ds/api/jobdesigns/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida%5C_Dime%5CSsdVidaDimePessoa02Ftp": {
+    "name": "SsdVidaDimePessoa02Ftp",
+    "projectName": "BI_VIDA",
+    "jobType": "PARALLEL",
+    "engineName": "AMOSTRA.DEV",
+    "folderPath": "\\Jobs\\SsdVida\\_Dime",
+    "shortDescription": "ETL de amostra: une dados de pessoa para a lista NLIST.",
+    "longDescription": "Amostra do harness de DEV (sem dado real).",
+    "created": {"timestamp": "2022-10-25T17:34:00.659+0000", "user": {"displayName": "Amostra", "isUserId": "AMOSTRA"}},
+    "lastModified": {"timestamp": "2026-08-04T03:37:15.253+0000", "user": {"displayName": "Amostra", "isUserId": "AMOSTRA"}}
+  },
+  "/ibm/iis/ds/api/jobdesigns/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CSsdVida%5C_Dime%5CSeqSsdVidaDime": {
+    "name": "SeqSsdVidaDime",
+    "projectName": "BI_VIDA",
+    "jobType": "SEQUENCE",
+    "engineName": "AMOSTRA.DEV",
+    "folderPath": "\\Jobs\\SsdVida\\_Dime",
+    "shortDescription": "Sequence de amostra que chama dois jobs.",
+    "longDescription": "",
+    "lastModified": {"timestamp": "2026-08-05T12:00:00.000+0000", "user": {"displayName": "Amostra", "isUserId": "AMOSTRA"}}
+  },
+  "/ibm/iis/ds/api/jobdesigns/AMOSTRA.DEV%5CBI_VIDA%5CJobs%5CJobRaiz": {
+    "name": "JobRaiz", "projectName": "BI_VIDA", "jobType": "PARALLEL", "engineName": "AMOSTRA.DEV",
+    "folderPath": "\\Jobs", "shortDescription": "Job na raiz de Jobs (sem .isx na amostra).",
+    "lastModified": {"timestamp": "2026-01-10T10:00:00.000+0000"}
+  }
+}

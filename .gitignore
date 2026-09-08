@@ -81,3 +81,7 @@ logs/
 ## runtime, nunca entram no git — o deploy.sh já as exclui do rsync, e o
 ## harness da retomada (docs/retomada-harness-dev.md §8) exigia esta linha.
 dags/generated/
+
+## Lineage ISX (docs/spec-lineage-isx.md): um .isx exportado de produção traz
+## credenciais de conexão no XMLProperties — as amostras reais ficam FORA do git.
+tests/fixtures/isx/
