@@ -151,3 +151,35 @@ ignorado pelo git.
 
 Os outros 17 pulados sem a variável são: os 16 acima + 1 de compilação de DAG
 que já pulava antes.
+
+## DataStage de amostra para o lineage ISX (`sshd-amostra` + `ds-api-amostra`)
+
+A VPS não tem Information Server. Para a spec `docs/spec-lineage-isx.md` o DEV tem:
+
+- **istool de mentira** dentro do `sshd-amostra` (`dev/sshd-amostra/10-amostra.sh`,
+  marcador `/dados/.amostra-isx-pronta`): a árvore `/opt/IBM/InformationServer/…` com um
+  `setupEnv.sh` que aponta `JAVA_HOME` para um `jdk/bin/java` de shell. Esse "java" lê
+  `-archive` e `-datastage ENGINE/PROJ/Jobs/…/JOB.pjb` e copia `/dados/bi/isx/JOB.isx`
+  para o archive (ou falha como o istool falharia: `-password` na linha de comando é
+  recusado com rc 9). O comando que a API monta é **idêntico** ao de produção.
+- **API REST de amostra** (`ds-api-amostra`, `python:3.12-alpine`, só stdlib): serve os
+  JSONs de `dev/ds-api-amostra/rotas.json` nos caminhos reais (`engines`, `projects`,
+  `folders/…/contents`, `jobdesigns/…`), exigindo Basic auth não vazio.
+- **Os `.isx` reais** (um parallel, um sequence, sem dado sensível) sobem pela tela
+  Utilitários › Enviar arquivo para `/dados/bi/isx/` (raiz `/dados/bi`); a extensão
+  `isx` precisa estar na lista do Admin. Nomes na amostra: `SsdVidaDimePessoa02Ftp.isx`
+  e `SeqSsdVidaDime.isx` (os mesmos das rotas).
+- Variáveis no `.env.dev` (bloco "Lineage ISX"). Subir/atualizar:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d ds-api-amostra
+docker restart orquestra-dev-sshd-amostra     # roda o 10-amostra.sh de novo (marcador próprio)
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml --env-file .env.dev up -d --no-deps orquestra-api
+# prova viva de ponta a ponta (localizar → exportar → parse), de dentro da API:
+docker exec -i orquestra-api python - <<'PY'
+import os, sys; sys.path.insert(0, "/opt/airflow/dags")
+from utils import isx_engine as E
+from services import ssh_arquivos as S   # transporte SSH do Console/Utilitários
+cfg = E.ConfigISX.do_ambiente(); print("faltas:", cfg.faltas())
+PY
+```

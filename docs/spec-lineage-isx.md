@@ -1,5 +1,5 @@
 # Spec: Lineage automático via ISX (DataStage) — Orquestra
-Data: 2026-09-07 · Status: rascunho (aguarda aprovação do usuário)
+Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F1)
 
 Consolida, no formato da casa, o documento técnico "Spec — Lineage Automático via ISX"
 (Equipe BI CVP, 2026-09-07), levantado com acesso ao DataStage de produção. **Nenhuma
@@ -113,21 +113,29 @@ pronto para uma IA consultar — a IA em si é spec própria.
   `DS_ISTOOL_LAUNCHER` (relativo ao home; padrão o JAR
   `Clients/istools/cli/plugins/org.eclipse.equinox.launcher_*.jar`), `DS_ISTOOL_DOMAIN`
   (`host:porta` dos serviços), `DS_ISTOOL_AUTHFILE` (caminho **no servidor**),
-  `DS_ISTOOL_TMP` (padrão `/tmp`), `DS_ISTOOL_CFG` (padrão `~/.orquestra/istool_cfg`).
+  `DS_ISTOOL_TMP` (padrão `~/.orquestra/tmp` — pasta PRIVADA do usuário SSH, com
+  `umask 077`: o `.isx` traz credenciais de conexão e não pode nascer legível por todos
+  num `/tmp` compartilhado), `DS_ISTOOL_CFG` (padrão `~/.orquestra/istool_cfg`).
 - Funções puras (testáveis sem rede): `validar_nome(projeto|job)` (`^[A-Za-z0-9_.-]+$`,
   o mesmo espírito de `_SAFE_JOB_RE` do operador), `validar_pasta` (componentes
   `^[A-Za-z0-9_. -]+$`), `caminho_istool(engine, projeto, folder_path, job, tipo)`
   (`\\Jobs\\A\\B` → `Jobs/A/B`, `.pjb`/`.sjb`), `comando_istool(cfg, caminho, archive)`
-  (tudo por `shlex.quote`; `-authfile`, **nunca** `-password`), `parse_isx(bytes, mapa)`
-  (ZIP → XML → dict da §5 do documento original; `mapa` = linhas de
-  `etl_stage_type_map`), `classificar(stage_type, context, pins, mapa)`,
-  `filhos_do_sequence(root)`, `tipos_nao_reconhecidos(root)`.
-- Transportes injetáveis: `rest(metodo, caminho) -> dict` e `ssh() -> (exec, sftp)`
-  (`contextmanager`). Na API: `paramiko` + `httpx`; na DAG não se usa (a DAG chama a API).
-  Nos testes: fakes em memória — a mesma técnica do `FakeSftp` dos Utilitários.
-- `exportar(ssh, cfg, caminho) -> bytes`: `mkdir -p` do `DS_ISTOOL_CFG` + `cp -rn` da
-  `configuration/` (uma vez por usuário, sem corrida entre chamadas), `istool export`
-  com `-archive <tmp>/orq_<job>_<uuid8>.isx`, `sftp.get` para `BytesIO`, `sftp.remove` em
+  (tudo por `shlex.quote`, `~/` vira `"$HOME"/`; `-authfile`, **nunca** `-password`;
+  `umask 077` e pasta temporária privada), `parse_isx(bytes, mapa, job=)` (ZIP → XML →
+  dict da §5 do documento original; `mapa` = linhas de `etl_stage_type_map`; raiz que
+  não é `DSJobDefSDO`, job sem stage, DOCTYPE/ENTITY em qualquer codificação e membro
+  acima do teto → 422/413; parâmetros `Encrypted`/senha mascarados); em
+  `ds_stage_types.py`: `classe_do_tipo(stage_type, mapa)` e `direcao(classe, context,
+  tem_entrada, tem_saida)`; o parse devolve `children` (só atividades com `JobName`) e
+  `nao_reconhecidos`.
+- Transportes injetáveis: `rest(caminho) -> dict | None` (caminho relativo à
+  `DS_API_URL`, só `folders/…`/`jobdesigns/…` validados pelo engine — nunca `urljoin`)
+  e `ssh() -> (executar, sftp)` (`contextmanager`). Na API: `paramiko` + `httpx`; na DAG
+  não se usa (a DAG chama a API). Nos testes: fakes em memória — a mesma técnica do
+  `FakeSftp` dos Utilitários.
+- `exportar(ssh, cfg, caminho, job=) -> bytes`: `mkdir -p` do `DS_ISTOOL_CFG` + `cp -rn`
+  da `configuration/` (uma vez por usuário, sem corrida entre chamadas), `istool export`
+  com `-archive <tmp>/orq_<job>_<uuid8>.isx`, leitura por `sftp.open` com teto, `sftp.remove` em
   `finally`, teto de 60 s no canal; `stderr` do istool vai ao log, nunca à resposta.
 
 ### Dados
@@ -255,9 +263,9 @@ o caso no `nao_reconhecidos_json` e no manual).
     `/dados/bi/isx/<job>.isx` (404 se não existe; `-preview` lista a pasta).
     `dev/ds-api-amostra/servidor.py` (stdlib `http.server`, container `python:3.12-alpine`
     no `docker-compose.dev.yaml`) serve `engines`, `projects`, `folders/…/contents`,
-    `jobdesigns/…` a partir de JSON em `dev/ds-api-amostra/dados/` (os exemplos do
+    `jobdesigns/…` a partir de `dev/ds-api-amostra/rotas.json` (os exemplos do
     documento original, sem credencial). `.env.dev` ganha `DS_API_*`, `DS_ENGINE`,
-    `DS_ISTOOL_*`. `.env.example` e `docker-compose.yaml` ganham as variáveis.
+    `DS_ISTOOL_*`. `.env.dev.example` e `docker-compose.yaml` ganham as variáveis.
   - Testes `tests/test_lineage_isx_engine.py`: puras (validações, caminho, comando com
     quote e **sem** `-password`, classificação pelo mapa e fallback), parser sobre `.pjb`
     sintéticos montados dos fragmentos do documento (parallel com ODBC → Transformer →
@@ -447,3 +455,14 @@ unitário `acao_editar` e lote admin; arquivo com senhas apagado do DEV; harness
 8. **`GET /lineage` autenticado**: confirmar que nenhum script externo (n8n, relatório)
    lê esse endpoint sem token antes do deploy da F2.
 9. **Extração de filhos em cadeia** e **contexto para IA**: backlog na F5.
+10. **`etl_stage_type_map` tem duas grafias no repo** (achado da F1): `sql/schema_prod_dev.sql`
+    e `sql/deploy_full.sql` criam a tabela com a chave `stage_type` (é o que `/lineage` e
+    `dags/etl_lineage_query.py` leem); `script/alteracoes/20260601_lineage_catalogo_fase2_v1`
+    cria com `type_raw` + `description` (é o que `api/routers/catalogo.py` e
+    `dags/etl_catalogo_query.py` leem). Qual existe depende de qual script rodou primeiro no
+    ambiente — no DEV é `stage_type`, e por isso as consultas do catálogo falham lá com
+    "Invalid column name 'type_raw'". A migration 106 descobre a coluna em tempo de execução;
+    a F2 carrega o mapa do mesmo jeito. **Pendente do usuário**: rodar em produção
+    `SELECT COL_LENGTH('dbo.etl_stage_type_map','type_raw'), COL_LENGTH('dbo.etl_stage_type_map','stage_type')`
+    e dizer o resultado, para decidirmos se unificamos a grafia numa migration própria
+    (fora desta spec).

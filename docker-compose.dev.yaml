@@ -82,6 +82,24 @@ services:
       - ${DEV_SSHD_PASTA_EXTRA:-./dev/sshd-amostra}:${DEV_SSHD_PASTA_EXTRA:-/mnt/extra}:ro
     restart: unless-stopped
 
+  # ── API REST do DataStage de amostra (lineage ISX) ─────────────────────────
+  # A VPS não tem Information Server. Este container serve, por HTTP simples,
+  # os JSONs de dev/ds-api-amostra/rotas.json nos caminhos da API real
+  # (spec docs/spec-lineage-isx.md, F1). O istool "de mentira" fica dentro do
+  # sshd-amostra (dev/sshd-amostra/10-amostra.sh). Sem `ports`: só a rede do
+  # compose alcança. Sem pip: só biblioteca padrão.
+  ds-api-amostra:
+    image: python:3.12-alpine
+    container_name: orquestra-dev-ds-api-amostra
+    command: ["python", "/app/servidor.py"]
+    working_dir: /app
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/dev/ds-api-amostra:/app:ro
+    environment:
+      DS_API_AMOSTRA_PORTA: "9443"
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+
   # ── Airflow — todos usam Dockerfile.dev e variáveis de dev ─────────────────
   # webserver_config.dev.py substitui o de prod (LDAP → DB auth)
   airflow-webserver:

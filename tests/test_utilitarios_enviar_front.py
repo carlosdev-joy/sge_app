@@ -254,4 +254,6 @@ def test_transporte_e_xhr_cru_com_a_sessao_da_api():
 def test_nenhuma_permissao_nova():
     for arquivo in SRC.rglob("*.ts*"):
         assert "acao_upload" not in arquivo.read_text(encoding="utf-8"), arquivo
-    assert not list((RAIZ / "sql" / "migrations").glob("106_*")), "a F4 não traz migration"
+    # a F4 da transferência não traz migration (a 106 é de outra spec: lineage ISX)
+    migrations = (RAIZ / "sql" / "migrations").glob("*.sql")
+    assert not [m.name for m in migrations if any(p in m.name.lower() for p in ("transfer", "enviar", "baixar", "upload", "download"))]
