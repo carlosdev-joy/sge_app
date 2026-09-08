@@ -161,7 +161,11 @@ A VPS não tem Information Server. Para a spec `docs/spec-lineage-isx.md` o DEV 
   `setupEnv.sh` que aponta `JAVA_HOME` para um `jdk/bin/java` de shell. Esse "java" lê
   `-archive` e `-datastage ENGINE/PROJ/Jobs/…/JOB.pjb` e copia `/dados/bi/isx/JOB.isx`
   para o archive (ou falha como o istool falharia: `-password` na linha de comando é
-  recusado com rc 9). O comando que a API monta é **idêntico** ao de produção.
+  recusado com rc 9; `-authfile` que não existe no servidor é recusado com rc 3, como o
+  istool faria — é o que pega um `~` que chegue literal). O comando que a API monta é
+  **idêntico** ao de produção. Regenerar o istool falso depois de mudar o script:
+  `docker exec orquestra-dev-sshd-amostra rm -f /dados/.amostra-isx-pronta && docker
+  restart orquestra-dev-sshd-amostra`.
 - **API REST de amostra** (`ds-api-amostra`, `python:3.12-alpine`, só stdlib): serve os
   JSONs de `dev/ds-api-amostra/rotas.json` nos caminhos reais (`engines`, `projects`,
   `folders/…/contents`, `jobdesigns/…`), exigindo Basic auth não vazio.

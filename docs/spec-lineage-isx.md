@@ -456,8 +456,9 @@ unitário `acao_editar` e lote admin; arquivo com senhas apagado do DEV; harness
 2. **`-authfile` do istool** — ✅ resolvido em 2026-09-08 (medido no servidor de produção):
    o arquivo foi criado na pasta do usuário SSH do Orquestra com a grafia chave=valor
    (`user=` e `password=` em linhas próprias), permissão 600; a grafia `-user`/`-password`
-   em linhas o istool 11.7 recusa com "user name not found". `DS_ISTOOL_AUTHFILE` recebe
-   o caminho **absoluto** (a API passa o valor entre aspas e não expande `~`). Sem a
+   em linhas o istool 11.7 recusa com "user name not found". `DS_ISTOOL_AUTHFILE` aceita
+   caminho absoluto ou `~/…` (o engine traduz para `"$HOME"/…` como já fazia com
+   `DS_ISTOOL_TMP`/`CFG`; antes o authfile ia entre aspas e o `~` seguia literal). Sem a
    variável, a extração responde 503 "não configurado" — **não** há fallback para senha
    na linha de comando.
 3. **Certificado da API REST**: há CA interna para `DS_API_VERIFY_SSL=<caminho>`? Se não,

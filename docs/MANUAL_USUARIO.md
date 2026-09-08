@@ -786,9 +786,9 @@ servidor do DataStage**, na pasta do usuário SSH do Orquestra, com duas linhas 
 grafia chave=valor — `user=<usuário do istool>` e `password=<senha>` — e permissão
 **600** desse usuário. A grafia com hífen (`-user` numa linha e a senha na seguinte,
 como nos parâmetros de linha de comando) o istool 11.7 recusa com *user name not
-found* (medido em produção). Em `DS_ISTOOL_AUTHFILE` vai o
-**caminho absoluto** (`/home/<usuário ssh>/.orquestra/istool.auth`): a API passa o
-valor ao istool entre aspas e não expande `~`. O Orquestra usa esse caminho no
+found* (medido em produção). Em `DS_ISTOOL_AUTHFILE` vai o caminho no servidor —
+absoluto (`/home/<usuário ssh>/.orquestra/istool.auth`) ou com `~/`, que o
+Orquestra traduz para o home do usuário SSH. O Orquestra usa esse caminho no
 `-authfile` e nunca `-password` na linha de comando (a senha apareceria no `ps` e
 no log). Sem a variável, Extrair
 responde 503 *Lineage ISX não configurado nesta instância da API — defina

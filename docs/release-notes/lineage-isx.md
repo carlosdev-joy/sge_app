@@ -153,8 +153,8 @@ extração responde 503 "não configurado" (nada quebra, mas ninguém extrai).
    **No servidor do DataStage**, criar o `-authfile` do istool na pasta do usuário
    SSH do Orquestra: duas linhas `user=<usuário do istool>` e `password=<senha>`
    (grafia chave=valor; `-user`/`-password` em linhas o istool 11.7 recusa com
-   *user name not found*), permissão **600**, e o **caminho absoluto** em
-   `DS_ISTOOL_AUTHFILE` (a API não expande `~`). Sem a variável, a extração responde
+   *user name not found*), permissão **600**, e o caminho em `DS_ISTOOL_AUTHFILE`
+   (absoluto ou `~/…`, que vira o home do usuário SSH). Sem a variável, a extração responde
    503 "Lineage ISX não configurado nesta instância da API — defina DS_ISTOOL_AUTHFILE";
    com a variável apontando para um arquivo que não existe no servidor, o istool falha
    (502, motivo no log da API) — **não há** fallback para senha na linha de comando.

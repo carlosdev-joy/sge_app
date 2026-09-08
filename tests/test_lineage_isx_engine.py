@@ -239,6 +239,13 @@ class TestComandoIstool:
         assert '-configuration "$HOME"/.orquestra/istool_cfg ' in cmd
         assert '-archive "$HOME"/.orquestra/tmp/orq_J_' in cmd and 'find "$HOME"/.orquestra/tmp -maxdepth 1' in cmd
         assert "'~" not in cmd
+        # o authfile mora no home do usuário SSH: `~/…` também vira "$HOME"/… (entre aspas o
+        # til iria literal ao istool, que responderia "arquivo não encontrado")
+        c2 = E.ConfigISX.do_ambiente({**AMBIENTE, "DS_ISTOOL_AUTHFILE": "~/.orquestra/istool.auth"})
+        cmd2 = E.comando_istool(c2, "E/P/Jobs/J.pjb", "/tmp/x.isx")
+        assert '-authfile "$HOME"/.orquestra/istool.auth ' in cmd2 and "'~" not in cmd2
+        c3 = E.ConfigISX.do_ambiente({**AMBIENTE, "DS_ISTOOL_AUTHFILE": "~/pasta com espaco/auth"})
+        assert '-authfile "$HOME"/\'pasta com espaco/auth\' ' in E.comando_istool(c3, "E/P/Jobs/J.pjb", "/tmp/x.isx")
         assert E._caminho_shell("~") == '"$HOME"' and E._caminho_shell("~/a b") == '"$HOME"/\'a b\''  # noqa: SLF001
         assert E._caminho_shell("/x/~y") == "'/x/~y'"  # noqa: SLF001
 

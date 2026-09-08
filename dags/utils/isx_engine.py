@@ -231,8 +231,9 @@ def caminho_sftp(caminho: str) -> str:
 
 def comando_istool(cfg: ConfigISX, caminho: str, archive: str, *, preview: bool = False) -> str:
     """A linha de shell do export. Tudo que veio de fora passa por `shlex.quote`
-    (`~/…` vira `"$HOME"/…`); `$JAVA_HOME` fica sem aspas de propósito (é o
-    setupEnv.sh quem o define). Nenhum `-password`: a credencial vem do `-authfile`.
+    (`~/…` vira `"$HOME"/…` — inclusive o `-authfile`, que mora no home do usuário
+    SSH); `$JAVA_HOME` fica sem aspas de propósito (é o setupEnv.sh quem o define).
+    Nenhum `-password`: a credencial vem do `-authfile`.
     `umask 077` + pasta temporária privada: o .isx traz credenciais de conexão e não
     pode nascer legível por todos num /tmp compartilhado. O `find` apaga órfãos de um
     export que estourou o teto (o istool continua depois de o canal SSH fechar)."""
@@ -260,7 +261,7 @@ def comando_istool(cfg: ConfigISX, caminho: str, archive: str, *, preview: bool 
         + f" -configuration {cfg_dir}"
         + " export"
         + f" -domain {q(cfg.istool_domain)}"
-        + f" -authfile {q(cfg.istool_authfile)}"
+        + f" -authfile {_caminho_shell(cfg.istool_authfile)}"
         + f" -archive {_caminho_shell(archive)}"
         + f" -datastage {_caminho_datastage_shell(caminho)}"
         + (" -preview" if preview else "")
