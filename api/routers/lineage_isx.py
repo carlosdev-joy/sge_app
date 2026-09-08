@@ -1,9 +1,11 @@
-"""api/routers/lineage_isx.py — lineage automático via ISX (spec docs/spec-lineage-isx.md, F2).
+"""api/routers/lineage_isx.py — lineage automático via ISX (spec docs/spec-lineage-isx.md, F2/F3).
 
   GET  /lineage/isx/localizar?pipeline_name&job_name — acha o job na API REST do DataStage
-  POST /lineage/isx/extrair {pipeline_name, job_name, force?}  [acao_editar] — export + parse + grava
+  POST /lineage/isx/extrair {pipeline_name, job_name, force?, origem?}  [acao_editar] — export + parse + grava
   GET  /lineage/isx/job?pipeline_name&job_name       — o que está no banco (cabeçalho + stages)
   GET  /lineage/isx/pipeline?pipeline_name           — estado ISX de cada job do pipeline
+  POST /lineage/isx/lote {pipeline_name?, jobs?, force?}  [admin] — dispara a DAG etl_lineage_extract_isx
+  GET  /lineage/isx/lote/{run_id}                    — estado da run + resumo (XCom) quando terminou
 
 Regra do usuário: só há lineage ISX para job mapeado num pipeline (`etl_pipeline_job`);
 o projeto DataStage vem de `etl_pipeline.project_name`. O trabalho bloqueante (REST,
@@ -13,14 +15,19 @@ Shape de erro: `detail` em pt-BR; 422 regra/nome; 404 job não achado no DataSta
 """
 from __future__ import annotations
 
+import ast
 import asyncio
+import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 
-from deps import PERM_EDITAR, get_current_user, require_perm
+from deps import PERM_EDITAR, get_admin_user, get_current_user, require_perm
+from routers.airflow import get_airflow_client
 from services import lineage_isx as svc
 
 log = logging.getLogger("orquestra-api")
@@ -33,6 +40,12 @@ router = APIRouter()
 _EXECUTOR_ISX = ThreadPoolExecutor(max_workers=2, thread_name_prefix="orq-lineage-isx")
 _TETO_EXTRAIR_S = 60     # spec §3: istool leva 3–5 s; sequence tenta .qjb e .sjb
 _TETO_LOCALIZAR_S = 35   # BFS do engine tem 30 s; aqui um pouco mais para o 504 vir do engine
+DAG_LOTE = "etl_lineage_extract_isx"
+_ORIGEM_RE = re.compile(r"^[A-Za-z0-9_:.-]{1,60}$")     # ex.: dag:etl_lineage_extract_isx
+# Só o formato que ESTE endpoint emite (isx_lote__<UTC>__<matricula>): o httpx normaliza
+# `.`/`..` na URL e um run_id assim consultaria outro recurso do Airflow.
+_RUN_ID_RE = re.compile(r"isx_lote__[A-Za-z0-9_~:+-]{1,230}")
+_DS_JOB_TYPES = ("datastage", "")   # NULL/'' = padrão da coluna
 
 svc.aviso_arranque()
 
@@ -96,6 +109,11 @@ def _info_do_job(cur, pipeline: str, job: str) -> dict:
         raise HTTPException(
             status_code=422,
             detail=f"O pipeline {pipeline} não tem projeto DataStage (project_name) cadastrado.")
+    if str(info.get("job_type") or "").strip().lower() not in _DS_JOB_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"O nó {job} do pipeline {pipeline} é do tipo {info['job_type']!r}, não um job DataStage — "
+                   "só jobs DataStage têm lineage ISX.")
     return info
 
 
@@ -140,6 +158,13 @@ async def isx_extrair(body: dict = Body(default={}), user: dict = Depends(requir
     pipeline, job = _nomes(body.get("pipeline_name"), body.get("job_name"))
     forcar = str(body.get("force", "false")).lower() in ("true", "1", "yes", "sim")
     usuario = str(user.get("matricula") or "?")
+    # `origem` (opcional) diz quem pediu em nome do usuário — a DAG de lote manda
+    # `dag:etl_lineage_extract_isx`; fica ao lado da matrícula, nunca no lugar dela.
+    origem = str(body.get("origem") or "").strip()
+    if origem:
+        if not _ORIGEM_RE.match(origem):
+            raise HTTPException(status_code=422, detail="origem inválida (até 60 caracteres: letras, números, '_', ':', '.', '-').")
+        usuario = f"{usuario} ({origem})"
     t0 = time.time()
     with svc.banco() as (_conn, cur):
         info = _info_do_job(cur, pipeline, job)
@@ -208,6 +233,107 @@ def isx_job(pipeline_name: str = Query(...), job_name: str = Query(...),
     if resposta is None:
         raise HTTPException(status_code=404, detail=f"O job {job} ainda não tem extração ISX no pipeline {pipeline}.")
     return resposta
+
+
+@router.post("/lineage/isx/lote", tags=["lineage"])
+async def isx_lote(body: dict = Body(default={}), user: dict = Depends(get_admin_user)):
+    """Dispara a DAG de lote pela REST do Airflow (mesmo helper de routers/airflow.py).
+    `pipeline_name` vazio = todos os pipelines com project_name; `jobs` restringe;
+    `force` reextrai. Devolve o `dag_run_id` para acompanhar em GET /lineage/isx/lote/{id}."""
+    pipeline = str(body.get("pipeline_name") or "").strip()
+    if len(pipeline) > 200:
+        raise HTTPException(status_code=422, detail="pipeline_name inválido.")
+    jobs_brutos = body.get("jobs") or []
+    if not isinstance(jobs_brutos, list) or len(jobs_brutos) > 500:
+        raise HTTPException(status_code=422, detail="jobs deve ser uma lista (até 500 nomes).")
+    E = svc.engine()
+    jobs = []
+    for j in jobs_brutos:
+        try:
+            jobs.append(E.validar_nome(j, "job"))
+        except E.ISXError as e:
+            raise _http(e)
+    def _bool(chave: str) -> bool:
+        return str(body.get(chave, "false")).lower() in ("true", "1", "yes", "sim")
+    forcar = _bool("force")
+    matricula = re.sub(r"[^A-Za-z0-9_-]", "", str(user.get("matricula") or "x"))[:40] or "x"
+    run_id = f"isx_lote__{datetime.now(timezone.utc):%Y%m%dT%H%M%S}__{matricula}"
+    conf = {"pipeline_name": pipeline, "jobs": jobs, "force": forcar,
+            "incluir_copias": _bool("incluir_copias"), "incluir_inativos": _bool("incluir_inativos")}
+    try:
+        async with get_airflow_client() as client:
+            # DAG nova nasce PAUSADA no Airflow: uma run disparada numa DAG pausada fica
+            # `queued` para sempre. Despausar é idempotente e vem antes do disparo.
+            p = await client.patch(f"/api/v1/dags/{DAG_LOTE}", json={"is_paused": False},
+                                   headers={"Content-Type": "application/json"})
+            if p.status_code == 404:
+                raise HTTPException(status_code=503, detail=f"A DAG {DAG_LOTE} não está no Airflow — deploy de dags/ pendente.")
+            if not p.is_success:
+                log.warning("Lineage ISX: Airflow respondeu %s ao despausar %s: %s", p.status_code, DAG_LOTE, p.text[:300])
+            r = await client.post(f"/api/v1/dags/{DAG_LOTE}/dagRuns",
+                                  json={"dag_run_id": run_id, "conf": conf},
+                                  headers={"Content-Type": "application/json"})
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("Lineage ISX: falha ao disparar a DAG %s: %r", DAG_LOTE, e)
+        raise HTTPException(status_code=502, detail="Não foi possível falar com o Airflow para disparar o lote.")
+    if r.status_code == 404:
+        raise HTTPException(status_code=503, detail=f"A DAG {DAG_LOTE} não está no Airflow — deploy de dags/ pendente.")
+    if r.status_code == 409:
+        raise HTTPException(status_code=409, detail="Já existe uma run com este identificador — tente de novo em um segundo.")
+    if not r.is_success:
+        log.warning("Lineage ISX: Airflow respondeu %s ao disparar %s: %s", r.status_code, DAG_LOTE, r.text[:300])
+        raise HTTPException(status_code=502, detail=f"O Airflow recusou o disparo do lote (HTTP {r.status_code}).")
+    dados = r.json() if r.content else {}
+    log.info("Lineage ISX: lote %s disparado por %s (pipeline=%r, jobs=%d, force=%s)",
+             run_id, user.get("matricula"), pipeline, len(jobs), forcar)
+    return {"dag_id": DAG_LOTE, "dag_run_id": dados.get("dag_run_id") or run_id,
+            "state": dados.get("state") or "queued", "conf": conf}
+
+
+def _resumo_de(valor) -> dict | None:
+    """O XCom pela REST vem como TEXTO (repr ou JSON): tenta os dois."""
+    if isinstance(valor, dict):
+        return valor
+    if not isinstance(valor, str) or not valor.strip():
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            v = parser(valor)
+            return v if isinstance(v, dict) else None
+        except (ValueError, SyntaxError):
+            continue
+    return None
+
+
+@router.get("/lineage/isx/lote/{run_id}", tags=["lineage"])
+async def isx_lote_estado(run_id: str = Path(...), _auth: dict = Depends(get_current_user)):
+    """Estado da run no Airflow; quando terminou, o resumo `{total, extraidos, cache,
+    erros[]}` que a task extrair_em_lote devolveu (XCom)."""
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise HTTPException(status_code=422, detail="run_id inválido (esperado isx_lote__…).")
+    try:
+        async with get_airflow_client() as client:
+            r = await client.get(f"/api/v1/dags/{DAG_LOTE}/dagRuns/{run_id}")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail="Run não encontrada no Airflow.")
+            if not r.is_success:
+                raise HTTPException(status_code=502, detail=f"O Airflow respondeu HTTP {r.status_code}.")
+            run = r.json()
+            resumo = None
+            if run.get("state") in ("success", "failed"):
+                x = await client.get(f"/api/v1/dags/{DAG_LOTE}/dagRuns/{run_id}/taskInstances/extrair_em_lote/xcomEntries/return_value")
+                if x.is_success:
+                    resumo = _resumo_de((x.json() or {}).get("value"))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.warning("Lineage ISX: falha ao consultar a run %s: %r", run_id, e)
+        raise HTTPException(status_code=502, detail="Não foi possível consultar o Airflow.")
+    return {"dag_id": DAG_LOTE, "dag_run_id": run_id, "state": run.get("state"),
+            "start_date": run.get("start_date"), "end_date": run.get("end_date"),
+            "conf": run.get("conf") or {}, "resumo": resumo}
 
 
 @router.get("/lineage/isx/pipeline", tags=["lineage"])

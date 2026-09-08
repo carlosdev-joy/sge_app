@@ -72,6 +72,11 @@ x-airflow-common:
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
 
     AIRFLOW__CORE__FERNET_KEY: '${AIRFLOW__CORE__FERNET_KEY:-}'
+    # Lineage ISX (spec docs/spec-lineage-isx.md §8.16): credencial de serviço da DAG
+    # etl_lineage_extract_isx pelo AMBIENTE (não aparece nem se edita na UI do Airflow;
+    # não passa pelo banco sem Fernet). Vazio = o Airflow cai na Connection do banco.
+    # Formato: http://<usuario>:<senha>@orquestra-api:8000/http
+    AIRFLOW_CONN_ORQUESTRA_API: '${AIRFLOW_CONN_ORQUESTRA_API:-}'
     # Chave (Fernet) das senhas de dbo.etl_conexao — o worker decifra ao
     # resolver conexões (dags/utils/conn_resolver.py). PRECISA ser a mesma
     # do orquestra-api. Gere com:
