@@ -1,5 +1,5 @@
 # Spec: Lineage automático via ISX (DataStage) — Orquestra
-Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F3; F1 = PR #369, F2 = PR #370)
+Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F4; F1 = PR #369, F2 = PR #370, F3 = PR #371)
 
 Consolida, no formato da casa, o documento técnico "Spec — Lineage Automático via ISX"
 (Equipe BI CVP, 2026-09-07), levantado com acesso ao DataStage de produção. **Nenhuma

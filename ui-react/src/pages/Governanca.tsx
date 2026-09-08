@@ -7,6 +7,7 @@ import { Modal } from '../components/ui/Modal'
 import { Tabs } from '../components/ui/Tabs'
 import { InfoBanner } from '../components/ui/InfoBanner'
 import { CatalogoPipelines } from '../components/malhas/CatalogoPipelines'
+import { PainelJobIsx } from '../components/governanca/isx/PainelJobIsx'
 import { useAuthStore } from '../store/auth'
 import {
   Search, Download, ChevronDown, ChevronUp, ArrowRight, History,
@@ -1297,6 +1298,8 @@ export default function Governanca() {
         onChange={setTab}
         tabs={[
           { id: 'lineage', label: 'Lineage' },
+          // Lineage automático via ISX (spec docs/spec-lineage-isx.md, F4).
+          { id: 'isx', label: 'Job DataStage' },
           { id: 'catalogo', label: 'Catálogo de Dados' },
           // Inventário realocado da tela Malha na F9 (spec §8): a consulta
           // continua acessível a quem não constrói malhas.
@@ -1306,6 +1309,7 @@ export default function Governanca() {
       />
       <div>
         {tab === 'lineage' && <LineageTab pipeline={pipeline} setPipeline={setPipeline} />}
+        {tab === 'isx' && <PainelJobIsx pipeline={pipeline} setPipeline={setPipeline} />}
         {tab === 'catalogo' && <CatalogoTab onGoLineage={goLineage} />}
         {tab === 'catalogo-pipelines' && <CatalogoPipelines />}
         {tab === 'xmlpreview' && <XmlPreviewTab />}
