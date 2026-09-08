@@ -209,3 +209,24 @@ JOB=SsdVidaDimePessoa02Ftp JOB_SEQ=SeqSsdVidaDime scripts/smoke_lineage_isx.sh
 
 No arranque a API avisa `DS_API_VERIFY_SSL=false` e `DS_SSH_KNOWN_HOSTS ausente` — esperado
 no DEV (API REST de amostra em HTTP puro; sshd-amostra sem known_hosts).
+
+### Lote da F3 (DAG `etl_lineage_extract_isx`) no DEV
+
+A DAG chama a API com a Connection `orquestra_api` (usuário de serviço do Orquestra com
+`acao_editar`). Ela vem pelo AMBIENTE do worker — `AIRFLOW_CONN_ORQUESTRA_API` no
+`.env.dev` (o compose repassa; ver `.env.dev.example`) — e não pelo banco do Airflow:
+assim não aparece nem se edita na UI do Airflow e não depende de Fernet. No DEV o
+usuário de serviço é o próprio admin do Airflow de DEV. Depois de mudar o `.env.dev`,
+recriar os containers do Airflow (`up -d airflow-worker airflow-scheduler`).
+
+O `dags/` é volume nos containers do Airflow: a DAG aparece sozinha em ~30 s (pausada — o
+`POST /lineage/isx/lote` despausa antes de disparar). Disparo e acompanhamento pela API
+(admin): `POST /lineage/isx/lote {"pipeline_name": "PIPE_VIDA"}` →
+`GET /lineage/isx/lote/{dag_run_id}`. O pipeline de amostra tem um terceiro job
+(`JobRaiz`) que existe na API REST de amostra mas não tem `.isx` — é o erro individual
+que não aborta o lote. Só nós `job_type = 'datastage'` entram no lote; os nós http/decisão
+dos pipelines de smoke ficam de fora.
+
+Proxy (§7 l da spec): o worker chama `http://orquestra-api:8000` direto (`trust_env=False`
+na sessão); conferir com `docker exec <worker> python -c "import requests;
+print(requests.get('http://orquestra-api:8000/health', timeout=5).status_code)"`.

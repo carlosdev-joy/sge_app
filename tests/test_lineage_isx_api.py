@@ -26,7 +26,8 @@ if "pyodbc" not in sys.modules:
 os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 from api.main import app as _app  # noqa: F401  (ordem de import — ver test_copias.py)
 
-from deps import PERM_EDITAR, get_current_user
+from deps import PERM_ADMIN, PERM_EDITAR, PERM_EXECUTAR, get_current_user
+from routers import airflow as rt_airflow
 from routers import lineage as rt_lineage
 from routers import lineage_isx as rt
 from services import lineage_isx as svc
@@ -342,6 +343,72 @@ def auth_consulta(app):
     app.dependency_overrides.pop(get_current_user, None)
 
 
+@pytest.fixture
+def auth_admin(app):
+    _auth(app, [PERM_ADMIN, PERM_EDITAR], "admin")
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+class _RespAirflow:
+    def __init__(self, status, corpo=None, texto=""):
+        self.status_code = status
+        self.is_success = 200 <= status < 300
+        self._corpo = corpo
+        self.text = texto or (str(corpo) if corpo is not None else "")
+        self.content = b"x" if corpo is not None else b""
+
+    def json(self):
+        return self._corpo
+
+
+class FakeAirflow:
+    """`get_airflow_client()` falso: registra o POST do disparo e responde às consultas."""
+
+    def __init__(self, post_status=200, run=None, xcom=None, explodir=False):
+        self.post_status = post_status
+        self.run = run
+        self.xcom = xcom
+        self.explodir = explodir
+        self.posts: list[tuple[str, dict]] = []
+        self.gets: list[str] = []
+        self.patches: list[tuple[str, dict]] = []
+
+    async def __aenter__(self):
+        if self.explodir:
+            raise ConnectionError("airflow fora")
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def patch(self, path, json=None, headers=None):
+        self.patches.append((path, json))
+        if self.post_status == 404:                       # DAG ausente: já falha no despausar
+            return _RespAirflow(404, {"detail": "DAG not found"}, "nao")
+        return _RespAirflow(200, {"dag_id": "etl_lineage_extract_isx", "is_paused": False})
+
+    async def post(self, path, json=None, headers=None):
+        self.posts.append((path, json))
+        if self.post_status != 200:
+            return _RespAirflow(self.post_status, {"detail": "x"}, "erro")
+        return _RespAirflow(200, {"dag_run_id": (json or {}).get("dag_run_id") or "manual__x", "state": "queued",
+                                  "dag_id": path.split("/dags/")[1].split("/")[0]})
+
+    async def get(self, path):
+        self.gets.append(path)
+        if "xcomEntries" in path:
+            return _RespAirflow(200, {"value": self.xcom}) if self.xcom is not None else _RespAirflow(404, {"detail": "x"})
+        return _RespAirflow(200, self.run) if self.run is not None else _RespAirflow(404, {"detail": "x"})
+
+
+@pytest.fixture
+def airflow(monkeypatch):
+    fake = FakeAirflow(run={"dag_run_id": "isx_lote__x", "state": "running", "start_date": "2026-09-08T01:00:00+00:00", "end_date": None, "conf": {}})
+    monkeypatch.setattr(rt, "get_airflow_client", lambda: fake)
+    return fake
+
+
 def _extrair(client, job=JOB, force=False, pipeline=PIPE):
     return client.post("/lineage/isx/extrair", json={"pipeline_name": pipeline, "job_name": job, "force": force})
 
@@ -429,6 +496,16 @@ class TestExtrair:
         db.pipelines[PIPE] = ""
         r = _extrair(client)
         assert r.status_code == 422 and "project_name" in r.json()["detail"]
+
+    def test_no_que_nao_e_job_datastage_422_sem_tocar_a_api_rest(self, client, db, ssh, rest, auth_dev):
+        # um nó http/decisão do pipeline não existe no DataStage: nada de BFS de 30 s nem cabeçalho `erro`
+        db.jobs[(PIPE, "http_saude")] = {"job_type": "http", "execution_order": 4}
+        r = _extrair(client, job="http_saude")
+        assert r.status_code == 422 and "não um job DataStage" in r.json()["detail"] and "'http'" in r.json()["detail"]
+        assert client.get(f"/lineage/isx/localizar?pipeline_name={PIPE}&job_name=http_saude").status_code == 422
+        assert rest.chamadas == [] and ssh.comandos == [] and (PIPE, "http_saude") not in db.cabecalhos
+        db.jobs[(PIPE, "JobTipoNulo")] = {"job_type": None, "execution_order": 5}     # NULL/'' = padrão datastage
+        assert _extrair(client, job="JobTipoNulo").status_code == 404                  # passa o portão; a API REST não o tem
 
     def test_job_que_a_api_nao_acha_404_e_cabecalho_erro(self, client, db, ssh, rest, auth_dev):
         db.jobs[(PIPE, "JobFantasma")] = {"job_type": "datastage", "execution_order": 3}
@@ -568,6 +645,95 @@ class TestConsultas:
         assert b["jobs"][1]["isx"] is None
         assert client.get("/lineage/isx/pipeline?pipeline_name=NaoExiste").status_code == 404
         assert client.get("/lineage/isx/pipeline?pipeline_name=").status_code == 422
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2b. lote (F3): disparo da DAG e estado da run; `origem` na extração
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestLote:
+    def test_admin_dispara_a_dag_com_conf(self, client, db, airflow, auth_admin):
+        r = client.post("/lineage/isx/lote", json={"pipeline_name": f" {PIPE} ", "jobs": [JOB], "force": True})
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["dag_id"] == "etl_lineage_extract_isx" and b["state"] == "queued"
+        assert b["dag_run_id"].startswith("isx_lote__") and b["dag_run_id"].endswith("__C012345")
+        caminho, corpo = airflow.posts[0]
+        assert caminho == "/api/v1/dags/etl_lineage_extract_isx/dagRuns" and corpo["dag_run_id"] == b["dag_run_id"]
+        # DAG nova nasce pausada: o disparo despausa ANTES (senão a run fica queued para sempre)
+        assert airflow.patches == [("/api/v1/dags/etl_lineage_extract_isx", {"is_paused": False})]
+        assert corpo["conf"] == {"pipeline_name": PIPE, "jobs": [JOB], "force": True, "incluir_copias": False,
+                                 "incluir_inativos": False} == b["conf"]
+        # todos os pipelines: pipeline_name vazio passa vazio; booleanos como texto são lidos de verdade
+        r = client.post("/lineage/isx/lote", json={"incluir_copias": "false", "incluir_inativos": "true"})
+        assert r.status_code == 200
+        assert airflow.posts[1][1]["conf"]["pipeline_name"] == "" and airflow.posts[1][1]["conf"]["incluir_copias"] is False
+        assert airflow.posts[1][1]["conf"]["incluir_inativos"] is True
+
+    def test_proxy_generico_de_dag_exige_admin_para_a_dag_do_lote(self, client, db, airflow, auth_dev, monkeypatch, app):
+        # auditoria da F3: /airflow/dags/{dag}/dagRuns (acao_executar) contornava o "só admin" do lote
+        monkeypatch.setattr(rt_airflow, "get_airflow_client", lambda: airflow)
+        _auth(app, [PERM_EDITAR, PERM_EXECUTAR], "desenvolvedor")
+        r = client.post("/airflow/dags/etl_lineage_extract_isx/dagRuns", json={"conf": {"force": True}})
+        assert r.status_code == 403 and "administrador" in r.json()["detail"]
+        r = client.patch("/airflow/dags/etl_lineage_extract_isx", json={"is_paused": False})
+        assert r.status_code == 403 and airflow.posts == [] and airflow.patches == []
+        # outras DAGs continuam como antes para quem tem acao_executar
+        assert client.post("/airflow/dags/etl_lineage_query/dagRuns", json={}).status_code == 200
+        # admin passa
+        _auth(app, [PERM_ADMIN, PERM_EXECUTAR], "admin")
+        assert client.post("/airflow/dags/etl_lineage_extract_isx/dagRuns", json={}).status_code == 200
+        assert rt_airflow._DAGS_SO_ADMIN == frozenset({"etl_lineage_extract_isx"})  # noqa: SLF001
+
+    def test_lote_validacoes_e_falhas_do_airflow(self, client, db, airflow, auth_admin, monkeypatch):
+        assert client.post("/lineage/isx/lote", json={"jobs": ["x; id"]}).status_code == 422
+        assert client.post("/lineage/isx/lote", json={"jobs": "JOB"}).status_code == 422
+        assert client.post("/lineage/isx/lote", json={"pipeline_name": "p" * 201}).status_code == 422
+        assert airflow.posts == []
+        monkeypatch.setattr(rt, "get_airflow_client", lambda: FakeAirflow(post_status=404))
+        r = client.post("/lineage/isx/lote", json={})
+        assert r.status_code == 503 and "deploy" in r.json()["detail"]
+        monkeypatch.setattr(rt, "get_airflow_client", lambda: FakeAirflow(post_status=409))
+        assert client.post("/lineage/isx/lote", json={}).status_code == 409
+        monkeypatch.setattr(rt, "get_airflow_client", lambda: FakeAirflow(post_status=500))
+        r = client.post("/lineage/isx/lote", json={})
+        assert r.status_code == 502 and "HTTP 500" in r.json()["detail"]
+        monkeypatch.setattr(rt, "get_airflow_client", lambda: FakeAirflow(explodir=True))
+        assert client.post("/lineage/isx/lote", json={}).status_code == 502
+
+    def test_lote_so_admin(self, client, db, airflow, auth_dev):
+        r = client.post("/lineage/isx/lote", json={"pipeline_name": PIPE})
+        assert r.status_code == 403 and airflow.posts == []
+
+    def test_estado_da_run_e_resumo_pelo_xcom(self, client, db, airflow, auth_dev, monkeypatch):
+        r = client.get("/lineage/isx/lote/isx_lote__x")
+        assert r.status_code == 200 and r.json()["state"] == "running" and r.json()["resumo"] is None
+        assert len(airflow.gets) == 1                                              # em curso: não pede o XCom
+        # terminou: o XCom vem como TEXTO (repr do Airflow) e vira dict
+        fake = FakeAirflow(run={"dag_run_id": "isx_lote__x", "state": "success", "start_date": "s", "end_date": "e", "conf": {"force": True}},
+                           xcom="{'total': 3, 'extraidos': 2, 'cache': 0, 'erros': [{'job_name': 'JobRaiz', 'status': 404}], 'duracao_s': 4.2}")
+        monkeypatch.setattr(rt, "get_airflow_client", lambda: fake)
+        b = client.get("/lineage/isx/lote/isx_lote__x").json()
+        assert b["state"] == "success" and b["resumo"]["extraidos"] == 2 and b["resumo"]["erros"][0]["job_name"] == "JobRaiz"
+        assert b["conf"] == {"force": True} and fake.gets[1].endswith("/taskInstances/extrair_em_lote/xcomEntries/return_value")
+        # XCom em JSON também; XCom ausente (task não rodou) → resumo None, sem erro
+        fake.xcom = '{"total": 0, "extraidos": 0, "cache": 0, "erros": []}'
+        assert client.get("/lineage/isx/lote/isx_lote__x").json()["resumo"]["total"] == 0
+        fake.xcom = None
+        assert client.get("/lineage/isx/lote/isx_lote__x").json()["resumo"] is None
+        monkeypatch.setattr(rt, "get_airflow_client", lambda: FakeAirflow(run=None))
+        assert client.get("/lineage/isx/lote/isx_lote__nada").status_code == 404
+        # só o formato que este endpoint emite: `..`/`.` seriam normalizados pelo httpx para outro recurso do Airflow
+        for ruim in ("..", ".", "..%2Fx"):                      # o Starlette normaliza antes: nem chega ao handler
+            assert client.get(f"/lineage/isx/lote/{ruim}").status_code in (404, 405), ruim
+        for ruim in ("a%20b", "abc", "isx_lote__a.b", "isx_lote__x%0A", "manual__2026", "isx_lote__"):
+            assert client.get(f"/lineage/isx/lote/{ruim}").status_code == 422, ruim
+
+    def test_extrair_com_origem_da_dag(self, client, db, ssh, rest, auth_dev):
+        r = client.post("/lineage/isx/extrair", json={"pipeline_name": PIPE, "job_name": JOB, "origem": "dag:etl_lineage_extract_isx"})
+        assert r.status_code == 200 and r.json()["extracted_by"] == "C012345 (dag:etl_lineage_extract_isx)"
+        r = client.post("/lineage/isx/extrair", json={"pipeline_name": PIPE, "job_name": JOB, "origem": "x y"})
+        assert r.status_code == 422 and "origem" in r.json()["detail"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

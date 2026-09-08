@@ -11,10 +11,23 @@ from fastapi.responses import PlainTextResponse
 from db import get_db_conn
 from deps import (
     AIRFLOW_URL, AIRFLOW_USER, AIRFLOW_PASSWORD,
-    get_current_user, require_perm, PERM_EXECUTAR,
+    get_current_user, require_perm, PERM_ADMIN, PERM_EXECUTAR,
 )
 
 _DAG_ID_RE = re.compile(r'^[a-zA-Z0-9_.\-]+$')
+# DAGs que só o admin dispara/despausa por aqui: este proxy genérico (acao_executar)
+# contornaria o gate de admin dos endpoints próprios delas (auditoria da F3 do
+# lineage ISX). Quem tem role Op no Airflow ainda dispara pela UI do Airflow — o
+# gate vale para a API do Orquestra.
+_DAGS_SO_ADMIN = frozenset({"etl_lineage_extract_isx"})
+
+
+def _exigir_admin_para_dag(dag_id: str, user: dict) -> None:
+    if dag_id in _DAGS_SO_ADMIN and PERM_ADMIN not in user.get("permissoes", []):
+        raise HTTPException(
+            status_code=403,
+            detail=f"A DAG {dag_id} só pode ser disparada ou despausada por administrador "
+                   "(use o endpoint próprio dela, ex.: POST /lineage/isx/lote).")
 _ALLOWED_ORDER = {
     "execution_date", "-execution_date", "start_date", "-start_date",
     "end_date", "-end_date", "logical_date", "-logical_date",
@@ -98,10 +111,11 @@ async def list_dag_runs(dag_id: str, limit: int = 50, order_by: str = "-executio
 
 
 @router.post("/airflow/dags/{dag_id}/dagRuns")
-async def trigger_dag_run(dag_id: str, body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+async def trigger_dag_run(dag_id: str, body: dict = Body(default={}), user: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Dispara uma execução manual de um DAG — proxy para Airflow REST API."""
     if not _DAG_ID_RE.match(dag_id):
         raise HTTPException(status_code=400, detail="dag_id inválido")
+    _exigir_admin_para_dag(dag_id, user)
     safe_body = {k: body[k] for k in ('dag_run_id', 'conf', 'logical_date') if k in body}
     try:
         async with get_airflow_client() as client:
@@ -121,10 +135,11 @@ async def trigger_dag_run(dag_id: str, body: dict = Body(default={}), _auth: dic
 
 
 @router.patch("/airflow/dags/{dag_id}")
-async def patch_dag(dag_id: str, body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+async def patch_dag(dag_id: str, body: dict = Body(default={}), user: dict = Depends(require_perm(PERM_EXECUTAR))):
     """Ativa ou pausa um DAG (is_paused) — proxy para Airflow REST API."""
     if not _DAG_ID_RE.match(dag_id):
         raise HTTPException(status_code=400, detail="dag_id inválido")
+    _exigir_admin_para_dag(dag_id, user)
     safe_body = {k: body[k] for k in ('is_paused',) if k in body}
     try:
         async with get_airflow_client() as client:

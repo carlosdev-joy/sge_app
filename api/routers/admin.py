@@ -1486,6 +1486,12 @@ CATALOGO_DAGS: dict = {
             "arquivo .dsx",
         "frequencia": _APP,
     },
+    "etl_lineage_extract_isx": {
+        "categoria": "Linhagem e importação",
+        "funcionalidade": "Lineage ISX em lote: chama a API (POST /lineage/isx/extrair) "
+            "para cada job dos pipelines — export pelo istool, cache pelo lastModified",
+        "frequencia": _APP,
+    },
     "etl_lineage_normalize": {
         "categoria": "Linhagem e importação",
         "funcionalidade": "Normaliza a linhagem legada (object_name = tabela real)",

@@ -1,5 +1,5 @@
 # Spec: Lineage automático via ISX (DataStage) — Orquestra
-Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F2; F1 mergeada na PR #369)
+Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F3; F1 = PR #369, F2 = PR #370)
 
 Consolida, no formato da casa, o documento técnico "Spec — Lineage Automático via ISX"
 (Equipe BI CVP, 2026-09-07), levantado com acesso ao DataStage de produção. **Nenhuma
@@ -496,6 +496,16 @@ unitário `acao_editar` e lote admin; arquivo com senhas apagado do DEV; harness
     ou nome sugestivo (senha/password/pwd/secret); `apt_code`/`sql_expression`/`BeforeSQL`
     podem carregar literais sensíveis do próprio design do job e são lidos por qualquer
     usuário autenticado. A F4 renderiza tudo por escape do React (nunca `innerHTML`).
+16. **Produção, antes do deploy da F3 (auditoria de segurança da F3)**: a credencial de
+    serviço da DAG deve vir pelo AMBIENTE do worker, não pelo banco do Airflow —
+    `AIRFLOW_CONN_ORQUESTRA_API=http://<usuario>:<senha>@orquestra-api:8000/http` no `.env`
+    (o compose repassa; vazio = cai no banco). Motivos: um role Op do Airflow edita
+    Connections/Variables pela UI e poderia apontar a URL para outro host e capturar o
+    Basic; e sem `AIRFLOW__CORE__FERNET_KEY` a senha de uma Connection de banco fica em
+    claro no Postgres. Com a Connection no ambiente, a DAG monta a URL a partir dela e
+    ignora a Variable `ORQUESTRA_API_URL`. Conferir também se há usuários com role Op em
+    produção e a que perfil do Orquestra mapeiam. O disparo genérico de DAG da API
+    (`/airflow/dags/{dag_id}/dagRuns` e o PATCH) passa a exigir admin para esta DAG.
 15. **Para a F3 (lote)**: excluir por padrão pastas `bkp/backup/bkup` e jobs `CopyOf*`;
     timeout por job 30 s; `max_workers=4`. O documento propõe descobrir a pasta de
     sub-sequences tentando uma lista fixa de pastas por projeto — descartado: a busca é
