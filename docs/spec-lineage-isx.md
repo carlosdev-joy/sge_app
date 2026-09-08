@@ -453,10 +453,14 @@ unitário `acao_editar` e lote admin; arquivo com senhas apagado do DEV; harness
 1. **Usuário de serviço para a DAG** (Connection `orquestra_api` do Airflow): qual
    matrícula/perfil com `acao_editar`? Alternativa: a DAG usar `SSHHook` + engine
    diretamente (descartada nesta spec, ver §3).
-2. **`-authfile` do istool**: ops cria o arquivo no servidor do DataStage (formato do
-   istool: `user=` e `password=` em linhas próprias — confirmar na documentação da versão
-   11.7.1) com permissão 600 do usuário SSH do Orquestra. Sem ele, a extração responde
-   503 "authfile não configurado" — **não** há fallback para senha na linha de comando.
+2. **`-authfile` do istool** — ✅ resolvido em 2026-09-08 (medido no servidor de produção):
+   o arquivo foi criado na pasta do usuário SSH do Orquestra com a grafia chave=valor
+   (`user=` e `password=` em linhas próprias), permissão 600; a grafia `-user`/`-password`
+   em linhas o istool 11.7 recusa com "user name not found". `DS_ISTOOL_AUTHFILE` aceita
+   caminho absoluto ou `~/…` (o engine traduz para `"$HOME"/…` como já fazia com
+   `DS_ISTOOL_TMP`/`CFG`; antes o authfile ia entre aspas e o `~` seguia literal). Sem a
+   variável, a extração responde 503 "não configurado" — **não** há fallback para senha
+   na linha de comando.
 3. **Certificado da API REST**: há CA interna para `DS_API_VERIFY_SSL=<caminho>`? Se não,
    `false` com aviso, e o item entra no backlog de segurança.
 4. **Amostras `.isx`**: subir um parallel e um sequence, sem dado sensível, para

@@ -782,10 +782,15 @@ O SSH é o mesmo do Console e dos Utilitários (`DS_SSH_HOST/PORT/USER/PASSWORD`
 Depois de mudar o `.env`, recriar o container da API.
 
 **Arquivo de credencial do istool (`-authfile`).** Criado pela sustentação **no
-servidor do DataStage**, no formato que a documentação do istool da versão
-instalada descreve (linhas `user=` e `password=`), com permissão **600** do usuário
-SSH do Orquestra. O Orquestra passa esse caminho no `-authfile` e nunca `-password`
-na linha de comando (a senha apareceria no `ps` e no log). Sem a variável, Extrair
+servidor do DataStage**, na pasta do usuário SSH do Orquestra, com duas linhas na
+grafia chave=valor — `user=<usuário do istool>` e `password=<senha>` — e permissão
+**600** desse usuário. A grafia com hífen (`-user` numa linha e a senha na seguinte,
+como nos parâmetros de linha de comando) o istool 11.7 recusa com *user name not
+found* (medido em produção). Em `DS_ISTOOL_AUTHFILE` vai o caminho no servidor —
+absoluto (`/home/<usuário ssh>/.orquestra/istool.auth`) ou com `~/`, que o
+Orquestra traduz para o home do usuário SSH. O Orquestra usa esse caminho no
+`-authfile` e nunca `-password` na linha de comando (a senha apareceria no `ps` e
+no log). Sem a variável, Extrair
 responde 503 *Lineage ISX não configurado nesta instância da API — defina
 DS_ISTOOL_AUTHFILE*; com a variável apontando para um arquivo que não existe no
 servidor, o istool falha e a resposta é 502 *O istool falhou ao exportar o job* — o

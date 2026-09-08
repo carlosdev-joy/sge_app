@@ -97,16 +97,21 @@ EOF
     cat > "$IS/jdk/bin/java" <<'EOF'
 #!/bin/sh
 # "java" de amostra: faz o papel do launcher do istool para o comando `export`.
-archive=""; ds=""; preview=0
+archive=""; ds=""; auth=""; preview=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -archive)   archive=$2; shift ;;
         -datastage) ds=$2; shift ;;
+        -authfile)  auth=$2; shift ;;
         -preview)   preview=1 ;;
         -password)  echo "amostra: -password na linha de comando e PROIBIDO" >&2; exit 9 ;;
     esac
     shift
 done
+# Como o istool de verdade: o -authfile tem de existir no servidor (o conteudo nao e
+# lido aqui). Um `~` que chegue literal (entre aspas) cai neste erro.
+[ -n "$auth" ] || { echo "amostra: faltou -authfile" >&2; exit 3; }
+[ -f "$auth" ] || { echo "IISCOM000: authfile nao encontrado: $auth" >&2; exit 3; }
 if [ "$preview" = 1 ]; then ls /dados/bi/isx/*.isx 2>/dev/null | sed 's#.*/##; s#\.isx$##'; exit 0; fi
 [ -n "$archive" ] && [ -n "$ds" ] || { echo "amostra: faltou -archive ou -datastage" >&2; exit 2; }
 job=$(basename "$ds"); job=${job%.*}
@@ -120,7 +125,7 @@ EOF
     : > "$IS/Clients/istools/cli/plugins/org.eclipse.equinox.launcher_1.1.0.v20100507.jar"
     echo "# configuration de amostra" > "$IS/Clients/istools/cli/configuration/config.ini"
     chmod -R a+rX "$IS"
-    # authfile de amostra (o java falso não o lê; a API exige que exista o caminho).
+    # authfile de amostra: o java falso confere que o caminho existe (como o istool), não o lê.
     mkdir -p /config/.orquestra && printf 'user=amostra\npassword=amostra\n' > /config/.orquestra/istool.auth
     chown -R 1000:1000 /config/.orquestra "$BI/isx"; chmod 600 /config/.orquestra/istool.auth
     touch "$MARCA_IS"

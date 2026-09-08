@@ -150,9 +150,11 @@ extração responde 503 "não configurado" (nada quebra, mas ninguém extrai).
    servidor do DataStage**), `DS_ISTOOL_TMP` e `DS_ISTOOL_CFG` (pastas privadas do
    usuário SSH; padrão `~/.orquestra/…`), `DS_SSH_KNOWN_HOSTS`. Depois `docker compose
    up -d --no-deps orquestra-api` (a imagem muda de qualquer forma: `api/` mudou).
-   **No servidor do DataStage**, criar o `-authfile` do istool (no formato da
-   documentação do Information Server 11.7: linhas `user=` e `password=`) com
-   permissão **600** do usuário SSH do Orquestra. Sem a variável, a extração responde
+   **No servidor do DataStage**, criar o `-authfile` do istool na pasta do usuário
+   SSH do Orquestra: duas linhas `user=<usuário do istool>` e `password=<senha>`
+   (grafia chave=valor; `-user`/`-password` em linhas o istool 11.7 recusa com
+   *user name not found*), permissão **600**, e o caminho em `DS_ISTOOL_AUTHFILE`
+   (absoluto ou `~/…`, que vira o home do usuário SSH). Sem a variável, a extração responde
    503 "Lineage ISX não configurado nesta instância da API — defina DS_ISTOOL_AUTHFILE";
    com a variável apontando para um arquivo que não existe no servidor, o istool falha
    (502, motivo no log da API) — **não há** fallback para senha na linha de comando.
