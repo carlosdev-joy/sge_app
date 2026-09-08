@@ -48,16 +48,7 @@ def _safe_project_name(dsx: str) -> str:
     return name
 
 
-@router.get("/lineage", tags=["lineage"])
-def get_lineage(pipeline_name: str):
-    """Retorna lineage de um pipeline. Substitui etl_lineage_query."""
-    if not pipeline_name.strip():
-        raise HTTPException(status_code=400, detail="pipeline_name é obrigatório")
-
-    try:
-        conn = get_db_conn()
-        cur  = conn.cursor()
-        cur.execute("""
+_SQL_LINEAGE = """
             SELECT
                 j.execution_order, j.job_name, j.job_type,
                 l.direction, l.object_name,
@@ -70,6 +61,12 @@ def get_lineage(pipeline_name: str):
             FROM dbo.etl_pipeline_job j
             LEFT JOIN dbo.etl_job_lineage l
                    ON l.pipeline_name = j.pipeline_name AND l.job_name = j.job_name
+                  -- Job com extração ISX (spec docs/spec-lineage-isx.md): só as linhas
+                  -- isx_auto; sem ISX, as linhas de sempre (manual/dsx_auto ficam no banco).
+                  AND (l.extraction_method = 'isx_auto'
+                       OR NOT EXISTS (SELECT 1 FROM dbo.etl_job_lineage x
+                                      WHERE x.pipeline_name = j.pipeline_name AND x.job_name = j.job_name
+                                        AND x.extraction_method = 'isx_auto'))
             LEFT JOIN dbo.etl_stage_type_map m ON m.stage_type = l.stage_type_raw
             WHERE j.pipeline_name = ?
             ORDER BY j.execution_order, j.job_name,
@@ -79,14 +76,35 @@ def get_lineage(pipeline_name: str):
                     WHEN 'destino'       THEN 3 WHEN 'OUTPUT' THEN 3
                     ELSE 9
                 END, l.object_name
-        """, [pipeline_name])
+"""
+
+
+@router.get("/lineage", tags=["lineage"])
+def get_lineage(pipeline_name: str, _auth: dict = Depends(get_current_user)):
+    """Retorna lineage de um pipeline. Substitui etl_lineage_query.
+
+    Autenticado desde a F2 do lineage ISX (antes, qualquer um na rede lia o
+    lineage); a Governança e os modais de pipeline já mandam o token."""
+    if not pipeline_name.strip():
+        raise HTTPException(status_code=400, detail="pipeline_name é obrigatório")
+
+    try:
+        conn = get_db_conn()
+        cur  = conn.cursor()
+        cur.execute(_SQL_LINEAGE, [pipeline_name])
         rows = cur.fetchall()
         cur.close(); conn.close()
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log.exception("GET /lineage: falha ao consultar o lineage de %s", pipeline_name)
+        raise HTTPException(status_code=500, detail=f"Falha ao consultar o lineage: {type(e).__name__}.")
 
+    return _montar_lineage(pipeline_name, rows)
+
+
+def _montar_lineage(pipeline_name: str, rows) -> dict:
+    """Agrupa as linhas do SELECT por job e direção (função pura, testável)."""
     jobs_map: dict[str, dict] = {}
     for r in rows:
         (order, job_name, job_type, direction, obj_name, obj_type, type_label,
@@ -220,7 +238,7 @@ async def lineage_extract_dsx(body: dict = Body(default={}), _auth: dict = Depen
 
 
 @router.get("/lineage/dsx-files", tags=["lineage"])
-def list_dsx_files():
+def list_dsx_files(_auth: dict = Depends(get_current_user)):
     """Lista os arquivos .dsx disponíveis para varredura (nome sem extensão)."""
     DSXEngine, base_dir = _import_dsx_engine()
     try:
@@ -231,7 +249,7 @@ def list_dsx_files():
 
 
 @router.get("/lineage/dsx-folders", tags=["lineage"])
-def list_dsx_folders(dsx: str):
+def list_dsx_folders(dsx: str, _auth: dict = Depends(get_current_user)):
     """Lista as pastas (Category) distintas de um .dsx, com a contagem de jobs."""
     project = _safe_project_name(dsx)
     DSXEngine, base_dir = _import_dsx_engine()
@@ -248,7 +266,8 @@ def list_dsx_folders(dsx: str):
 def field_impact(dsx: str, campo: str, exato: bool = False,
                  tipo: str = "", excluir: bool = False,
                  incluir_bkp: bool = False, incluir_copy: bool = False,
-                 alvo: str = "coluna", pasta: str = ""):
+                 alvo: str = "coluna", pasta: str = "",
+                 _auth: dict = Depends(get_current_user)):
     """Impacto por campo: varre um .dsx (escolhido pelo nome exato) e retorna
     todos os jobs/stages cujas colunas casam com o termo (LIKE por padrão),
     com o datatype de cada coluna.

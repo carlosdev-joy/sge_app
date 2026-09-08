@@ -1,5 +1,5 @@
 # Spec: Lineage automático via ISX (DataStage) — Orquestra
-Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F1)
+Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F2; F1 mergeada na PR #369)
 
 Consolida, no formato da casa, o documento técnico "Spec — Lineage Automático via ISX"
 (Equipe BI CVP, 2026-09-07), levantado com acesso ao DataStage de produção. **Nenhuma
@@ -86,9 +86,13 @@ pronto para uma IA consultar — a IA em si é spec própria.
     api_id}`.
   - `POST /lineage/isx/extrair` `{pipeline_name, job_name, force}` —
     `require_perm(PERM_EDITAR)`; 422 se o job não está em `etl_pipeline_job`; cache pelo
-    `ds_last_modified` × API; extração em `_EXECUTOR_ISX` (`ThreadPoolExecutor(4)`,
-    `asyncio.wait_for` 60 s → 504, mesmo desenho de `routers/utilitarios.py`); grava
-    cabeçalho + linhas numa transação; devolve o lineage completo e `cache_hit`.
+    `ds_last_modified` × API; extração em `_EXECUTOR_ISX` (`ThreadPoolExecutor(2)` POR
+    worker do uvicorn — produção roda 2 workers → 4 JVMs do istool no total;
+    `asyncio.wait_for` 60 s → 504 e a fila é cancelada, mesmo desenho de
+    `routers/utilitarios.py`); grava cabeçalho + linhas numa transação com
+    `sp_getapplock` por job (duas extrações do mesmo job: a segunda recebe 409);
+    devolve o lineage completo e `cache_hit`. Nomes de pipeline/job saem do banco na
+    grafia cadastrada (colação CI × DataStage case-sensitive).
   - `GET /lineage/isx/job?pipeline_name&job_name` — `get_current_user`; só banco.
   - `GET /lineage/isx/pipeline?pipeline_name` — `get_current_user`; um item por job de
     `etl_pipeline_job` com o estado ISX (extraído em, `ds_last_modified`, status, erro).
@@ -105,7 +109,7 @@ pronto para uma IA consultar — a IA em si é spec própria.
   (`false` = aviso no log a cada arranque; `true` ou caminho de CA = recomendado).
 - Shape de erro para o front: `detail` string em pt-BR; 422 regra do pipeline; 404 job não
   achado no DataStage; 502 istool/SSH falhou (`interno` só no log); 503 servidor não
-  configurado; 504 teto; 409 nunca (não há sobrescrita manual).
+  configurado; 504 teto; 409 só quando outra extração do MESMO job está em andamento.
 
 ### Engine (`dags/utils/isx_engine.py` — novo)
 - `ConfigISX` lido do ambiente: `DS_ENGINE` (FQDN do engine, ex. no `.env.example`),
@@ -480,7 +484,19 @@ unitário `acao_editar` e lote admin; arquivo com senhas apagado do DEV; harness
 12. **Para a F2 (transporte SSH)**: com senha, o paramiko precisa de `allow_agent=False` e
     `look_for_keys=False` (o documento mediu "Authentication failed" sem eles); server jobs
     (`jobType` fora de PARALLEL/SEQUENCE) respondem 422 — fora do escopo.
-13. **Para a F3 (lote)**: excluir por padrão pastas `bkp/backup/bkup` e jobs `CopyOf*`;
+13. **Produção, antes do deploy da F2 (auditoria de segurança da F2)**: definir
+    `DS_SSH_KNOWN_HOSTS` no `.env` da API — sem ele o SSH aceita qualquer host key
+    (`AutoAddPolicy`, paridade com o Console) e o canal agora transporta o `.isx`, que traz
+    credenciais de conexão (a API avisa no arranque); conferir que o host da API REST do
+    DataStage NÃO passa pelo proxy corporativo (`rest_transport` usa `trust_env=False`, ou
+    seja, chamada direta — se a rede exigir proxy para esse host, é decisão a tomar);
+    `DS_API_URL` com `usuario:senha@` é recusada (503) — a credencial vai em
+    `DS_API_USER/DS_API_PASSWORD`.
+14. **Limitações registradas**: o mascaramento de parâmetros do job é por tipo `Encrypted`
+    ou nome sugestivo (senha/password/pwd/secret); `apt_code`/`sql_expression`/`BeforeSQL`
+    podem carregar literais sensíveis do próprio design do job e são lidos por qualquer
+    usuário autenticado. A F4 renderiza tudo por escape do React (nunca `innerHTML`).
+15. **Para a F3 (lote)**: excluir por padrão pastas `bkp/backup/bkup` e jobs `CopyOf*`;
     timeout por job 30 s; `max_workers=4`. O documento propõe descobrir a pasta de
     sub-sequences tentando uma lista fixa de pastas por projeto — descartado: a busca é
     pela API REST (`localizar_job`).

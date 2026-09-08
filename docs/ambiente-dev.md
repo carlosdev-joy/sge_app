@@ -183,3 +183,29 @@ from services import ssh_arquivos as S   # transporte SSH do Console/Utilitário
 cfg = E.ConfigISX.do_ambiente(); print("faltas:", cfg.faltas())
 PY
 ```
+
+### Smoke da F2 (endpoints ISX) contra o harness
+
+O banco do DEV precisa de um pipeline com `project_name = BI_VIDA` e os dois jobs da
+amostra mapeados (a regra do lineage ISX é "job só com pipeline"). Criado à mão em
+2026-09-08 (idempotente):
+
+```sql
+IF NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline WHERE pipeline_name='PIPE_VIDA')
+    INSERT INTO dbo.etl_pipeline (pipeline_name, project_name, domain) VALUES ('PIPE_VIDA','BI_VIDA','VIDA');
+IF NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_job WHERE pipeline_name='PIPE_VIDA' AND job_name='SsdVidaDimePessoa02Ftp')
+    INSERT INTO dbo.etl_pipeline_job (pipeline_name, job_name, execution_order) VALUES ('PIPE_VIDA','SsdVidaDimePessoa02Ftp',1);
+IF NOT EXISTS (SELECT 1 FROM dbo.etl_pipeline_job WHERE pipeline_name='PIPE_VIDA' AND job_name='SeqSsdVidaDime')
+    INSERT INTO dbo.etl_pipeline_job (pipeline_name, job_name, execution_order) VALUES ('PIPE_VIDA','SeqSsdVidaDime',2);
+```
+
+Depois, com a API reconstruída (`build orquestra-api` + `up -d --no-deps orquestra-api`):
+
+```bash
+read -rs ORQ_PASS; export ORQ_PASS            # senha do usuário do Airflow de DEV
+ORQ_URL=http://127.0.0.1:8000 ORQ_USER=admin PIPELINE=PIPE_VIDA \
+JOB=SsdVidaDimePessoa02Ftp JOB_SEQ=SeqSsdVidaDime scripts/smoke_lineage_isx.sh
+```
+
+No arranque a API avisa `DS_API_VERIFY_SSL=false` e `DS_SSH_KNOWN_HOSTS ausente` — esperado
+no DEV (API REST de amostra em HTTP puro; sshd-amostra sem known_hosts).
