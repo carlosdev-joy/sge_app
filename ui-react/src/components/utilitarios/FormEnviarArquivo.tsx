@@ -95,9 +95,11 @@ export function FormEnviarArquivo({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-[auto_1fr_auto] gap-3 items-start">
-        <div className="flex flex-col gap-1">
+        <div className="relative flex flex-col gap-1">
           <span className="text-xs text-dim font-medium">Arquivo do seu computador</span>
-          {/* O input real fica só para leitor de tela e teclado; o botão abre o seletor. */}
+          {/* O input real fica só para leitor de tela e teclado; o botão abre o seletor.
+              `relative` no pai: sr-only é absolute e, sem ancestral posicionado, esticaria
+              a página (ver ui/Checkbox). */}
           <input ref={seletor} type="file" className="sr-only" onChange={escolher} disabled={desabilitado || enviando}
             aria-label="Escolher arquivo do seu computador" data-campo="arquivo" />
           <Button type="button" variant="secondary" onClick={() => seletor.current?.click()}

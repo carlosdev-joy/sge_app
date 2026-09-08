@@ -20,7 +20,13 @@ export function AppShellV2() {
   const fullBleed = FULL_BLEED_PREFIXES.some(p => pathname === p || pathname.startsWith(p + '/'))
 
   return (
-    <div className="flex flex-col h-screen bg-canvas overflow-hidden">
+    // `relative` na casca: ela vira o bloco de contenção de qualquer descendente
+    // `position: absolute` sem ancestral posicionado (um input `sr-only` de
+    // Checkbox/Switch abaixo da dobra, por exemplo). Sem isso, esse descendente se
+    // ancora no DOCUMENTO e estica a área rolável da página inteira: a rolagem do
+    // <main> encadeia para o documento no fim da aba, cabeçalho e menu sobem e não
+    // há como voltar (captura do usuário, 2026-09-07; medido no DEV: 442 px).
+    <div className="relative flex flex-col h-screen bg-canvas overflow-hidden">
       <HeaderV2 onMenuClick={() => setMobileOpen(true)} />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />

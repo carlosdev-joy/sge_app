@@ -15,7 +15,10 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
   function Checkbox({ label, hint, className = '', disabled, ...rest }, ref) {
     return (
       <span className={`inline-flex items-center gap-1.5 ${className}`}>
-        <label className={`inline-flex items-center gap-2 select-none ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+        {/* `relative`: o input sr-only é `position: absolute`; sem ancestral posicionado ele
+            se ancora no documento e, abaixo da dobra, estica a área rolável da página inteira
+            (a tela "ia para baixo" na aba Utilitários do Admin — captura de 2026-09-07). */}
+        <label className={`relative inline-flex items-center gap-2 select-none ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
           <input ref={ref} type="checkbox" disabled={disabled} {...rest} className="peer sr-only" />
           <span
             aria-hidden="true"
