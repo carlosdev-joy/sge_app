@@ -50,11 +50,19 @@ EXPORT_TETO_S = 60
 XSI = "{http://www.w3.org/2001/XMLSchema-instance}"
 
 _NOME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,200}$")
-_PASTA_COMP_RE = re.compile(r"^[A-Za-z0-9_. -]{1,200}$")
+# Componente de pasta: as pastas reais têm acento, espaço, ponto e parênteses
+# ("03. Dimensões", "05. Projetos/AcumuloIS_Diaria"). `\w` é Unicode e NÃO casa
+# caracteres de formato (zero-width, soft hyphen); tudo vai ao shell por `shlex.quote`.
+_PASTA_COMP_RE = re.compile(r"^[\w. \-()&+,]{1,200}$")
 # Caminhos que a API REST devolve (`id`, `$ref`) e que voltamos a pedir a ela: só
 # estes dois prefixos, sem `..`, `//` nem `:` — nada de URL absoluta ou salto de host.
 _API_CAMINHO_RE = re.compile(r"^(?:folders|jobdesigns)/[A-Za-z0-9%._-]+(?:/contents)?$")
-_EXT_POR_TIPO = {"PARALLEL": "pjb", "SEQUENCE": "sjb"}
+# Extensões do istool por tipo, em ORDEM de tentativa: um sequence que chama outros
+# jobs exporta como .qjb e um sequence simples como .sjb — a API REST diz só
+# "SEQUENCE" para os dois (documento de origem, §4.4). `exportar_job` tenta em ordem.
+_EXTS_POR_TIPO = {"PARALLEL": ("pjb",), "SEQUENCE": ("qjb", "sjb")}
+# O istool diz assim quando o caminho não existe (pasta ou job); vale tentar o próximo.
+_MARCAS_NAO_ENCONTRADO = ("not found", "no assets matched")
 _RE_LEN = re.compile(r"\[(?:max=)?(\d{1,9})\]")
 _RE_DB_HINT = re.compile(r"ParmDb(?:Name)?([A-Za-z0-9]{3,})")
 # Parâmetro de job que carrega segredo (tipo Encrypted ou nome sugestivo): o
@@ -168,18 +176,32 @@ def validar_pasta(folder_path) -> list[str]:
 
 def tipo_job(bruto) -> str:
     t = str(bruto or "PARALLEL").strip().upper()
-    if t not in _EXT_POR_TIPO:
-        raise ISXError(422, f"Tipo de job desconhecido: {t!r} (esperado PARALLEL ou SEQUENCE).")
+    if t not in _EXTS_POR_TIPO:
+        raise ISXError(422, f"Tipo de job desconhecido: {t!r} (esperado PARALLEL ou SEQUENCE; server jobs ficam fora).")
     return t
 
 
-def caminho_istool(engine: str, projeto: str, folder_path, job: str, tipo: str) -> str:
-    """`ENGINE/PROJETO/Jobs/A/B/JOB.pjb` — o formato do `-datastage` do istool."""
+def caminhos_istool(engine: str, projeto: str, folder_path, job: str, tipo: str) -> list[str]:
+    """Os caminhos `-datastage` a tentar, em ordem: `ENGINE/PROJETO/Jobs/A/B/JOB.pjb`
+    para PARALLEL; `.qjb` e depois `.sjb` para SEQUENCE."""
     eng = validar_nome(engine, "Engine")
     proj = validar_nome(projeto, "Projeto")
     j = validar_nome(job, "Job")
     partes = validar_pasta(folder_path)
-    return f"{eng}/{proj}/{'/'.join(partes)}/{j}.{_EXT_POR_TIPO[tipo_job(tipo)]}"
+    base = f"{eng}/{proj}/{'/'.join(partes)}/{j}."
+    return [base + ext for ext in _EXTS_POR_TIPO[tipo_job(tipo)]]
+
+
+def caminho_istool(engine: str, projeto: str, folder_path, job: str, tipo: str) -> str:
+    """O primeiro candidato de `caminhos_istool` (quem quer a lista inteira usa ela)."""
+    return caminhos_istool(engine, projeto, folder_path, job, tipo)[0]
+
+
+def _caminho_datastage_shell(caminho: str) -> str:
+    """O istool quebra o `-datastage` no espaço MESMO entre aspas simples (medido em
+    produção com pastas como `04. ODS`): o espaço vai escapado com `\\ ` dentro das
+    aspas, e é o próprio istool que desfaz o escape."""
+    return shlex.quote(caminho.replace(" ", "\\ "))
 
 
 def nome_archive(cfg: ConfigISX, job: str) -> str:
@@ -240,7 +262,7 @@ def comando_istool(cfg: ConfigISX, caminho: str, archive: str, *, preview: bool 
         + f" -domain {q(cfg.istool_domain)}"
         + f" -authfile {q(cfg.istool_authfile)}"
         + f" -archive {_caminho_shell(archive)}"
-        + f" -datastage {q(caminho)}"
+        + f" -datastage {_caminho_datastage_shell(caminho)}"
         + (" -preview" if preview else "")
     )
     return f"{preparo} && {copia}; {limpeza}; {export}"
@@ -349,9 +371,12 @@ def exportar(ssh, cfg: ConfigISX, caminho: str, *, job: str, teto_s: int = EXPOR
         try:
             rc, saida, erro = executar(comando, teto_s)
             if rc != 0:
+                texto = (str(erro) + " " + str(saida)).lower()
+                nao_achou = any(m in texto for m in _MARCAS_NAO_ENCONTRADO)
                 raise ISXError(
                     502, "O istool falhou ao exportar o job — detalhe registrado no log da API.",
-                    interno=f"rc={rc} stderr={str(erro)[-800:]!r} stdout={str(saida)[-300:]!r}")
+                    interno=f"rc={rc} stderr={str(erro)[-800:]!r} stdout={str(saida)[-300:]!r}",
+                    resultado="nao_encontrado" if nao_achou else "erro")
             try:
                 st = sftp.stat(remoto)
             except OSError as e:
@@ -371,6 +396,25 @@ def exportar(ssh, cfg: ConfigISX, caminho: str, *, job: str, teto_s: int = EXPOR
             except Exception:  # noqa: BLE001 — limpeza best-effort
                 pass
     return dados
+
+
+def exportar_job(ssh, cfg: ConfigISX, engine: str, projeto: str, folder_path, job: str, tipo: str,
+                 *, teto_s: int = EXPORT_TETO_S) -> tuple[bytes, str]:
+    """`exportar` sobre os candidatos de `caminhos_istool`, em ordem (SEQUENCE: `.qjb`,
+    depois `.sjb`). "not found"/"No assets matched" do istool → próximo candidato;
+    esgotou → 404; qualquer outra falha → a ISXError original (502/413), sem insistir.
+    Devolve (bytes do .isx, caminho que funcionou)."""
+    ultimo: ISXError | None = None
+    for caminho in caminhos_istool(engine, projeto, folder_path, job, tipo):
+        try:
+            return exportar(ssh, cfg, caminho, job=job, teto_s=teto_s), caminho
+        except ISXError as e:
+            if e.status == 502 and e.resultado == "nao_encontrado":
+                ultimo = e
+                continue
+            raise
+    raise ISXError(404, "Job não encontrado no repositório do DataStage pelo istool — confira projeto, pasta e nome.",
+                   interno=ultimo.interno if ultimo else None, resultado="nao_encontrado")
 
 
 # ── Parse do XML ─────────────────────────────────────────────────────────────
@@ -443,10 +487,11 @@ def _colunas(pin) -> list[dict]:
             if _simples(m.tag) != "has_DSMetaData":
                 continue
             nome = m.get("name") or ""
-            if not nome or nome == "RTColumnProp":
-                continue
             ext = m.get("extendedType") or ""
             base = m.get("type") or ""
+            # Coluna tem tipo; metadado de propriedade (RTColumnProp, dataset=…) tem só `value`.
+            if not nome or nome == "RTColumnProp" or not (ext or base):
+                continue
             tam = None
             mt = _RE_LEN.search(ext)
             if mt:
@@ -456,6 +501,22 @@ def _colunas(pin) -> list[dict]:
                 tipo = ext or base
             cols.append({"name": nome, "type": tipo or None, "length": tam})
     return cols
+
+
+def _arquivo_dos_pins(stage) -> str | None:
+    """Fallback do path de arquivo: `has_DSMetaData name="dataset|file|filename"
+    value="…"` dentro de um pin (documento de origem, §5.7)."""
+    for pin in stage:
+        if _simples(pin.tag) not in ("has_InputPin", "has_OutputPin"):
+            continue
+        for bag in pin:
+            if _simples(bag.tag) != "has_DSMetaBag":
+                continue
+            for m in bag:
+                if _simples(m.tag) == "has_DSMetaData" and (m.get("name") or "").lower() in ("dataset", "file", "filename") \
+                        and m.get("value"):
+                    return m.get("value")
+    return None
 
 
 def _mainloop(bruto: str) -> str | None:
@@ -500,8 +561,8 @@ def _fluxo(root) -> list[dict]:
         info = dv.get("lazyLoadInfo") or ""
         por_id: dict[str, dict] = {}
         setas = []
-        for blk in [b for b in info.split(" StageID=") if b]:
-            blk = blk[len("StageID="):] if blk.startswith("StageID=") else blk
+        # Parallel separa os blocos por " StageID="; sequence por "StageID=" sem espaço.
+        for blk in [b for b in re.split(r"\s*StageID=", info) if b.strip()]:
             sid = re.match(r"^(\w+)", blk)
             nome = re.search(r"StageNames=([^|]+)", blk)
             tipo = re.search(r"StageTypeIDs=([^|]+)", blk)
@@ -516,9 +577,17 @@ def _fluxo(root) -> list[dict]:
                     if nome and lnome and alvo:
                         setas.append({"from": nome.group(1), "from_type": tipo.group(1) if tipo else "",
                                       "link": lnome, "to_id": alvo})
+        def resolver(to_id: str) -> dict:
+            # Parallel referencia V0S<id>; sequence usa outro prefixo (V22S3) com o mesmo <id>.
+            d = por_id.get(to_id)
+            if d is None:
+                m = re.match(r"^V\d+S(\w+)$", to_id)
+                d = por_id.get("V0S" + m.group(1)) if m else None
+            return d or {}
+
         return [{"from": a["from"], "from_type": a["from_type"], "link": a["link"],
-                 "to": por_id.get(a["to_id"], {}).get("name", a["to_id"]),
-                 "to_type": por_id.get(a["to_id"], {}).get("type", "")} for a in setas]
+                 "to": resolver(a["to_id"]).get("name", a["to_id"]),
+                 "to_type": resolver(a["to_id"]).get("type", "")} for a in setas]
     return []
 
 
@@ -642,7 +711,7 @@ def parse_isx(dados: bytes, mapa: dict[str, dict] | None = None, *, job: str | N
         if xmlprops:
             item.update({k: v for k, v in _propriedades_xml(xmlprops).items() if k in item})
         if classe == "arquivo" or not classe:
-            caminho = _valor_param(st, "dataset", "file", "filename", "path")
+            caminho = _valor_param(st, "dataset", "file", "filename", "path") or _arquivo_dos_pins(st)
             if caminho:
                 item["file_path"] = caminho
         for pin in st:
@@ -655,7 +724,10 @@ def parse_isx(dados: bytes, mapa: dict[str, dict] | None = None, *, job: str | N
             item["apt_code"] = _apt_code(st)
             item["expressions"] = _expressoes(st)
         if stype == "CJobActivity":
-            filho_nome = (_valor_param(st, "JobName", "job", "jobname") or "").strip()
+            # O job chamado fica no ATRIBUTO `jobname` do stage (documento de origem, §5b);
+            # o has_ParameterVal JobName é o fallback.
+            filho_nome = (st.get("jobname") or st.get("jobName") or st.get("JobName")
+                          or _valor_param(st, "JobName", "job", "jobname") or "").strip()
             if filho_nome:
                 item["_job_filho"] = filho_nome
             else:

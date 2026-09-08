@@ -119,7 +119,10 @@ pronto para uma IA consultar — a IA em si é spec própria.
 - Funções puras (testáveis sem rede): `validar_nome(projeto|job)` (`^[A-Za-z0-9_.-]+$`,
   o mesmo espírito de `_SAFE_JOB_RE` do operador), `validar_pasta` (componentes
   `^[A-Za-z0-9_. -]+$`), `caminho_istool(engine, projeto, folder_path, job, tipo)`
-  (`\\Jobs\\A\\B` → `Jobs/A/B`, `.pjb`/`.sjb`), `comando_istool(cfg, caminho, archive)`
+  (`\\Jobs\\A\\B` → `Jobs/A/B`; PARALLEL → `.pjb`; SEQUENCE → `.qjb` e, se o istool
+  disser "not found", `.sjb` — `caminhos_istool` + `exportar_job`; espaço no caminho vai
+  como `\ ` dentro das aspas, porque o istool quebra no espaço mesmo entre aspas;
+  componentes de pasta aceitam acento/parênteses), `comando_istool(cfg, caminho, archive)`
   (tudo por `shlex.quote`, `~/` vira `"$HOME"/`; `-authfile`, **nunca** `-password`;
   `umask 077` e pasta temporária privada), `parse_isx(bytes, mapa, job=)` (ZIP → XML →
   dict da §5 do documento original; `mapa` = linhas de `etl_stage_type_map`; raiz que
@@ -283,7 +286,10 @@ o caso no `nao_reconhecidos_json` e no manual).
     `origem/transformacao/destino`, SQL completo do ODBC, `file_path` com `#PSet…#`,
     colunas `CPF_CNPJ:string[20]`, expressão `IND_PESSOA_NLIST ← trim(...)`, `mainloop` e
     fluxo `A → link → B → link → C`.
-  - Dado o `.sjb`, devolve `job_type='SEQUENCE'` e `children=[…]` sem SQL.
+  - Dado o `.sjb`/`.qjb`, devolve `job_type='SEQUENCE'` e `children=[…]` sem SQL — o job
+    chamado vem do atributo `jobname` do stage `CJobActivity` (fallback: `has_ParameterVal
+    JobName`); atividade sem nome de job vai para `nao_reconhecidos`, nunca é chute. O
+    `lazyLoadInfo` de sequence vem sem espaço entre blocos e com IDs `V22S<n>`.
   - `comando_istool` nunca contém `-password`; um nome com `;` ou espaço vira 422 antes
     de qualquer SSH.
   - Migration 106 aplicada 2× no DEV sem erro; `etl_stage_type_map` ganha os tipos PX uma
@@ -466,3 +472,15 @@ unitário `acao_editar` e lote admin; arquivo com senhas apagado do DEV; harness
     `SELECT COL_LENGTH('dbo.etl_stage_type_map','type_raw'), COL_LENGTH('dbo.etl_stage_type_map','stage_type')`
     e dizer o resultado, para decidirmos se unificamos a grafia numa migration própria
     (fora desta spec).
+11. **Segunda versão do documento de origem (lida em 2026-09-07, depois da F1)**: trouxe
+    `.qjb` para sequences com filhos, `jobname` como atributo do stage, `lazyLoadInfo` de
+    sequence sem espaço e com `V22S<n>`, espaço no `-datastage` escapado com `\ `, pastas
+    com acento — tudo absorvido na F1. **Voltou a trazer senhas em claro** (SSH, Basic auth
+    da API REST, `-password` do istool/dsjob): nada disso entra no repo; apagar do DEV.
+12. **Para a F2 (transporte SSH)**: com senha, o paramiko precisa de `allow_agent=False` e
+    `look_for_keys=False` (o documento mediu "Authentication failed" sem eles); server jobs
+    (`jobType` fora de PARALLEL/SEQUENCE) respondem 422 — fora do escopo.
+13. **Para a F3 (lote)**: excluir por padrão pastas `bkp/backup/bkup` e jobs `CopyOf*`;
+    timeout por job 30 s; `max_workers=4`. O documento propõe descobrir a pasta de
+    sub-sequences tentando uma lista fixa de pastas por projeto — descartado: a busca é
+    pela API REST (`localizar_job`).

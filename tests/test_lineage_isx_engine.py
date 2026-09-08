@@ -181,14 +181,20 @@ class TestNomesECaminhos:
     def test_pasta_como_a_api_devolve(self):
         assert E.validar_pasta("\\Jobs\\SsdVida\\_Dime") == ["Jobs", "SsdVida", "_Dime"]
         assert E.validar_pasta("Jobs/Com Espaco/x") == ["Jobs", "Com Espaco", "x"]
-        for ruim in ("", "\\Outra\\x", "\\Jobs\\..\\etc", "\\Jobs\\a;b", "\\Jobs\\ x"):
+        # pastas reais: "03. Dimensões", "05. Projetos/AcumuloIS_Diaria", parênteses
+        assert E.validar_pasta("\\Jobs\\03. Dimensões\\Sub (v2) & cia") == ["Jobs", "03. Dimensões", "Sub (v2) & cia"]
+        for ruim in ("", "\\Outra\\x", "\\Jobs\\..\\etc", "\\Jobs\\a;b", "\\Jobs\\ x", "\\Jobs\\a$(id)", "\\Jobs\\a'b",
+                     "\\Jobs\\a​b", "\\Jobs\\a­b", "\\Jobs\\a`b", "\\Jobs\\a|b"):
             with pytest.raises(E.ISXError):
                 E.validar_pasta(ruim)
 
     def test_caminho_istool(self):
         assert E.caminho_istool("AMOSTRA.DEV", "BI_VIDA", "\\Jobs\\SsdVida\\_Dime", "SsdVidaDimePessoa02Ftp", "parallel") == \
             "AMOSTRA.DEV/BI_VIDA/Jobs/SsdVida/_Dime/SsdVidaDimePessoa02Ftp.pjb"
-        assert E.caminho_istool("E", "P", "\\Jobs", "Seq", "SEQUENCE").endswith("/Jobs/Seq.sjb")
+        # sequence: .qjb primeiro (chama outros jobs), .sjb depois — a API diz só SEQUENCE
+        assert E.caminhos_istool("E", "P", "\\Jobs", "Seq", "SEQUENCE") == ["E/P/Jobs/Seq.qjb", "E/P/Jobs/Seq.sjb"]
+        assert E.caminhos_istool("E", "P", "\\Jobs", "J", "PARALLEL") == ["E/P/Jobs/J.pjb"]
+        assert E.caminho_istool("E", "P", "\\Jobs", "Seq", "SEQUENCE").endswith("/Jobs/Seq.qjb")
         with pytest.raises(E.ISXError):
             E.caminho_istool("E", "P", "\\Jobs", "x; id", "PARALLEL")
         with pytest.raises(E.ISXError):
@@ -236,6 +242,12 @@ class TestComandoIstool:
         assert E._caminho_shell("~") == '"$HOME"' and E._caminho_shell("~/a b") == '"$HOME"/\'a b\''  # noqa: SLF001
         assert E._caminho_shell("/x/~y") == "'/x/~y'"  # noqa: SLF001
 
+    def test_datastage_com_espaco_vai_escapado_dentro_das_aspas(self):
+        # o istool quebra o caminho no espaço mesmo entre aspas simples (medido em produção)
+        cmd = E.comando_istool(CFG, "E/P/Jobs/04. ODS/03. Dimensões/Seq.qjb", "/tmp/x.isx")
+        assert "-datastage 'E/P/Jobs/04.\\ ODS/03.\\ Dimensões/Seq.qjb'" in cmd
+        assert E._caminho_datastage_shell("E/P/Jobs/J.pjb") == "E/P/Jobs/J.pjb"  # noqa: SLF001
+
     def test_authfile_com_password_no_nome_do_caminho_nao_quebra(self):
         c = E.ConfigISX.do_ambiente({**AMBIENTE, "DS_ISTOOL_AUTHFILE": "/etc/ds-password/auth"})
         cmd = E.comando_istool(c, "E/P/Jobs/J.pjb", "/tmp/x.isx")
@@ -257,6 +269,7 @@ class TestClassificacao:
         assert T.classe_do_tipo("PxDataSet", mapa) == ("arquivo", "Arquivo", True)      # fallback do conjunto
         assert T.classe_do_tipo("CTransformerStage") == ("transformacao", "Transformer", True)
         assert T.classe_do_tipo("CJobActivity") == ("sequence", "Sequence", True)
+        assert T.classe_do_tipo("CSequencer") == ("sequence", "Sequence", True)
         assert T.classe_do_tipo("MeuConnectorNovo") == ("banco", "ODBC", False)       # pelo nome, não reconhecido
         assert T.classe_do_tipo("PxAlienStage") == (None, "PxAlienStage", False)
 
@@ -358,6 +371,30 @@ class TestParseSequence:
         assert all(s["sql_expression"] is None for s in r["stages"])
         assert [f["to"] for f in r["flow"]] == ["Seq1", "SsdVidaOutroJob"]
 
+    def test_sequence_real_jobname_no_atributo_e_lazyload_sem_espaco(self):
+        # forma documentada do .qjb: `jobname` no próprio stage, IDs V22S<n>, blocos sem espaço,
+        # vários links por nó (paralelismo) separados por vírgula
+        qjb = """<?xml version="1.0" encoding="UTF-8"?>
+<com.ibm.datastage.ai.dtm.ds:DSJobDefSDO xmlns:com.ibm.datastage.ai.dtm.ds="http://www.ibm.com/datastage/ds"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SeqSsdPrs_CargaDiaria" jobType="Sequence">
+  <contains_JobObject xsi:type="com.ibm.datastage.ai.dtm.ds:DSStageSDO" stageType="CJobActivity" name="Dimensoes" jobname="SeqSsdPrs_Dim" internalID="V22S3" outputPins="V22S3P1"/>
+  <contains_JobObject xsi:type="com.ibm.datastage.ai.dtm.ds:DSStageSDO" stageType="CJobActivity" name="ODS" jobname="SeqSsdPrs_ODS" internalID="V22S5" inputPins="V22S5P1"/>
+  <contains_JobObject xsi:type="com.ibm.datastage.ai.dtm.ds:DSStageSDO" stageType="CJobActivity" name="AcmIS" jobname="SeqSsdPrs_AcmIS" internalID="V22S8" inputPins="V22S8P1"/>
+  <contains_JobObject xsi:type="com.ibm.datastage.ai.dtm.ds:DSStageSDO" stageType="CSequencer" name="Junta" internalID="V22S9" inputPins="V22S9P1"/>
+  <has_DSDesignView lazyLoadInfo="StageID=3|StageNames=Dimensoes|StageTypeIDs=CJobActivity|LI=LinkNames=LinkParaODS,LinkParaAcm|LI=TargetStageIDs=V22S5,V22S8StageID=5|StageNames=ODS|StageTypeIDs=CJobActivityStageID=8|StageNames=AcmIS|StageTypeIDs=CJobActivity|LI=LinkNames=ok|LI=TargetStageIDs=V22S9StageID=9|StageNames=Junta|StageTypeIDs=CSequencer"/>
+</com.ibm.datastage.ai.dtm.ds:DSJobDefSDO>
+"""
+        r = E.parse_isx(isx({"SeqSsdPrs_CargaDiaria.qjb": qjb}))
+        assert r["job_type"] == "SEQUENCE" and r["membro"].endswith(".qjb")
+        assert r["children"] == [{"job_name": "SeqSsdPrs_Dim", "activity": "Dimensoes"},
+                                 {"job_name": "SeqSsdPrs_ODS", "activity": "ODS"},
+                                 {"job_name": "SeqSsdPrs_AcmIS", "activity": "AcmIS"}]
+        assert r["nao_reconhecidos"] == []
+        assert [(f["from"], f["link"], f["to"], f["to_type"]) for f in r["flow"]] == [
+            ("Dimensoes", "LinkParaODS", "ODS", "CJobActivity"), ("Dimensoes", "LinkParaAcm", "AcmIS", "CJobActivity"),
+            ("AcmIS", "ok", "Junta", "CSequencer")]
+        assert {s["stage_name"]: s["object_type"] for s in r["stages"]}["Junta"] == "Sequence"
+
     def test_membro_escolhido_pelo_job_pedido(self):
         z = isx({"SeqZ_principal.sjb": SJB.replace('name="SeqSsdVidaDime"', 'name="SeqZ_principal"'),
                  "SeqA_filho.sjb": SJB.replace('name="SeqSsdVidaDime"', 'name="SeqA_filho"')})
@@ -383,6 +420,16 @@ class TestParseTolerancia:
         absurdo = PJB.replace('extendedType="string[max=20]"', 'extendedType="string[max=99999999999999999]"', 1)
         r3 = E.parse_isx(isx({"x.pjb": absurdo}))
         assert {s["stage_name"]: s for s in r3["stages"]}["DM_119_INFO"]["output_columns"][0]["length"] is None
+
+    def test_arquivo_pelo_metadado_do_pin_e_metadado_nao_vira_coluna(self):
+        # sem has_ParameterVal Name="dataset": o path vem do has_DSMetaData name="dataset" value=… do pin,
+        # e esse metadado (sem type) NÃO entra na lista de colunas
+        pjb = PJB.replace('<has_ParameterVal Name="dataset" valueExpression="#PSetSsdVida.ParmDirDst#DST_FTP_NLIST.ds" usage="In"/>',
+                          '<has_InputPin name="LnkDadosNlist"><has_DSMetaBag><has_DSMetaData name="dataset" value="/dados/dst/NLIST.ds"/>'
+                          '<has_DSMetaData name="IND_PESSOA_NLIST" type="string" extendedType="string[max=20]"/></has_DSMetaBag></has_InputPin>')
+        d = {s["stage_name"]: s for s in E.parse_isx(isx({"x.pjb": pjb}))["stages"]}["DST_FTP_NLIST"]
+        assert d["file_path"] == "/dados/dst/NLIST.ds"
+        assert d["input_columns"] == [{"name": "IND_PESSOA_NLIST", "type": "string", "length": 20}]
 
     def test_varios_links_por_stage_e_stage_sem_atributo_de_pins(self):
         pjb = PJB.replace("LI=LinkNames=LnkDadosNlist|LI=TargetStageIDs=V0S200", "LI=LinkNames=LnkDadosNlist,LnkOutro|LI=TargetStageIDs=V0S200,V0S210")
@@ -628,6 +675,45 @@ class TestExportar:
         ssh, reg = _ssh()
         assert E.exportar(ssh, c, "E/P/Jobs/J.pjb", job="J") == ISX_PJB
         assert reg["sftp"].removidos[0].startswith(".orquestra/tmp/orq_J_") and reg["sftp"].arquivos == {}
+
+    def test_exportar_job_tenta_qjb_depois_sjb(self):
+        respostas = {".qjb": (1, "", "IISCOM123: DataStageSequenceJob not found"), ".sjb": (0, "Exported 1 asset", "")}
+        tentativas: list[str] = []
+
+        def ssh_por_extensao(respostas):
+            @contextmanager
+            def ssh():
+                sftp = _Sftp({})
+
+                def executar(cmd, timeout):
+                    m = re.search(r"-datastage '?([^' ]+)'?", cmd)
+                    caminho = m.group(1)
+                    tentativas.append(caminho)
+                    rc, out, err = respostas[caminho[-4:]]
+                    if rc == 0:
+                        sftp.arquivos[re.search(r"-archive (\S+)", cmd).group(1)] = ISX_SJB
+                    return rc, out, err
+                yield executar, sftp
+            return ssh
+
+        dados, caminho = E.exportar_job(ssh_por_extensao(respostas), CFG, "E", "P", "\\Jobs", "Seq", "SEQUENCE")
+        assert dados == ISX_SJB and caminho == "E/P/Jobs/Seq.sjb" and tentativas == ["E/P/Jobs/Seq.qjb", "E/P/Jobs/Seq.sjb"]
+        # nenhum candidato existe → 404 (não 502), com o stderr só no interno
+        tentativas.clear()
+        with pytest.raises(E.ISXError) as ei:
+            E.exportar_job(ssh_por_extensao({".qjb": (1, "", "No assets matched x"), ".sjb": (1, "", "DataStageFolder not found")}),
+                           CFG, "E", "P", "\\Jobs", "Seq", "SEQUENCE")
+        assert ei.value.status == 404 and "not found" in ei.value.interno and len(tentativas) == 2
+        # erro que NÃO é "não achei" (ex.: login) → 502 na hora, sem tentar o .sjb
+        tentativas.clear()
+        with pytest.raises(E.ISXError) as ei:
+            E.exportar_job(ssh_por_extensao({".qjb": (1, "", "Login failed"), ".sjb": (0, "", "")}),
+                           CFG, "E", "P", "\\Jobs", "Seq", "SEQUENCE")
+        assert ei.value.status == 502 and tentativas == ["E/P/Jobs/Seq.qjb"]
+        # parallel: um candidato só
+        tentativas.clear()
+        _, caminho = E.exportar_job(ssh_por_extensao({".pjb": (0, "", "")}), CFG, "E", "P", "\\Jobs", "J", "PARALLEL")
+        assert caminho == "E/P/Jobs/J.pjb" and tentativas == ["E/P/Jobs/J.pjb"]
 
     def test_rc_diferente_de_zero_502_com_stderr_so_no_interno(self):
         ssh, reg = _ssh(rc=1, erro="IISCOM000: No assets matched", gerar=False)

@@ -24,9 +24,9 @@ TRANSFORM_TYPES: frozenset[str] = frozenset({
 # Atividades de sequence: viram "transformacao" no lineage; a de job vira filho.
 SEQUENCE_TYPES: frozenset[str] = frozenset({
     "CJobActivity", "CNotificationActivity", "CExceptionHandler",
-    "CExecCommandActivity", "CRoutineActivity", "CSequencerActivity",
+    "CExecCommandActivity", "CRoutineActivity", "CSequencerActivity", "CSequencer",
     "CWaitForFileActivity", "CStartLoopActivity", "CEndLoopActivity",
-    "CUserVariablesActivity",
+    "CUserVariablesActivity", "CTerminatorActivity", "CConditionActivity",
 })
 
 DB_TYPES: frozenset[str] = frozenset({
