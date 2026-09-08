@@ -14,7 +14,9 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
   function Switch({ label, hint, className = '', disabled, ...rest }, ref) {
     return (
       <span className={`inline-flex items-center gap-1.5 ${className}`}>
-        <label className={`inline-flex items-center gap-2 select-none ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+        {/* `relative`: contém o input sr-only (absolute) — sem isso ele estica o documento
+            quando fica abaixo da dobra (ver Checkbox). */}
+        <label className={`relative inline-flex items-center gap-2 select-none ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
           <input ref={ref} type="checkbox" role="switch" disabled={disabled} {...rest} className="peer sr-only" />
           <span
             aria-hidden="true"

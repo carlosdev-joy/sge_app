@@ -73,9 +73,7 @@ export function NavegadorPastas({
     const el = painel.current
     if (!el) return
     const ativo = document.activeElement
-    // preventScroll: devolver o foco ao painel não pode rolar a página (a casca é
-    // clip, mas o <main> rolaria e a lista pularia a cada listagem).
-    if (!ativo || ativo === document.body || !el.contains(ativo)) el.focus({ preventScroll: true })
+    if (!ativo || ativo === document.body || !el.contains(ativo)) el.focus()
   }, [aberto, carregando, listagem, baixando])
 
   const subir = () => {

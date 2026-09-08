@@ -28,8 +28,11 @@ export function BarraTransferencia({ estado, onFechar }: BarraTransferenciaProps
   const frase = estado ? fraseTransferencia(estado) : ''
   const pct = estado?.fase === 'baixando' ? percentual(estado.feito, estado.total) : null
   const emCurso = estado?.fase === 'conectando' || estado?.fase === 'baixando'
+  // `relative` no invólucro: a região sr-only é `position: absolute` e vive AQUI, no fluxo
+  // da página (não dentro da faixa fixa) — sem ancestral posicionado ela se ancoraria no
+  // documento e, abaixo da dobra, esticaria a área rolável (ver ui/Checkbox).
   return (
-    <div data-transferencia={estado?.fase ?? 'nenhuma'}>
+    <div data-transferencia={estado?.fase ?? 'nenhuma'} className="relative">
       <div aria-live="polite" className="sr-only" data-anuncio>{anuncioTransferencia(estado)}</div>
       {estado && (
         <div className="fixed bottom-4 right-4 z-[60] w-[min(26rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg p-3 flex flex-col gap-2"

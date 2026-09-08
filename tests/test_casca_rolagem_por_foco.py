@@ -1,13 +1,19 @@
-"""Casca da aplicação (AppShellV2): a página não pode "ir para baixo" quando um campo
-ganha foco (captura do usuário em 2026-09-07: Admin › Utilitários com o cabeçalho e o
-topo do menu fora da tela e o rodapé vazio).
+"""A página não pode "ir para baixo" perdendo a referência da tela (captura do usuário em
+2026-09-07: Admin › Utilitários com cabeçalho e topo do menu fora da tela, rodapé vazio e
+sem barra para voltar; nas outras telas não acontecia).
 
-Causa: `overflow: hidden` ainda é rolável por programa — `autoFocus` (caminho da raiz ao
-editar, no Admin) e o `focus()` do navegador de pastas fazem o navegador rolar a casca
-inteira, e não há barra para voltar. `overflow: clip` não rola nunca; o único contêiner
-rolável fica sendo o <main>. Anti-drift: as duas classes nos dois contêineres da casca,
-`overflow-hidden` mantido como reserva (navegador sem `clip` ignora a declaração), e o
-foco devolvido pelo navegador de pastas com `preventScroll`.
+Causa medida no DEV (Chromium headless): o input `sr-only` do Switch "Guardar cópia de
+segurança" é `position: absolute` (é o que `sr-only` faz). Sem NENHUM ancestral
+posicionado, ele se ancora no documento na posição em que estaria (y = 1141 numa janela
+de 700 px) e estica a área rolável da página inteira em 442 px; a casca é
+`overflow-hidden`, mas o documento passa a rolar — e a rolagem do <main> encadeia para
+ele no fim da aba. Nas outras telas os Checkbox/Switch ficam acima da dobra ou dentro
+de algo `relative`, por isso "diferente das demais".
+
+Correção em duas camadas: `relative` nos invólucros dos inputs sr-only (Checkbox,
+Switch, RadioItem, seletor de arquivo do Enviar) e `relative` na casca, que vira o
+bloco de contenção de qualquer absolute perdido (a `overflow-hidden` da casca então o
+corta em vez de o documento crescer). Anti-drift abaixo.
 """
 from __future__ import annotations
 
@@ -15,42 +21,65 @@ import re
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
-CASCA = RAIZ / "ui-react/src/components/layout/AppShellV2.tsx"
-NAVEGADOR = RAIZ / "ui-react/src/components/utilitarios/NavegadorPastas.tsx"
+SRC = RAIZ / "ui-react/src"
+CASCA = SRC / "components/layout/AppShellV2.tsx"
 
 
 def _sem_comentarios(texto: str) -> str:
-    return re.sub(r"//[^\n]*|/\*.*?\*/", "", texto, flags=re.DOTALL)
+    return re.sub(r"\{/\*.*?\*/\}|//[^\n]*|/\*.*?\*/", "", texto, flags=re.DOTALL)
 
 
-def test_casca_usa_overflow_clip_nos_dois_conteineres_com_hidden_de_reserva():
+def test_casca_e_o_bloco_de_contencao_dos_absolutes_perdidos():
     fonte = _sem_comentarios(CASCA.read_text(encoding="utf-8"))
-    raiz = re.search(r'className="flex flex-col h-screen bg-canvas ([^"]+)"', fonte)
-    meio = re.search(r'className="flex flex-1 ([^"]+)"', fonte)
-    assert raiz and meio, "a estrutura da casca mudou — ajuste o teste e confira a rolagem por foco"
-    for classes in (raiz.group(1), meio.group(1)):
-        lista = classes.split()
-        assert "overflow-clip" in lista and "overflow-hidden" in lista, classes
-        # a reserva vem ANTES: o Tailwind emite .overflow-clip depois de .overflow-hidden,
-        # então quem entende `clip` fica com ele; a ordem no className deixa isso legível
-        assert lista.index("overflow-hidden") < lista.index("overflow-clip"), classes
-    # o <main> continua sendo o único que rola
-    assert 'className="flex-1 overflow-y-auto"' in fonte
+    raiz = re.search(r'<div className="([^"]+)">\s*<HeaderV2', fonte)
+    assert raiz, "a estrutura da casca mudou — confira o bloco de contenção"
+    classes = raiz.group(1).split()
+    assert {"relative", "h-screen", "overflow-hidden"} <= set(classes), classes
+    assert "overflow-clip" not in fonte      # clip faria o transbordo rolar o documento inteiro
 
 
-def test_navegador_de_pastas_devolve_o_foco_sem_rolar():
-    fonte = _sem_comentarios(NAVEGADOR.read_text(encoding="utf-8"))
-    assert "el.focus({ preventScroll: true })" in fonte
-    assert not re.search(r"\.focus\(\)", fonte), "focus() sem preventScroll rola o <main> a cada listagem"
+_SR_ONLY_CONHECIDOS = {
+    # arquivo → quantas ocorrências de `sr-only`, todas dentro de um invólucro posicionado
+    "components/ui/Checkbox.tsx": 1,
+    "components/ui/Switch.tsx": 1,
+    "components/ui/RadioGroup.tsx": 1,
+    "components/utilitarios/FormEnviarArquivo.tsx": 1,
+    "components/utilitarios/BarraTransferencia.tsx": 1,
+    "components/utilitarios/ModalEnvioArquivo.tsx": 1,
+}
 
 
-def test_tailwind_gera_overflow_clip_depois_de_overflow_hidden():
-    """A reserva só funciona se `.overflow-clip` vier DEPOIS de `.overflow-hidden` no CSS
-    gerado — é a ordem do plugin do Tailwind 3.4; o teste prende isso na dist."""
-    css = sorted((RAIZ / "ui-react/dist/assets").glob("*.css"))
-    if not css:
-        return  # dist ainda não construída neste checkout
-    texto = css[-1].read_text(encoding="utf-8")
-    i_hidden, i_clip = texto.find(".overflow-hidden{"), texto.find(".overflow-clip{")
-    assert i_hidden != -1 and i_clip != -1 and i_hidden < i_clip
-    assert "overflow:clip" in texto
+def test_todo_sr_only_esta_na_lista_conhecida():
+    """`sr-only` = `position: absolute`. Todo uso novo entra aqui DEPOIS de garantir um
+    ancestral posicionado (`relative`/`fixed`) — senão o elemento escapa para o documento
+    quando fica abaixo da dobra e a página inteira passa a rolar."""
+    achados: dict[str, int] = {}
+    for arquivo in sorted(SRC.rglob("*.tsx")):
+        fonte = _sem_comentarios(arquivo.read_text(encoding="utf-8"))
+        n = len(re.findall(r"className=\"[^\"]*\bsr-only\b", fonte))
+        if n:
+            achados[str(arquivo.relative_to(SRC))] = n
+    assert achados == _SR_ONLY_CONHECIDOS, (
+        f"uso de sr-only fora da lista conhecida: {achados} — confira o invólucro posicionado e atualize a lista")
+
+
+def test_os_quatro_invólucros_conhecidos():
+    esperados = {
+        "components/ui/Checkbox.tsx": "relative inline-flex items-center gap-2 select-none",
+        "components/ui/Switch.tsx": "relative inline-flex items-center gap-2 select-none",
+        "components/ui/RadioGroup.tsx": "relative inline-flex items-center gap-2 select-none",
+        "components/utilitarios/FormEnviarArquivo.tsx": "relative flex flex-col gap-1",
+    }
+    for rel, trecho in esperados.items():
+        assert trecho in (SRC / rel).read_text(encoding="utf-8"), rel
+
+
+def test_regioes_aria_live_sr_only_vivem_em_ancestral_posicionado():
+    """As regiões `sr-only` de leitor de tela: a da BarraTransferencia vive no FLUXO da
+    página (não na faixa fixa) e por isso o invólucro é `relative`; a do ModalEnvioArquivo
+    fica dentro do Modal (`fixed`). Se alguém mover uma para fora, este teste avisa."""
+    barra = _sem_comentarios((SRC / "components/utilitarios/BarraTransferencia.tsx").read_text(encoding="utf-8"))
+    invólucro = re.search(r'<div data-transferencia=\{[^}]+\} className="([^"]+)">\s*<div aria-live="polite" className="sr-only"', barra)
+    assert invólucro and "relative" in invólucro.group(1).split(), "a região sr-only da faixa precisa de um pai relative"
+    modal = _sem_comentarios((SRC / "components/utilitarios/ModalEnvioArquivo.tsx").read_text(encoding="utf-8"))
+    assert modal.index("<Modal ") < modal.index('className="sr-only"')

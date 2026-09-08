@@ -47,8 +47,9 @@ export function RadioItem({ value, label, disabled, className = '' }: RadioItemP
   const ctx = React.useContext(RadioCtx)
   if (!ctx) throw new Error('RadioItem deve ser usado dentro de RadioGroup')
   const isDisabled = disabled || ctx.disabled
+  // `relative` no label: contém o input sr-only (absolute) — ver Checkbox.
   return (
-    <label className={`inline-flex items-center gap-2 select-none ${isDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${className}`}>
+    <label className={`relative inline-flex items-center gap-2 select-none ${isDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${className}`}>
       <input
         type="radio"
         name={ctx.name}
