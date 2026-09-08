@@ -9,10 +9,10 @@
 
 | Perfil | Quem é | O que pode fazer |
 |---|---|---|
-| **Consulta** | Analistas, gestores, auditoria | Visualizar Dashboard, Logs, Malha, Governança (lineage/catálogo) e Monitor DataStage |
+| **Consulta** | Analistas, gestores, auditoria | Visualizar Dashboard, Logs, Malha, Governança (lineage, catálogo e **Job DataStage**) e Monitor DataStage |
 | **Operador** | Operação/Sustentação ETL | Tudo do Consulta + executar pipelines manualmente, reexecutar falhas, acompanhar SLA, **ver arquivos do servidor do DataStage** (Utilitários) |
-| **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX, **criar e editar arquivos no servidor** (Utilitários) |
-| **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout, **diretórios e extensões dos Utilitários** |
+| **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX, **criar e editar arquivos no servidor** (Utilitários), **extrair o lineage direto do DataStage** (Governança › Job DataStage) |
+| **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout, **diretórios e extensões dos Utilitários**, **lote do lineage DataStage** |
 
 > **Como funciona:** todo usuário entra automaticamente no 1º login com perfil **consulta**. O administrador promove usuários e ajusta o que cada perfil acessa (telas e ações) em **Admin → Usuários & Perfis** — sem mexer no banco. A sessão sobrevive ao F5 e expira após o período configurado (padrão 12h); a senha nunca é armazenada, apenas um token de sessão revogável.
 
@@ -96,6 +96,7 @@ mesma execução do gerador, que é como ele sempre funcionou.
 - **Lineage**: para cada job, veja origens → transformação → destinos (tabelas, arquivos, colunas).
 - **Catálogo**: busque qualquer tabela/arquivo, veja quais pipelines o produzem/consomem, classificação (PII, Confidencial...), dono (owner/steward) e tags.
 - **Catálogo de pipelines**: o inventário que morava na tela Malha — cards por projeto, visão diagrama e exportação CSV.
+- **Job DataStage**: o lineage que o Orquestra extrai **sozinho** do DataStage (export ISX do próprio job): por job, o grafo dos stages, o SQL completo de cada origem e destino, as colunas, as expressões do Transformer e, nas sequences, os jobs chamados. Consulta livre para quem tem a tela; **extrair** é do Desenvolvedor ETL (§3.9).
 
 ### 1.5 Monitor DataStage (aba 🖥)
 Fila e desempenho dos jobs DataStage: tempo em fila, duração, jobs filhos, histórico.
@@ -560,6 +561,83 @@ Mensagens que você pode ver:
 | **O servidor não respondeu a tempo. Confira na pasta antes de reenviar…** | A gravação pode ter terminado depois da resposta: veja pela aba Ver arquivo ou pelo navegador antes de mandar de novo. |
 | **O envio foi cancelado, mas o arquivo já tinha chegado inteiro…** | Você cancelou depois de o arquivo subir; confira na pasta — ele pode ter sido gravado. |
 
+### 3.9 Lineage automático do job DataStage (Governança › Job DataStage)
+Até aqui o lineage de um job DataStage vinha de um `.dsx` exportado à mão (§3.2) ou
+do cadastro manual — e ficava defasado do job em produção. A aba **Job DataStage**
+faz o Orquestra **exportar o job por conta própria** (o `istool` do Information
+Server, formato ISX, via SSH no servidor do DataStage), ler a definição e gravar
+por stage o **SQL completo**, o banco/DSN, o caminho do arquivo, as **colunas com
+tipo e tamanho**, as **expressões coluna a coluna** do Transformer, o código APT e o
+**fluxo** entre os stages.
+
+**Regra da casa: job só com pipeline.** A extração vale para um job que já está
+mapeado num pipeline do Orquestra (aba ⚙ Jobs), e o projeto do DataStage é o
+`project_name` cadastrado no pipeline. Job fora de pipeline não se extrai — mapeie
+primeiro. O nome do job é **exatamente** o do DataStage (maiúsculas e minúsculas
+contam lá).
+
+**Passo a passo**
+1. Governança → aba **Job DataStage**. Escolha o pipeline (a lista sugere os
+   cadastrados) e clique **Carregar**. O cabeçalho mostra o projeto DataStage, quantos
+   jobs o pipeline tem e quantos já têm lineage ISX.
+2. A lista à esquerda traz cada job com o estado: **extraído** (data e quem extraiu),
+   **não extraído**, **erro** (a frase da última tentativa) ou **não é job DataStage**
+   (nós http, decisão, shell… não existem no DataStage e ficam sem botão).
+3. Clique **Extrair** no job (ou **Atualizar**, quando já há lineage). A tela mostra
+   *Extraindo … do DataStage… (istool, até 60 s)* — normalmente leva de 3 a 10 s. Uma
+   extração por vez na tela. Duas extrações simultâneas do mesmo job (dois usuários, ou
+   você e o lote) rodam dois istool e a última a gravar vence; só se as gravações
+   coincidirem a segunda responde *Outra extração … em andamento*.
+4. Com o lineage carregado aparecem, de cima para baixo:
+   - **Cabeçalho**: projeto, pasta no DataStage, tipo (PARALLEL/SEQUENCE), última
+     modificação no DataStage, extraído em/por, duração e tamanho do `.isx`,
+     descrição (a longa fica recolhida em *Ver descrição completa*) e o badge
+     **dados do cache** ou **extraído agora do DataStage**.
+   - **Grafo**: um nó por stage, colorido pela direção — **origem** (verde),
+     **transformação** (azul), **destino** (âmbar) — e as setas com o nome do link.
+     Clique (ou Enter) no nó para abrir o painel do stage. Zoom e deslocamento
+     (arrastar o fundo) como no editor de fluxo; os nós não se movem.
+   - **Tabela de stages**: nome, tipo, direção, banco/arquivo (DSN, tabela ou arquivo)
+     e a contagem de colunas; clicar na linha abre o mesmo painel.
+   - **Painel do stage** (lateral): o SQL/consulta completo, banco/DSN, arquivo,
+     colunas de saída e de entrada com tipo e tamanho, as expressões
+     `saída ← expressão (origem)` e o código APT (recolhido). Parâmetros do job
+     (`#PSet.Param#`) viram um badge com a explicação — o valor real só existe em
+     tempo de execução.
+5. **Sequence**: além do grafo e da tabela (as atividades são os stages), a seção
+   *Jobs chamados por esta sequence* lista os jobs chamados. Filho mapeado no mesmo
+   pipeline vira link (abre o job) e ganha o seu
+   **Extrair**; filho de fora aparece marcado *(fora deste pipeline)* — só informado,
+   pela regra acima.
+
+**Cache.** A extração só roda o `istool` quando o job **mudou no DataStage** (a data
+de modificação que a API REST do DataStage informa é a chave). Sem mudança, a
+resposta vem do banco em menos de um segundo com o badge *dados do cache*.
+**Atualizar** força a reextração mesmo sem mudança.
+
+**Convivência com o lineage antigo.** As linhas cadastradas à mão ou vindas do `.dsx`
+continuam no banco; reextrair só substitui as linhas ISX do job. A aba **Lineage**
+passa a mostrar o lineage ISX quando ele existe para o job (senão, o que havia).
+
+**Mensagens que você pode ver**
+
+| Mensagem | O que significa / o que fazer |
+|---|---|
+| **O job … não está mapeado no pipeline …** | Regra *job só com pipeline*: mapeie o job na aba ⚙ Jobs do pipeline e tente de novo. |
+| **O pipeline … não tem projeto DataStage (project_name) cadastrado.** | Edite o pipeline e informe o projeto do DataStage. |
+| **O nó … é do tipo …, não um job DataStage** | Só jobs `datastage` têm ISX. |
+| **Job … não encontrado no projeto … do DataStage (a API REST não o acha em nenhuma pasta de Jobs).** | Nome com caixa diferente, job em outro projeto, ou apagado/renomeado no DataStage. |
+| **Job não encontrado no repositório do DataStage pelo istool — confira projeto, pasta e nome.** | A API REST achou o job, mas o export não: o job foi movido ou renomeado entre a busca e o export, ou a pasta tem um nome que o istool não aceita. |
+| **Outra extração do job … está em andamento — tente de novo em instantes.** | Alguém (ou o lote do admin) está extraindo o mesmo job; espere terminar. |
+| **A extração não terminou em 60 s — tente de novo.** | O servidor do DataStage está lento. O cabeçalho fica com *erro* e o resultado tardio é descartado; quando o servidor aliviar, clique **Atualizar** de novo — o lineage anterior (se havia) continua visível. |
+| **Lineage ISX não configurado nesta instância da API — defina …** e outros *503* | O lineage ISX não está configurado nesta instalação — chame o administrador (§4.8). |
+| **N stage(s) com tipo fora do mapa: …** | Aviso no cabeçalho: o parser não classificou esses tipos de stage; o lineage do resto está completo. O administrador inclui o tipo no mapa (§4.8) e você clica **Atualizar**. |
+| **… — os dados abaixo são da última extração que deu certo.** | A última tentativa falhou (a frase diz por quê), mas o lineage anterior continua válido e visível. |
+
+> Caminhos e nomes com acento fora da collation do banco podem aparecer com `?` na
+> tabela de stages (limitação das colunas atuais); o caso fica anotado no aviso de
+> não reconhecidos.
+
 ---
 
 ## 4. Perfil Administrador
@@ -675,6 +753,74 @@ guarde o arquivo em `dsx/` (montado como `/opt/airflow/dsx`) e aponte
 container não enxerga deixa a tela inteira em "arquivo que a API não consegue
 ler".
 
+### 4.8 Lineage ISX (DataStage): configuração, lote e mapa de tipos
+A aba Job DataStage (§3.9) só funciona depois que o administrador configura o
+acesso ao `istool` e à API REST do DataStage. Nada disso vem de fábrica e **nenhuma
+credencial fica no Orquestra além do `.env`**: sem configuração, Extrair responde
+503 "não configurado" e ninguém extrai — nada mais quebra.
+
+**Migration.** A **106** (`sql/migrations/106_lineage_isx.sql`, etapa 6c do deploy)
+cria `dbo.etl_ds_job_isx` (cabeçalho por job), as colunas novas de
+`etl_job_lineage` e completa o mapa de tipos `dbo.etl_stage_type_map`. Idempotente.
+
+**`.env` da API** (bloco "Lineage ISX"; modelo em `.env.dev.example`):
+
+| Variável | Para quê |
+|---|---|
+| `DS_ENGINE` | Nome (FQDN) do engine do DataStage, como o istool exige no `-datastage` |
+| `DS_API_URL` | URL da API REST do DataStage (`https://<host>:<porta>/ibm/iis/ds/api`); **sem** `usuario:senha@` — se vier, a API recusa |
+| `DS_API_USER` / `DS_API_PASSWORD` | Credencial da API REST (Basic); só leitura da árvore de pastas e do `lastModified` |
+| `DS_API_VERIFY_SSL` | `true`, o caminho de uma CA interna, ou `false` (funciona, mas a API avisa a cada arranque) |
+| `DS_ISTOOL_HOME` | Raiz do Information Server no servidor (padrão `/opt/IBM/InformationServer`) |
+| `DS_ISTOOL_LAUNCHER` | JAR do launcher do istool, relativo ao home (o padrão é o da versão 11.7) |
+| `DS_ISTOOL_DOMAIN` | `host:porta` dos serviços (services tier) |
+| `DS_ISTOOL_AUTHFILE` | Caminho, **no servidor do DataStage**, do arquivo de credencial do istool (abaixo) |
+| `DS_ISTOOL_TMP` / `DS_ISTOOL_CFG` | Pastas privadas do usuário SSH para o `.isx` temporário e a `configuration/` do istool (padrão `~/.orquestra/…`) |
+| `DS_SSH_KNOWN_HOSTS` | Já usada pelos Utilitários (o Console ainda aceita qualquer host key): sem ela o SSH do ISX também aceita qualquer host key — e o canal transporta o `.isx`, que traz credenciais de conexão dos jobs |
+
+O SSH é o mesmo do Console e dos Utilitários (`DS_SSH_HOST/PORT/USER/PASSWORD`).
+Depois de mudar o `.env`, recriar o container da API.
+
+**Arquivo de credencial do istool (`-authfile`).** Criado pela sustentação **no
+servidor do DataStage**, no formato que a documentação do istool da versão
+instalada descreve (linhas `user=` e `password=`), com permissão **600** do usuário
+SSH do Orquestra. O Orquestra passa esse caminho no `-authfile` e nunca `-password`
+na linha de comando (a senha apareceria no `ps` e no log). Sem a variável, Extrair
+responde 503 *Lineage ISX não configurado nesta instância da API — defina
+DS_ISTOOL_AUTHFILE*; com a variável apontando para um arquivo que não existe no
+servidor, o istool falha e a resposta é 502 *O istool falhou ao exportar o job* — o
+motivo fica no log da API.
+
+**Lote — botão "Extrair todos (lote)".** Só o administrador vê o botão na aba
+(§3.9). Ele dispara a DAG **`etl_lineage_extract_isx`** para os jobs DataStage do
+pipeline carregado; a linha abaixo do filtro acompanha a run a cada 5 s e resume
+*N job(s): x extraído(s), y em cache, z com erro* — "ver erros" mostra job a job. A
+run termina **verde mesmo com erros individuais** (um job apagado no DataStage não
+derruba os outros — e falha de istool/SSH em todos os jobs também deixa a run verde
+com N erros: veja "ver erros"). A run só **falha** quando nenhum job chega à API (API
+fora do ar, credencial de serviço recusada, ISX não configurado) ou quando o filtro não
+encontra job DataStage (pipeline inativo, só `CopyOf*`, só nós que não são DataStage).
+A DAG
+chama a API do Orquestra por job com um **usuário de serviço** com `acao_editar`,
+definido no `.env` do Airflow em `AIRFLOW_CONN_ORQUESTRA_API`
+(`http://<usuario>:<senha>@orquestra-api:8000/http`) — pelo ambiente do worker, não
+pelo banco do Airflow (assim não aparece nem se edita na UI do Airflow). Pela API:
+`POST /lineage/isx/lote {pipeline_name, jobs?, force?}` (vazio = todos os
+pipelines com projeto) e `GET /lineage/isx/lote/{run_id}`. Cada job é uma JVM do
+istool (3–5 s) no servidor do DataStage, 4 de cada vez: prefira horário sem carga.
+
+**Mapa de tipos de stage.** Quando o cabeçalho avisa *N stage(s) com tipo fora do
+mapa*, o tipo (ex.: `PxAlienStage`) não está em `dbo.etl_stage_type_map`. Inclua
+por SQL — a coluna-chave se chama `stage_type` ou `type_raw`, conforme o ambiente
+(confira com `COL_LENGTH`) — informando `type_label`, `type_category`
+(`banco`, `arquivo`, `transformacao`, `sequence` ou `debug`) e `role_hint`; depois o
+usuário clica **Atualizar** no job. Não há tela para isso ainda (backlog).
+
+**O que mudou para quem consome a API.** `GET /lineage` (a aba Lineage) **passa a
+exigir o token** da sessão — scripts externos que liam o lineage sem autenticação
+param de funcionar. A extração unitária exige `acao_editar`; o lote, admin; o
+disparo genérico de DAGs da API também exige admin para esta DAG.
+
 ---
 
 ## 5. Perguntas frequentes
@@ -700,3 +846,13 @@ ler".
 **Utilitários: o acento veio errado.** O rodapé do modal mostra a codificação detectada (`utf-8` ou `latin-1`). Ao editar, escolha a mesma codificação antes de gravar — "Carregar existente" já faz isso.
 
 **Gravei um arquivo e o job passou a falhar por permissão.** A gravação preserva as permissões do arquivo anterior, mas o **dono** passa a ser a conta SSH do Orquestra. Se o job depende do dono, peça à sustentação para ajustar; a cópia `.bak-<data-hora>` na mesma pasta tem o conteúdo anterior.
+
+**Job DataStage diz que o job não está mapeado no pipeline.** É a regra do lineage ISX: só se extrai job que está num pipeline do Orquestra, e o projeto vem do cadastro do pipeline. Mapeie o job na aba ⚙ Jobs (§3.2) e volte à aba (§3.9).
+
+**Job DataStage: "não encontrado no projeto … do DataStage".** O DataStage distingue maiúsculas de minúsculas e o Orquestra não — confira a grafia exata do job, o projeto cadastrado no pipeline e se o job não foi movido de pasta, renomeado ou apagado. Se o job mudou de nome no DataStage, corrija o nome na aba ⚙ Jobs.
+
+**Cliquei em Extrair na lista de filhos da sequence e veio "dados do cache".** *Extrair* (na lista de filhos e no lote) só reextrai quando o job mudou no DataStage; sem mudança, o resultado vem do banco — é o esperado. *Atualizar* na lista de jobs sempre força a reextração. Veja a data em *Modificado no DS* no cabeçalho.
+
+**O lineage que eu cadastrei à mão sumiu da aba Lineage?** Não: ele continua no banco. Quando o job tem lineage ISX, a aba Lineage mostra o ISX (mais completo) no lugar do manual/DSX; o Job DataStage mostra só o ISX.
+
+**Não vejo o botão "Extrair todos (lote)".** Ele é só do administrador (§4.8); a extração unitária pede a permissão de cadastrar/editar (Desenvolvedor ETL).
