@@ -20,9 +20,15 @@ export function AppShellV2() {
   const fullBleed = FULL_BLEED_PREFIXES.some(p => pathname === p || pathname.startsWith(p + '/'))
 
   return (
-    <div className="flex flex-col h-screen bg-canvas overflow-hidden">
+    // overflow-clip (com overflow-hidden de reserva para navegadores antigos): um
+    // contêiner `hidden` ainda pode ser ROLADO por programa — quando um campo longe
+    // do topo ganha foco (autoFocus ao editar uma raiz no Admin, o foco devolvido à
+    // lista do navegador de pastas), o navegador rola a casca inteira para mostrá-lo,
+    // cabeçalho e menu somem e não há barra para voltar. `clip` não rola nunca; o
+    // único contêiner que rola é o <main>, e é nele que o foco deve entrar na tela.
+    <div className="flex flex-col h-screen bg-canvas overflow-hidden overflow-clip">
       <HeaderV2 onMenuClick={() => setMobileOpen(true)} />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden overflow-clip">
         <Sidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />
         <main className="flex-1 overflow-y-auto">
           <div className={fullBleed ? 'min-h-full' : 'p-6 max-w-[1600px] mx-auto'}>
