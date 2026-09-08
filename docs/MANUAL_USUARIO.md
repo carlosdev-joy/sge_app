@@ -784,8 +784,9 @@ Depois de mudar o `.env`, recriar o container da API.
 **Arquivo de credencial do istool (`-authfile`).** Criado pela sustentação **no
 servidor do DataStage**, na pasta do usuário SSH do Orquestra, com duas linhas na
 grafia chave=valor — `user=<usuário do istool>` e `password=<senha>` — e permissão
-**600** desse usuário. A grafia `-user` / `-password` em linhas o istool 11.7
-recusa com *user name not found* (medido em produção). Em `DS_ISTOOL_AUTHFILE` vai o
+**600** desse usuário. A grafia com hífen (`-user` numa linha e a senha na seguinte,
+como nos parâmetros de linha de comando) o istool 11.7 recusa com *user name not
+found* (medido em produção). Em `DS_ISTOOL_AUTHFILE` vai o
 **caminho absoluto** (`/home/<usuário ssh>/.orquestra/istool.auth`): a API passa o
 valor ao istool entre aspas e não expande `~`. O Orquestra usa esse caminho no
 `-authfile` e nunca `-password` na linha de comando (a senha apareceria no `ps` e
