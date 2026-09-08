@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke do lineage ISX pela API (spec docs/spec-lineage-isx.md, §7 itens c–i).
+# Smoke do lineage ISX pela API (spec docs/spec-lineage-isx.md, §7: itens c–i e k).
 #
 # Uso (a senha pelo `read -s`, para não ficar no histórico do shell):
 #   read -rs ORQ_PASS; export ORQ_PASS
@@ -10,6 +10,11 @@
 # ORQ_USER precisa de acao_editar (extrair). JOB e JOB_SEQ têm de estar mapeados
 # no PIPELINE. Nada é gravado fora do lineage ISX do job; a senha só vai no corpo
 # do login (por arquivo temporário 0700, não no argv).
+#
+# k) lote: só com ORQ_USER admin (um desenvolvedor recebe 403 e o item é pulado,
+# como a spec manda); espera a DAG etl_lineage_extract_isx terminar (LOTE_TETO_S,
+# padrão 300 s); SMOKE_LOTE=0 pula. Os itens a, b, j, l e m são manuais — o
+# roteiro é impresso no fim. Resultado no DEV (2026-09-08, F5): ver a spec §7.
 set -euo pipefail
 
 : "${ORQ_URL:?defina ORQ_URL (ex.: http://localhost:8000)}"
@@ -130,6 +135,61 @@ else fail "GET /lineage com token → $st"; fi
 echo "▶ estado do pipeline"
 st=$(chamar p GET "/lineage/isx/pipeline?pipeline_name=$P")
 [ "$st" = "200" ] && ok "$(python3 -c "import json;d=json.load(open('$TMP/p.json'));print(sum(1 for j in d['jobs'] if j['isx']), 'de', len(d['jobs']), 'jobs com ISX')")" || fail "pipeline → $st"
+
+echo "▶ k) lote (admin): POST /lineage/isx/lote → GET /lineage/isx/lote/{run_id} até terminar"
+if [ "${SMOKE_LOTE:-1}" = "0" ]; then
+  echo "     pulado (SMOKE_LOTE=0)"
+else
+  # `|| echo 000`: se o curl nem conectar (API reiniciando), o `set -e` não mata o script
+  # antes do resumo — 000 vira uma falha normal.
+  st=$(chamar k POST "/lineage/isx/lote" "{\"pipeline_name\":\"$PIPELINE\"}" || echo 000)
+  if [ "$st" = "403" ]; then
+    echo "     pulado: $ORQ_USER não é admin (403 é o esperado para desenvolvedor — rode de novo com um admin)"
+  elif [ "$st" != "200" ]; then
+    fail "disparo do lote → $st: $(head -c 300 "$TMP/k.json")"
+  else
+    RUN=$(campo "$TMP/k.json" .dag_run_id)
+    ok "lote disparado: $RUN (state $(campo "$TMP/k.json" .state))"
+    LOTE_TETO_S="${LOTE_TETO_S:-300}"; t0=$(date +%s); estado=""
+    while :; do
+      st=$(chamar k2 GET "/lineage/isx/lote/$(enc "$RUN")" || echo 000)
+      if [ "$st" != "200" ]; then fail "estado do lote → $st (000 = curl não conectou): $(head -c 200 "$TMP/k2.json" 2>/dev/null)"; break; fi
+      estado=$(campo "$TMP/k2.json" .state)
+      case "$estado" in success|failed) break ;; esac
+      if [ $(( $(date +%s) - t0 )) -ge "$LOTE_TETO_S" ]; then
+        fail "lote ainda '$estado' após ${LOTE_TETO_S}s (worker parado? DAG não carregada?)"; break
+      fi
+      sleep 5
+    done
+    if [ "$estado" = "success" ] || [ "$estado" = "failed" ]; then
+      # A run termina VERDE mesmo com erros individuais (ficam em resumo.erros); falha
+      # só quando nenhum job respondeu — aí é configuração (API, credencial, ISX).
+      linha=$(python3 - "$TMP/k2.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])) or {}
+r = d.get("resumo") or {}
+erros = r.get("erros") or []
+total = int(r.get("total") or 0); feitos = int(r.get("extraidos") or 0) + int(r.get("cache") or 0)
+print("ok" if d.get("state") == "success" and total >= 1 and feitos >= 1 else "falhou",
+      f"state={d.get('state')} total={total} extraidos={r.get('extraidos')} cache={r.get('cache')} erros={len(erros)}"
+      + (" em " + str(r.get("duracao_s")) + " s" if r.get("duracao_s") is not None else "")
+      + ("".join(f"\n       erro: {e.get('job_name')} → {e.get('status')} {str(e.get('detail'))[:100]}" for e in erros[:5])))
+PY
+)
+      if [ "${linha%% *}" = "ok" ]; then ok "${linha#ok }"; else fail "${linha#falhou }"; fi
+    fi
+  fi
+fi
+
+echo
+echo "▶ roteiro manual (spec §7 — não cabe na API):"
+echo "   a) migration 106 aplicada na 6c; SELECT COUNT(*) FROM dbo.etl_stage_type_map cresceu; dbo.etl_ds_job_isx existe."
+echo "   b) .env da API com DS_API_URL/USER/PASSWORD, DS_ENGINE, DS_ISTOOL_DOMAIN, DS_ISTOOL_AUTHFILE (arquivo 600 no"
+echo "      servidor do DataStage); de dentro do container da API, curl -k \$DS_API_URL/engines → 200 com Basic."
+echo "   j) Governança › Job DataStage › $PIPELINE: $JOB 'extraído em …'; grafo com nós por direção; clique no nó de"
+echo "      origem → painel com o SQL; #PSet…# como badge; tema escuro ok."
+echo "   l) de dentro do worker: python3 -c \"import requests; print(requests.get('<ORQUESTRA_API_URL>/health', timeout=5).status_code)\" → 200."
+echo "   m) log da API sem senha nem '-password'; revisar nao_reconhecidos_json dos jobs extraídos (tipos para o mapa)."
 
 echo
 if [ "$FALHAS" = 0 ]; then echo "✔ smoke ISX: tudo OK"; else echo "✘ smoke ISX: $FALHAS falha(s)"; exit 1; fi

@@ -1,5 +1,5 @@
 # Spec: Lineage automático via ISX (DataStage) — Orquestra
-Data: 2026-09-07 · Status: aprovada pelo usuário em 2026-09-07 — em execução (F4; F1 = PR #369, F2 = PR #370, F3 = PR #371)
+Data: 2026-09-07 · Status: **concluída** — F1 = PR #369, F2 = PR #370, F3 = PR #371, F4 = PR #373 mergeadas (2026-09-08); F5 (manual, release note, smoke, backlog) na PR de fecho
 
 Consolida, no formato da casa, o documento técnico "Spec — Lineage Automático via ISX"
 (Equipe BI CVP, 2026-09-07), levantado com acesso ao DataStage de produção. **Nenhuma
@@ -406,7 +406,13 @@ o caso no `nao_reconhecidos_json` e no manual).
 ## 7. Smoke pós-deploy
 
 > **Script**: `scripts/smoke_lineage_isx.sh` (`ORQ_URL`, `ORQ_USER`, `ORQ_PASS`,
-> `PIPELINE`, `JOB`, `JOB_SEQ`) cobre c–i pela API. a, b, j, k, l e m são manuais.
+> `PIPELINE`, `JOB`, `JOB_SEQ`; `LOTE_TETO_S`, `SMOKE_LOTE=0`) cobre c–i e k pela API
+> (k só com usuário admin — desenvolvedor recebe 403 e o item é pulado). a, b, j, l e m
+> são manuais, com o roteiro impresso no fim. **Resultado no DEV (2026-09-08, F5): 14
+> conferências ok, 0 falhas** — lote `success` com 3 jobs (2 em cache, 1 erro individual
+> esperado: `JobRaiz` sem `.isx` → 404 não derruba a run); j provado pela tela com
+> Chromium headless nos dois temas (scripts de prova ad hoc, não versionados);
+> backlog aplicado 2× (12 linhas, 12 títulos).
 
 a) Migration **106** aplicada na 6c (responder **s**); `SELECT COUNT(*) FROM
    dbo.etl_stage_type_map` cresceu; `etl_ds_job_isx` existe.
