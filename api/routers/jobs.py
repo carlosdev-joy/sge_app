@@ -15,6 +15,8 @@ import db
 from db import get_db_conn
 from services.notify import add_notificacao
 from services.conn_native import abrir_conexao_nativa
+from services.conn_crypto import encrypt_password
+from services import job_params as jp
 from deps import (
     PERM_EDITAR,
     get_current_user, require_perm,
@@ -57,6 +59,116 @@ def _valid_http_url(url) -> bool:
     # Tolerante a tipo: job_command não-string (ex.: número no JSON) vira 422 de
     # validação nos call sites, não 500 de .strip() inexistente.
     return isinstance(url, str) and bool(_HTTP_URL_RE.match(url.strip()))
+
+
+# ── Parâmetros de etapa DataStage (migration 107) ───────────────────────────
+# Colunas que a 107 acrescenta em etl_pipeline_job_param. A leitura degrada
+# sem elas (GET devolve 'fixo'/None); a ESCRITA de parâmetro datastage NÃO
+# degrada — sem a 107 o operador não saberia a origem, e gravar "fixo" no
+# lugar de "data_referencia" em silêncio é exatamente o falso verde que a
+# spec proíbe (docs/spec-parametros-job-datastage.md §3).
+_PARAM_CALC_COLS = ("param_source", "param_offset_meses", "param_ancora",
+                    "param_offset_dias", "param_formato")
+_ERRO_SEM_107 = ("parâmetros de etapa DataStage exigem a migration 107 "
+                 "(etl_pipeline_job_param.param_source) — aplique-a e tente de novo")
+
+
+def _tem_colunas_param_calc(cur) -> bool:
+    cur.execute(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+        "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job_param' "
+        "AND COLUMN_NAME='param_source'")
+    return bool(cur.fetchone()[0])
+
+
+def _tokens_encrypted(cur, pipeline_name: str, job_name: str) -> dict[str, str]:
+    """param_name → token Fernet já gravado (tipo Encrypted) — o que o `***`
+    do payload manda preservar."""
+    try:
+        cur.execute(
+            "SELECT param_name, param_value FROM dbo.etl_pipeline_job_param "
+            "WHERE pipeline_name=? AND job_name=? AND param_type='Encrypted'",
+            (pipeline_name, job_name))
+        return {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    except Exception:
+        return {}
+
+
+def _preparar_params_ds(raw_params, tokens_existentes: dict[str, str]) -> tuple[list[dict], list[str]]:
+    """Valida os parâmetros de UMA etapa datastage (services/job_params) e
+    deixa cada linha pronta para o sp_etl_pipeline_job_param_insert.
+
+    Encrypted: `***` = mantém o token gravado (erro se não houver); qualquer
+    outro valor é cifrado com a ORQUESTRA_CONN_KEY (services/conn_crypto —
+    a mesma chave que o worker usa para decifrar). O valor em claro não é
+    logado nem devolvido."""
+    validos, erros = jp.normalizar_lista(raw_params)
+    linhas: list[dict] = []
+    for ordem, p in enumerate(validos):
+        if p["param_type"] == "Encrypted":
+            v = p.get("param_value") or ""
+            if v == jp.ENCRYPTED_MASCARA:
+                if p["param_name"] not in tokens_existentes:
+                    erros.append(f"parâmetro '{p['param_name']}': Encrypted sem valor gravado — informe o valor")
+                    continue
+                p["param_value"] = tokens_existentes[p["param_name"]]
+            else:
+                p["param_value"] = encrypt_password(v)
+        p["param_order"] = ordem
+        linhas.append(p)
+    return linhas, erros
+
+
+def _inserir_param_ds(cur, pipeline_name: str, job_name: str, p: dict) -> None:
+    cur.execute(
+        "EXEC dbo.sp_etl_pipeline_job_param_insert "
+        "@pipeline_name=?, @job_name=?, @param_name=?, @param_type=?, @param_value=?, "
+        "@param_order=?, @param_source=?, @param_offset_meses=?, @param_ancora=?, "
+        "@param_offset_dias=?, @param_formato=?",
+        (pipeline_name, job_name, p["param_name"], p["param_type"], p["param_value"],
+         p["param_order"], p["param_source"], p["param_offset_meses"], p["param_ancora"],
+         p["param_offset_dias"], p["param_formato"]))
+
+
+def _serializar_param(r, tem_calc: bool) -> dict:
+    """Linha de etl_pipeline_job_param → JSON da API. Encrypted NUNCA sai:
+    vira `***` + tem_valor. Sem a 107 os campos de cálculo saem 'fixo'/None."""
+    tipo = r[1]
+    valor = r[2]
+    encrypted = (tipo == "Encrypted")
+    out = {
+        "param_name": r[0], "param_type": tipo,
+        "param_value": (jp.ENCRYPTED_MASCARA if (encrypted and valor) else ("" if encrypted else valor)),
+        "param_order": r[3],
+        "param_source": (r[4] or "fixo") if tem_calc else "fixo",
+        "param_offset_meses": r[5] if tem_calc else None,
+        "param_ancora": r[6] if tem_calc else None,
+        "param_offset_dias": r[7] if tem_calc else None,
+        "param_formato": r[8] if tem_calc else None,
+    }
+    if encrypted:
+        out["tem_valor"] = bool(valor)
+    return out
+
+
+_SQL_PARAMS_BASE = ("SELECT param_name, param_type, param_value, param_order "
+                    "FROM dbo.etl_pipeline_job_param WHERE pipeline_name=? {job} ORDER BY {ordem}")
+_SQL_PARAMS_CALC = ("SELECT param_name, param_type, param_value, param_order, param_source, "
+                    "param_offset_meses, param_ancora, param_offset_dias, param_formato "
+                    "FROM dbo.etl_pipeline_job_param WHERE pipeline_name=? {job} ORDER BY {ordem}")
+
+
+def _ler_params(cur, pipeline_name: str, job_name: str | None) -> tuple[list[tuple], bool]:
+    """Linhas de etl_pipeline_job_param do job (ou do pipeline inteiro, quando
+    job_name=None — cada linha vem com job_name na frente) + se a 107 existe."""
+    tem_calc = _tem_colunas_param_calc(cur)
+    sql = _SQL_PARAMS_CALC if tem_calc else _SQL_PARAMS_BASE
+    if job_name is None:
+        sql = sql.replace("SELECT ", "SELECT job_name, ", 1)
+        cur.execute(sql.format(job="", ordem="job_name, param_order"), (pipeline_name,))
+    else:
+        cur.execute(sql.format(job="AND job_name=?", ordem="param_order"), (pipeline_name, job_name))
+    return cur.fetchall(), tem_calc
 
 # ── Nó de Decisão (migration 043) ──────────────────────────────────────────
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1621,6 +1733,33 @@ async def rename_pipeline_job(
     }
 
 
+@router.post("/pipelines/jobs/params/preview", tags=["jobs"])
+def preview_params_ds(body: dict = Body(default={}), _auth: dict = Depends(get_current_user)):
+    """Prévia dos parâmetros DataStage de uma etapa: "com a referência X, o
+    valor enviado seria Y" — valor + descrição do cálculo, calculados pelo
+    MESMO módulo que valida o save (services/job_params). Não toca no banco e
+    não dispara nada. É a única fonte da prévia do front — o TypeScript não
+    reimplementa o cálculo (spec §3).
+
+    Body: {referencia: 'YYYY-MM-DD' (opcional; padrão hoje), itens: [...]}
+    Resposta: {referencia, itens: [{param_name, valor, descricao}], erros: [...]}
+    Itens inválidos vão para `erros` (não derrubam os válidos): a tela mostra
+    a mensagem ao lado da linha enquanto o usuário ainda está digitando.
+    """
+    ref_raw = body.get("referencia")
+    referencia = jp.parse_data(ref_raw) if ref_raw not in (None, "") else _dt.date.today()
+    if referencia is None:
+        raise HTTPException(status_code=422, detail="referencia inválida — use YYYY-MM-DD")
+    itens = body.get("itens")
+    if itens is None:
+        itens = body.get("params", [])
+    validos, erros = jp.normalizar_lista(itens)
+    valores, erros_calc = jp.resolver_preview(referencia, validos)
+    return {"referencia": referencia.isoformat(),
+            "itens": valores,
+            "erros": erros + erros_calc}
+
+
 @router.post("/pipelines/jobs/register", tags=["jobs"])
 async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Registra/atualiza jobs e lineage de um pipeline (etl_pipeline_job_register)."""
@@ -1646,9 +1785,12 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                  "ssh_conn_id": body.get("ssh_conn_id"),
                  "verbose_log": body.get("verbose_log", False),
                  "mssql_conn_id": body.get("mssql_conn_id"),
-                 "params": body.get("params", []),
                  "origens": body.get("origens", []),
                  "destinos": body.get("destinos", [])}]
+        # A chave 'params' só entra se veio no corpo: é a PRESENÇA dela que
+        # autoriza mexer nos parâmetros gravados (mesma regra do POST /fluxo).
+        if "params" in body:
+            jobs[0]["params"] = body.get("params")
 
     mssql_conn_ids = await _list_mssql_conn_ids()
 
@@ -1702,6 +1844,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job' "
             "AND COLUMN_NAME='aguarde_json'")
         _has_aguarde_col = bool(cur.fetchone()[0])
+        _has_param_calc = _tem_colunas_param_calc(cur)
 
         # Jobs conhecidos do pipeline (request + já existentes) — usado para
         # validar os ramos da decisão e detectar ciclos incluindo as arestas
@@ -1713,9 +1856,13 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         # re-save de um job legado seria rejeitado com mensagem enganosa de
         # validação. Falha aqui propaga ao handler externo (500 'Erro DB'),
         # igual ao mesmo SELECT no POST /fluxo.
-        cur.execute("SELECT job_name FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
+        cur.execute("SELECT job_name, job_type FROM dbo.etl_pipeline_job WHERE pipeline_name=?",
                     (pipeline_name,))
-        db_names: set[str] = {r[0] for r in cur.fetchall()}
+        # job_name → job_type gravado: detecta troca de tipo de um job existente
+        # (os parâmetros são do TIPO — storedproc guarda @p VARCHAR, datastage
+        # guarda pData String — e não sobrevivem à troca).
+        db_types: dict[str, str] = {r[0]: (r[1] or "datastage").lower().strip() for r in cur.fetchall()}
+        db_names: set[str] = set(db_types)
         known_jobs = req_names | db_names
         # Arestas para o detector de ciclo (apenas nós presentes no request).
         cycle_adj: dict[str, set[str]] = {n: set() for n in req_names}
@@ -1854,7 +2001,17 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 if raw_py is not None:
                     python_json_str = json.dumps(_normalize_python_node(raw_py), ensure_ascii=False)
 
-            params_validos = []
+            # Parâmetros: só se a CHAVE 'params' veio no item — é ela que
+            # autoriza o replace-all (clear + insert). Um chamador que não
+            # manda a chave não apaga o que está gravado (regra do POST /fluxo,
+            # agora também aqui).
+            params_present = "params" in job
+            # Tipo mudou sem a chave (ex.: bulk-create reusando o nome de um
+            # storedproc como datastage): os parâmetros do tipo antigo não
+            # servem ao novo — limpa mesmo sem a chave (achado 6 da revisão).
+            tipo_mudou = j_name in db_types and db_types[j_name] != j_type
+            params_validos = []       # storedproc: tuplas (nome, tipo, valor, ordem)
+            params_ds: list[dict] = []  # datastage: linhas prontas p/ _inserir_param_ds
             if j_type == "storedproc" and j_params:
                 nomes_vistos = set()
                 param_erro = False
@@ -1872,6 +2029,13 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                     params_validos.append((p_name, p_type, p.get("param_value"), pi))
                 if param_erro:
                     continue
+            elif j_type == "datastage" and params_present and j_params:
+                if not _has_param_calc:
+                    erros.append(f"Item {idx} ({j_name}): {_ERRO_SEM_107}"); continue
+                params_ds, ds_errs = _preparar_params_ds(
+                    j_params, _tokens_encrypted(cur, pipeline_name, j_name))
+                if ds_errs:
+                    erros.extend(f"Item {idx} ({j_name}): {e}" for e in ds_errs); continue
 
             try:
                 verbose = 1 if job.get("verbose_log") else 0
@@ -1882,16 +2046,19 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                     (pipeline_name, j_name, int(j_order), j_type, j_cmd,
                      job.get("ssh_conn_id") or None, verbose, j_mssql_cid),
                 )
-                cur.execute(
-                    "EXEC dbo.sp_etl_pipeline_job_param_clear @pipeline_name=?, @job_name=?",
-                    (pipeline_name, j_name),
-                )
-                for p_name, p_type, p_value, p_order in params_validos:
+                if params_present or tipo_mudou:
                     cur.execute(
-                        "EXEC dbo.sp_etl_pipeline_job_param_insert "
-                        "@pipeline_name=?, @job_name=?, @param_name=?, @param_type=?, @param_value=?, @param_order=?",
-                        (pipeline_name, j_name, p_name, p_type, p_value, p_order),
+                        "EXEC dbo.sp_etl_pipeline_job_param_clear @pipeline_name=?, @job_name=?",
+                        (pipeline_name, j_name),
                     )
+                    for p_name, p_type, p_value, p_order in params_validos:
+                        cur.execute(
+                            "EXEC dbo.sp_etl_pipeline_job_param_insert "
+                            "@pipeline_name=?, @job_name=?, @param_name=?, @param_type=?, @param_value=?, @param_order=?",
+                            (pipeline_name, j_name, p_name, p_type, p_value, p_order),
+                        )
+                    for p in params_ds:
+                        _inserir_param_ds(cur, pipeline_name, j_name, p)
                 # Dependência por job (opt-in) — grava CSV dos predecessores.
                 _dep = job.get("depends_on_jobs")
                 if isinstance(_dep, list):
@@ -1979,8 +2146,19 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         conn.commit()
         cur.close(); conn.close()
     except HTTPException:
+        # Agora uma HTTPException pode nascer NO MEIO do loop (encrypt_password
+        # sem ORQUESTRA_CONN_KEY) com EXECs já feitos e não commitados — desfaz
+        # e fecha, como o POST /fluxo (achado 5 da revisão adversarial da F1).
+        try:
+            conn.rollback(); cur.close(); conn.close()
+        except Exception:
+            pass
         raise
     except Exception as e:
+        try:
+            conn.rollback(); cur.close(); conn.close()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
     return {"ok": True, "pipeline_name": pipeline_name, "jobs_registered": len(jobs)}
 
@@ -2051,15 +2229,10 @@ def get_pipeline_job(
         if not row:
             cur.close(); conn.close()
             raise HTTPException(status_code=404, detail=f"Job '{job_name}' não encontrado no pipeline '{pipeline_name}'")
-        cur.execute(
-            """SELECT param_name, param_type, param_value, param_order
-               FROM dbo.etl_pipeline_job_param
-               WHERE pipeline_name=? AND job_name=?
-               ORDER BY param_order""",
-            (pipeline_name, job_name),
-        )
-        params = [{"param_name": r[0], "param_type": r[1], "param_value": r[2], "param_order": r[3]}
-                   for r in cur.fetchall()]
+        # Parâmetros (storedproc e datastage). Encrypted sai mascarado; sem a
+        # 107 os campos de cálculo degradam para 'fixo'/None.
+        _prows, _pcalc = _ler_params(cur, pipeline_name, job_name)
+        params = [_serializar_param(r, _pcalc) for r in _prows]
         depends_on_jobs = None
         try:
             cur.execute(
@@ -2276,13 +2449,10 @@ def get_pipeline_fluxo(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
             "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_job_param'")
         if cur.fetchone()[0]:
-            cur.execute(
-                "SELECT job_name, param_name, param_type, param_value "
-                "FROM dbo.etl_pipeline_job_param WHERE pipeline_name=? "
-                "ORDER BY job_name, param_order", (pipeline_name,))
-            for pr in cur.fetchall():
-                params_by_job.setdefault(pr[0], []).append(
-                    {"param_name": pr[1], "param_type": pr[2], "param_value": pr[3]})
+            _prows, _pcalc = _ler_params(cur, pipeline_name, None)
+            for pr in _prows:
+                # pr[0] = job_name; o resto é a linha no formato de _serializar_param
+                params_by_job.setdefault(pr[0], []).append(_serializar_param(pr[1:], _pcalc))
         nodes = []
         for r in rows:
             condition = None
@@ -2442,6 +2612,11 @@ async def save_pipeline_fluxo(
         has_ssh = "ssh_conn_id" in _cols
         has_verb = "verbose_log" in _cols
         has_mconn = "mssql_conn_id" in _cols
+        # Parâmetros de etapa DataStage (migration 107) — tabela DIFERENTE.
+        try:
+            has_param_calc = _tem_colunas_param_calc(cur)
+        except Exception:
+            has_param_calc = False
 
         # Conjunto final de jobs (o canvas envia o estado completo do fluxo) —
         # base para validar ramos e filtrar dependências.
@@ -2487,10 +2662,20 @@ async def save_pipeline_fluxo(
             j_mdb = (node.get("mssql_database") or "").strip() or None
             raw_by_name[j_name] = node
 
-            # Params (storedproc): valida e prepara; só serão gravados se a CHAVE
-            # 'params' veio no payload (protege os params de um storedproc existente).
+            # Params (storedproc e datastage): valida e prepara; só serão gravados
+            # se a CHAVE 'params' veio no payload (protege os params existentes).
+            # storedproc → tuplas (nome, tipo, valor, ordem); datastage → dicts
+            # prontos para _inserir_param_ds (origem + cálculo de data, 107).
             params_present = "params" in node
             j_params = []
+            if j_type == "datastage" and params_present and isinstance(node.get("params"), list) \
+                    and node["params"]:
+                if not has_param_calc:
+                    errors.append(f"{j_name}: {_ERRO_SEM_107}"); continue
+                j_params, ds_errs = _preparar_params_ds(
+                    node["params"], _tokens_encrypted(cur, pipeline_name, j_name))
+                if ds_errs:
+                    errors.extend(f"{j_name}: {e}" for e in ds_errs); continue
             if j_type == "storedproc" and isinstance(node.get("params"), list):
                 vistos_p: set[str] = set()
                 for pi, p in enumerate(node["params"]):
@@ -2660,17 +2845,21 @@ async def save_pipeline_fluxo(
                         f"UPDATE dbo.etl_pipeline_job SET {', '.join(sets)} "
                         "WHERE pipeline_name=? AND job_name=?",
                         (*vals, pipeline_name, j_name))
-            # Params (storedproc): só toca se a chave 'params' veio no payload
-            # (um frontend que não envia params não apaga os existentes).
-            if params_present and j_type == "storedproc":
+            # Params (storedproc e datastage): só toca se a chave 'params' veio no
+            # payload (um frontend que não envia params não apaga os existentes).
+            if params_present and j_type in ("storedproc", "datastage"):
                 cur.execute("EXEC dbo.sp_etl_pipeline_job_param_clear "
                             "@pipeline_name=?, @job_name=?", (pipeline_name, j_name))
-                for p_name, p_type, p_value, p_order in j_params:
-                    cur.execute(
-                        "EXEC dbo.sp_etl_pipeline_job_param_insert "
-                        "@pipeline_name=?, @job_name=?, @param_name=?, @param_type=?, "
-                        "@param_value=?, @param_order=?",
-                        (pipeline_name, j_name, p_name, p_type, p_value, p_order))
+                if j_type == "storedproc":
+                    for p_name, p_type, p_value, p_order in j_params:
+                        cur.execute(
+                            "EXEC dbo.sp_etl_pipeline_job_param_insert "
+                            "@pipeline_name=?, @job_name=?, @param_name=?, @param_type=?, "
+                            "@param_value=?, @param_order=?",
+                            (pipeline_name, j_name, p_name, p_type, p_value, p_order))
+                else:
+                    for p in j_params:
+                        _inserir_param_ds(cur, pipeline_name, j_name, p)
             if has_deps:
                 cur.execute("UPDATE dbo.etl_pipeline_job SET depends_on_jobs=? "
                             "WHERE pipeline_name=? AND job_name=?",
