@@ -1,5 +1,5 @@
 # Spec: Parâmetros de execução dos jobs DataStage — Orquestra
-Data: 2026-09-09 · Status: aprovada 2026-09-09 · em execução (F1)
+Data: 2026-09-09 · Status: aprovada 2026-09-09 · em execução (F2) · F1 = PR #376 mergeada
 
 ## 1. Visão
 Hoje o Orquestra dispara todo job DataStage sem nenhum `-param`: o comando gerado é
@@ -400,8 +400,11 @@ Retenção: sem job de limpeza nesta spec (volume = nº de reruns com sobreposi�
     com `%s`; falha alta quando ausente e sem `conf['data_referencia']`.
   - Decifra Encrypted com a mesma rotina de `conn_resolver.py:74-80` (extrair para
     função reutilizável no mesmo módulo).
-  - `_descreve_param` atualizado; `_classifica_erro_dsjob` ganha a categoria
-    `parametro` para a saída "Invalid parameter"/"Parameter … does not exist".
+  - `_descreve_param` atualizado (cita os enviados, Encrypted como `***`).
+    Categoria nova em `_classifica_erro_dsjob` para "parâmetro inválido" foi
+    descartada na execução da F2: o `-lparams` antes do `-run` já transforma o
+    caso em falha explícita, e a regra do módulo é "só entra categoria com
+    marcador textual confirmado em incidente".
   - Fábrica: `pipeline_name=PIPELINE_NAME` no bloco datastage (`etl_dag_factory.py:298`).
   - Sem parâmetro no banco: nenhuma chamada `-lparams`, nenhuma leitura extra além
     da consulta às duas tabelas.
@@ -423,8 +426,11 @@ Retenção: sem job de limpeza nesta spec (volume = nº de reruns com sobreposi�
     indisponível", sem disparo.
   - Dado valor com espaço ou aspa, então o par vai quotado por `shlex` e o dsjob
     recebe o valor íntegro (teste do comando montado).
-  - Dado DAG gerada, então contém `pipeline_name=PIPELINE_NAME` no operador
-    (teste na família `test_dag_factory_*`) e `tests/test_dag_compile.py` segue verde.
+  - Dado DAG gerada, então contém `pipeline_name=PIPELINE_NAME` no operador,
+    uma linha por bloco DataStage e nenhum parâmetro no fonte
+    (`tests/test_dag_factory_datastage.py` por AST; a âncora
+    `tests/test_dag_factory_espera.py` declara esse delta). `test_dag_compile.py`
+    não cobre o gerado neste repo — `dags/generated/` não é versionado.
 - Validação: pytest baseline; nada de front. **Release note: `dags/utils/` mudou →
   restart do worker** (gotcha `orquestra-worker-cacheia-dags-utils`).
 - Revisão adversarial multi-agente antes da PR. PR: `feat(datastage): -param resolvido em runtime no DataStageOperator`.
@@ -516,6 +522,10 @@ Retenção: sem job de limpeza nesta spec (volume = nº de reruns com sobreposi�
     gravou; auditoria no mesmo `etl_pipeline_audit` do rerun (`:1422-1428`).
   - Operador: passo 3 da resolução + `UPDATE … SET consumido_em=GETDATE()` após o
     disparo aceito; retry do Airflow no mesmo run reusa a sobreposição.
+    ⚠️ `ds_params.mesclar` (F2) mantém o `param_type` da linha original no
+    override: com Encrypted, `resolver` tentaria decifrar o texto do override e
+    falharia com "ilegível" (mensagem enganosa). A F5 tem de RECUSAR override de
+    Encrypted em `mesclar` (ParamError claro) e na API (422), não só no modal.
   - `ModalRerunEtapa.tsx`: seção "Parâmetros desta reexecução" (oculta quando
     vazia), sem opção pré-marcada além do valor atual; envia só o que mudou; erro
     do servidor com `detail` objeto tratado como o modal já faz (`:567`).

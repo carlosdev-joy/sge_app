@@ -13,6 +13,13 @@ Features:
   - Child job visibility for SEQUENCE type jobs (BATCH/finish events)
   - Espelha fielmente o status do DataStage (sem RESET/retry — nao manipula o job)
   - Optional logical-date parameter for catch-up scheduling correctness
+  - Parâmetros da etapa (spec docs/spec-parametros-job-datastage.md, F2): lidos
+    de etl_pipeline_job_param EM RUNTIME (não embutidos na DAG), conferidos
+    contra `dsjob -lparams` antes do disparo, resolvidos (valor fixo, data de
+    referência/lógica/execução com cálculo meses → âncora → dias → formato,
+    run_id, Encrypted decifrado) e enviados como N `-param`. Sem parâmetro
+    cadastrado o comando é byte a byte o de sempre. O que foi enviado fica no
+    log da task e em etl_ds_job_log.params_json — Encrypted sempre `***`.
   - DB persistence to etl_ds_job_log via sp_etl_ds_job_log_upsert
   - attach_only mode: monitor an already-running job without triggering
   - XCom JSON output compatible with etl_dag_factory._extract_status_code()
@@ -44,6 +51,8 @@ from datetime import datetime
 from airflow.exceptions import AirflowException
 from airflow.models import BaseOperator
 from airflow.providers.ssh.hooks.ssh import SSHHook
+
+from utils import ds_params
 
 # Nome de job seguro p/ interpolar no comando dsjob remoto (evita injeção shell)
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9_.]+$")
@@ -212,6 +221,12 @@ class DataStageOperator(BaseOperator):
         self.verbose_log          = verbose_log   # logsum periódico durante execução
         self.verbose_interval     = verbose_interval
         self.logsum_max           = logsum_max     # limita -logsum ao run atual
+        # Parâmetros da etapa (F2): o contexto do run é guardado pelo execute();
+        # sem ele (chamada direta a _trigger_run, testes) nenhum parâmetro entra
+        # e o comando é o de sempre.
+        self._run_ctx: dict | None = None
+        self._params_enviados: list = []   # [{name, valor, fonte, descricao, mascarado}]
+        self._params_ignorados: list = []  # defaults do pipeline que o job não declara
 
     # ── entry point ──────────────────────────────────────────────────────────
 
@@ -220,6 +235,15 @@ class DataStageOperator(BaseOperator):
         logical_date = context["ds"]
         execution_id = context["ts_nodash"]
         pipeline     = self.pipeline_name or context["dag"].dag_id
+        # O que _parametros_para_disparo precisa do run: run_id (chave da linha
+        # em etl_pipeline_execucao, de onde vem o ODATE), ds, conf e pipeline.
+        _dag_run = context.get("dag_run")
+        self._run_ctx = {
+            "run_id": str(context.get("run_id") or ""),
+            "ds": logical_date,
+            "conf": (getattr(_dag_run, "conf", None) or {}) if _dag_run is not None else {},
+            "pipeline": pipeline,
+        }
 
         if self.attach_only:
             # Monitor mode: attach to whatever is running, don't trigger
@@ -242,6 +266,9 @@ class DataStageOperator(BaseOperator):
 
         # Persist initial state to DB
         self._persist(execution_id, pipeline, wave_num, None, "QUEUED", self._ST_QUEUED, [], "", None)
+        # Rastro do que foi enviado ao dsjob (F2) — logo após a linha nascer.
+        if self._params_enviados:
+            self._persist_params_json(execution_id, pipeline)
 
         if self.verbose_log:
             self.log.info("[DS] verbose_log=True — logsum parcial a cada %d polls", self.verbose_interval)
@@ -356,27 +383,37 @@ class DataStageOperator(BaseOperator):
         return self._trigger_run(logical_date)
 
     def _trigger_run(self, logical_date: str) -> int:
+        # Parâmetros da etapa (F2) — resolvidos ANTES de montar o comando; uma
+        # falha aqui (não declarado, ODATE ausente, Encrypted ilegível, banco
+        # fora) derruba a etapa SEM disparar. Sem parâmetro: lista vazia.
+        params = self._parametros_para_disparo()
         # dsjob requer todas as flags ANTES de project/job
         parts = [f"{self.dshome}/bin/dsjob", "-run", "-mode", "NORMAL"]
         if self.queue_name:
             parts += ["-queue", self.queue_name]
         if self.execution_date_param and logical_date:
             parts += ["-param", f"{self.execution_date_param}={logical_date}"]
-        parts += [f"'{self.project}'", f"'{self.job_name}'"]
-        cmd = " ".join(parts)
+        alvo = [f"'{self.project}'", f"'{self.job_name}'"]
+        cmd = " ".join(parts + ds_params.montar_args(params) + alvo)
+        # Versão para log/mensagens: idêntica, salvo Encrypted → ***. É a ÚNICA
+        # forma do comando que pode sair do operador.
+        cmd_log = " ".join(parts + ds_params.montar_args(params, exibir=True) + alvo)
+        if params:
+            self.log.info("[DS] parâmetros: %s",
+                          ds_params.linha_de_log(params, self._params_ignorados))
 
         rc, out, err = self._exec(cmd, timeout=60)
         combined = (out + " " + err).strip()
         self.log.info("[DS] trigger rc=%d | %s", rc, combined[:300])
         # O comando disparado NÃO carrega credencial: usuário/chave vêm da
         # conexão SSH do Airflow (`SSHHook`) e o dsjob autentica pelo dsenv do
-        # servidor — o que aparece aqui é dshome, -mode, -queue, -param (data
-        # lógica), projeto e job. Pode ir para o log. Mostramos SEMPRE no
-        # caminho de erro (é a informação que diz se a fila/param que o
-        # Orquestra mandou existe no job) e, no caminho feliz, só com
+        # servidor — o que aparece aqui é dshome, -mode, -queue, -param, projeto
+        # e job. Pode ir para o log NA VERSÃO MASCARADA (cmd_log). Mostramos
+        # SEMPRE no caminho de erro (é a informação que diz se a fila/param que
+        # o Orquestra mandou existe no job) e, no caminho feliz, só com
         # verbose_log — mesma disciplina do -logsum parcial.
         if rc not in (0, 1) or self.verbose_log:
-            self.log.info("[DS] comando: %s", cmd)
+            self.log.info("[DS] comando: %s", cmd_log)
 
         # Espelho puro: não tentamos RESET no BADSTATE. Se o disparo for recusado
         # (job travado de um run anterior), reportamos o erro — não manipulamos o job.
@@ -392,10 +429,10 @@ class DataStageOperator(BaseOperator):
             # inexistente / projeto / estado / repositório). Só cai no genérico
             # se a saída não trouxer marcador — aí a mensagem crua é tudo que temos.
             self._falhar_se_erro_dsjob(
-                rc, out, err, "disparar o job (dsjob -run)", cmd=cmd, extra=diag)
+                rc, out, err, "disparar o job (dsjob -run)", cmd=cmd_log, extra=diag)
             generico = (
                 f"[DS] Failed to trigger '{self.job_name}': rc={rc} | {combined[:300]}"
-                f"\n     Comando: {cmd}"
+                f"\n     Comando: {cmd_log}"
             )
             raise AirflowException(generico + ("\n" + diag if diag else ""))
 
@@ -404,6 +441,126 @@ class DataStageOperator(BaseOperator):
             return int(info.get("wave_number") or 0)
         except (TypeError, ValueError):
             return 0
+
+    # ── parâmetros da etapa (F2) ─────────────────────────────────────────────
+
+    def _db_hook(self):
+        """Hook do banco do Orquestra (o mesmo mssql_conn_id de _persist).
+        Isolado para os testes trocarem por um dublê."""
+        from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+        return MsSqlHook(mssql_conn_id=self.mssql_conn_id)
+
+    def _parametros_para_disparo(self) -> list:
+        """Os `-param` desta execução, já resolvidos (contrato do §4 da spec).
+
+        Ordem: linhas da etapa no banco → (nada cadastrado: lista vazia, ZERO
+        chamadas extras, comando de sempre) → `dsjob -lparams` para saber o que
+        o job declara → mesclar (não declarado = falha) → bases de data (o ODATE
+        só é lido do banco se algum item precisa) → resolver (Encrypted
+        decifrado). Qualquer ParamError vira AirflowException ANTES do -run.
+        Sem contexto de run (chamada direta) não há parâmetro — é o caminho
+        legado dos testes e do execution_date_param."""
+        ctx = self._run_ctx
+        if ctx is None:
+            return []
+        try:
+            hook = self._db_hook()
+            etapa = ds_params.carregar_etapa(hook, ctx["pipeline"], self.job_name, log=self.log)
+        except ds_params.ParamError:
+            raise
+        except Exception as exc:
+            # Sem banco não dá para saber os parâmetros — e disparar "sem eles"
+            # é o falso verde que a spec proíbe. check_agenda já exige o mesmo
+            # banco antes de qualquer etapa, então isto não é dependência nova.
+            raise AirflowException(
+                f"[DS] Não foi possível ler os parâmetros da etapa "
+                f"'{ctx['pipeline']}/{self.job_name}' em etl_pipeline_job_param "
+                f"({exc}) — a etapa NÃO foi disparada.")
+        if not etapa:
+            self._params_enviados, self._params_ignorados = [], []
+            return []
+        declarados = self._lparams()
+        try:
+            itens, ignorados = ds_params.mesclar(etapa, declarados)
+            bases = self._bases_de_data(itens, hook, ctx)
+            lista = ds_params.resolver(itens, bases, ctx["run_id"])
+        except ds_params.ParamError as exc:
+            raise AirflowException(
+                f"[DS] Parâmetros de '{self.project}/{self.job_name}': {exc} "
+                f"— a etapa NÃO foi disparada.")
+        self._params_enviados, self._params_ignorados = lista, ignorados
+        return lista
+
+    def _bases_de_data(self, itens: list, hook, ctx: dict) -> dict:
+        """{origem: date} só para as origens que algum item usa."""
+        origens = {it.get("param_source") for it in itens}
+        bases: dict = {}
+        if "data_logica" in origens:
+            bases["data_logica"] = ds_params.parse_data(ctx.get("ds"))
+        if "data_execucao" in origens:
+            bases["data_execucao"] = datetime.now().date()   # relógio do worker
+        if "data_referencia" in origens:
+            bases["data_referencia"] = self._data_referencia_do_run(hook, ctx)
+        return bases
+
+    def _data_referencia_do_run(self, hook, ctx: dict):
+        """O ODATE desta corrida — Decisão 36 da malha: o run tem UM ODATE e ele
+        nasce no check_agenda (linha de etl_pipeline_execucao com o run_id),
+        sempre a montante das etapas. Fallback único: conf['data_referencia']
+        válido. Sem os dois, ParamError — nunca "a data de hoje"."""
+        row = None
+        try:
+            # TOP 1 … ORDER BY id = o MESMO degrau 0 do pipeline
+            # (dags/utils/malha_corrida.SQL_ODATE_DO_RUN): se um run_id tiver
+            # duas linhas com datas diferentes ("a doença" da malha), o -param
+            # usa a mesma linha que o registro da corrida usou.
+            row = hook.get_first(
+                "SELECT TOP 1 data_referencia FROM dbo.etl_pipeline_execucao "
+                "WHERE pipeline_name=%s AND execution_id=%s ORDER BY id",
+                parameters=(ctx["pipeline"], ctx["run_id"]))
+        except Exception as exc:
+            self.log.warning("[DS] etl_pipeline_execucao indisponível para o ODATE (%s) "
+                             "— tentando conf['data_referencia']", exc)
+        d = ds_params.parse_data(row[0]) if row and row[0] is not None else None
+        if d is None:
+            d = ds_params.parse_data((ctx.get("conf") or {}).get("data_referencia"))
+        if d is None:
+            raise ds_params.ParamError(
+                "data de referência indisponível para este run — não há linha em "
+                "etl_pipeline_execucao para o run_id (o check_agenda não registrou a "
+                "corrida) nem conf['data_referencia'] válido, e a etapa tem parâmetro "
+                "com origem data_referencia. Republique a DAG ou dispare com "
+                "data_referencia no conf.")
+        return d
+
+    def _lparams(self) -> set:
+        """`dsjob -lparams` — os nomes que o job declara. Só é chamado quando
+        há parâmetro cadastrado (custo zero sem parâmetro). Falha = falha da
+        etapa, com o diagnóstico do dsjob: sem saber o que o job declara, não
+        dá para prometer que o -run vai ser aceito."""
+        cmd = f"{self.dshome}/bin/dsjob -lparams '{self.project}' '{self.job_name}'"
+        rc, out, err = self._exec(cmd, timeout=30)
+        if rc != 0:
+            self._falhar_se_erro_dsjob(rc, out, err, "listar os parâmetros do job (dsjob -lparams)")
+            raise AirflowException(
+                f"[DS] Não foi possível listar os parâmetros de "
+                f"'{self.project}/{self.job_name}' (dsjob -lparams, rc={rc}): "
+                f"{((out or '') + ' ' + (err or '')).strip()[:300]} — a etapa NÃO foi disparada.")
+        return ds_params.parse_lparams(out)
+
+    def _persist_params_json(self, execution_id: str, pipeline: str) -> None:
+        """etl_ds_job_log.params_json = o que FOI enviado (Encrypted `***`).
+        Best-effort, como queued_seconds: o valor já está no log da task."""
+        try:
+            hook = self._db_hook()
+            hook.run(
+                "UPDATE dbo.etl_ds_job_log SET params_json=%s, updated_at=GETDATE() "
+                "WHERE execution_id=%s AND pipeline_name=%s AND job_name=%s",
+                parameters=(ds_params.para_json(self._params_enviados),
+                            execution_id, pipeline, self.job_name),
+            )
+        except Exception as exc:
+            self.log.warning("[DS] Não foi possível gravar params_json: %s", exc)
 
     # ── dsjob wrappers ───────────────────────────────────────────────────────
 
@@ -494,11 +651,20 @@ class DataStageOperator(BaseOperator):
             f"     Saída do dsjob: {trecho}")
 
     def _descreve_param(self) -> str:
-        """O que o Orquestra manda em -param — informação que só ELE tem."""
+        """O que o Orquestra manda em -param — informação que só ELE tem.
+        Encrypted aparece como *** (nunca o valor)."""
+        partes = []
         if self.execution_date_param:
-            return (f"o Orquestra envia '-param {self.execution_date_param}=<data>' "
-                    f"(parâmetro de data lógica da etapa). Se o job não declarar "
-                    f"'{self.execution_date_param}', o DataStage recusa o run.")
+            partes.append(f"'-param {self.execution_date_param}=<data>' (data lógica da etapa)")
+        if self._params_enviados:
+            partes.append(", ".join(
+                f"'-param {p['name']}={ds_params.valor_exibido(p)}' ({p.get('fonte', 'etapa')})"
+                for p in self._params_enviados))
+        if partes:
+            return ("o Orquestra envia " + " e ".join(partes)
+                    + ". Os nomes foram conferidos no `dsjob -lparams` antes do disparo; "
+                      "se o DataStage ainda recusar, confira o VALOR (tipo/formato) "
+                      "que o job espera.")
         return "o Orquestra NÃO envia nenhum -param nesta etapa."
 
     def _descreve_fila(self) -> str:

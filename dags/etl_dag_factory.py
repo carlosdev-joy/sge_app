@@ -301,6 +301,10 @@ def _task_block(job, project, pipeline, branch_reachable=False):
             f'    job_name={name!r},',
             f'    ssh_conn_id=SSH_CONN_ID,',
             f'    queue_name=DS_QUEUE,',
+            # F2 (parâmetros da etapa): o operador lê etl_pipeline_job_param
+            # por (pipeline, job) em runtime — explícito, sem depender do
+            # fallback dag_id == pipeline_name. NENHUM parâmetro entra aqui.
+            f'    pipeline_name=PIPELINE_NAME,',
             verbose_line,
             f')',
         ]))

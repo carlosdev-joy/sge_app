@@ -104,6 +104,21 @@ class _Exec:
         return self.default
 
 
+class _HookSemParametros:
+    """Dublê do banco para o execute(): etapa SEM parâmetro cadastrado (F2 —
+    o operador lê etl_pipeline_job_param antes de disparar; sem banco a etapa
+    falha alto, e este arquivo testa outros ramos)."""
+
+    def get_records(self, sql, parameters=None):
+        return []
+
+    def get_first(self, sql, parameters=None):
+        return None
+
+    def run(self, sql, parameters=None):
+        return None
+
+
 def _op(**kwargs):
     base = dict(project="BI_VIDA", job_name="SsdVidaDimePessoa02Ftp",
                 queue_name="HighPriorityJobs", execution_date_param="pDataRef",
@@ -111,6 +126,7 @@ def _op(**kwargs):
     base.update(kwargs)
     op = DataStageOperator(**base)
     op.log = logging.getLogger("test-ds-erro-disparo")
+    op._db_hook = lambda: _HookSemParametros()
     return op
 
 

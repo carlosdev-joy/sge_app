@@ -126,6 +126,12 @@ _DELTA_IMPORT_CORRIDA = [
 # antes: o import guardado faz `_LogStart = PythonOperator`.
 _TROCA_LOG_START = ("= _LogStart(", "= PythonOperator(")
 
+# F2 dos parâmetros DataStage (docs/spec-parametros-job-datastage.md): o bloco
+# `DataStageOperator(` ganha `pipeline_name=PIPELINE_NAME` — UMA linha por etapa
+# DataStage, acréscimo puro. NENHUM parâmetro entra no fonte gerado (a leitura
+# é em runtime, decisão da spec §3) — por isso o delta é só esta linha.
+_DELTA_PARAMS_PIPELINE_NAME = "pipeline_name=PIPELINE_NAME,"   # linha inteira, sem a indentação
+
 _DELTA_LOG_START = [
     "    # F5 — portao da etapa em espera: SEM pausa pedida (o caso normal)",
     "    # devolve None de imediato e o caminho abaixo e o de sempre.",
@@ -760,7 +766,17 @@ def _remover_delta(src: str) -> str:
     velho, novo = _TROCA_LOG_START
     assert src.count(velho) >= 1, "nenhum t_start com o operador da F5"
     src = src.replace(velho, novo)
+    # F2 dos parâmetros DataStage: exatamente uma linha por bloco DataStage —
+    # nem a menos (etapa sem a chave) nem a mais (parâmetro vazando para o fonte).
+    # Remoção por LINHA inteira (a linha vem indentada dentro do `with DAG`):
+    # um replace por substring deixaria a indentação órfã colada na linha seguinte.
+    n_ds = src.count("= DataStageOperator(")
     linhas = src.split("\n")
+    achadas = [i for i, l in enumerate(linhas) if l.strip() == _DELTA_PARAMS_PIPELINE_NAME]
+    assert len(achadas) == n_ds, (
+        f"pipeline_name=PIPELINE_NAME esperado {n_ds}x (um por DataStageOperator), "
+        f"encontrado {len(achadas)}x")
+    linhas = [l for i, l in enumerate(linhas) if i not in set(achadas)]
     for bloco_novo, bloco_velho in _TROCAS_DA_CORRIDA:
         ocorrencias = _ocorrencias(linhas, bloco_novo)
         assert len(ocorrencias) == 1, (
