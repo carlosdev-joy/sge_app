@@ -48,6 +48,19 @@ valor lido de tabela, condições — responde **não atendido**, orienta a
 4. Cada rodada vira uma linha em `dbo.etl_maestro_conversa` (sem segredo). Os
    `nao_atendido` são os **pedidos** do Admin.
 
+## 🧭 Maestro no cadastro do pipeline e as perguntas de "como funciona" (complemento, 2026-09-10)
+
+O mesmo avatar entra na seção **Parâmetros DataStage do pipeline** do wizard
+(passo Execução). Ali o Maestro sabe que está cadastrando **defaults**: a
+proposta vale para toda etapa DataStage cujo job declarar o nome, sem configurar
+nada nas etapas, e o cartão diz **quais etapas vão herdar** cada parâmetro e
+quais vão ignorá-lo (pelo lineage ISX de cada etapa; sem lineage, avisa). O
+contexto vai com `nivel: pipeline`; o prompt ganhou a seção "Como os parâmetros
+se comportam" (herança, sobreposição pela etapa, recálculo a cada disparo pela
+data de referência da corrida com o exemplo do dia 05, reexecução, *Simular*,
+rastro, o erro clássico de caixa no nome) e o status `explicacao` para quando o
+usuário só quer entender — sem proposta e sem virar pedido não atendido.
+
 ## 🧩 Admin (F3)
 
 Aba **Maestro** em *Acessos & Comunicação*: interruptor (ligar exige o provedor

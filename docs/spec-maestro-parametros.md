@@ -402,3 +402,19 @@ atendidos (tratados ou não) com mais de 180 dias.
 - Modelo: o configurado no provedor; se em produção o gateway expuser um modelo
   mais barato, o admin pode trocar só ali (vale para o Caixa também).
 - Números de migration (110) confirmados na abertura da F1.
+
+## 9. Complemento (2026-09-10, pedido do usuário após o fechamento): Maestro no pipeline
+- **Pedido:** "faltou colocarmos o maestro dentro das configurações do pipeline
+  na área de parâmetros, pois a pessoa vê na tela e não sabe como configurar;
+  inclusive com todas essas explicações que fizemos ele deve saber responder."
+- **Entregue (uma PR):** `MaestroChat` na `ParametrosPipelineSecao` do wizard com
+  `nivel="pipeline"` (contexto sem job, boas-vindas que explicam a herança;
+  `PipelineFormModal` passa o nome do pipeline); API: `contexto.nivel`
+  (`etapa` padrão | `pipeline`), `parametros_declarados_pipeline` (o que cada
+  etapa DataStage declara no ISX, teto de 30), avisos "vai para: … / ignorado
+  por: …" na proposta, status `explicacao`; prompt com a seção "Como os
+  parâmetros se comportam" (as respostas dadas ao usuário: default vale para
+  etapas cujo job declara o nome, herdam sem configurar, etapa sobrepõe,
+  recálculo pela data de referência da corrida com o exemplo do dia 05, ordem
+  meses → âncora, rerun, sem republicar DAG, Simular, rastro, caixa do nome).
+- **Fora:** o Maestro no modal de reexecução (sobreposição por corrida) — backlog.

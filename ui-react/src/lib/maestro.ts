@@ -21,8 +21,15 @@ export const MAESTRO_BOAS_VINDAS =
   'Olá! Sou o Maestro. Descreva o cenário desta etapa — por exemplo, "carga mensal do mês '
   + 'anterior com data inicial e final" — e eu digo como preencher cada parâmetro. '
   + 'Nada é salvo até você aplicar no editor e salvar a etapa.'
+export const MAESTRO_BOAS_VINDAS_PIPELINE =
+  'Olá! Sou o Maestro. Aqui você cadastra os parâmetros do pipeline: eles valem para toda etapa '
+  + 'DataStage cujo job declarar o nome, sem configurar nada nas etapas (a etapa pode sobrepor). '
+  + 'Descreva o cenário — por exemplo, "carga mensal do mês anterior com data inicial e final" — '
+  + 'ou pergunte como a herança e as datas funcionam. Nada é salvo até você aplicar no editor e salvar o pipeline.'
 
-export type MaestroStatusRodada = 'atendido' | 'nao_atendido' | 'pergunta'
+export type MaestroStatusRodada = 'atendido' | 'nao_atendido' | 'pergunta' | 'explicacao'
+/** Onde o usuário está: na etapa (Parâmetros do job) ou no pipeline (defaults do wizard). */
+export type MaestroNivel = 'etapa' | 'pipeline'
 
 export interface MaestroPrevia { param_name: string; valor: string; descricao: string }
 
@@ -67,6 +74,36 @@ export interface MaestroHistoricoConversa {
   rodadas: MaestroHistoricoRodada[]
 }
 
+// ── a conversa sobrevive à desmontagem do componente ────────────────────────
+// No wizard do pipeline a seção de parâmetros só existe no passo 2: trocar de
+// passo desmontava o MaestroChat e a conversa (com a proposta ainda não
+// aplicada) sumia (achado 1 da revisão adversarial do complemento). O estado
+// vive aqui, por chave (nível + pipeline + job), até "Nova conversa" ou o F5.
+
+export interface ConversaGuardada {
+  conversaId: string
+  mensagens: MaestroMensagem[]
+  aberto: boolean
+}
+
+const conversasGuardadas = new Map<string, ConversaGuardada>()
+
+export function chaveDaConversa(nivel: MaestroNivel, pipeline?: string, jobName?: string): string {
+  return `${nivel}|${(pipeline ?? '').trim()}|${nivel === 'etapa' ? (jobName ?? '').trim() : ''}`
+}
+
+export function lerConversaGuardada(chave: string): ConversaGuardada | undefined {
+  return conversasGuardadas.get(chave)
+}
+
+export function guardarConversa(chave: string, estado: ConversaGuardada): void {
+  conversasGuardadas.set(chave, estado)
+}
+
+export function esquecerConversa(chave: string): void {
+  conversasGuardadas.delete(chave)
+}
+
 // ── ids ─────────────────────────────────────────────────────────────────────
 
 /** uuid v4 quando o browser tem `crypto.randomUUID`; senão um id aleatório que
@@ -79,8 +116,8 @@ export function novoConversaId(): string {
   return s.slice(0, 32)
 }
 
-export function mensagemDeBoasVindas(): MaestroMensagem {
-  return { id: 0, papel: 'assistant', texto: MAESTRO_BOAS_VINDAS, sistema: true }
+export function mensagemDeBoasVindas(nivel: MaestroNivel = 'etapa'): MaestroMensagem {
+  return { id: 0, papel: 'assistant', texto: nivel === 'pipeline' ? MAESTRO_BOAS_VINDAS_PIPELINE : MAESTRO_BOAS_VINDAS, sistema: true }
 }
 
 // ── contexto (o que vai ao servidor) ────────────────────────────────────────
@@ -91,6 +128,7 @@ const CHAVES_CONTEXTO = [
 ] as const
 
 export interface MaestroContexto {
+  nivel: MaestroNivel
   pipeline_name?: string
   job_name?: string
   referencia: string
@@ -101,7 +139,8 @@ export interface MaestroContexto {
  *  contrato, sem `id`/`tem_valor`, e o valor de Encrypted NUNCA (o servidor
  *  também remove — aqui é a primeira barreira, antes de sair do browser). */
 export function contextoDoEditor(pipeline: string | undefined, jobName: string | undefined,
-                                 params: JobParam[], referencia: string): MaestroContexto {
+                                 params: JobParam[], referencia: string,
+                                 nivel: MaestroNivel = 'etapa'): MaestroContexto {
   const linhas: Record<string, string>[] = []
   for (const p of params) {
     const nome = (p.param_name ?? '').trim()
@@ -116,9 +155,9 @@ export function contextoDoEditor(pipeline: string | undefined, jobName: string |
     item.param_name = nome
     linhas.push(item)
   }
-  const ctx: MaestroContexto = { referencia, params: linhas }
+  const ctx: MaestroContexto = { nivel, referencia, params: linhas }
   if (pipeline?.trim()) ctx.pipeline_name = pipeline.trim()
-  if (jobName?.trim()) ctx.job_name = jobName.trim()
+  if (nivel === 'etapa' && jobName?.trim()) ctx.job_name = jobName.trim()
   return ctx
 }
 
@@ -180,12 +219,17 @@ export function aplicarProposta(atuais: JobParam[], novos: JobParam[]): Resultad
   return { params, substituidos, adicionados }
 }
 
-export function resumoAplicacao(r: ResultadoAplicacao): string {
+/** O que se salva depois de aplicar: a etapa (Etapas/Fluxos) ou o pipeline (wizard). */
+export function alvoDoSalvar(nivel: MaestroNivel = 'etapa'): string {
+  return nivel === 'pipeline' ? 'salve o pipeline' : 'salve a etapa'
+}
+
+export function resumoAplicacao(r: ResultadoAplicacao, nivel: MaestroNivel = 'etapa'): string {
   const partes = [
     r.adicionados.length ? `${r.adicionados.length} parâmetro(s) adicionado(s)` : '',
     r.substituidos.length ? `${r.substituidos.length} substituído(s): ${r.substituidos.join(', ')}` : '',
   ].filter(Boolean)
-  return `${partes.join(' · ') || 'nada mudou'} — confira os valores e salve a etapa`
+  return `${partes.join(' · ') || 'nada mudou'} — confira os valores e ${alvoDoSalvar(nivel)}`
 }
 
 // ── rótulos (o cartão da proposta) ──────────────────────────────────────────

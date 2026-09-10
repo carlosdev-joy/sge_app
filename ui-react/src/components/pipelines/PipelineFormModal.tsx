@@ -1073,7 +1073,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 {/* F4 — defaults de parâmetro DataStage do pipeline (lidos em
                     runtime pelo operador; não afetam a DAG publicada). */}
                 {parametrosDisponiveis && (
-                  <ParametrosPipelineSecao params={parametrosDs} onChange={setParametrosEdit} />
+                  <ParametrosPipelineSecao params={parametrosDs} onChange={setParametrosEdit}
+                    pipeline={form.pipeline_name.trim().toUpperCase() || undefined} />
                 )}
                 {/* O campo de texto "Depende de" e o checkbox "Disparar quando
                     as dependências concluírem" morreram na F5: dependência é
