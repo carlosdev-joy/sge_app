@@ -29,7 +29,7 @@ from datetime import date
 
 from services import job_params as jp
 from services.rerun_params import _defaults_pipeline as _defaults_pipeline_108
-from services.ssh_arquivos import cortar_utf16
+from services.ssh_arquivos import cortar_utf16, utf16_len
 
 K_ENABLED = "maestro_enabled"
 
@@ -257,7 +257,9 @@ def system_prompt(catalogo: list[dict], contexto: dict) -> str:
     if catalogo:
         for c in catalogo:
             receita = json.dumps(c["receita"].get("params", []), ensure_ascii=False, separators=(",", ":"))
-            linhas.append(f"- [{c['codigo']}] {c['titulo']} — {c['descricao']} Receita: {receita}")
+            titulo = " ".join(str(c["titulo"]).split())
+            descricao = " ".join(str(c["descricao"]).split())
+            linhas.append(f"- [{c['codigo']}] {titulo} — {descricao} Receita: {receita}")
     else:
         linhas.append("- (catálogo vazio: só o vocabulário acima)")
     linhas += [
@@ -326,19 +328,31 @@ def validar_receita(receita) -> tuple[list[dict], list[str]]:
     params = receita.get("params")
     if not isinstance(params, list) or not params:
         return [], ["receita sem params"]
+    # Marcador repetido é checado ANTES da troca: `<D>` duas vezes viraria
+    # p_1/p_2 (distintos) e passaria — e o Maestro entregaria dois nomes
+    # iguais que a régua do salvar derruba como duplicata (achado 4 da
+    # revisão adversarial da F3). Caixa exata, como o DataStage.
+    vistos: set[str] = set()
+    repetidos: list[str] = []
     trocados = []
     for i, p in enumerate(params, start=1):
         if not isinstance(p, dict):
             trocados.append(p)
             continue
         q = dict(p)
-        nome = str(q.get("param_name") or "")
+        nome = str(q.get("param_name") or "").strip()
+        if nome:
+            if nome in vistos and nome not in repetidos:
+                repetidos.append(nome)
+            vistos.add(nome)
         if _PLACEHOLDER_RE.match(nome):
             q["param_name"] = f"p_{i}"
         if q.get("param_type") == "Encrypted" and not q.get("param_value"):
             q["param_value"] = jp.ENCRYPTED_MASCARA
         trocados.append(q)
-    return jp.normalizar_lista(trocados)
+    validos, erros = jp.normalizar_lista(trocados)
+    erros = [f"marcador/nome repetido na receita: {r}" for r in repetidos] + erros
+    return (validos if not erros else []), erros
 
 
 def extrair_proposta(texto: str) -> tuple[str, dict | None]:
@@ -514,6 +528,253 @@ def historico(cur, matricula: str, limite: int = 20) -> list[dict]:
             ordem.append(cid)
         g["rodadas"].append({"mensagem": mensagem, "resposta": resposta, "status": status})
     return [grupos[c] for c in ordem]
+
+
+# ── Admin (F3): interruptor, catálogo e pedidos ──────────────────────────────
+
+CODIGO_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+LIMITE_TITULO = 120        # NVARCHAR(120)
+LIMITE_DESCRICAO = 600     # NVARCHAR(600)
+LIMITE_EXEMPLO = 200
+MAX_EXEMPLOS = 10
+# Retenção das conversas (dags/etl_log_cleanup.py apaga o que passa disso).
+RETENCAO_CONVERSAS_DIAS = 180
+
+
+class CodigoExistente(Exception):
+    """Outro cenário já usa o código."""
+
+
+def validar_cenario(payload) -> tuple[dict, list[str]]:
+    """O que o admin manda para gravar um cenário → (normalizado, erros).
+
+    A receita passa pela MESMA régua do salvar (validar_receita): o catálogo
+    não pode prometer o que o Orquestra recusaria. Os marcadores `<NOME>`
+    ficam como estão na receita gravada — o Maestro os troca pelos nomes reais."""
+    erros: list[str] = []
+    if not isinstance(payload, dict):
+        return {}, ["corpo inválido (esperado objeto)"]
+    codigo = str(payload.get("codigo") or "").strip().lower()
+    if not CODIGO_RE.match(codigo):
+        erros.append("código: letras minúsculas, números e _, de 2 a 40 caracteres, começando por letra")
+    # Título e descrição vão para UMA linha do system prompt: quebras de linha
+    # e espaços repetidos colapsam (uma descrição com "## Como responder"
+    # numa linha nova entraria no prompt como se fosse seção).
+    titulo = " ".join(str(payload.get("titulo") or "").split())
+    if not titulo:
+        erros.append("título obrigatório")
+    elif utf16_len(titulo) > LIMITE_TITULO:
+        erros.append(f"título com mais de {LIMITE_TITULO} caracteres")
+    descricao = " ".join(str(payload.get("descricao") or "").split())
+    if not descricao:
+        erros.append("descrição obrigatória — é o que o Maestro lê para reconhecer o cenário")
+    elif utf16_len(descricao) > LIMITE_DESCRICAO:
+        erros.append(f"descrição com mais de {LIMITE_DESCRICAO} caracteres")
+
+    receita = payload.get("receita")
+    if not isinstance(receita, dict):
+        erros.append("receita deve ser um objeto {params, exemplos}")
+        receita = {}
+    _validos, erros_receita = validar_receita(receita)
+    erros.extend(f"receita: {e}" for e in erros_receita)
+    exemplos_raw = receita.get("exemplos")
+    exemplos: list[str] = []
+    if exemplos_raw is None:
+        pass
+    elif not isinstance(exemplos_raw, list):
+        erros.append("exemplos deve ser uma lista de frases")
+    else:
+        for e in exemplos_raw:
+            frase = str(e or "").strip()
+            if not frase:
+                continue
+            if utf16_len(frase) > LIMITE_EXEMPLO:
+                erros.append(f"exemplo com mais de {LIMITE_EXEMPLO} caracteres: '{frase[:30]}…'")
+                continue
+            if frase not in exemplos:
+                exemplos.append(frase)
+        if len(exemplos) > MAX_EXEMPLOS:
+            erros.append(f"no máximo {MAX_EXEMPLOS} exemplos")
+    params_limpos = []
+    for p in receita.get("params") or []:
+        if isinstance(p, dict):
+            item = {c: p.get(c) for c in _COLS if p.get(c) not in (None, "")}
+            # Valor de Encrypted NUNCA vai para a receita: ela vai inteira ao
+            # system prompt (provedor pode ser externo) — a tela não oferece o
+            # campo, mas o endpoint aceitava (achado 3 da revisão da F3).
+            if item.get("param_type") == "Encrypted":
+                item.pop("param_value", None)
+            params_limpos.append(item)
+    norm = {"codigo": codigo, "titulo": titulo, "descricao": descricao,
+            "receita": {"params": params_limpos, "exemplos": exemplos},
+            "ativo": bool(payload.get("ativo", True))}
+    return norm, erros
+
+
+def previa_da_receita(receita, referencia: date) -> tuple[list[dict], list[str]]:
+    """A prévia de uma receita para a tela do admin ("Simular"): valida com os
+    marcadores trocados e devolve os valores com os NOMES ORIGINAIS (`<DATA>`)."""
+    validos, erros = validar_receita(receita)
+    if erros:
+        return [], erros
+    originais: dict[str, str] = {}
+    for i, p in enumerate(receita.get("params") or [], start=1):
+        nome = str((p or {}).get("param_name") or "") if isinstance(p, dict) else ""
+        if _PLACEHOLDER_RE.match(nome):
+            originais[f"p_{i}"] = nome
+    previa, erros_previa = jp.resolver_preview(referencia, validos)
+    for item in previa:
+        item["param_name"] = originais.get(item["param_name"], item["param_name"])
+    return previa, erros_previa
+
+
+_COLS_CENARIO = ("id", "codigo", "titulo", "descricao", "receita_json", "ativo",
+                 "criado_em", "criado_por", "atualizado_em", "atualizado_por")
+_SQL_CENARIO = ("SELECT id, codigo, titulo, descricao, receita_json, ativo, "
+                "CONVERT(VARCHAR(19), criado_em, 120), criado_por, "
+                "CONVERT(VARCHAR(19), atualizado_em, 120), atualizado_por FROM dbo.etl_maestro_cenario")
+
+
+def _linha_cenario(row) -> dict:
+    d = dict(zip(_COLS_CENARIO, row))
+    try:
+        receita = json.loads(d.pop("receita_json") or "{}")
+    except (TypeError, ValueError):
+        receita = {}
+    if not isinstance(receita, dict):
+        receita = {}
+    d["receita"] = {"params": receita.get("params") or [], "exemplos": receita.get("exemplos") or []}
+    d["ativo"] = bool(d["ativo"])
+    return d
+
+
+def listar_cenarios(cur) -> list[dict]:
+    """Todos (ativos e inativos), na ordem de criação — a lista do admin."""
+    try:
+        cur.execute(_SQL_CENARIO + " ORDER BY id")
+        rows = cur.fetchall()
+    except Exception as e:
+        if _sem_tabela(e):
+            raise MaestroIndisponivel(ERRO_SEM_110) from e
+        raise
+    return [_linha_cenario(r) for r in rows]
+
+
+def salvar_cenario(cur, dados: dict, matricula: str, cenario_id: int | None = None) -> dict | None:
+    """INSERT (sem id) ou UPDATE (com id). None quando o id não existe.
+    Código repetido → CodigoExistente (a UNIQUE da 110 pegaria, mas com uma
+    mensagem de banco; aqui a resposta diz qual é o problema)."""
+    receita_json = json.dumps(dados["receita"], ensure_ascii=False)
+    try:
+        cur.execute("SELECT id FROM dbo.etl_maestro_cenario WHERE codigo = ?", (dados["codigo"],))
+        dono = cur.fetchone()
+        if dono and (cenario_id is None or int(dono[0]) != int(cenario_id)):
+            raise CodigoExistente(dados["codigo"])
+        if cenario_id is None:
+            # `OUTPUT INSERTED.id` (convenção do repo): um `INSERT; SELECT
+            # SCOPE_IDENTITY()` no mesmo execute deixa o pyodbc parado no
+            # INSERT ("No results") — pego no smoke do DEV.
+            cur.execute(
+                "INSERT INTO dbo.etl_maestro_cenario (codigo, titulo, descricao, receita_json, ativo, criado_por) "
+                "OUTPUT INSERTED.id VALUES (?,?,?,?,?,?)",
+                (dados["codigo"], dados["titulo"], dados["descricao"], receita_json,
+                 1 if dados["ativo"] else 0, (matricula or "")[:100]))
+            row = cur.fetchone()
+            novo_id = int(row[0]) if row and row[0] is not None else None
+        else:
+            cur.execute(
+                "UPDATE dbo.etl_maestro_cenario SET codigo=?, titulo=?, descricao=?, receita_json=?, ativo=?, "
+                "atualizado_em=GETDATE(), atualizado_por=? WHERE id=?",
+                (dados["codigo"], dados["titulo"], dados["descricao"], receita_json,
+                 1 if dados["ativo"] else 0, (matricula or "")[:100], int(cenario_id)))
+            if not cur.rowcount:
+                return None
+            novo_id = int(cenario_id)
+        cur.execute(_SQL_CENARIO + " WHERE id = ?", (novo_id,))
+        row = cur.fetchone()
+    except CodigoExistente:
+        raise
+    except Exception as e:
+        if _sem_tabela(e):
+            raise MaestroIndisponivel(ERRO_SEM_110) from e
+        raise
+    return _linha_cenario(row) if row else None
+
+
+def excluir_cenario(cur, cenario_id: int) -> bool:
+    try:
+        cur.execute("DELETE FROM dbo.etl_maestro_cenario WHERE id = ?", (int(cenario_id),))
+    except Exception as e:
+        if _sem_tabela(e):
+            raise MaestroIndisponivel(ERRO_SEM_110) from e
+        raise
+    return bool(cur.rowcount)
+
+
+_COLS_PEDIDO = ("id", "criado_em", "matricula", "pipeline_name", "job_name", "mensagem", "motivo",
+                "tratado_em", "tratado_por")
+
+
+def listar_pedidos(cur, tratados: bool = False, limite: int = 200) -> list[dict]:
+    """Os `nao_atendido`: abertos (padrão) ou já tratados — a demanda que o
+    catálogo ainda não cobre, para o administrador ver."""
+    try:
+        cur.execute(
+            f"SELECT TOP ({int(limite)}) id, CONVERT(VARCHAR(19), criado_em, 120), matricula, pipeline_name, "
+            "job_name, mensagem, motivo, CONVERT(VARCHAR(19), tratado_em, 120), tratado_por "
+            "FROM dbo.etl_maestro_conversa WHERE status = 'nao_atendido' AND tratado_em IS "
+            + ("NOT NULL" if tratados else "NULL") + " ORDER BY criado_em DESC, id DESC")
+        rows = cur.fetchall()
+    except Exception as e:
+        if _sem_tabela(e):
+            raise MaestroIndisponivel(ERRO_SEM_110) from e
+        raise
+    return [dict(zip(_COLS_PEDIDO, r)) for r in rows]
+
+
+def marcar_pedido(cur, pedido_id: int, tratado: bool, matricula: str) -> bool:
+    """Carimba (ou descarimba) `tratado_em` num pedido não atendido."""
+    try:
+        if tratado:
+            cur.execute(
+                "UPDATE dbo.etl_maestro_conversa SET tratado_em = GETDATE(), tratado_por = ? "
+                "WHERE id = ? AND status = 'nao_atendido'", ((matricula or "")[:20], int(pedido_id)))
+        else:
+            cur.execute(
+                "UPDATE dbo.etl_maestro_conversa SET tratado_em = NULL, tratado_por = NULL "
+                "WHERE id = ? AND status = 'nao_atendido'", (int(pedido_id),))
+    except Exception as e:
+        if _sem_tabela(e):
+            raise MaestroIndisponivel(ERRO_SEM_110) from e
+        raise
+    return bool(cur.rowcount)
+
+
+def gravar_enabled(cur, ligado: bool, matricula: str) -> None:
+    """`maestro_enabled` em etl_app_config (MERGE, como as caixa_ia_*)."""
+    valor = "1" if ligado else "0"
+    cur.execute(
+        "MERGE dbo.etl_app_config AS t USING (SELECT ? AS k) AS s ON t.config_key = s.k "
+        "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
+        "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
+        "  VALUES (s.k, ?, 'Maestro — assistente de parâmetros DataStage (Etapas/Fluxos)', ?, GETDATE());",
+        (K_ENABLED, valor, (matricula or "")[:100], valor, (matricula or "")[:100]))
+
+
+def contagens(cur) -> dict:
+    """Os números da aba: cenários (total/ativos) e pedidos abertos. Sem a
+    110, zeros — a aba diz que a migration falta em vez de quebrar."""
+    try:
+        cur.execute("SELECT COUNT(*), SUM(CASE WHEN ativo = 1 THEN 1 ELSE 0 END) FROM dbo.etl_maestro_cenario")
+        total, ativos = cur.fetchone() or (0, 0)
+        cur.execute("SELECT COUNT(*) FROM dbo.etl_maestro_conversa WHERE status = 'nao_atendido' AND tratado_em IS NULL")
+        abertos = (cur.fetchone() or (0,))[0]
+    except Exception as e:
+        if _sem_tabela(e):
+            raise MaestroIndisponivel(ERRO_SEM_110) from e
+        raise
+    return {"total_cenarios": int(total or 0), "cenarios_ativos": int(ativos or 0),
+            "pedidos_abertos": int(abertos or 0)}
 
 
 def sugestoes(catalogo: list[dict], maximo: int = 4) -> list[str]:

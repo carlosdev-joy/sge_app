@@ -22,7 +22,8 @@ const mini = require(path.join(__dirname, 'minireact.cjs'))
 
 const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/JobTypeFields.tsx',
                   'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx',
-                  'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx']
+                  'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx',
+                  'lib/maestroAdmin.ts']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -459,6 +460,63 @@ function tela(params, previa, extra, jobName) {
              semJob: porAttr(semJobComMaestro, 'data-maestro-botao').length, storedproc: porAttr(storedprocComStatus, 'data-maestro-botao').length,
              importarContinua: porAttr(comMaestro, 'data-importar-isx').length },
     abrir: { antes, depois, boasVindas: porAttr(chat, 'data-maestro-msg').length },
+  }
+}
+
+// ── 8. Admin do Maestro (F3): a lib pura do formulário do cenário ────────────
+{
+  const A = require(path.join(tmp, 'lib/maestroAdmin.js'))
+  const cenarioApi = {
+    id: 5, codigo: 'mensal_anterior', titulo: 'Carga mensal', descricao: 'Primeiro e último dia.', ativo: true,
+    criado_em: '2026-09-10 10:00:00', criado_por: 'migration_110', atualizado_em: null, atualizado_por: null,
+    receita: { params: [
+      { param_name: '<DATA_INICIAL>', param_type: 'Date', param_source: 'data_referencia', param_value: null,
+        param_offset_meses: -1, param_ancora: 'inicio_mes', param_offset_dias: 0, param_formato: '%Y-%m-%d' },
+      { param_name: '<CAMINHO>', param_type: 'Pathname', param_source: 'fixo', param_value: '/dados/entrada' },
+    ], exemplos: ['carga mensal', 'mês passado'] },
+  }
+  const form = A.formDoCenario(cenarioApi)
+  const corpo = A.cenarioParaApi(Object.assign({}, form, { codigo: ' Mensal_Anterior ', exemplosTexto: 'a\n\n a \nb' }))
+  const semParams = Object.assign(A.cenarioVazio(), { codigo: 'x1', titulo: 't', descricao: 'd', linhas: [] })
+  const nomeRuim = Object.assign(A.cenarioVazio(), { codigo: 'x1', titulo: 't', descricao: 'd',
+    linhas: [Object.assign(A.linhaVazia(), { param_name: 'a b' })] })
+  const dataComInteger = Object.assign(A.cenarioVazio(), { codigo: 'x1', titulo: 't', descricao: 'd',
+    linhas: [Object.assign(A.linhaVazia(), { param_name: '<D>', param_type: 'Integer' })] })
+  const valido = Object.assign(A.cenarioVazio(), { codigo: 'x1', titulo: 't', descricao: 'd',
+    linhas: [Object.assign(A.linhaVazia(), { param_name: '<D>', param_offset_meses: '-1', param_ancora: 'fim_mes' })] })
+  const encrypted = Object.assign(A.cenarioVazio(), { codigo: 'x1', titulo: 't', descricao: 'd',
+    linhas: [Object.assign(A.linhaVazia(), { param_name: '<SENHA>', param_type: 'Encrypted', param_source: 'fixo', param_value: 'vazou?' })] })
+  const repetido = Object.assign(A.cenarioVazio(), { codigo: 'x1', titulo: 't', descricao: 'd',
+    linhas: [Object.assign(A.linhaVazia(), { param_name: '<D>', param_ancora: 'inicio_mes' }),
+             Object.assign(A.linhaVazia(), { param_name: '<D>', param_ancora: 'fim_mes' })] })
+  saida.maestroAdmin = {
+    form: { codigo: form.codigo, ativo: form.ativo, exemplosTexto: form.exemplosTexto,
+            linhas: form.linhas.map(l => [l.param_name, l.param_type, l.param_source, l.param_value, l.param_offset_meses, l.param_ancora, l.param_offset_dias, l.param_formato]) },
+    vazioTemUmaLinha: A.formDoCenario(Object.assign({}, cenarioApi, { receita: { params: [], exemplos: [] } })).linhas.length,
+    corpo,
+    exemplos: A.exemplosDoTexto(' x \n\nx\ny\n'),
+    erros: {
+      valido: A.errosDoCenario(valido),
+      vazio: A.errosDoCenario(A.cenarioVazio()),
+      semParams: A.errosDoCenario(semParams),
+      nomeRuim: A.errosDoCenario(nomeRuim),
+      dataComInteger: A.errosDoCenario(dataComInteger),
+      codigoRuim: A.errosDoCenario(Object.assign({}, valido, { codigo: 'Ruim Demais' })),
+      tituloLongo: A.errosDoCenario(Object.assign({}, valido, { titulo: 't'.repeat(121) })),
+      exemplosDemais: A.errosDoCenario(Object.assign({}, valido, { exemplosTexto: Array.from({ length: 11 }, (_, i) => `e${i}`).join('\n') })),
+      encrypted: A.errosDoCenario(encrypted),
+      repetido: A.errosDoCenario(repetido),
+    },
+    encryptedNoCorpo: A.cenarioParaApi(encrypted).receita.params,
+    mensagens: [
+      A.mensagemErroAdmin({ status: 422, detail: { code: 'cenario_invalido', errors: ['a', 'b'] } }, 'p'),
+      A.mensagemErroAdmin({ status: 409, detail: { code: 'codigo_existente', mensagem: 'Já existe' } }, 'p'),
+      A.mensagemErroAdmin({ status: 503, detail: 'Maestro indisponível: migration 110 pendente' }, 'p'),
+      A.mensagemErroAdmin({ status: 500, message: '500 Internal Server Error' }, 'padrão'),
+    ],
+    pendente110: [A.migration110Pendente({ status: 503, detail: 'Maestro indisponível: migration 110 pendente' }),
+                  A.migration110Pendente({ status: 503, detail: 'outra coisa' }), A.migration110Pendente({ status: 500, detail: 'migration 110' })],
+    idsUnicos: new Set([A.linhaVazia().id, A.linhaVazia().id, A.linhaVazia().id]).size,
   }
 }
 

@@ -1,5 +1,5 @@
 # Spec: Maestro — assistente conversacional de parâmetros DataStage — Orquestra
-Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F1)
+Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F3; F1 = #382, F2 = #383)
 
 ## 1. Visão
 Cadastrar parâmetro DataStage exige conhecer um vocabulário (origem, meses, âncora,
