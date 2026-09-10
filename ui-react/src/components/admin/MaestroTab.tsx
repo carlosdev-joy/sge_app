@@ -129,7 +129,7 @@ export function MaestroTab() {
       <section className="flex flex-col gap-3 rounded-lg border border-edge bg-panel p-4 shadow-sm" data-maestro-catalogo>
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-sm font-semibold text-ink">Catálogo de cenários</h3>
-          <span className="text-xs text-dim">— o que o Maestro pode prometer; os exemplos viram as sugestões de abertura do chat</span>
+          <span className="text-xs text-dim">— o que o Maestro pode prometer; o 1º exemplo dos 4 primeiros cenários ativos vira sugestão de abertura do chat</span>
           <Button size="sm" variant="primary" className="ml-auto" onClick={() => { setChaveModal(k => k + 1); setEditando('novo') }} data-maestro-novo>
             <Plus size={13} /> Novo cenário
           </Button>

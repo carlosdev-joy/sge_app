@@ -1,5 +1,5 @@
 # Spec: Maestro — assistente conversacional de parâmetros DataStage — Orquestra
-Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F3; F1 = #382, F2 = #383)
+Data: 2026-09-10 · Status: **concluída** (F1 = #382, F2 = #383, F3 = #384, F4 = a PR que fecha esta spec, 2026-09-10)
 
 ## 1. Visão
 Cadastrar parâmetro DataStage exige conhecer um vocabulário (origem, meses, âncora,
@@ -284,8 +284,9 @@ declarados no ISX (quando o ISX existe) vira aviso na resposta, não bloqueio.
 - Inclui: `docs/MANUAL_USUARIO.md` §3.11 *Maestro* (+ nota no §3.10, §4 admin,
   FAQ); `docs/release-notes/maestro.md` (deploy: 110 na 6c, `dist/`, provedor de
   IA já configurado, `config/` → n); `docs/ORQUESTRA_Funcionalidades_e_Beneficios.md`;
-  smoke §7 no DEV com o provedor anthropic desta VPS (o gateway da Caixa só em
-  produção); ajustes de prompt que o smoke pedir (com teste para cada ajuste);
+  smoke §7 no DEV com um provedor de mentira dentro do container (o DEV não tem
+  provedor de IA; gateway da Caixa e Anthropic reais só em homologação/produção);
+  ajustes de prompt que o smoke pedir (com teste para cada ajuste);
   status da spec → concluída.
 - Critérios de aceite: os cinco cenários da semente atendidos no DEV com prévia
   correta; três pedidos fora do vocabulário (dia útil, feriado, valor de tabela)
@@ -299,7 +300,7 @@ declarados no ISX (quando o ISX existe) vira aviso na resposta, não bloqueio.
 | # | Risco | Impacto | Mitigação |
 |---|-------|---------|-----------|
 | 1 | O modelo "inventa" origem/âncora que o vocabulário não tem (falso verde) | Proposta aplicada dá 422 no salvar ou, pior, comportamento inesperado | O servidor valida com `normalizar_lista` **antes** de devolver a proposta; inválida vira `nao_atendido` com o erro; teste anti-drift garante que o prompt lista o vocabulário do `job_params` |
-| 2 | Segredo vazando para o provedor ou para o log | Senha do DataStage num gateway externo / tabela | Contexto do editor nunca leva valor Encrypted (bancada prova); prompt instrui a nunca pedir senha; `proposta_json` gravada sem valor de Encrypted; `_PADROES_SEGREDO` do admin cobre `maestro` |
+| 2 | Segredo vazando para o provedor ou para o log | Senha do DataStage num gateway externo / tabela | Contexto do editor nunca leva valor Encrypted (bancada prova); prompt instrui a nunca pedir senha; `proposta_json` gravada sem valor de Encrypted; o Maestro não tem chave secreta própria (a do provedor é `caixa_ia_api_key_enc`, já mascarada pelo admin) |
 | 3 | Gateway da Caixa: proxy/CA/formatos (incidente já vivido nos assistentes) | "Maestro indisponível" em produção sem dizer por quê | Reuso integral de `caixa_ia` (trust_env, `_verificacao_tls`, `extrai_texto`); laudo em *Caixa Seguro IA › Verificar* vale para o Maestro; erro 503 ao usuário com "contate o administrador" |
 | 4 | Permissão: usuário de consulta usando IA à vontade / custo | Gasto no provedor; ruído no log | Gate `tela_jobs` (quem pode ver Etapas/Fluxos); limite de 4.000 chars por mensagem e 12 mensagens de histórico; interruptor do admin; `duracao_ms`/`modelo` no log para acompanhar |
 | 5 | Painel flutuante × modal/dock: z-index, tema escuro, sticky/overflow | Chat escondido atrás do modal ou branco no escuro | Portal em `document.body` com `z-[60]` (Modal `z-50`, Toast `z-[100]`); só tokens semânticos; revisão adversarial com o checklist de CSS do repo |
@@ -326,8 +327,11 @@ f) Conversa que envolve senha: "o job precisa da senha do banco" → o Maestro p
    FROM dbo.etl_maestro_conversa` sem nenhum valor; log da API sem o valor.
 g) Desligar o Maestro no Admin → o avatar some (após o cache de 5 min ou F5); a
    API responde 503 `maestro_desligado`.
-h) Provedor com chave errada → usuário vê "Maestro indisponível — contate o
-   administrador"; *Caixa Seguro IA › Verificar* mostra a etapa que falhou.
+h) Provedor com chave errada → o chat mostra o erro do provedor ("Chave de API
+   inválida (Anthropic)" ou "(provedor)") e um toast; *Caixa Seguro IA ›
+   Verificar* mostra a etapa que falhou. (Só erro de configuração interna —
+   lib ausente, `ORQUESTRA_CONN_KEY` — vira "Maestro temporariamente
+   indisponível — contate o administrador".)
 i) Tema escuro: painel, bolhas e cartão da proposta legíveis; o painel fica acima
    do modal e abaixo dos toasts.
 j) **Gateway da Caixa com histórico** (só em produção): conversa de 2+ rodadas e
@@ -339,6 +343,45 @@ k) **Anthropic com adaptive thinking**: conversa de 2+ rodadas (turnos assistant
 l) **Resposta longa**: depois de uma resposta do Maestro acima de 4.000
    caracteres, a rodada seguinte continua funcionando (o histórico é truncado
    no servidor, nunca recusado).
+m) **Retenção**: na manhã seguinte, o log da task `limpar_conversas_maestro` da
+   DAG `etl_log_cleanup` traz `{"tabela": "ok", "apagadas": N, "retencao_dias": 180}`.
+
+**Resultado no DEV (2026-09-10, F4).** O DEV desta VPS não tem DataStage,
+provedor de IA nem browser, então o smoke foi pela API com um **provedor
+OpenAI-compatível de mentira dentro do container** que lê o catálogo do próprio
+system prompt e responde com a receita do cenário — o servidor validou e
+calculou as prévias de verdade: (a) status com as 4 sugestões do catálogo;
+(c) os **10 cenários da semente** atendidos com as prévias corretas na
+referência 2026-03-15 (mês anterior 02-01/02-28, mês corrente 03-01/03-15,
+referência 03-15, D-1 03-14, semana anterior 03-02/03-08, trimestre anterior
+2025-10-01/2025-12-31, ano anterior 2025-01-01/2025-12-31, competência 202602,
+run_id, caminho fixo), todos com o aviso de ISX ausente (o job do DEV tem
+extração com erro) e sem o valor Encrypted do editor; (e) 3 pedidos fora do
+vocabulário (dia útil, tabela, feriados) → não atendidos com orientação,
+listados em Admin › Maestro › Pedidos com pipeline/job/motivo, um marcado
+tratado; pergunta sem proposta; (f) `etl_maestro_conversa` com 10 atendidos,
+3 não atendidos e 1 pergunta, **0 linhas com o segredo**, `proposta_json` em
+todos os atendidos (o log da API não foi inspecionado); (g) 503 distintos para
+desligado e sem provedor (F1); (l) resposta longa truncada (F1); a função da
+retenção rodou no worker com a conexão pymssql real (F3). Tudo pela API: os
+nomes do ISX, *Aplicar no editor* e salvar (c) não foram exercitados — o job do
+DEV não tem ISX válido e não há browser. **Pendentes de ambiente real:** b, d,
+i (browser), h (chave inválida num provedor real), j, k (gateway da Caixa e
+Anthropic com histórico), m (DAG agendada).
+
+**Diferença entre o desenho aprovado (§3) e o construído**, registrada no
+fechamento: `GET /maestro/status` devolve `{enabled, sugestoes}`; as rotas do
+Admin são `/maestro/admin/config|cenarios|cenarios/validar|cenarios/{id}|
+cenarios/{id}/excluir|pedidos|pedidos/{id}/tratar`; os 503 vêm com `detail`
+em texto ("Maestro desligado…", "…sem provedor de IA…", "…migration 110
+pendente…"), sem `code` — o front reconhece a 110 pelo texto; erro do provedor
+(chave inválida, 429, 402) chega ao chat como o `detail` do provedor, e só erro
+de configuração interna (500) vira o "temporariamente indisponível". As
+**sugestões de abertura** são o 1º exemplo dos **4 primeiros cenários ativos**
+(ordem de criação): um cenário novo com a semente intacta não aparece nas
+sugestões (o Maestro o conhece pelo catálogo) — backlog: escolher os sugeridos
+por uma flag ou ordem do admin. A retenção apaga também os pedidos não
+atendidos (tratados ou não) com mais de 180 dias.
 
 ## 8. Decisões tomadas (aprovação de 2026-09-10) e pendências
 - **Desenho aprovado** pelo usuário: catálogo de cenários (admin) + vocabulário,
