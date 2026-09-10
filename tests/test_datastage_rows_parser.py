@@ -30,6 +30,10 @@ sys.modules["airflow.models"].BaseOperator = type(
 sys.modules["airflow.exceptions"].AirflowException = type("AirflowException", (Exception,), {})
 
 _ROOT = Path(__file__).parent.parent
+# O operador importa `from utils import ds_params` (F2 dos parâmetros DataStage):
+# carregado por caminho ele não tem pacote, então `dags/` precisa estar no path
+# — sem isto o arquivo só coletava quando outro teste já tinha inserido o path.
+sys.path.insert(0, str(_ROOT / "dags"))
 _spec = importlib.util.spec_from_file_location(
     "datastage_operator_rows_test", _ROOT / "dags/utils/datastage_operator.py")
 _mod = importlib.util.module_from_spec(_spec)
