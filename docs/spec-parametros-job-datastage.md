@@ -1,5 +1,5 @@
 # Spec: Parâmetros de execução dos jobs DataStage — Orquestra
-Data: 2026-09-09 · Status: aprovada 2026-09-09 · em execução (F2) · F1 = PR #376 mergeada
+Data: 2026-09-09 · Status: aprovada 2026-09-09 · em execução (F3) · F1 = PR #376 · F2 = PR #377 mergeadas
 
 ## 1. Visão
 Hoje o Orquestra dispara todo job DataStage sem nenhum `-param`: o comando gerado é
@@ -127,8 +127,10 @@ Sustentação (lê no log exatamente o que foi enviado).
   param_source, param_offset_meses, param_ancora, param_offset_dias,
   param_formato}]}` e devolve `[{param_name, valor, descricao}]` ou os erros de
   validação por item. Não toca no banco.
-- `routers/execucoes.py` — os SELECTs de `etl_ds_job_log` (`:303`, `:331`) passam a
-  devolver `params_json` para o modal de detalhe.
+- `routers/datastage.py` — `GET /datastage/log` (o que o modal de detalhe da
+  execução consome) inclui `params_json` na projeção quando a coluna existe e o
+  devolve já parseado. (Os SELECTs de `execucoes.py` sobre `etl_ds_job_log` são
+  agregações de fila, não o detalhe — corrigido na F3.)
 - `routers/pipelines.py` — `POST /pipelines/register` aceita `parametros` (semântica
   de presença da chave) e o GET que hidrata o `PipelineFormModal` devolve `parametros`.
   `CAMPOS_QUE_AFETAM_DAG` **não muda**: parâmetro é lido em runtime, não entra na DAG.
@@ -450,8 +452,11 @@ Retenção: sem job de limpeza nesta spec (volume = nº de reruns com sobreposi�
   - `jobTypeFieldsErrors` no modo DataStage (regex escritas como literal `/…/`,
     nunca string com `\\d` — gotcha `gotcha-regex-escape-duplo`).
   - `Jobs.tsx:278`: envia `params` para datastage; hidratação dos campos novos.
-  - `FluxoEditor.tsx:201` / `PainelEtapa.tsx` / `EtapaNode.tsx`: campos novos e
-    badge de contagem no nó DataStage.
+  - `FluxoEditor.tsx:201` / `PainelEtapa.tsx`: campos novos hidratados e enviados
+    pela mesma conversão da lib. (A "badge de contagem no nó" prometida no
+    rascunho foi descartada na execução: `EtapaNode.tsx` não tem badge de
+    parâmetros para tipo nenhum — o storedproc nunca teve — e o painel já mostra a
+    contagem na seção.)
   - Coluna "Prévia" por linha, vinda de `POST /pipelines/jobs/params/preview` com
     debounce, e o campo "Simular com a referência" no cabeçalho da seção (padrão:
     hoje). A prévia mostra valor e descrição ("−1 mês → fim do mês"). Nenhum

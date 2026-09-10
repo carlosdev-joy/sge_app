@@ -107,8 +107,62 @@ interface DsLog {
   ds_end_time: string
   queued_seconds: number
   rows_out?: number | null
+  // F2/F3 dos parâmetros DataStage: o que FOI enviado no -param desta execução
+  // (a API já devolve o JSON parseado; Encrypted vem `***`). Null = execução
+  // anterior à feature ou etapa sem parâmetro.
+  params_json?: ParamEnviado[] | string | null
   created_at: string
   updated_at: string
+}
+
+export interface ParamEnviado {
+  name: string
+  valor: string
+  fonte: 'etapa' | 'pipeline' | 'rerun' | string
+  descricao: string
+  mascarado: boolean
+}
+
+// params_json pode chegar já parseado (API nova) ou como texto (API antiga /
+// leitura direta) — aceita os dois; inválido = nada a mostrar. (Não exportado:
+// a regra react-refresh/only-export-components conta cada export não-componente.)
+function parseParamsEnviados(raw: ParamEnviado[] | string | null | undefined): ParamEnviado[] {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v : []
+  } catch { return [] }
+}
+
+const FONTE_LABEL: Record<string, string> = { etapa: 'etapa', pipeline: 'pipeline', rerun: 'reexecução' }
+
+// Bloco "Parâmetros enviados" do log DataStage — o rastro do -param.
+export function ParametrosEnviados({ params }: { params: ParamEnviado[] }) {
+  if (!params.length) return null
+  return (
+    <div data-parametros-enviados>
+      <p className="text-xs text-dim font-medium mb-2">Parâmetros enviados ao DataStage</p>
+      <table className="w-full text-xs">
+        <thead><tr className="text-dim border-b border-edge">
+          <th className="text-left pb-1">Parâmetro</th>
+          <th className="text-left pb-1">Valor enviado</th>
+          <th className="text-left pb-1">Fonte</th>
+          <th className="text-left pb-1">Como foi calculado</th>
+        </tr></thead>
+        <tbody>
+          {params.map((p, i) => (
+            <tr key={i} className="border-b border-edge/40 align-top" data-param-enviado={p.name}>
+              <td className="py-1 font-mono">{p.name}</td>
+              <td className="py-1 font-mono text-ink" data-valor={p.valor}>{p.valor}</td>
+              <td className="py-1 text-dim">{FONTE_LABEL[p.fonte] ?? p.fonte}</td>
+              <td className="py-1 text-dim break-words">{p.descricao}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 export interface AirflowLogState {
@@ -298,6 +352,8 @@ export function DsLogModal({
               <div><span className="text-dim">Fila:</span> <span className="text-amber-400 text-xs">{durStr(log.queued_seconds)} em fila</span></div>
             )}
           </div>
+
+          <ParametrosEnviados params={parseParamsEnviados(log.params_json)} />
 
           {log.child_jobs?.length > 0 && (
             <div>
