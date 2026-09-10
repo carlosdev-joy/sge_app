@@ -1,8 +1,8 @@
 # ⚙️ Parâmetros de execução dos jobs DataStage — o `-param` chega ao DataStage
 
 **Compatibilidade:** Apache Airflow 2.x | SQL Server | IBM InfoSphere DataStage 11.7 (`dsjob -run -param` e `dsjob -lparams` via SSH, o mesmo acesso do operador de hoje)
-**Migrations:** **107** (`107_job_param_datastage.sql`, F1 — deploy.sh etapa 6c, responder **s**); 108 (F4) e 109 (F5) chegam nas próximas fases
-**Spec:** `docs/spec-parametros-job-datastage.md` (F1 = #376 · F2 = esta PR · F3–F6 a seguir)
+**Migrations:** **107** (`107_job_param_datastage.sql`, F1) e **108** (`108_pipeline_param.sql`, F4) — deploy.sh etapa 6c, responder **s**; 109 (F5) chega na próxima fase
+**Spec:** `docs/spec-parametros-job-datastage.md` (F1 = #376 · F2 = #377 · F3 = #378 · F4 = esta PR · F5–F6 a seguir)
 **Manual:** `docs/MANUAL_USUARIO.md` — seções entram na F6 (tela) — por enquanto este documento
 **Depende de:** `ORQUESTRA_CONN_KEY` no **worker do Airflow** (a mesma que o `orquestra-api` já usa nas conexões cifradas da 054) — só para parâmetros do tipo Encrypted
 
@@ -63,11 +63,23 @@ a linha `[DS] parâmetros:` no log da task, a coluna `params_json` de
 4. Monta `-param nome=valor` (quotado para o shell quando precisa) e dispara.
    O comando só vai para o log **mascarado** (`***` no Encrypted).
 
+## 🧩 Defaults no nível do pipeline (F4)
+
+Um Parameter Set vale para todos os jobs — e agora o **pipeline** guarda defaults
+com o mesmo vocabulário da etapa (Construção › Pipelines › passo Notificações /
+Execução, seção **Parâmetros DataStage do pipeline**). O operador aplica cada
+default **só à etapa cujo job declara o nome** (conferido no `dsjob -lparams`);
+job que não declara ignora, e o nome ignorado sai na linha `[DS] parâmetros:`.
+A etapa pode sobrepor pelo mesmo nome — o painel da etapa mostra
+"Defaults do pipeline: … · sobreposto pela etapa". Tabela nova
+`etl_pipeline_param` (migration **108**); sem ela, a seção não aparece e nada
+muda.
+
 ## 🚀 Deploy
 
 | Passo | O quê |
 |---|---|
-| 6c | Migration **107** → **s** (F1). Sem ela: nenhum parâmetro é enviado, com aviso no log da task |
+| 6c | Migrations **107** (F1) e **108** (F4) → **s**. Sem a 107: nenhum parâmetro é enviado, com aviso no log da task; sem a 108: sem defaults de pipeline, seção oculta |
 | `dags/` | `dags/utils/datastage_operator.py`, `dags/utils/ds_params.py` (novo) e `dags/etl_dag_factory.py` → **sim** para `dags/` |
 | worker | ⚠️ **Reiniciar o worker do Airflow** — ele cacheia `dags/utils/` (task verde com código antigo sem o restart) |
 | `.env` | `ORQUESTRA_CONN_KEY` no `x-airflow-common` (worker), igual à do `orquestra-api` — exigida só ao disparar etapa com parâmetro Encrypted |

@@ -170,6 +170,7 @@ export function PainelEtapa({ node, pipeline, sshConns, mssqlConns, onRename, on
             sshConns={sshConns}
             mssqlConns={mssqlConns}
             onMaximizar={onMaximizar}
+            pipeline={pipeline}
           />
         </div>
       </div>

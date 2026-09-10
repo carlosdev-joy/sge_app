@@ -20,6 +20,8 @@ from deps import (
 )
 from services.notify import add_notificacao
 from services.dag_reconcile import enqueue as enqueue_dag_pendente
+# Parâmetros DataStage do PIPELINE (F4): mesma validação/serialização da etapa.
+from routers.jobs import _preparar_params_ds, _serializar_param
 # Ports com paridade testada contra dags/ (o canônico): ODATE (F9) e o
 # predicado de liberação (F5/D29). services não importa routers — sem ciclo.
 from services import data_referencia as dref
@@ -1024,6 +1026,67 @@ def estado_dependencias(data_referencia: str | None = None,
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
 
 
+# ── Parâmetros DataStage do pipeline (migration 108, spec F4) ───────────────
+# Defaults que valem para toda etapa DataStage cujo job DECLARA o nome (o
+# operador confere no `dsjob -lparams`); a etapa sobrepõe por nome. Mesmo
+# vocabulário e mesma validação da etapa (routers.jobs._preparar_params_ds).
+_ERRO_SEM_108 = ("parâmetros DataStage do pipeline exigem a migration 108 "
+                 "(dbo.etl_pipeline_param) — aplique-a e tente de novo")
+_SQL_PIPELINE_PARAMS = (
+    "SELECT param_name, param_type, param_value, param_order, param_source, "
+    "param_offset_meses, param_ancora, param_offset_dias, param_formato "
+    "FROM dbo.etl_pipeline_param WHERE pipeline_name=? ORDER BY param_order")
+
+
+def _tem_tabela_pipeline_param(cur) -> bool:
+    cur.execute(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
+        "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline_param'")
+    return bool(cur.fetchone()[0])
+
+
+def _tokens_encrypted_pipeline(cur, pipeline_name: str) -> dict[str, str]:
+    """param_name → token Fernet gravado (Encrypted) — o que o `***` preserva."""
+    try:
+        cur.execute(
+            "SELECT param_name, param_value FROM dbo.etl_pipeline_param "
+            "WHERE pipeline_name=? AND param_type='Encrypted'", (pipeline_name,))
+        return {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    except Exception:
+        return {}
+
+
+def _gravar_parametros_pipeline(cur, pipeline_name: str, linhas: list[dict]) -> None:
+    """Replace-all (a chave `parametros` presente é o gesto pedido)."""
+    cur.execute("DELETE FROM dbo.etl_pipeline_param WHERE pipeline_name=?", (pipeline_name,))
+    for p in linhas:
+        cur.execute(
+            "INSERT INTO dbo.etl_pipeline_param "
+            "(pipeline_name, param_name, param_type, param_value, param_source, "
+            "param_offset_meses, param_ancora, param_offset_dias, param_formato, param_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (pipeline_name, p["param_name"], p["param_type"], p["param_value"], p["param_source"],
+             p["param_offset_meses"], p["param_ancora"], p["param_offset_dias"], p["param_formato"],
+             p["param_order"]))
+
+
+@router.get("/pipelines/{pipeline_name}/parametros", tags=["pipelines"])
+def get_pipeline_parametros(pipeline_name: str, _auth: dict = Depends(get_current_user)):
+    """Defaults DataStage do pipeline, com Encrypted mascarado (`***` + tem_valor).
+    Sem a migration 108: lista vazia e `disponivel: false` (a tela esconde a seção)."""
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if not _tem_tabela_pipeline_param(cur):
+            cur.close(); conn.close()
+            return {"parametros": [], "disponivel": False}
+        cur.execute(_SQL_PIPELINE_PARAMS, (pipeline_name,))
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return {"parametros": [_serializar_param(r, True) for r in rows], "disponivel": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
 @router.post("/pipelines/register", tags=["pipelines"])
 async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Cria ou atualiza um pipeline (etl_pipeline_register)."""
@@ -1137,6 +1200,30 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         old_record = _read_pipeline_record(cur, pipeline)
         is_new = old_record is None
 
+        # Parâmetros DataStage do pipeline (F4) — PATCH-parcial como as demais
+        # chaves: só a PRESENÇA de `parametros` autoriza o replace-all (o body
+        # do InactivateModal não a envia). Validados aqui, ANTES de qualquer
+        # gravação; Encrypted `***` preserva o token gravado.
+        tem_parametros = "parametros" in body
+        parametros_ds: list = []
+        if tem_parametros:
+            raw_parametros = body.get("parametros")
+            if raw_parametros is None:
+                raw_parametros = []
+            if not isinstance(raw_parametros, list):
+                raise HTTPException(status_code=422, detail="parametros deve ser uma lista")
+            tem_108 = _tem_tabela_pipeline_param(cur)
+            if raw_parametros and not tem_108:
+                raise HTTPException(status_code=422, detail=_ERRO_SEM_108)
+            if raw_parametros:
+                parametros_ds, erros_p = _preparar_params_ds(
+                    raw_parametros, _tokens_encrypted_pipeline(cur, pipeline))
+                if erros_p:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Parâmetros DataStage do pipeline: " + "; ".join(erros_p))
+            tem_parametros = tem_108   # sem a tabela e lista vazia: nada a gravar
+
         # 'monthly_days_times' com a chave AUSENTE (body parcial — achado 3):
         # vale o dias_horarios_mes EFETIVO, o já vigente no banco. Sem valor
         # vigente (pipeline novo ou nunca configurado), recusa como antes.
@@ -1156,6 +1243,10 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
              schedule_dom, active, envia_msg_inicio, envia_msg_fim, envia_msg_erro,
              dag_criada, project, domain, tags),
         )
+        # F4 — depois do upsert (o pipeline novo já existe para a FK), na
+        # mesma transação: replace-all dos defaults DataStage.
+        if tem_parametros:
+            _gravar_parametros_pipeline(cur, pipeline, parametros_ds)
         if tem_depends_on:
             # Chave presente: sincroniza tabela 067 E espelho CSV para o valor
             # (vazio = remoção explícita). O replace-all sobrevive AQUI porque

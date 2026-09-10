@@ -481,6 +481,7 @@ function JobFormModal({
           <JobTypeFields
             value={typeFieldsValue}
             onChange={patchTypeFields}
+            pipeline={pipeline}
             sshConns={sshConns}
             mssqlConns={mssqlConns}
           />

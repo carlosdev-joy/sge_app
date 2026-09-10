@@ -1,5 +1,5 @@
 # Spec: Parâmetros de execução dos jobs DataStage — Orquestra
-Data: 2026-09-09 · Status: aprovada 2026-09-09 · em execução (F3) · F1 = PR #376 · F2 = PR #377 mergeadas
+Data: 2026-09-09 · Status: aprovada 2026-09-09 · em execução (F4) · F1 = PR #376 · F2 = PR #377 · F3 = PR #378 mergeadas
 
 ## 1. Visão
 Hoje o Orquestra dispara todo job DataStage sem nenhum `-param`: o comando gerado é
