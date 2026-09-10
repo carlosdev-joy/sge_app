@@ -118,6 +118,24 @@ Tudo do Consulta, mais:
 2. Abra o detalhe, analise o log do job que falhou.
 3. Use **Reexecutar** para disparar nova execução.
 
+**Reexecutar a partir de uma etapa, trocando um parâmetro (Fluxos › painel da
+etapa › Reexecutar a partir daqui).** Quando as etapas DataStage que vão rodar
+de novo têm parâmetros (§3.10), o modal mostra a seção **Parâmetros desta
+reexecução**: para cada parâmetro, o **valor que iria ao DataStage** na data de
+referência da corrida (com o cálculo por extenso, ex.: *referência 2026-09-09 →
+-1 mês → fim do mês → 2026-08-31*) e um campo **Novo valor (só agora)**.
+- O que você digitar vale **só nesta reexecução**; a corrida agendada seguinte
+  volta ao cadastro. Deixe em branco para manter.
+- Parâmetro **Encrypted** não se sobrepõe (aparece `***`, sem campo).
+- Um default do pipeline aparece com "(se o job declarar)": se o job não
+  declarar esse nome, a etapa falha antes de disparar, listando o que o job
+  declara.
+- Se uma reexecução anterior desta mesma corrida já tinha sobreposto algo, o
+  modal avisa: **esses valores são descartados** pela nova reexecução — digite de
+  novo o que quiser manter.
+- O que foi enviado fica no detalhe da execução (bloco **Parâmetros enviados ao
+  DataStage**, fonte *reexecução*) e no log da task.
+
 ### 2.3 Alertas de SLA (Teams)
 O monitor de SLA roda a cada 5 minutos e envia card no canal do Teams quando:
 - **RISCO**: execução já consumiu ≥ 80% do SLA definido.
@@ -197,13 +215,18 @@ Aba **Pipelines → + Novo pipeline**. O wizard tem etapas:
    - Opções: **somente dias úteis**, **calendário** (feriados) e **dependência de
      outros pipelines** (§3.4) — esta última substitui o horário: o pipeline
      passa a ser disparado quando os antecessores concluem.
-4. **Execução**: retries, retry delay, max active runs, pool.
+4. **Execução**: retries, retry delay, max active runs, pool — e **Parâmetros
+   DataStage do pipeline** (opcional): defaults com o mesmo vocabulário da etapa
+   (§3.10), enviados a **toda etapa DataStage cujo job declarar o nome**; job que
+   não declara ignora (o nome sai como *ignorado* no log da task). A etapa pode
+   sobrepor pelo mesmo nome. Não exige republicar a DAG: o operador lê em runtime.
 5. **Jobs**: adicione os jobs com **ordem de execução**. Jobs com a **mesma ordem executam em paralelo**; a ordem seguinte só inicia quando todos da anterior terminam. Na edição, os jobs já cadastrados são carregados automaticamente. Remover uma linha aqui **não exclui** o job do banco — exclusão definitiva só na tela Jobs.
 6. **Lineage** (opcional aqui; obrigatório se cadastrar pela tela Jobs).
 7. **Revisão** → salvar. Depois clique em **Gerar DAG** para publicar no Airflow.
 
 ### 3.2 Gerenciar jobs (aba ⚙ Jobs)
 - Cadastro/edição completa: tipo (`datastage`, `shell`, `python`, `storedproc`), comando, conexão SSH.
+- **Parâmetros do job** (etapa `datastage`): o que vai no `-param` do DataStage a cada execução — §3.10. O mesmo editor existe no painel da etapa em **Fluxos**.
 - **Reordenar** por arrastar-e-soltar.
 - **Lineage obrigatório**: pelo menos 1 origem e 1 destino por job.
 - **Extrair lineage do DSX**: para jobs DataStage, importe o `.dsx` e o sistema extrai origens/destinos automaticamente.
@@ -640,6 +663,79 @@ passa a mostrar o lineage ISX quando ele existe para o job (senão, o que havia)
 
 ---
 
+### 3.10 Parâmetros dos jobs DataStage (o `-param` a cada execução)
+Até esta versão o Orquestra disparava o job DataStage **sem nenhum parâmetro**: o
+job rodava com os defaults do design e do Parameter Set. Agora a etapa `datastage`
+(tela **Etapas**, modal da etapa; ou **Fluxos**, painel do nó) tem a seção
+**Parâmetros do job (opcional)**, e o operador do Orquestra envia cada um como
+`-param nome=valor` no `dsjob -run`.
+
+**Cada parâmetro tem:**
+- **Nome** — exatamente como o job declara (o DataStage distingue maiúsculas de
+  minúsculas). Membro de Parameter Set: `PSet.Param`.
+- **Tipo** — o do DataStage: String, Integer, Float, Date, Time, Timestamp,
+  Pathname (caminho absoluto), List ou **Encrypted**.
+- **Origem** — de onde vem o valor a cada execução:
+  - **Valor fixo**: o que você digitar.
+  - **Data de referência**: o ODATE da corrida (a mesma data que rege a malha e
+    as dependências, §1.3). É a origem recomendada para datas.
+  - **Data lógica (Airflow)** e **Data da execução** (relógio do disparo).
+  - **Run id da corrida**: o identificador da corrida no Airflow (rastreabilidade).
+- **Cálculo** (só nas origens de data), sempre nesta ordem: **meses → âncora →
+  dias → formato**. O deslocamento em meses trunca o dia ao último válido
+  (31/03 −1 mês = 28/02); a âncora leva ao início/fim do mês, trimestre, ano ou
+  semana (seg–dom); o formato é o do `strftime` (`%Y-%m-%d`, `%Y%m%d`,
+  `%d/%m/%Y`…).
+
+| Caso | Meses | Âncora | Dias | Formato | Com referência 2026-09-09 |
+|------|------:|--------|-----:|---------|---------------------------|
+| Primeiro dia do mês anterior | −1 | início do mês | 0 | `%Y-%m-%d` | 2026-08-01 |
+| Último dia do mês anterior | −1 | fim do mês | 0 | `%Y-%m-%d` | 2026-08-31 |
+| D−1 compacto | 0 | — | −1 | `%Y%m%d` | 20260908 |
+| Ano-mês de referência | 0 | — | 0 | `%Y%m` | 202609 |
+
+A coluna **Prévia** mostra o valor que iria ao DataStage com a data de
+**Simular com a referência** (padrão: hoje) — use 31/03 ou 29/02 para conferir
+bordas antes de salvar. A prévia é calculada pelo servidor, pela mesma rotina
+que roda no disparo.
+
+**Importar do DataStage.** Se o job já tem lineage ISX extraído (§3.9), o botão
+lê os parâmetros que o job **declara** e acrescenta os que faltam na lista, com
+tipo e default como valor fixo — confira valor e origem antes de salvar. Um
+Parameter Set aparece só como conjunto no ISX: cadastre os membros como
+`PSet.Param`. Nomes fora da regra do Orquestra (ex.: variáveis `$APT_…` que o
+job declara como parâmetro) são ignorados, e o aviso os lista. Sem lineage
+extraído, o botão orienta a extrair primeiro; se a última extração falhou, ele
+avisa e não importa nada (reextraia antes). O botão aparece na etapa já salva.
+
+**Encrypted.** O valor é cifrado no banco (a mesma chave das conexões) e nunca
+aparece em log ou tela; o campo mostra *mantido — digite para trocar*. Vazio com
+valor gravado = manter. ⚠️ Use Encrypted no Orquestra **só para parâmetro
+Encrypted no job**: o DataStage grava os parâmetros recebidos no log do job e só
+mascara os que forem Encrypted no Designer — um Encrypted enviado a um parâmetro
+String do job aparece em claro no `dsjob -logsum`.
+
+**Defaults do pipeline.** Cadastrados no wizard do pipeline (§3.1, passo
+Execução), valem para toda etapa DataStage cujo job declarar o nome; a etapa
+sobrepõe pelo mesmo nome. O painel da etapa mostra *Defaults do pipeline: … ·
+sobreposto pela etapa*.
+
+**O que acontece no disparo.** Com parâmetro cadastrado (na etapa ou no
+pipeline), o operador consulta `dsjob -lparams` e:
+- parâmetro **da etapa** que o job não declara → a etapa **falha antes de
+  disparar**, listando o que o job declara (confira a grafia);
+- default **do pipeline** que o job não declara → ignorado e listado no log;
+- data de referência indisponível (corrida sem registro) → falha antes de
+  disparar, nunca "a data de hoje";
+- sem banco → falha antes de disparar, nunca "sem os parâmetros".
+Sem parâmetro cadastrado, o comando é exatamente o de sempre.
+
+**Rastro.** O que foi enviado fica em três lugares, sempre com o mesmo texto: a
+linha `[DS] parâmetros:` no log da task (nome=valor, fonte e o cálculo por
+extenso), o bloco **Parâmetros enviados ao DataStage** no detalhe da execução
+(Logs › log DataStage) e a coluna `params_json` de `etl_ds_job_log`. Encrypted
+aparece sempre como `***`.
+
 ## 4. Perfil Administrador
 
 Tudo dos demais, mais a aba **Admin** (visível apenas para administradores):
@@ -675,6 +771,11 @@ docker compose restart ui-nginx
 Lembretes:
 - Segredos só em `/opt/airflow/.env` (nunca no Git).
 - Dependências novas chegam via Git (`wheels/`), nunca via pip/internet no servidor.
+- **Parâmetros dos jobs DataStage (§3.10)**: migrations **107, 108 e 109** na
+  etapa 6c; `dags/utils/` mudou → **reiniciar o worker** do Airflow (ele cacheia
+  `dags/utils/`); `ORQUESTRA_CONN_KEY` também no **worker** (parâmetro Encrypted é
+  decifrado no disparo). Roteiro e conferência pós-deploy em
+  `docs/release-notes/parametros-datastage.md`.
 
 ### 4.7 Utilitários (Admin → Sistema → Utilitários)
 É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança
@@ -832,7 +933,15 @@ disparo genérico de DAGs da API também exige admin para esta DAG.
 
 **O pipeline não rodou no horário. Por quê?** Verifique, nesta ordem: (1) pipeline ativo? (2) data está num calendário de feriado ou blackout? (3) tipo "horários específicos": o horário consta na lista? (4) DAG gerado/atualizado após a última edição? (5) DAG despausado no Airflow?
 
-**Editei o pipeline e nada mudou.** Edições de agendamento exigem **Gerar DAG** novamente.
+**Editei o pipeline e nada mudou.** Edições de agendamento exigem **Gerar DAG** novamente. (Parâmetros DataStage — da etapa ou do pipeline — **não** exigem: o operador os lê a cada disparo.)
+
+**A etapa falhou antes de disparar: "o job NÃO declara o(s) parâmetro(s)…".** O nome cadastrado não existe no job, ou está com outra caixa (`pdata` ≠ `pData`) — a mensagem lista o que o job declara. Corrija na etapa (§3.10) ou use **Importar do DataStage** para trazer os nomes certos.
+
+**A etapa falhou com "data de referência indisponível".** A etapa tem parâmetro com origem *Data de referência* e a corrida não tem registro (DAG publicada antes da migration 067, ou disparo fora do fluxo normal). Republique a DAG; para um disparo avulso, informe `data_referencia` no conf.
+
+**Salvei um parâmetro e a API respondeu "exigem a migration 107/108/109".** O banco desse ambiente ainda não recebeu a migration — rode a etapa 6c do deploy (§4.6).
+
+**O valor Encrypted apareceu no log do DataStage.** O DataStage só mascara parâmetros Encrypted **no job**; um Encrypted do Orquestra enviado a um parâmetro String do job sai em claro no `dsjob -logsum`. Troque o tipo do parâmetro no Designer ou não use Encrypted ali (§3.10).
 
 **Jobs em paralelo não rodam juntos.** Confirme que têm exatamente a mesma ordem de execução e que há workers Celery disponíveis.
 

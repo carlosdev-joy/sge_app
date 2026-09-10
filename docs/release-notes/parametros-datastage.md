@@ -2,8 +2,8 @@
 
 **Compatibilidade:** Apache Airflow 2.x | SQL Server | IBM InfoSphere DataStage 11.7 (`dsjob -run -param` e `dsjob -lparams` via SSH, o mesmo acesso do operador de hoje)
 **Migrations:** **107** (`107_job_param_datastage.sql`, F1), **108** (`108_pipeline_param.sql`, F4) e **109** (`109_job_param_override.sql`, F5) — deploy.sh etapa 6c, responder **s**
-**Spec:** `docs/spec-parametros-job-datastage.md` (F1 = #376 · F2 = #377 · F3 = #378 · F4 = #379 · F5 = esta PR · F6 a seguir)
-**Manual:** `docs/MANUAL_USUARIO.md` — seções entram na F6 (tela) — por enquanto este documento
+**Spec:** `docs/spec-parametros-job-datastage.md` (F1 = #376 · F2 = #377 · F3 = #378 · F4 = #379 · F5 = #380 · F6 = esta PR)
+**Manual:** `docs/MANUAL_USUARIO.md` §3.10 (parâmetros: origem, cálculo, importar do DataStage, Encrypted, defaults, rastro), §3.1 (defaults no wizard), §3.2 (Etapas), §2.2 (sobreposição na reexecução), §4.6 (deploy) e §5 (FAQ)
 **Depende de:** `ORQUESTRA_CONN_KEY` no **worker do Airflow** (a mesma que o `orquestra-api` já usa nas conexões cifradas da 054) — só para parâmetros do tipo Encrypted
 
 ---
@@ -87,6 +87,18 @@ em `etl_job_param_override` (migration **109**) **antes** do clear e desfeita se
 o Airflow recusar; o operador carimba `consumido_em` quando a usa, e ela
 aparece no `[DS] parâmetros:` com fonte `rerun` e no `params_json`. A auditoria
 do rerun registra os nomes sobrepostos (nunca valores).
+
+## 📥 Importar do DataStage (F6)
+
+No editor de parâmetros da etapa, o botão **Importar do DataStage** lê os
+parâmetros que o job **declara** no lineage ISX já extraído (Governança › Job
+DataStage) e acrescenta os que faltam — nome, tipo do DataStage e o default como
+valor fixo (Encrypted vem sem valor; o default ofuscado nunca vira valor). Um
+Parameter Set aparece no ISX só como conjunto: os membros são cadastrados como
+`PSet.Param`; nomes fora da régua do Orquestra (`$APT_…`) são ignorados com
+aviso. Sem lineage extraído, o botão orienta a extrair primeiro; extração com
+erro → aviso para reextrair, sem importar. Nada é salvo até o usuário salvar a
+etapa.
 
 ## 🚀 Deploy
 

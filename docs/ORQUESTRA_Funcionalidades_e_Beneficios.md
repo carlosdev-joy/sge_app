@@ -89,6 +89,7 @@ Tudo do Operador, mais:
 
 #### Gerenciamento de jobs (aba Jobs)
 - Cadastro e edição completa: tipo, comando/job DataStage, conexão SSH, parâmetros.
+- **Parâmetros de execução do job DataStage** (`-param`): valor fixo ou calculado a partir da data de referência (meses → âncora → dias → formato — ex.: primeiro e último dia do mês anterior), Encrypted cifrado, defaults no pipeline com sobreposição por etapa, sobreposição só na reexecução, prévia calculada pelo servidor e rastro do valor enviado no detalhe da execução.
 - Reordenar por arrastar-e-soltar.
 - Diagrama de execução: visualize a ordem e paralelismo dos jobs antes de salvar.
 - Lineage obrigatório por job.

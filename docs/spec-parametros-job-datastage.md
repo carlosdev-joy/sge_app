@@ -1,5 +1,5 @@
 # Spec: Parâmetros de execução dos jobs DataStage — Orquestra
-Data: 2026-09-09 · Status: aprovada 2026-09-09 · em execução (F5) · F1 = PR #376 · F2 = PR #377 · F3 = PR #378 · F4 = PR #379 mergeadas
+Data: 2026-09-09 · Status: concluída (F6 = a PR que fecha esta spec, 2026-09-10) · F1 = PR #376 · F2 = PR #377 · F3 = PR #378 · F4 = PR #379 · F5 = PR #380 · migrations 107–109 aplicadas no DEV em 2026-09-10
 
 ## 1. Visão
 Hoje o Orquestra dispara todo job DataStage sem nenhum `-param`: o comando gerado é
@@ -555,9 +555,13 @@ Retenção: sem job de limpeza nesta spec (volume = nº de reruns com sobreposi�
 - Inclui:
   - `JobTypeFields.tsx` modo DataStage: botão que chama `GET /lineage/isx/job`
     (`api/routers/lineage_isx.py:225`) e adiciona **só os nomes ausentes** com nome,
-    tipo (mapa `extendedType`/`typeCode` → tipo DataStage; desconhecido → String),
-    default como valor fixo (default `***` do parser → Encrypted sem valor). Sem ISX
-    extraído → toast orientando a aba Governança › Job DataStage (§3.9 do manual).
+    tipo (mapa `extendedType`/`typeCode` → tipo DataStage; `Stringlist` → List;
+    desconhecido → String), default como valor fixo — Encrypted vem sem valor e o
+    default `***` (mascarado pelo parser por nome/tipo sensível) vira valor vazio
+    **mantendo o tipo** do ISX; um `Parameterset` é só avisado (cadastre
+    `PSet.Param`); nome fora da régua (`$APT_…`) é ignorado com aviso; extração
+    com `status='erro'` → aviso para reextrair, sem importar. Sem ISX extraído
+    (404) → toast orientando a aba Governança › Job DataStage (§3.9 do manual).
   - `docs/MANUAL_USUARIO.md`: §3.2 (Etapas) e §3.1 (wizard) ganham os parâmetros;
     §2 (rerun) ganha a sobreposição; tabela de erros com "parâmetro não declarado".
   - `docs/ORQUESTRA_Funcionalidades_e_Beneficios.md:91`: a frase "parâmetros" passa
@@ -593,6 +597,23 @@ Retenção: sem job de limpeza nesta spec (volume = nº de reruns com sobreposi�
 | 13 | NVARCHAR conta UTF-16 (`gotcha-nvarchar-utf16`) em `criado_por`/nomes | Truncamento silencioso | Colunas com folga; valores de parâmetro em NVARCHAR(MAX) |
 
 ## 7. Smoke pós-deploy (ambiente real, na ordem)
+
+> **Estado em 2026-09-10 (F6):** o DEV desta VPS não tem DataStage — só o
+> `istool`/API REST de amostra — então os itens que exigem `dsjob` (a, b, c,
+> c2, d, e, f, g, h, i, j) só rodam em homologação/produção. O que foi
+> executado no DEV: migrations 106–109 aplicadas pelo `migrate.py` e
+> reexecutadas (idempotência real), colunas/CHECKs/colação conferidos, API
+> reconstruída com o código da spec e os endpoints exercitados (prévia do
+> cálculo, parâmetros da etapa e do pipeline, GET mascarado). O item (k) foi
+> exercitado só nas metades "sem ISX → orientação", "extração falhou →
+> aviso" e "conjunto / nome fora da régua → aviso": o único ISX `ok` do DEV é
+> a amostra sintética (declara um Parameter Set e um `$APT_…`), então a
+> inserção de linhas com tipo/default reais depende de um `.isx` de
+> produção. Achado lateral, pré-existente e fora desta spec:
+> `GET /pipelines/jobs/{p}/{j}` responde 500 no DEV porque o banco de lá não
+> tem `etl_pipeline_job.active` (o SELECT vem da main; produção tem a coluna)
+> — o modal de Etapas de uma etapa existente não carrega no DEV. O item (l)
+> vale para o deploy de produção.
 a) Etapa DataStage **sem** parâmetro, `verbose_log` ligado: rodar e conferir no log da task a linha `[DS] comando:` idêntica à de antes (sem `-param`, sem `-lparams` no log).
 b) Cadastrar em uma etapa `pTeste` String fixo `orquestra` (job que declara `pTeste`): rodar; log mostra `[DS] parâmetros: pTeste=orquestra`; `dsjob -logsum` no Console DataStage mostra `pTeste = orquestra` na entrada "Starting Job".
 c) Trocar `pTeste` para origem Data de referência, formato `%Y%m%d`, offset −1: rodar; valor no log = ODATE da corrida − 1 dia (conferir com a coluna `data_referencia` de `etl_pipeline_execucao` do run).
