@@ -69,8 +69,10 @@ precisar ler o §3.10 do manual.
   (`aplicarProposta`: substitui pelo nome exato, mantém as demais) e as mensagens
   fixas (boas-vindas, "procure o administrador"). Bancada em
   `tests/js/ds_params_harness.cjs` (mesma infra: sucrase + minireact).
-- Markdown da resposta com o `renderMarkdown` de `lib/markdown.ts` (o mesmo do
-  sino de notificações) — não importa nada de `caixa/`.
+- Markdown da resposta desenhado por blocos com o **parser puro**
+  `parseMarkdown` de `caixa/lib/markdown.ts` (o mesmo dos assistentes do Caixa,
+  sem HTML por string — o texto vem de um LLM); só o parser é reusado, nenhum
+  componente da seção Caixa.
 - `JobTypeFields.tsx`: recebe `pipeline`/`jobName` (já recebe desde a F6) e passa
   ao `MaestroChat` junto com `value.params`, `defaultsPipeline` e um
   `onAplicar(params)` que faz `onChange({ params })` lendo a lista atual via
