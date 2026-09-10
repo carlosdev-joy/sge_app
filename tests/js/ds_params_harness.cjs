@@ -21,7 +21,8 @@ const { transform } = require(path.join(UI, 'node_modules', 'sucrase'))
 const mini = require(path.join(__dirname, 'minireact.cjs'))
 
 const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/JobTypeFields.tsx',
-                  'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx']
+                  'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx',
+                  'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -81,6 +82,11 @@ module.exports = { jsx, jsxs: jsx, jsxDEV: jsx, Fragment: mini.FRAGMENT }
 `
   escrever('react', 'jsx-runtime.js', runtime)
   escrever('react', 'jsx-dev-runtime.js', runtime)
+  // react-dom: o MaestroChat leva o painel ao body por portal. O minireact não
+  // tem portal (de propósito); aqui o portal rende NO LUGAR — o que a bancada
+  // afirma é o conteúdo do painel, não onde ele mora no DOM.
+  escrever('react-dom', 'package.json', '{"name":"react-dom","main":"index.js"}')
+  escrever('react-dom', 'index.js', 'module.exports = { createPortal: (el) => el }; module.exports.default = module.exports')
   escrever('lucide-react', 'package.json', '{"name":"lucide-react","main":"index.js"}')
   escrever('lucide-react', 'index.js', `
 module.exports = new Proxy({}, { get: (_, nome) => {
@@ -119,6 +125,9 @@ const { JobTypeFields, jobTypeFieldsErrors } = require(path.join(tmp, 'component
 const { ParametrosPipelineSecao } = require(path.join(tmp, 'components/pipelines/ParametrosPipeline.js'))
 const R = Object.assign({}, require(path.join(tmp, 'lib/rerunParams.js')),
                         require(path.join(tmp, 'components/etapas/ParametrosRerun.js')))
+const M = require(path.join(tmp, 'lib/maestro.js'))
+const { MaestroPainel } = require(path.join(tmp, 'components/etapas/MaestroPainel.js'))
+const { MaestroChat } = require(path.join(tmp, 'components/etapas/MaestroChat.js'))
 
 const el = (tipo, props) => mini.criar(tipo, props)
 const porAttr = (tela, attr) => tela.achar(n => n.props && n.props[attr] !== undefined)
@@ -332,6 +341,124 @@ function tela(params, previa, extra, jobName) {
     vazio: mini.montar(el(R.ParametrosRerun, { parametros: [], valores: {}, onChange: () => {} })).texto,
     indisponiveis: porAttr(mini.montar(el(R.ParametrosRerun, { parametros: [], valores: {}, onChange: () => {}, indisponiveis: true })),
                            'data-parametros-rerun').map(n => n.props['data-parametros-rerun']),
+  }
+}
+
+// ── 7. Maestro (spec docs/spec-maestro-parametros.md, F2) ───────────────────
+{
+  const editor = [
+    { id: 'a', param_name: 'pSenha', param_type: 'Encrypted', param_source: 'fixo', param_value: 'segredo!', tem_valor: true },
+    { id: 'b', param_name: 'pAmb', param_type: 'String', param_source: 'fixo', param_value: 'PRD' },
+    { id: 'c', param_name: 'pDataFim', param_type: 'Date', param_source: 'data_referencia', param_value: '',
+      param_offset_meses: '-1', param_ancora: 'fim_mes', param_offset_dias: '', param_formato: '' },
+    { id: 'd', param_name: '  ', param_type: 'String', param_source: 'fixo', param_value: 'x' },
+  ]
+  const propostaApi = [
+    { param_name: 'pDataIni', param_type: 'Date', param_source: 'data_referencia', param_value: null,
+      param_offset_meses: -1, param_ancora: 'inicio_mes', param_offset_dias: 0, param_formato: '%Y-%m-%d' },
+    { param_name: 'pDataFim', param_type: 'Date', param_source: 'data_referencia', param_value: null,
+      param_offset_meses: -1, param_ancora: 'fim_mes', param_offset_dias: 0, param_formato: '%Y-%m-%d' },
+    { param_name: 'pSenha', param_type: 'Encrypted', param_source: 'fixo', param_value: '',
+      param_offset_meses: null, param_ancora: null, param_offset_dias: null, param_formato: null, tem_valor: false },
+  ]
+  const novos = M.propostaParaEditor(propostaApi)
+  const aplicado = M.aplicarProposta(editor, novos)
+  // Encrypted sobre Encrypted com token GRAVADO (tela recém-carregada): o
+  // "manter" sobrevive; e aplicar de novo com o mesmo nome não repete id.
+  const aplicadoGravado = M.aplicarProposta(
+    [{ id: 'g', param_name: 'pSenha', param_type: 'Encrypted', param_source: 'fixo', param_value: '', tem_valor: true }],
+    M.propostaParaEditor(propostaApi))
+  const idsDuasVezes = [...M.propostaParaEditor(propostaApi), ...M.propostaParaEditor(propostaApi)].map(p => p.id)
+  const mensagens = [
+    M.mensagemDeBoasVindas(),
+    { id: 1, papel: 'user', texto: 'mensal do mês anterior' },
+    { id: 2, papel: 'assistant', texto: 'erro do provedor', erro: true },
+    { id: 3, papel: 'assistant', texto: 'Entendi. **pDataIni** e **pDataFim**.', resultado: {
+      status: 'atendido', cenario: 'mensal_anterior', motivo: null, proposta: { params: propostaApi },
+      previa: [{ param_name: 'pDataIni', valor: '2026-02-01', descricao: 'referência 2026-03-15 → -1 mês → início do mês → 2026-02-01' },
+               { param_name: 'pDataFim', valor: '2026-02-28', descricao: 'd2' },
+               { param_name: 'pSenha', valor: '***', descricao: 'fixo (Encrypted — nunca exibido)' }],
+      avisos: ["o job não declara 'pDataFim' segundo o lineage ISX"], orientacao: null, referencia: '2026-03-15' } },
+    { id: 4, papel: 'user', texto: 'e o último dia útil?' },
+    { id: 5, papel: 'assistant', texto: 'Isso eu não atendo.', resultado: {
+      status: 'nao_atendido', cenario: null, motivo: 'dia útil exige calendário', proposta: null, previa: null,
+      avisos: [], orientacao: 'Procure o administrador do Orquestra.', referencia: '2026-03-15' } },
+  ]
+  const painelProps = (extra) => Object.assign({
+    mensagens, carregando: false, sugestoes: ['carga mensal do mês anterior', 'D-1'], entrada: 'oi', onEntrada() {},
+    onEnviar() {}, onSugestao() {}, onAplicar() {}, onFechar() {}, onNovaConversa() {}, historico: null,
+    onHistorico() {}, onAbrirConversa() {}, referencia: '2026-06-10',   // o editor já mudou; a prévia foi com 2026-03-15
+  }, extra || {})
+  const painel = mini.montar(el(MaestroPainel, painelProps()))
+  const aplicadaTela = mini.montar(el(MaestroPainel, painelProps({ mensagens: [Object.assign({}, mensagens[3], { aplicada: true })] })))
+  const soBoasVindas = mini.montar(el(MaestroPainel, painelProps({ mensagens: [M.mensagemDeBoasVindas()] })))
+  const pensando = mini.montar(el(MaestroPainel, painelProps({ carregando: true, mensagens: [M.mensagemDeBoasVindas()] })))
+  const comHistorico = mini.montar(el(MaestroPainel, painelProps({ historico: [
+    { conversa_id: 'c1', iniciado_em: '2026-09-10 10:00:00', pipeline_name: 'P', job_name: 'J',
+      rodadas: [{ mensagem: 'antiga', resposta: 'r', status: 'atendido' }] }] })))
+
+  // O botão no JobTypeFields: só datastage + backend dizendo enabled.
+  const status = { enabled: true, sugestoes: ['carga mensal do mês anterior'] }
+  const comMaestro = tela([], null, { 'maestro-status': status, __pipeline: 'PIPE_VIDA' }, 'SeqCarga')
+  const desligado = tela([], null, { 'maestro-status': { enabled: false, sugestoes: [] }, __pipeline: 'PIPE_VIDA' }, 'SeqCarga')
+  const semJobComMaestro = tela([], null, { 'maestro-status': status, __pipeline: 'PIPE_VIDA' })
+  global.__q = { 'maestro-status': status }
+  const storedprocComStatus = mini.montar(el(JobTypeFields, { value: { job_type: 'storedproc', job_command: 'dbo.p', ssh_conn_id: '',
+    verbose_log: false, mssql_conn_id: '', mssql_database: '', params: [] }, onChange: () => {}, sshConns: [], mssqlConns: [] }))
+  // Abrir o chat pelo botão: o painel (portal → inline na bancada) aparece.
+  // O MaestroChat só monta o portal com `document` presente (guarda contra
+  // ambiente sem DOM): um `document.body` mínimo faz o papel do browser.
+  global.document = { body: {} }
+  const chat = mini.montar(el(MaestroChat, { pipeline: 'PIPE_VIDA', jobName: 'SeqCarga', params: editor, referencia: '2026-03-15',
+    sugestoes: ['x'], onAplicar() {} }))
+  const antes = porAttr(chat, 'data-maestro-painel').length
+  chat.clicar(porAttr(chat, 'data-maestro-botao')[0])
+  const depois = porAttr(chat, 'data-maestro-painel').length
+  delete global.document
+
+  saida.maestro = {
+    contexto: M.contextoDoEditor('PIPE_VIDA', ' SeqCarga ', editor, '2026-03-15'),
+    contextoSemJob: M.contextoDoEditor(undefined, '', [], '2026-03-15'),
+    historico: M.historicoParaEnvio(mensagens),
+    historicoCorte: M.historicoParaEnvio(Array.from({ length: 30 }, (_, i) => ({ id: i, papel: i % 2 ? 'assistant' : 'user', texto: `m${i}` }))).map(m => m.content),
+    novos: novos.map(p => [p.id, p.param_name, p.param_type, p.param_source, p.param_value, p.param_offset_meses, p.param_ancora, p.param_formato, p.tem_valor === undefined ? null : p.tem_valor]),
+    aplicado: { ordem: aplicado.params.map(p => [p.id, p.param_name, p.param_value, p.tem_valor === undefined ? null : p.tem_valor]), substituidos: aplicado.substituidos, adicionados: aplicado.adicionados },
+    aplicadoGravado: aplicadoGravado.params.map(p => [p.id, p.param_name, p.param_type, p.param_value, p.tem_valor === undefined ? null : p.tem_valor]),
+    idsDuasVezes,
+    resumo: M.resumoAplicacao(aplicado),
+    resumoVazio: M.resumoAplicacao({ params: [], substituidos: [], adicionados: [] }),
+    descricoes: propostaApi.map(M.descricaoDaLinha).concat([M.descricaoDaLinha({ param_name: 'pRun', param_type: 'String', param_source: 'run_id', param_value: null }),
+      M.descricaoDaLinha({ param_name: 'pAmb', param_type: 'String', param_source: 'fixo', param_value: 'PRD' })]),
+    erros: [[429], [402], [422, { errors: ['a', 'b'] }], [503, 'Maestro desligado'], [403], [500]].map(([s, d]) => M.mensagemDeErro({ status: s, detail: d, message: 'msg' })),
+    idConversa: [M.novoConversaId(), M.novoConversaId()],
+    painel: {
+      msgs: porAttr(painel, 'data-maestro-msg').map(n => n.props['data-maestro-msg']),
+      propostas: porAttr(painel, 'data-maestro-proposta').length,
+      params: porAttr(painel, 'data-maestro-param').map(n => n.props['data-maestro-param']),
+      previas: porAttr(painel, 'data-maestro-previa').map(n => n.props['data-maestro-previa']),
+      referenciasDaPrevia: porAttr(painel, 'data-maestro-referencia').map(n => n.props['data-maestro-referencia']),
+      botoesDesabilitadosPensando: ['data-maestro-nova', 'data-maestro-historico'].map(a => porAttr(pensando, a)[0].props.disabled),
+      botoesHabilitadosOuvindo: ['data-maestro-nova', 'data-maestro-historico'].map(a => porAttr(painel, a)[0].props.disabled),
+      avisos: porAttr(painel, 'data-maestro-aviso').length,
+      aplicar: porAttr(painel, 'data-maestro-aplicar').length,
+      naoAtendido: porAttr(painel, 'data-maestro-nao-atendido').length,
+      sugestoesComConversa: porAttr(painel, 'data-maestro-sugestao').length,
+      texto: painel.texto,
+      aplicadaBotao: porAttr(aplicadaTela, 'data-maestro-aplicar').length,
+      aplicadaMarca: porAttr(aplicadaTela, 'data-maestro-aplicada').length,
+      sugestoesSoBoasVindas: porAttr(soBoasVindas, 'data-maestro-sugestao').length,
+      estadoOuvindo: porAttr(soBoasVindas, 'data-maestro-estado').map(n => n.props['data-maestro-estado']),
+      estadoPensando: porAttr(pensando, 'data-maestro-estado').map(n => n.props['data-maestro-estado']),
+      digitando: porAttr(pensando, 'data-maestro-digitando').length,
+      avatarPensando: porAttr(pensando, 'data-maestro-avatar').map(n => n.props['data-maestro-avatar']),
+      historicoConversas: porAttr(comHistorico, 'data-maestro-conversa').map(n => n.props['data-maestro-conversa']),
+      historicoSemEntrada: porAttr(comHistorico, 'data-maestro-entrada').length,
+      modalExempt: porAttr(painel, 'data-modal-exempt').length,
+    },
+    botao: { comMaestro: porAttr(comMaestro, 'data-maestro-botao').length, desligado: porAttr(desligado, 'data-maestro-botao').length,
+             semJob: porAttr(semJobComMaestro, 'data-maestro-botao').length, storedproc: porAttr(storedprocComStatus, 'data-maestro-botao').length,
+             importarContinua: porAttr(comMaestro, 'data-importar-isx').length },
+    abrir: { antes, depois, boasVindas: porAttr(chat, 'data-maestro-msg').length },
   }
 }
 

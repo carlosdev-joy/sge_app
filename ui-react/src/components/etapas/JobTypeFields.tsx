@@ -7,10 +7,13 @@ import {
   dsParamErrors, ehOrigemData, hojeLocalISO, importarDoIsx, previewItens,
   type IsxParameter, type JobParam, type JobParamApi,
 } from '../../lib/dsParams'
+import { aplicarProposta, resumoAplicacao } from '../../lib/maestro'
+import { useMaestroStatus } from '../../lib/maestroStatus'
 import { Button } from '../ui/Button'
 import { Hint } from '../ui/Hint'
 import { Input, Select, Textarea } from '../ui/Input'
 import { toast } from '../ui/Toast'
+import { MaestroChat } from './MaestroChat'
 
 export type { JobParam } from '../../lib/dsParams'
 
@@ -506,6 +509,16 @@ export function JobTypeFields({
   // lista velha (a mescla sobrescreveria a edição).
   const paramsRef = useRef(value.params)
   useEffect(() => { paramsRef.current = value.params }, [value.params])
+  // Maestro (spec docs/spec-maestro-parametros.md, F2): o backend decide se o
+  // avatar aparece (interruptor do Admin + provedor com chave). A proposta
+  // entra pelo mesmo caminho do import — a lista ATUAL via ref, mesclada por
+  // nome exato; nada é salvo até o usuário salvar a etapa.
+  const maestro = useMaestroStatus(job_type === 'datastage')
+  function aplicarDoMaestro(novos: JobParam[]) {
+    const r = aplicarProposta(paramsRef.current, novos)
+    onChange({ params: r.params })
+    toast.success(resumoAplicacao(r))
+  }
   async function importarDoDataStage() {
     if (!podeImportar) return
     setImportando(true)
@@ -667,6 +680,17 @@ export function JobTypeFields({
                 data-importar-isx>
                 {importando ? 'Importando…' : 'Importar do DataStage'}
               </Button>
+            )}
+            {maestro.enabled && (
+              <MaestroChat
+                pipeline={pipeline}
+                jobName={(jobName ?? '').trim() || undefined}
+                params={value.params}
+                referencia={referenciaPrevia}
+                sugestoes={maestro.sugestoes}
+                onAplicar={aplicarDoMaestro}
+                compact={compact}
+              />
             )}
             {value.params.length > 0 && (
               <label className={`ml-auto flex items-center gap-1 ${compact ? 'text-[10px]' : 'text-[11px]'} text-dim`}>
