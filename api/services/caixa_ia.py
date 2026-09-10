@@ -100,21 +100,66 @@ def _api_key(cfg: dict) -> str:
 
 
 async def chat(cfg: dict, system_prompt: str, message: str) -> tuple[str, str]:
-    """Envia uma mensagem ao provedor configurado.
+    """Envia UMA mensagem ao provedor configurado (os assistentes do Caixa).
     Retorna (resposta, modelo_usado). Levanta HTTPException em erro."""
+    return await chat_conversa(cfg, system_prompt, [{"role": "user", "content": message}])
+
+
+def normalizar_mensagens(mensagens) -> list[dict]:
+    """`[{role, content}]` → só user/assistant com conteúdo, começando e
+    terminando em user. Papéis iguais seguidos são juntados numa mensagem: a
+    Messages API do Anthropic exige alternância e recusaria a conversa inteira
+    por duas mensagens do usuário em sequência."""
+    saida: list[dict] = []
+    for m in mensagens or []:
+        if not isinstance(m, dict):
+            continue
+        papel = str(m.get("role") or "").strip().lower()
+        conteudo = str(m.get("content") or "").strip()
+        if papel not in ("user", "assistant") or not conteudo:
+            continue
+        if saida and saida[-1]["role"] == papel:
+            saida[-1] = {"role": papel, "content": saida[-1]["content"] + "\n\n" + conteudo}
+        else:
+            saida.append({"role": papel, "content": conteudo})
+    while saida and saida[0]["role"] != "user":
+        saida.pop(0)
+    if not saida or saida[-1]["role"] != "user":
+        raise HTTPException(status_code=422,
+                            detail="a conversa precisa terminar com uma mensagem do usuário")
+    return saida
+
+
+def transcrever(mensagens: list[dict]) -> str:
+    """O gateway da Caixa só recebe UMA mensagem (ver _corpo_gateway). Uma
+    mensagem só vai como está — o corpo fica idêntico ao de `chat`; com
+    histórico, vai o transcrito rotulado, terminando no pedido do usuário."""
+    if len(mensagens) == 1:
+        return mensagens[0]["content"]
+    linhas = []
+    for m in mensagens:
+        rotulo = "Usuário" if m["role"] == "user" else "Assistente"
+        linhas.append(f"{rotulo}: {m['content']}")
+    return "\n\n".join(linhas)
+
+
+async def chat_conversa(cfg: dict, system_prompt: str, mensagens) -> tuple[str, str]:
+    """Conversa multi-rodada (o Maestro): `mensagens` = [{role, content}] com o
+    histórico, terminando na mensagem do usuário. Retorna (resposta, modelo)."""
+    msgs = normalizar_mensagens(mensagens)
     provider = cfg.get("provider") or "anthropic"
     model = cfg.get("model") or DEFAULT_MODEL[provider]
     api_key = _api_key(cfg)
 
     if provider == "anthropic":
-        return await _chat_anthropic(api_key, model, system_prompt, message), model
+        return await _chat_anthropic(api_key, model, system_prompt, msgs), model
     if provider == "caixa_gateway":
-        return await _chat_caixa_gateway(cfg, api_key, model, system_prompt, message), model
-    return await _chat_openai_compat(cfg, api_key, model, system_prompt, message), model
+        return await _chat_caixa_gateway(cfg, api_key, model, system_prompt, transcrever(msgs)), model
+    return await _chat_openai_compat(cfg, api_key, model, system_prompt, msgs), model
 
 
 async def _chat_anthropic(api_key: str, model: str,
-                          system_prompt: str, message: str) -> str:
+                          system_prompt: str, mensagens: list[dict]) -> str:
     try:
         # import tardio: a lib só é exigida quando o provedor anthropic é usado
         from anthropic import AsyncAnthropic
@@ -130,7 +175,7 @@ async def _chat_anthropic(api_key: str, model: str,
             max_tokens=MAX_TOKENS,
             thinking={"type": "adaptive"},
             system=system_prompt,
-            messages=[{"role": "user", "content": message}],
+            messages=mensagens,
         )
     except _anthropic.AuthenticationError:
         raise HTTPException(status_code=502, detail="Chave de API inválida (Anthropic)")
@@ -153,7 +198,7 @@ async def _chat_anthropic(api_key: str, model: str,
 
 
 async def _chat_openai_compat(cfg: dict, api_key: str, model: str,
-                              system_prompt: str, message: str) -> str:
+                              system_prompt: str, mensagens: list[dict]) -> str:
     base_url = cfg.get("base_url")
     if not base_url:
         raise HTTPException(status_code=503,
@@ -167,10 +212,7 @@ async def _chat_openai_compat(cfg: dict, api_key: str, model: str,
                          "Content-Type": "application/json"},
                 json={
                     "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": message},
-                    ],
+                    "messages": [{"role": "system", "content": system_prompt}, *mensagens],
                     "temperature": 0.7,
                     "max_tokens": MAX_TOKENS,
                 },
