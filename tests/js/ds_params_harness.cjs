@@ -20,7 +20,7 @@ const SRC = path.join(UI, 'src')
 const { transform } = require(path.join(UI, 'node_modules', 'sucrase'))
 const mini = require(path.join(__dirname, 'minireact.cjs'))
 
-const ENTRADAS = ['lib/dsParams.ts', 'components/etapas/JobTypeFields.tsx']
+const ENTRADAS = ['lib/dsParams.ts', 'components/etapas/JobTypeFields.tsx', 'components/pipelines/ParametrosPipeline.tsx']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -89,11 +89,15 @@ module.exports = new Proxy({}, { get: (_, nome) => {
   return Icone
 } })
 `)
-  // react-query: a prévia vem do servidor — aqui o hook devolve o que a
-  // bancada injetar em global.__previa (ou nada), sem rede.
+  // react-query: a prévia e os defaults do pipeline vêm do servidor — aqui o
+  // hook devolve o que a bancada injetar em global.__q[queryKey[0]] (ou nada),
+  // sem rede. Query desabilitada não devolve nada.
   escrever('@tanstack/react-query', 'package.json', '{"name":"@tanstack/react-query","main":"index.js"}')
   escrever('@tanstack/react-query', 'index.js', `
-module.exports = { useQuery: (opts) => ({ data: global.__previa && opts.enabled ? global.__previa : undefined, isLoading: false }) }
+module.exports = { useQuery: (opts) => ({
+  data: (global.__q && opts.enabled !== false) ? global.__q[String(opts.queryKey[0])] : undefined,
+  isLoading: false,
+}) }
 `)
 }
 
@@ -106,9 +110,11 @@ fs.mkdirSync(path.join(tmp, 'lib'), { recursive: true })
 fs.writeFileSync(path.join(tmp, 'lib', 'api.js'), 'exports.apiFetch = async () => ({});')
 const D = require(path.join(tmp, 'lib/dsParams.js'))
 const { JobTypeFields, jobTypeFieldsErrors } = require(path.join(tmp, 'components/etapas/JobTypeFields.js'))
+const { ParametrosPipelineSecao } = require(path.join(tmp, 'components/pipelines/ParametrosPipeline.js'))
 
 const el = (tipo, props) => mini.criar(tipo, props)
 const porAttr = (tela, attr) => tela.achar(n => n.props && n.props[attr] !== undefined)
+const textoDe = (no) => typeof no === 'string' ? no : (no.filhos || []).map(textoDe).join(' ').replace(/\s+/g, ' ').trim()
 
 const saida = {}
 
@@ -178,11 +184,12 @@ const saida = {}
 }
 
 // ── 3. a tela: JobTypeFields em modo datastage ──────────────────────────────
-function tela(params, previa) {
-  global.__previa = previa || null
+function tela(params, previa, extra) {
+  global.__q = Object.assign({}, previa ? { 'ds-params-preview': previa } : {}, extra || {})
   const value = { job_type: 'datastage', job_command: 'SeqCarga', ssh_conn_id: '', verbose_log: false,
     mssql_conn_id: '', mssql_database: '', params }
-  return mini.montar(el(JobTypeFields, { value, onChange: () => {}, sshConns: [], mssqlConns: [] }))
+  return mini.montar(el(JobTypeFields, Object.assign({ value, onChange: () => {}, sshConns: [], mssqlConns: [] },
+    extra && extra.__pipeline ? { pipeline: extra.__pipeline } : {})))
 }
 {
   const semParams = tela([])
@@ -218,6 +225,44 @@ function tela(params, previa) {
     texto: comParams.texto,
     storedprocSemSecaoDs: porAttr(storedproc, 'data-secao-params-ds').length,
     storedprocSemEditorDs: porAttr(storedproc, 'data-editor-params').length,
+  }
+}
+
+// ── 4. F4: defaults do pipeline na etapa + a seção do wizard ────────────────
+{
+  const defaults = { parametros: [
+    { param_name: 'pAmb', param_type: 'String', param_value: 'PRD', param_order: 0, param_source: 'fixo' },
+    { param_name: 'pSenha', param_type: 'Encrypted', param_value: '***', param_order: 1, param_source: 'fixo', tem_valor: true },
+    { param_name: 'pDataFim', param_type: 'Date', param_value: null, param_order: 2, param_source: 'data_referencia',
+      param_offset_meses: -1, param_ancora: 'fim_mes' },
+  ], disponivel: true }
+  // etapa sobrepõe pAmb
+  const comDefaults = tela([{ id: 'a', param_name: 'pAmb', param_type: 'String', param_source: 'fixo', param_value: 'HML' }],
+    null, { 'pipeline-parametros': defaults, __pipeline: 'PIPE_VIDA' })
+  const semPipeline = tela([], null, { 'pipeline-parametros': defaults })   // sem prop pipeline → query desabilitada
+  const semDefaults = tela([], null, { 'pipeline-parametros': { parametros: [], disponivel: true }, __pipeline: 'PIPE_VIDA' })
+  saida.defaults = {
+    linha: porAttr(comDefaults, 'data-defaults-pipeline').length,
+    itens: porAttr(comDefaults, 'data-default').map(n => [n.props['data-default'], n.props['data-sobreposto']]),
+    texto: textoDe(porAttr(comDefaults, 'data-defaults-pipeline')[0]),
+    semPipeline: porAttr(semPipeline, 'data-defaults-pipeline').length,
+    semDefaults: porAttr(semDefaults, 'data-defaults-pipeline').length,
+  }
+
+  global.__q = { 'ds-params-preview': { referencia: '2026-09-09', itens: [{ param_name: 'pAmb', valor: 'PRD', descricao: 'fixo' }], erros: [] } }
+  const secaoVazia = mini.montar(el(ParametrosPipelineSecao, { params: [], onChange: () => {} }))
+  const secao = mini.montar(el(ParametrosPipelineSecao, { params: [
+    { id: 'a', param_name: 'pAmb', param_type: 'String', param_source: 'fixo', param_value: 'PRD' },
+    { id: 'b', param_name: 'pDataFim', param_type: 'Date', param_source: 'data_referencia', param_value: '', param_offset_meses: '-1', param_ancora: 'fim_mes', param_offset_dias: '', param_formato: '' },
+  ], onChange: () => {} }))
+  saida.secaoPipeline = {
+    vaziaEditor: porAttr(secaoVazia, 'data-editor-params').length,
+    vaziaReferencia: porAttr(secaoVazia, 'data-referencia-previa').length,
+    contagem: porAttr(secao, 'data-contagem').map(n => n.props['data-contagem']),
+    linhas: porAttr(secao, 'data-param-linha').map(n => n.props['data-param-linha']),
+    calculos: porAttr(secao, 'data-calculo').length,
+    previas: porAttr(secao, 'data-previa').map(n => n.props['data-previa']),
+    texto: secao.texto,
   }
 }
 

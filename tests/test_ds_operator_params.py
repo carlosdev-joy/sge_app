@@ -82,10 +82,13 @@ class _Exec:
 
 
 class _Hook:
-    """Dublê do MsSqlHook: linhas da etapa, a linha do ODATE e o registro dos UPDATEs."""
+    """Dublê do MsSqlHook: linhas da etapa (e do pipeline, F4), a linha do ODATE
+    e o registro dos UPDATEs. Sem a 108 (`pipeline=None`) a leitura dos
+    defaults falha como o SQL Server falharia — tabela inexistente."""
 
-    def __init__(self, etapa=None, odate=date(2026, 9, 9), erro_records=None, erro_first=None):
-        self.etapa, self.odate = etapa or [], odate
+    def __init__(self, etapa=None, odate=date(2026, 9, 9), erro_records=None, erro_first=None,
+                 pipeline=None):
+        self.etapa, self.odate, self.pipeline = etapa or [], odate, pipeline
         self.erro_records, self.erro_first = erro_records, erro_first
         self.records_calls, self.first_calls, self.runs = [], [], []
 
@@ -93,6 +96,10 @@ class _Hook:
         self.records_calls.append((sql, parameters))
         if self.erro_records:
             raise self.erro_records
+        if "dbo.etl_pipeline_param " in sql:
+            if self.pipeline is None:
+                raise Exception("(208, b\"Invalid object name 'dbo.etl_pipeline_param'\")")
+            return self.pipeline
         return self.etapa
 
     def get_first(self, sql, parameters=None):
@@ -337,6 +344,72 @@ def test_encrypted_sem_chave_no_worker_falha_antes_do_run(monkeypatch):
         op._trigger_run("2026-09-09")
     assert "ORQUESTRA_CONN_KEY" in str(e.value)
     assert not any(" -run " in c for c in op._exec.chamadas)
+
+
+# ═══════════ F4: defaults do pipeline ═══════════════════════════════════════
+
+def test_default_do_pipeline_entra_so_onde_o_job_declara(caplog):
+    """`pAmb` declarado → vai; `pFora` não declarado → ignorado E listado no log."""
+    hook = _Hook(etapa=[], pipeline=[_linha("pAmb", valor="PRD"), _linha("pFora", valor="x")])
+    op = _op(hook)
+    op._exec = _exec_ok()
+    with caplog.at_level(logging.INFO):
+        op._trigger_run("2026-09-09")
+    cmd = _cmd_run(op._exec)
+    assert "-param pAmb=PRD " in cmd and "pFora" not in cmd
+    assert "pAmb=PRD (pipeline · fixo)" in caplog.text
+    assert "ignorados do pipeline (o job não declara): pFora" in caplog.text
+    assert op._params_ignorados == ["pFora"]
+
+
+def test_default_ignorado_aparece_no_log_mesmo_sem_nada_a_enviar(caplog):
+    """Job que não declara NENHUM default: nada vai no comando, mas o nome
+    ignorado tem de aparecer no log (critério da F4 — nunca em silêncio)."""
+    hook = _Hook(etapa=[], pipeline=[_linha("pAmbiente", valor="PRD")])
+    op = _op(hook)
+    op._exec = _Exec({"-jobinfo": (0, JOBINFO_PARADO, ""), "-lparams": (0, "pOutro\nStatus code = 0\n", ""),
+                      "-run": (0, "Job started", "")})
+    with caplog.at_level(logging.INFO):
+        op._trigger_run("2026-09-09")
+    assert _cmd_run(op._exec).endswith("-queue HighPriorityJobs 'BI_VIDA' 'SeqCarga'")
+    assert "[DS] parâmetros: nenhum · ignorados do pipeline (o job não declara): pAmbiente" in caplog.text
+
+
+def test_etapa_sobrepoe_o_default_do_pipeline():
+    hook = _Hook(etapa=[_linha("pAmb", valor="HML")], pipeline=[_linha("pAmb", valor="PRD")])
+    op = _op(hook)
+    op._exec = _exec_ok()
+    op._trigger_run("2026-09-09")
+    cmd = _cmd_run(op._exec)
+    assert "-param pAmb=HML " in cmd and "PRD" not in cmd
+    assert op._params_enviados[0]["fonte"] == "etapa"
+
+
+def test_so_default_de_pipeline_ainda_chama_lparams():
+    hook = _Hook(etapa=[], pipeline=[_linha("pAmb", valor="PRD")])
+    op = _op(hook)
+    op._exec = _exec_ok()
+    op._trigger_run("2026-09-09")
+    assert any("-lparams" in c for c in op._exec.chamadas)
+
+
+def test_sem_migration_108_os_defaults_sao_vazios_e_nada_muda():
+    """Tabela do pipeline ausente (pré-F4) + etapa sem parâmetro = comando de sempre."""
+    hook = _Hook(etapa=[], pipeline=None)
+    op = _op(hook)
+    op._exec = _exec_ok()
+    op._trigger_run("2026-09-09")
+    assert _cmd_run(op._exec).endswith("-queue HighPriorityJobs 'BI_VIDA' 'SeqCarga'")
+    assert not any("-lparams" in c for c in op._exec.chamadas)
+
+
+def test_default_de_pipeline_com_data_de_referencia():
+    hook = _Hook(etapa=[], pipeline=[_linha("pDataFim", "Date", "data_referencia", meses=-1, ancora="fim_mes")])
+    op = _op(hook)
+    op._exec = _exec_ok()
+    op._trigger_run("2026-09-09")
+    assert "-param pDataFim=2026-08-31 " in _cmd_run(op._exec)
+    assert op._params_enviados[0]["fonte"] == "pipeline"
 
 
 # ═══════════ a mensagem do DSJE_REPERROR cita os parâmetros enviados ════════

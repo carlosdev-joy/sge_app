@@ -398,7 +398,9 @@ class DataStageOperator(BaseOperator):
         # Versão para log/mensagens: idêntica, salvo Encrypted → ***. É a ÚNICA
         # forma do comando que pode sair do operador.
         cmd_log = " ".join(parts + ds_params.montar_args(params, exibir=True) + alvo)
-        if params:
+        # Também quando NADA vai: um default do pipeline que o job não declara
+        # precisa aparecer como ignorado (critério da F4 — nunca em silêncio).
+        if params or self._params_ignorados:
             self.log.info("[DS] parâmetros: %s",
                           ds_params.linha_de_log(params, self._params_ignorados))
 
@@ -466,6 +468,8 @@ class DataStageOperator(BaseOperator):
         try:
             hook = self._db_hook()
             etapa = ds_params.carregar_etapa(hook, ctx["pipeline"], self.job_name, log=self.log)
+            # F4 — defaults do pipeline: entram só onde o job declara o nome.
+            pipe = ds_params.carregar_pipeline(hook, ctx["pipeline"], log=self.log)
         except ds_params.ParamError:
             raise
         except Exception as exc:
@@ -474,14 +478,14 @@ class DataStageOperator(BaseOperator):
             # banco antes de qualquer etapa, então isto não é dependência nova.
             raise AirflowException(
                 f"[DS] Não foi possível ler os parâmetros da etapa "
-                f"'{ctx['pipeline']}/{self.job_name}' em etl_pipeline_job_param "
-                f"({exc}) — a etapa NÃO foi disparada.")
-        if not etapa:
+                f"'{ctx['pipeline']}/{self.job_name}' (etl_pipeline_job_param / "
+                f"etl_pipeline_param): {exc} — a etapa NÃO foi disparada.")
+        if not etapa and not pipe:
             self._params_enviados, self._params_ignorados = [], []
             return []
         declarados = self._lparams()
         try:
-            itens, ignorados = ds_params.mesclar(etapa, declarados)
+            itens, ignorados = ds_params.mesclar(etapa, declarados, pipeline=pipe)
             bases = self._bases_de_data(itens, hook, ctx)
             lista = ds_params.resolver(itens, bases, ctx["run_id"])
         except ds_params.ParamError as exc:

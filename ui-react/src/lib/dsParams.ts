@@ -102,6 +102,12 @@ export function ehOrigemData(origem?: string | null): boolean {
   return DS_SOURCES_DATA.includes(origem ?? '')
 }
 
+// "Hoje" no fuso LOCAL em YYYY-MM-DD (toISOString é UTC: depois das 21h em
+// BRT mostraria amanhã) — padrão do "Simular com a referência".
+export function hojeLocalISO(agora: Date = new Date()): string {
+  return new Date(agora.getTime() - agora.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+}
+
 // GET → draft (vale para storedproc e datastage: os campos extras chegam
 // 'fixo'/null no storedproc e não atrapalham). Encrypted: o `***` do GET vira
 // campo vazio com tem_valor — o usuário só digita para TROCAR.

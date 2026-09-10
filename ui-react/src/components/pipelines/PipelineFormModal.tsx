@@ -16,6 +16,8 @@ import {
   critColor, parseMonthDaysTimes, serializeMonthDaysTimes,
 } from './pipelineUtils'
 import { DependenciasModal } from './DependenciasModal'
+import { ParametrosPipelineSecao } from './ParametrosPipeline'
+import { dsParamErrors, dsParamsToApi, paramsFromApi, type JobParam, type JobParamApi } from '../../lib/dsParams'
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
 
@@ -277,6 +279,31 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const calendarios = calData?.calendarios ?? []
 
+  // Parâmetros DataStage do pipeline (F4). Na edição vêm do GET próprio (a
+  // linha da lista não os carrega); o que o usuário edita fica em estado
+  // separado, NULL até o primeiro toque — sem setState em effect. Não marcam a
+  // DAG como desatualizada: o operador os lê em runtime.
+  const paramsQ = useQuery<{ parametros: JobParamApi[]; disponivel: boolean }>({
+    queryKey: ['pipeline-parametros', pipeline?.pipeline_name],
+    queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline?.pipeline_name ?? '')}/parametros`),
+    enabled: isEdit,
+    // Sempre o estado GRAVADO ao abrir: com cache "fresh" o wizard reaberto
+    // logo após um save mostraria a lista velha e o replace-all a gravaria de
+    // volta (achado da revisão da F4). O save também invalida esta key.
+    staleTime: 0,
+  })
+  const [parametrosEdit, setParametrosEdit] = useState<JobParam[] | null>(null)
+  const parametrosDs = useMemo(
+    () => parametrosEdit ?? paramsFromApi(paramsQ.data?.parametros),
+    [parametrosEdit, paramsQ.data],
+  )
+  // A seção (e a chave no save) só existem quando se SABE o estado gravado: na
+  // edição, depois do GET responder — editar antes da resposta faria o
+  // replace-all apagar os defaults gravados. Sem a migration 108 a API responde
+  // `disponivel: false` e a seção some (o save não manda a chave, preservando
+  // o contrato antigo); GET com erro idem.
+  const parametrosDisponiveis = !isEdit || (paramsQ.isSuccess && paramsQ.data?.disponivel !== false)
+
   // "Dirty" cirúrgico: marca só quando muda algo que AFETA a DAG (não cadastro
   // puro). Usado para perguntar "Regenerar a DAG?" só quando precisa.
   // Alinhado com CAMPOS_QUE_AFETAM_DAG do servidor (achado 1 da revisão da
@@ -386,6 +413,11 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       }
       return e
     }
+    if (s === 2) {
+      // F4 — mesmas réguas da etapa (espelham a API); o 422 do servidor ainda
+      // vale como última barreira (Encrypted sem token, migration 108).
+      return parametrosDisponiveis ? dsParamErrors(parametrosDs) : []
+    }
     return []
   }
 
@@ -494,6 +526,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         runbook_md:          form.runbook_md.trim() || null,
         changed_by:          user?.matricula ?? 'react-ui',
         dag_criada:          pipeline?.dag_criada ?? 0,
+        // F4 — a chave só vai quando a API tem a 108 (senão o contrato antigo,
+        // sem a chave, preserva o que houver). Replace-all na presença.
+        ...(parametrosDisponiveis ? { parametros: dsParamsToApi(parametrosDs) } : {}),
         ...buildSchedulePayload(),
       }
       const reg = await apiFetch<{ dag_sync?: DagSync | null; avisos?: string[] }>('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
@@ -502,6 +537,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
     },
     onSuccess: (res: { pname: string; dagSync?: DagSync | null; avisos?: string[] }) => {
       qc.invalidateQueries({ queryKey: ['pipelines'] })
+      // F4: os defaults gravados mudaram — invalida a key que o wizard (reaberto)
+      // e a linha informativa da etapa (JobTypeFields) leem.
+      qc.invalidateQueries({ queryKey: ['pipeline-parametros', res.pname] })
       // D35: hora inválida virou NULL no servidor — o descarte nunca é mudo.
       res.avisos?.forEach(a => toast.info(`Atenção: ${a}`))
       const dag = dagSyncMsg(res.dagSync)
@@ -544,7 +582,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   function validateAllAndSave() {
     const allErrors: Record<number, string[]> = {}
     let firstBad = -1
-    for (const s of [0, 1]) {
+    // 0–2: o passo 2 tem as réguas dos parâmetros DataStage (F4) — pular pelo
+    // Stepper direto à Revisão não pode contornar a validação.
+    for (const s of [0, 1, 2]) {
       const e = validateStep(s)
       if (e.length) { allErrors[s] = e; if (firstBad < 0) firstBad = s }
     }
@@ -1030,6 +1070,11 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 </div>
                 <Input label="Fila de execução (pool)" value={form.pool_name}
                   onChange={e => f('pool_name', e.target.value)} placeholder="padrão do Airflow" />
+                {/* F4 — defaults de parâmetro DataStage do pipeline (lidos em
+                    runtime pelo operador; não afetam a DAG publicada). */}
+                {parametrosDisponiveis && (
+                  <ParametrosPipelineSecao params={parametrosDs} onChange={setParametrosEdit} />
+                )}
                 {/* O campo de texto "Depende de" e o checkbox "Disparar quando
                     as dependências concluírem" morreram na F5: dependência é
                     escolhida SÓ pelo modal do passo Agendamento (D33) e ter
@@ -1126,6 +1171,23 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 )}
               </div>
             </div>
+
+            {parametrosDs.length > 0 && (
+              <div className="border border-edge rounded-xl overflow-hidden" data-revisao-parametros>
+                <div className="bg-canvas border-b border-edge px-3 py-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Parâmetros DataStage do pipeline</span>
+                </div>
+                <div className="p-3 text-xs flex flex-wrap gap-x-4 gap-y-1">
+                  {parametrosDs.filter(p => p.param_name.trim()).map(p => (
+                    <span key={p.param_name} className="font-mono text-ink">
+                      {p.param_name}
+                      <span className="text-dim font-sans"> ({p.param_type}, {p.param_source === 'fixo' ? 'fixo' : p.param_source === 'run_id' ? 'run id' : 'calculado'})</span>
+                    </span>
+                  ))}
+                  <span className="basis-full text-dim">Valem para toda etapa DataStage cujo job declarar o nome; a etapa pode sobrepor.</span>
+                </div>
+              </div>
+            )}
 
             <div className="bg-blue-50 border border-blue-200 text-blue-800 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300 rounded-lg px-3 py-2 text-xs">
               As etapas deste pipeline (jobs, decisões e lineage) são gerenciadas na tela <strong>Etapas</strong> (Lista + Fluxo), não neste cadastro.

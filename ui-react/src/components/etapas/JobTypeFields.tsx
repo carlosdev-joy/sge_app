@@ -4,7 +4,7 @@ import { Maximize2, Plus } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
 import {
   DS_ENCRYPTED_MASCARA, DS_FORMATOS_SUGERIDOS, DS_PARAM_ANCORAS, DS_PARAM_SOURCES, DS_PARAM_TYPES,
-  dsParamErrors, ehOrigemData, previewItens, type JobParam,
+  dsParamErrors, ehOrigemData, hojeLocalISO, previewItens, type JobParam, type JobParamApi,
 } from '../../lib/dsParams'
 import { Button } from '../ui/Button'
 import { Hint } from '../ui/Hint'
@@ -108,6 +108,9 @@ export interface JobTypeFieldsProps {
   compact?: boolean   // layout denso p/ o painel lateral do Fluxo (fontes/spacing menores)
   // Maximiza o dock (modo focado) — usado pelo editor de código do nó python.
   onMaximizar?: () => void
+  // Pipeline da etapa — só para mostrar os defaults de parâmetro DataStage que
+  // ela herda (F4). Ausente = sem a linha informativa.
+  pipeline?: string
 }
 
 // ── Label / placeholder do campo de comando, por tipo ────────────────────────
@@ -474,15 +477,20 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
 // ── Componente principal ─────────────────────────────────────────────────────
 
 export function JobTypeFields({
-  value, onChange, sshConns, mssqlConns, compact, onMaximizar,
+  value, onChange, sshConns, mssqlConns, compact, onMaximizar, pipeline,
 }: JobTypeFieldsProps) {
   const { job_type } = value
-  // "Simular com a referência" da prévia dos parâmetros DataStage — padrão HOJE
-  // no fuso local (toISOString é UTC: depois das 21h em BRT mostraria amanhã).
-  const [referenciaPrevia, setReferenciaPrevia] = useState(() => {
-    const d = new Date()
-    return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+  // "Simular com a referência" da prévia dos parâmetros DataStage — padrão hoje (fuso local).
+  const [referenciaPrevia, setReferenciaPrevia] = useState(() => hojeLocalISO())
+  // F4 — defaults do pipeline: informativo, para o usuário saber o que a etapa
+  // herda (e o que ela sobrepõe) sem abrir o cadastro do pipeline.
+  const defaultsQ = useQuery<{ parametros: JobParamApi[]; disponivel: boolean }>({
+    queryKey: ['pipeline-parametros', pipeline],
+    queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline ?? '')}/parametros`),
+    enabled: job_type === 'datastage' && !!pipeline,
+    staleTime: 30_000,
   })
+  const defaultsPipeline = defaultsQ.data?.parametros ?? []
 
   // Bancos do SERVIDOR DA CONEXÃO SELECIONADA (regra de 100% do Orquestra —
   // mesma do nó SQL): conn_id primeiro (credencial NATIVA da conexão, enxerga
@@ -616,6 +624,25 @@ export function JobTypeFields({
               </label>
             )}
           </div>
+          {defaultsPipeline.length > 0 && (
+            <p className={`${compact ? 'text-[10px]' : 'text-[11px]'} text-dim rounded-md border border-edge/60 bg-canvas/40 px-2 py-1`} data-defaults-pipeline>
+              Defaults do pipeline (valem se o job declarar o nome; a etapa sobrepõe):{' '}
+              {defaultsPipeline.map((d, i) => {
+                const sobreposto = value.params.some(p => p.param_name.trim() === d.param_name)
+                return (
+                  <span key={d.param_name} data-default={d.param_name} data-sobreposto={sobreposto ? '1' : '0'}>
+                    {i > 0 ? ', ' : ''}
+                    <span className="font-mono text-ink">{d.param_name}</span>
+                    <span className="text-dim/80">
+                      {' '}({DS_PARAM_SOURCES.find(s => s.value === (d.param_source ?? 'fixo'))?.label ?? d.param_source}
+                      {d.param_type === 'Encrypted' ? ', Encrypted' : ''})
+                    </span>
+                    {sobreposto && <span className="text-amber-700 dark:text-amber-300"> · sobreposto pela etapa</span>}
+                  </span>
+                )
+              })}
+            </p>
+          )}
           <JobParamsEditor
             modo="datastage"
             params={value.params}

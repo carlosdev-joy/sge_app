@@ -159,6 +159,28 @@ def test_linhas_por_origem(cen):
     assert t["encrypted"] == [["mantido", "password", "mantido — digite para trocar"]]
 
 
+# ═══════════ 4. F4: defaults do pipeline ════════════════════════════════════
+
+def test_defaults_do_pipeline_aparecem_na_etapa_com_sobreposicao(cen):
+    d = cen["defaults"]
+    assert d["linha"] == 1
+    assert d["itens"] == [["pAmb", "1"], ["pSenha", "0"], ["pDataFim", "0"]]
+    assert "sobreposto pela etapa" in d["texto"]
+    assert "Encrypted" in d["texto"] and "Data de referência" in d["texto"]
+    assert "***" not in d["texto"] and "PRD" not in d["texto"]      # nunca o valor, só nome/origem
+    # sem o pipeline (prop ausente) a query fica desabilitada; sem defaults a linha some
+    assert d["semPipeline"] == 0 and d["semDefaults"] == 0
+
+
+def test_secao_do_wizard_reusa_o_editor_datastage(cen):
+    s = cen["secaoPipeline"]
+    assert s["vaziaEditor"] == 1 and s["vaziaReferencia"] == 0    # editor sempre; "Simular com" só com item
+    assert s["contagem"] == [2]
+    assert s["linhas"] == ["pAmb", "pDataFim"] and s["calculos"] == 1
+    assert s["previas"][0] == "PRD"
+    assert "declarar o nome" in s["texto"] or "Parâmetros DataStage do pipeline" in s["texto"]
+
+
 def test_previa_do_servidor_aparece_por_nome(cen):
     t = cen["tela"]
     assert t["previas"] == [

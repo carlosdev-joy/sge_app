@@ -254,3 +254,24 @@ def test_carregar_etapa_outro_erro_propaga():
     h = _Hook(erro=OSError("banco fora"))
     with pytest.raises(OSError):
         dp.carregar_etapa(h, "P", "J")
+
+
+# ── carregar_pipeline (F4) ───────────────────────────────────────────────────
+
+def test_carregar_pipeline_le_a_tabela_108_com_placeholder_pymssql():
+    h = _Hook(rows=[("pAmb", "String", "PRD", "fixo", None, None, None, None)])
+    out = dp.carregar_pipeline(h, "PIPE")
+    assert out == [_linha("pAmb", valor="PRD")]
+    sql, params = h.chamadas[0]
+    assert "dbo.etl_pipeline_param " in sql and "etl_pipeline_job_param" not in sql
+    assert "%s" in sql and "?" not in sql and params == ("PIPE",)
+
+
+def test_carregar_pipeline_sem_migration_108_devolve_vazio():
+    h = _Hook(erro=Exception("(208, b\"Invalid object name 'dbo.etl_pipeline_param'\")"))
+    assert dp.carregar_pipeline(h, "P", log=logging.getLogger("t")) == []
+
+
+def test_carregar_pipeline_outro_erro_propaga():
+    with pytest.raises(OSError):
+        dp.carregar_pipeline(_Hook(erro=OSError("banco fora")), "P")

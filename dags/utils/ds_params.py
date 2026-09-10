@@ -166,6 +166,11 @@ SQL_ETAPA = (
     "FROM dbo.etl_pipeline_job_param WHERE pipeline_name=%s AND job_name=%s "
     "ORDER BY param_order")
 _SEM_107_RE = re.compile(r"invalid column name|invalid object name", re.IGNORECASE)
+# F4 — defaults do pipeline (migration 108): mesmas colunas, mesma ordem.
+SQL_PIPELINE = (
+    "SELECT param_name, param_type, param_value, param_source, param_offset_meses, "
+    "param_ancora, param_offset_dias, param_formato "
+    "FROM dbo.etl_pipeline_param WHERE pipeline_name=%s ORDER BY param_order")
 
 
 def _decrypt(token: str) -> str:
@@ -202,6 +207,23 @@ def carregar_etapa(hook, pipeline_name: str, job_name: str, log=None) -> list[di
             if log is not None:
                 log.warning("[DS] etl_pipeline_job_param sem as colunas da migration 107 "
                             "(%s) — nenhum parâmetro de etapa será enviado", e)
+            return []
+        raise
+    return [dict(zip(COLS_ETAPA, r)) for r in (rows or [])]
+
+
+def carregar_pipeline(hook, pipeline_name: str, log=None) -> list[dict]:
+    """Defaults do pipeline (etl_pipeline_param, F4), na ordem do editor.
+
+    Sem a migration 108 (tabela ausente) não há default nenhum — resposta
+    honesta é "nenhum", em debug (é o estado normal até a F4 ir para
+    produção). Qualquer OUTRO erro de banco propaga, como em carregar_etapa."""
+    try:
+        rows = hook.get_records(SQL_PIPELINE, parameters=(pipeline_name,))
+    except Exception as e:
+        if _SEM_107_RE.search(str(e)):
+            if log is not None:
+                log.debug("[DS] etl_pipeline_param ausente (migration 108) — sem defaults do pipeline (%s)", e)
             return []
         raise
     return [dict(zip(COLS_ETAPA, r)) for r in (rows or [])]
