@@ -543,6 +543,10 @@ def registrar_auditoria(cur, pipeline: str, usuario: str, detalhe: dict) -> bool
             "dependentes_reabertos": detalhe.get("dependentes_reabertos") or [],
             "corridas_substituidas": detalhe.get("corridas_substituidas"),
             "tasks_limpas": detalhe.get("tasks_limpas"),
+            # F5 — `job.param` dos parâmetros sobrepostos nesta corrida (nomes,
+            # nunca valores). Chave FIXA como as outras: o que não está aqui
+            # não vai para a auditoria (achado 2 da revisão da F5).
+            "parametros_sobrepostos": detalhe.get("parametros_sobrepostos") or [],
         }, ensure_ascii=False)
         cur.execute(
             "INSERT INTO dbo.etl_pipeline_audit "

@@ -181,6 +181,26 @@ def test_secao_do_wizard_reusa_o_editor_datastage(cen):
     assert "declarar o nome" in s["texto"] or "Parâmetros DataStage do pipeline" in s["texto"]
 
 
+# ═══════════ 5. F5: a seção do modal de rerun ══════════════════════════════
+
+def test_rerun_envia_so_o_que_difere_e_nunca_encrypted(cen):
+    r = cen["rerun"]
+    assert r["enviar"] == [{"job_name": "SeqCarga", "param_name": "pDataFim", "param_value": "2026-09-01"}]
+    assert r["enviarVazio"] == []
+    assert r["sobrepostos"] == [1]
+
+
+def test_rerun_tela_mostra_efetivo_input_por_item_e_encrypted_bloqueado(cen):
+    r = cen["rerun"]
+    assert r["etapas"] == ["SeqCarga"]
+    assert r["efetivos"] == ["2026-08-31", "PRD", "***"]
+    assert r["inputs"] == [["pDataFim", "2026-09-01", "1"], ["pAmb", "PRD", "0"]]   # igual ao efetivo = não mudou
+    assert r["naoEditaveis"] == ["pSenha"]
+    assert r["aviso"] == 1 and "só nesta reexecução" in r["texto"]
+    assert "se o job declarar" in r["texto"] and "default do pipeline" in r["texto"]
+    assert r["vazio"] == "" and r["indisponiveis"] == ["indisponiveis"]
+
+
 def test_previa_do_servidor_aparece_por_nome(cen):
     t = cen["tela"]
     assert t["previas"] == [

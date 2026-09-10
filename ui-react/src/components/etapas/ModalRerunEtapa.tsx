@@ -31,6 +31,8 @@ import {
 import { Modal } from '../ui/Modal'
 import { apiFetch } from '../../lib/api'
 import { toast } from '../ui/Toast'
+import { ParametrosRerun } from './ParametrosRerun'
+import { overridesParaEnviar, type ParametrosRerunEtapa } from '../../lib/rerunParams'
 
 // ─────────────────────────── contrato do servidor ───────────────────────────
 
@@ -90,6 +92,13 @@ interface PreviaRerun {
   tasks_de_apoio: number
   total_tasks: number
   cascata: CascataPrevia
+  /** F5 — parâmetros DataStage das etapas do conjunto limpo, com o valor
+   *  efetivo nesta referência (opcional: API anterior à F5 não manda) */
+  parametros?: ParametrosRerunEtapa[]
+  parametros_indisponiveis?: boolean
+  /** F5 — `job.param` que um rerun ANTERIOR desta corrida sobrepôs; o gesto
+   *  novo os descarta (redigite para manter) */
+  sobreposicoes_anteriores?: string[]
 }
 
 interface RespostaRerun {
@@ -102,6 +111,8 @@ interface RespostaRerun {
   corridas_irmas_aposentadas: number
   auditado: boolean
   avisos: string[]
+  /** F5 — `job.param` dos parâmetros sobrepostos nesta corrida */
+  parametros_sobrepostos?: string[]
   /** F8 — ciclos que voltaram a ABERTA por causa deste gesto */
   corridas_reabertas?: { malha: string; data_referencia: string; tentativas: number }[]
   /** F8 — ciclos que NÃO reabriram e ficaram com o registro do reprocesso */
@@ -152,6 +163,9 @@ export function ModalRerunEtapa({
 }: Props) {
   const qc = useQueryClient()
   const [cascata, setCascata] = useState(false)
+  // F5 — o que o operador digitou por `job param`; só o que difere do
+  // efetivo é enviado (overridesParaEnviar).
+  const [overrides, setOverrides] = useState<Record<string, string>>({})
 
   const previa = useQuery<PreviaRerun>({
     queryKey: ['rerun-previa', pipeline, taskId, dataReferencia, runId],
@@ -195,6 +209,9 @@ export function ModalRerunEtapa({
                       : (ciclo.efeito_sem_cascata ?? ciclo.efeito))
     : null
 
+  const parametrosPrevia = p?.parametros ?? []
+  const sobreposicoes = overridesParaEnviar(parametrosPrevia, overrides)
+
   const executar = useMutation<RespostaRerun>({
     mutationFn: () => apiFetch('/execucoes/rerun', {
       method: 'POST',
@@ -204,13 +221,21 @@ export function ModalRerunEtapa({
         cascata: cascataEfetiva,
         ...(runId ? { dag_run_id: runId } : {}),
         ...(dataReferencia ? { data_referencia: dataReferencia } : {}),
+        // F5 — a sobreposição exige a corrida identificada: vai com o
+        // dag_run_id que a prévia resolveu (é a mesma corrida que o clear atinge).
+        ...(sobreposicoes.length
+          ? { parametros: sobreposicoes, ...(p?.dag_run_id ? { dag_run_id: p.dag_run_id } : {}) }
+          : {}),
       }),
     }),
     onSuccess: (r) => {
       const extra = r.cascata && r.dependentes_reabertos.length
         ? ` · ${r.dependentes_reabertos.length} dependente(s) reaberto(s)`
         : ''
-      toast.success(`Reexecução disparada — ${r.tasks_cleared} tarefa(s) limpa(s)${extra}`)
+      const params = r.parametros_sobrepostos?.length
+        ? ` · ${r.parametros_sobrepostos.length} parâmetro(s) sobreposto(s) só nesta corrida`
+        : ''
+      toast.success(`Reexecução disparada — ${r.tasks_cleared} tarefa(s) limpa(s)${extra}${params}`)
       // `corridas_irmas_aposentadas` vem como aviso do servidor (e o loop
       // abaixo o mostra): a aposentadoria das outras corridas do dia é um
       // efeito colateral real do gesto e não pode passar em silêncio.
@@ -359,6 +384,42 @@ export function ModalRerunEtapa({
                 </p>
               )}
             </div>
+          </section>
+        )}
+
+        {/* ── F5: parâmetros DataStage desta reexecução ─────────────────
+            Só aparece quando há parâmetro nas etapas do conjunto limpo (ou
+            quando o servidor não conseguiu calcular — e diz). O valor
+            digitado vale SÓ nesta corrida; Encrypted não se sobrepõe. */}
+        {p && (parametrosPrevia.length > 0 || p.parametros_indisponiveis) && (
+          <section>
+            <h3 className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-ink">
+              <Layers size={13} /> Parâmetros desta reexecução
+            </h3>
+            <ParametrosRerun
+              parametros={parametrosPrevia}
+              valores={overrides}
+              onChange={(chave, valor) => setOverrides(prev => ({ ...prev, [chave]: valor }))}
+              indisponiveis={!!p.parametros_indisponiveis}
+              cabecalho={
+                <>
+                  <p className="text-[11px] leading-snug text-dim">
+                    O valor calculado com a data de referência{' '}
+                    <span className="font-mono text-ink">{p.data_referencia ?? '—'}</span> é o que
+                    iria ao DataStage. Digite um novo valor para usar <strong>só nesta reexecução</strong>;
+                    deixe em branco para manter.
+                  </p>
+                  {(p.sobreposicoes_anteriores?.length ?? 0) > 0 && (
+                    <Aviso tom="alerta" icone={<AlertTriangle size={14} className="mt-0.5 shrink-0" />}>
+                      Uma reexecução anterior desta corrida sobrepôs{' '}
+                      <span className="font-mono">{p.sobreposicoes_anteriores!.join(', ')}</span>.
+                      {' '}Esses valores serão <strong>descartados</strong> por esta reexecução — digite de
+                      novo o que quiser manter.
+                    </Aviso>
+                  )}
+                </>
+              }
+            />
           </section>
         )}
 

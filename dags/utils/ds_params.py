@@ -229,6 +229,27 @@ def carregar_pipeline(hook, pipeline_name: str, log=None) -> list[dict]:
     return [dict(zip(COLS_ETAPA, r)) for r in (rows or [])]
 
 
+SQL_OVERRIDES = (
+    "SELECT param_name, param_value FROM dbo.etl_job_param_override "
+    "WHERE pipeline_name=%s AND job_name=%s AND dag_run_id=%s ORDER BY id")
+
+
+def carregar_overrides(hook, pipeline_name: str, job_name: str, run_id: str, log=None) -> list[dict]:
+    """Sobreposições do rerun para ESTA corrida (etl_job_param_override, F5).
+    Sem a migration 109 não há sobreposição — [] em debug. Outro erro propaga."""
+    if not run_id:
+        return []
+    try:
+        rows = hook.get_records(SQL_OVERRIDES, parameters=(pipeline_name, job_name, run_id))
+    except Exception as e:
+        if _SEM_107_RE.search(str(e)):
+            if log is not None:
+                log.debug("[DS] etl_job_param_override ausente (migration 109) — sem sobreposição (%s)", e)
+            return []
+        raise
+    return [{"param_name": r[0], "param_value": r[1]} for r in (rows or [])]
+
+
 def parse_lparams(saida: str) -> set[str]:
     """Nomes que o job declara, um por linha no `dsjob -lparams` — parâmetros
     simples e membros de Parameter Set (`PSet.Param`). Ignora a linha
@@ -276,6 +297,12 @@ def mesclar(etapa: list[dict], declarados: set[str], pipeline: list[dict] | None
                 f"a sobreposição do rerun cita '{nome}', que o job não declara. "
                 "Parâmetros que o job declara: " + (", ".join(sorted(declarados)) or "(nenhum)"))
         base = por_nome.get(nome, {"param_name": nome, "param_type": "String"})
+        if base.get("param_type") == "Encrypted":
+            # A API já recusa (422); aqui é a segunda barreira — sem ela o texto
+            # da sobreposição seria "decifrado" e falharia como token ilegível.
+            raise ParamError(
+                f"a sobreposição do rerun cita '{nome}', que é Encrypted — "
+                "valor Encrypted não pode ser sobreposto na reexecução")
         por_nome[nome] = dict(base, param_source="fixo", param_value=o.get("param_value"),
                               param_offset_meses=None, param_ancora=None,
                               param_offset_dias=None, param_formato=None, fonte="rerun")
