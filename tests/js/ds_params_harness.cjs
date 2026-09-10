@@ -20,7 +20,8 @@ const SRC = path.join(UI, 'src')
 const { transform } = require(path.join(UI, 'node_modules', 'sucrase'))
 const mini = require(path.join(__dirname, 'minireact.cjs'))
 
-const ENTRADAS = ['lib/dsParams.ts', 'components/etapas/JobTypeFields.tsx', 'components/pipelines/ParametrosPipeline.tsx']
+const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/JobTypeFields.tsx',
+                  'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -111,6 +112,8 @@ fs.writeFileSync(path.join(tmp, 'lib', 'api.js'), 'exports.apiFetch = async () =
 const D = require(path.join(tmp, 'lib/dsParams.js'))
 const { JobTypeFields, jobTypeFieldsErrors } = require(path.join(tmp, 'components/etapas/JobTypeFields.js'))
 const { ParametrosPipelineSecao } = require(path.join(tmp, 'components/pipelines/ParametrosPipeline.js'))
+const R = Object.assign({}, require(path.join(tmp, 'lib/rerunParams.js')),
+                        require(path.join(tmp, 'components/etapas/ParametrosRerun.js')))
 
 const el = (tipo, props) => mini.criar(tipo, props)
 const porAttr = (tela, attr) => tela.achar(n => n.props && n.props[attr] !== undefined)
@@ -263,6 +266,40 @@ function tela(params, previa, extra) {
     calculos: porAttr(secao, 'data-calculo').length,
     previas: porAttr(secao, 'data-previa').map(n => n.props['data-previa']),
     texto: secao.texto,
+  }
+}
+
+// ── 5. F5: a seção do modal de rerun ────────────────────────────────────────
+{
+  const previa = [
+    { job_name: 'SeqCarga', itens: [
+      { param_name: 'pDataFim', param_type: 'Date', param_source: 'data_referencia', fonte: 'etapa', condicional: false,
+        valor_efetivo: '2026-08-31', descricao: 'referência 2026-09-09 → -1 mês → fim do mês → 2026-08-31', editavel: true },
+      { param_name: 'pAmb', param_type: 'String', param_source: 'fixo', fonte: 'pipeline', condicional: true,
+        valor_efetivo: 'PRD', descricao: 'fixo', editavel: true },
+      { param_name: 'pSenha', param_type: 'Encrypted', param_source: 'fixo', fonte: 'etapa', condicional: false,
+        valor_efetivo: '***', descricao: 'fixo (Encrypted — nunca exibido)', editavel: false },
+    ] },
+  ]
+  const valores = {
+    [R.chaveOverride('SeqCarga', 'pDataFim')]: '2026-09-01',
+    [R.chaveOverride('SeqCarga', 'pAmb')]: 'PRD',
+    [R.chaveOverride('SeqCarga', 'pSenha')]: 'x',
+  }
+  const tela = mini.montar(el(R.ParametrosRerun, { parametros: previa, valores, onChange: () => {} }))
+  saida.rerun = {
+    enviar: R.overridesParaEnviar(previa, valores),                    // só o que difere; Encrypted nunca
+    enviarVazio: R.overridesParaEnviar(previa, {}),
+    sobrepostos: porAttr(tela, 'data-sobrepostos').map(n => n.props['data-sobrepostos']),
+    etapas: porAttr(tela, 'data-etapa-params').map(n => n.props['data-etapa-params']),
+    inputs: porAttr(tela, 'data-override').map(n => [n.props['data-override'], n.props.value, n.props['data-mudou']]),
+    naoEditaveis: porAttr(tela, 'data-nao-editavel').map(n => n.props['data-nao-editavel']),
+    efetivos: porAttr(tela, 'data-valor-efetivo').map(n => n.props['data-valor-efetivo']),
+    aviso: porAttr(tela, 'data-aviso-sobreposicao').length,
+    texto: tela.texto,
+    vazio: mini.montar(el(R.ParametrosRerun, { parametros: [], valores: {}, onChange: () => {} })).texto,
+    indisponiveis: porAttr(mini.montar(el(R.ParametrosRerun, { parametros: [], valores: {}, onChange: () => {}, indisponiveis: true })),
+                           'data-parametros-rerun').map(n => n.props['data-parametros-rerun']),
   }
 }
 

@@ -438,11 +438,28 @@ class DataStageOperator(BaseOperator):
             )
             raise AirflowException(generico + ("\n" + diag if diag else ""))
 
+        # F5 — disparo ACEITO com sobreposição do rerun: carimba consumido_em
+        # (o rastro de "esse valor foi usado"). Best-effort, como o params_json.
+        if any(p.get("fonte") == "rerun" for p in params):
+            self._consumir_overrides()
+
         info = self._jobinfo()
         try:
             return int(info.get("wave_number") or 0)
         except (TypeError, ValueError):
             return 0
+
+    def _consumir_overrides(self) -> None:
+        ctx = self._run_ctx or {}
+        try:
+            hook = self._db_hook()
+            hook.run(
+                "UPDATE dbo.etl_job_param_override SET consumido_em=GETDATE() "
+                "WHERE pipeline_name=%s AND job_name=%s AND dag_run_id=%s AND consumido_em IS NULL",
+                parameters=(ctx.get("pipeline"), self.job_name, ctx.get("run_id") or ""),
+            )
+        except Exception as exc:
+            self.log.warning("[DS] Não foi possível carimbar consumido_em da sobreposição: %s", exc)
 
     # ── parâmetros da etapa (F2) ─────────────────────────────────────────────
 
@@ -470,6 +487,9 @@ class DataStageOperator(BaseOperator):
             etapa = ds_params.carregar_etapa(hook, ctx["pipeline"], self.job_name, log=self.log)
             # F4 — defaults do pipeline: entram só onde o job declara o nome.
             pipe = ds_params.carregar_pipeline(hook, ctx["pipeline"], log=self.log)
+            # F5 — sobreposição do rerun para ESTA corrida (chave = run_id).
+            overrides = ds_params.carregar_overrides(
+                hook, ctx["pipeline"], self.job_name, ctx.get("run_id") or "", log=self.log)
         except ds_params.ParamError:
             raise
         except Exception as exc:
@@ -480,12 +500,12 @@ class DataStageOperator(BaseOperator):
                 f"[DS] Não foi possível ler os parâmetros da etapa "
                 f"'{ctx['pipeline']}/{self.job_name}' (etl_pipeline_job_param / "
                 f"etl_pipeline_param): {exc} — a etapa NÃO foi disparada.")
-        if not etapa and not pipe:
+        if not etapa and not pipe and not overrides:
             self._params_enviados, self._params_ignorados = [], []
             return []
         declarados = self._lparams()
         try:
-            itens, ignorados = ds_params.mesclar(etapa, declarados, pipeline=pipe)
+            itens, ignorados = ds_params.mesclar(etapa, declarados, pipeline=pipe, overrides=overrides)
             bases = self._bases_de_data(itens, hook, ctx)
             lista = ds_params.resolver(itens, bases, ctx["run_id"])
         except ds_params.ParamError as exc:

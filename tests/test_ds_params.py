@@ -99,6 +99,38 @@ def test_mesclar_override_de_nome_declarado_mas_nao_cadastrado_entra_como_string
     assert itens[0]["param_type"] == "String" and itens[0]["fonte"] == "rerun"
 
 
+def test_mesclar_recusa_override_de_encrypted():
+    """Segunda barreira (a API já recusa): sem ela o texto seria 'decifrado' e
+    falharia como token ilegível — mensagem enganosa."""
+    with pytest.raises(dp.ParamError) as e:
+        dp.mesclar([_linha("pSenha", "Encrypted", valor="tok")], {"pSenha"},
+                   overrides=[{"param_name": "pSenha", "param_value": "novo"}])
+    assert "Encrypted" in str(e.value) and "não pode ser sobreposto" in str(e.value)
+    # default do pipeline Encrypted também
+    with pytest.raises(dp.ParamError):
+        dp.mesclar([], {"pSenha"}, pipeline=[_linha("pSenha", "Encrypted", valor="tok")],
+                   overrides=[{"param_name": "pSenha", "param_value": "novo"}])
+
+
+# ── carregar_overrides (F5) ──────────────────────────────────────────────────
+
+def test_carregar_overrides_por_corrida_com_placeholder_pymssql():
+    h = _Hook(rows=[("pDataIni", "2026-09-01")])
+    assert dp.carregar_overrides(h, "PIPE", "JOB", "manual__x") == [{"param_name": "pDataIni", "param_value": "2026-09-01"}]
+    sql, params = h.chamadas[0]
+    assert "dbo.etl_job_param_override" in sql and "%s" in sql and "?" not in sql
+    assert params == ("PIPE", "JOB", "manual__x")
+
+
+def test_carregar_overrides_sem_run_id_ou_sem_109():
+    h = _Hook(rows=[("p", "1")])
+    assert dp.carregar_overrides(h, "P", "J", "") == [] and h.chamadas == []
+    h2 = _Hook(erro=Exception("(208, b\"Invalid object name 'dbo.etl_job_param_override'\")"))
+    assert dp.carregar_overrides(h2, "P", "J", "run") == []
+    with pytest.raises(OSError):
+        dp.carregar_overrides(_Hook(erro=OSError("banco fora")), "P", "J", "run")
+
+
 # ── resolver ─────────────────────────────────────────────────────────────────
 
 def test_resolver_caso_mensal_da_spec():

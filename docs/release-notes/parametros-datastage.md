@@ -1,8 +1,8 @@
 # ⚙️ Parâmetros de execução dos jobs DataStage — o `-param` chega ao DataStage
 
 **Compatibilidade:** Apache Airflow 2.x | SQL Server | IBM InfoSphere DataStage 11.7 (`dsjob -run -param` e `dsjob -lparams` via SSH, o mesmo acesso do operador de hoje)
-**Migrations:** **107** (`107_job_param_datastage.sql`, F1) e **108** (`108_pipeline_param.sql`, F4) — deploy.sh etapa 6c, responder **s**; 109 (F5) chega na próxima fase
-**Spec:** `docs/spec-parametros-job-datastage.md` (F1 = #376 · F2 = #377 · F3 = #378 · F4 = esta PR · F5–F6 a seguir)
+**Migrations:** **107** (`107_job_param_datastage.sql`, F1), **108** (`108_pipeline_param.sql`, F4) e **109** (`109_job_param_override.sql`, F5) — deploy.sh etapa 6c, responder **s**
+**Spec:** `docs/spec-parametros-job-datastage.md` (F1 = #376 · F2 = #377 · F3 = #378 · F4 = #379 · F5 = esta PR · F6 a seguir)
 **Manual:** `docs/MANUAL_USUARIO.md` — seções entram na F6 (tela) — por enquanto este documento
 **Depende de:** `ORQUESTRA_CONN_KEY` no **worker do Airflow** (a mesma que o `orquestra-api` já usa nas conexões cifradas da 054) — só para parâmetros do tipo Encrypted
 
@@ -75,11 +75,24 @@ A etapa pode sobrepor pelo mesmo nome — o painel da etapa mostra
 `etl_pipeline_param` (migration **108**); sem ela, a seção não aparece e nada
 muda.
 
+## 🔁 Sobreposição na reexecução (F5)
+
+No modal **Reexecutar a partir de…** (painel da etapa no Fluxo), a seção
+**Parâmetros desta reexecução** lista, por etapa DataStage que vai rodar de
+novo, cada parâmetro com o **valor que iria ao DataStage** na data de
+referência da corrida (defaults do pipeline marcados "se o job declarar"). O
+operador digita um valor novo que vale **só nesta corrida** — a agendada
+seguinte volta ao cadastro. Encrypted não se sobrepõe. A sobreposição é gravada
+em `etl_job_param_override` (migration **109**) **antes** do clear e desfeita se
+o Airflow recusar; o operador carimba `consumido_em` quando a usa, e ela
+aparece no `[DS] parâmetros:` com fonte `rerun` e no `params_json`. A auditoria
+do rerun registra os nomes sobrepostos (nunca valores).
+
 ## 🚀 Deploy
 
 | Passo | O quê |
 |---|---|
-| 6c | Migrations **107** (F1) e **108** (F4) → **s**. Sem a 107: nenhum parâmetro é enviado, com aviso no log da task; sem a 108: sem defaults de pipeline, seção oculta |
+| 6c | Migrations **107** (F1), **108** (F4) e **109** (F5) → **s**. Sem a 107: nenhum parâmetro é enviado, com aviso no log da task; sem a 108: sem defaults de pipeline, seção oculta; sem a 109: a sobreposição no rerun é recusada com mensagem clara |
 | `dags/` | `dags/utils/datastage_operator.py`, `dags/utils/ds_params.py` (novo) e `dags/etl_dag_factory.py` → **sim** para `dags/` |
 | worker | ⚠️ **Reiniciar o worker do Airflow** — ele cacheia `dags/utils/` (task verde com código antigo sem o restart) |
 | `.env` | `ORQUESTRA_CONN_KEY` no `x-airflow-common` (worker), igual à do `orquestra-api` — exigida só ao disparar etapa com parâmetro Encrypted |

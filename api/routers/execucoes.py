@@ -29,6 +29,7 @@ from services import execucao_identidade as ident_svc
 from services import malha_corrida as mc
 # Cascata, reabertura de corrida e auditoria do rerun (F4 — §4 e decisão 1 §7).
 from services import rerun as rerun_svc
+from services import rerun_params
 # Pausa de etapa em runtime, liberação e cancelamento (F5 — §5 Bloco C, decisão 3).
 from services import espera as espera_svc
 
@@ -1153,6 +1154,44 @@ async def previa_rerun(
             airflow_indisponivel = True
             log.warning("[RERUN] dry_run de %s falhou: %s", oficial, e)
 
+    # F5 — os parâmetros DataStage das etapas que vão rodar de novo, com o valor
+    # que iria ao DataStage nesta referência. Best-effort: sem eles a prévia
+    # continua servindo para o gesto (e diz que não conseguiu).
+    parametros: list = []
+    parametros_indisponiveis = False
+    sobreposicoes_anteriores: list = []
+    if etapas_info.get("etapas"):
+        conn = cur = None
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            parametros = rerun_params.parametros_da_previa(
+                cur, oficial, list(etapas_info["etapas"]), data_ref)
+        except Exception as e:  # noqa: BLE001 — prévia degrada, nunca derruba
+            parametros_indisponiveis = True
+            log.warning("[RERUN] parametros da previa de %s falharam: %s", oficial, e)
+        finally:
+            for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+                try:
+                    f and f()
+                except Exception:
+                    pass
+    # O gesto novo descarta a sobreposição de um rerun ANTERIOR desta corrida —
+    # a prévia diz quais existem, para o operador redigitar. Best-effort à
+    # parte: falhar aqui não pode marcar os parâmetros como indisponíveis.
+    if dag_run_id:
+        conn = cur = None
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            sobreposicoes_anteriores = rerun_params.sobreposicoes_anteriores(cur, oficial, dag_run_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug("[RERUN] sobreposicoes anteriores de %s/%s: %s", oficial, dag_run_id, e)
+        finally:
+            for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+                try:
+                    f and f()
+                except Exception:
+                    pass
+
     return {
         "pipeline_name": oficial,
         "task_id": task_id,
@@ -1161,6 +1200,9 @@ async def previa_rerun(
         "identidade": _ident_json(ident),
         "dag_run_id": dag_run_id,
         "airflow_indisponivel": airflow_indisponivel,
+        "parametros": parametros,
+        "parametros_indisponiveis": parametros_indisponiveis,
+        "sobreposicoes_anteriores": sobreposicoes_anteriores,
         # O gesto RECUSA com 409 quando a DAG está pausada; a prévia diz isso
         # antes, para o modal não oferecer um botão que só pode dar erro.
         "dag_pausada": dag_pausada,
@@ -1173,7 +1215,8 @@ async def previa_rerun(
 
 
 def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
-                     usuario: str, cascata: bool, tasks_limpas: int) -> dict:
+                     usuario: str, cascata: bool, tasks_limpas: int,
+                     overrides=None) -> dict:
     """Reabertura dos dependentes + auditoria — DEPOIS de o Airflow aceitar o
     clear. A ordem importa: auditar/reabrir antes e o clear falhar deixaria
     corridas aposentadas sem reprocesso nenhum a caminho.
@@ -1288,7 +1331,9 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
              "task_id": task_id, "cascata": cascata,
              "dependentes_reabertos": saida["dependentes_reabertos"],
              "corridas_substituidas": saida["corridas_substituidas"],
-             "tasks_limpas": tasks_limpas})
+             "tasks_limpas": tasks_limpas,
+             # F5 — quais parâmetros foram sobrepostos (nomes, nunca valores)
+             "parametros_sobrepostos": list(overrides or [])})
         conn.commit()
     except Exception as e:  # noqa: BLE001 — o clear já aconteceu; nunca levantar
         log.warning("[RERUN] pós-clear de '%s' falhou: %s", oficial, e)
@@ -1335,9 +1380,14 @@ async def rerun_from_task(body: dict = Body(default={}),
     dag_run_id = (body.get("dag_run_id")    or "").strip()
     data_ref_s = (body.get("data_referencia") or "").strip()
     cascata    = bool(body.get("cascata"))
+    # F5 — sobreposição de parâmetros DataStage SÓ nesta corrida:
+    # [{job_name, param_name, param_value}]. Chave ausente/vazia = nada.
+    parametros_raw = body.get("parametros") or []
 
     if not pipeline or not task_id:
         raise HTTPException(status_code=422, detail="pipeline_name e task_id são obrigatórios")
+    if parametros_raw and not isinstance(parametros_raw, list):
+        raise HTTPException(status_code=422, detail="parametros deve ser uma lista")
 
     dag_id = pipeline  # no Airflow o dag_id = pipeline_name exato
     oficial, data_ref = pipeline, None
@@ -1346,7 +1396,11 @@ async def rerun_from_task(body: dict = Body(default={}),
     # uma corrida concreta. Com `execution_id` ou `dag_run_id` na mão o caminho
     # segue o histórico, byte a byte — Logs e Dashboard não mudam de
     # comportamento por causa desta fase.
-    if cascata or data_ref_s or not (exec_id or dag_run_id):
+    # `parametros_raw` com a corrida dada também força o modo estrito: a
+    # sobreposição precisa da grafia oficial e do ODATE (marca EXECUTANDO /
+    # aposenta irmãs) — sem isso um rerun com parâmetro por dag_run_id cru
+    # pularia o pós-clear. Só com execution_id, o 422 abaixo é a resposta.
+    if cascata or data_ref_s or (parametros_raw and dag_run_id) or not (exec_id or dag_run_id):
         oficial, ident, data_ref = await _resolve_alvo_rerun(
             pipeline, exec_id=exec_id, dag_run_id=dag_run_id,
             data_referencia=data_ref_s)
@@ -1360,6 +1414,125 @@ async def rerun_from_task(body: dict = Body(default={}),
                                      "deste ciclo no Airflow — sem ele o clear "
                                      "atingiria todos os ciclos da DAG.")})
 
+    # F5 — a sobreposição é gravada ANTES do clear (o operador a lê no disparo;
+    # gravar depois abriria a janela em que a task já rodou sem ela) e
+    # desfeita se o clear for recusado. Exige a corrida identificada: sem
+    # dag_run_id aqui (caminho histórico por execution_id) não há chave.
+    usuario = str((auth or {}).get("matricula") or "?")
+    overrides_nomes: list = []
+    if parametros_raw and not dag_run_id:
+        raise HTTPException(
+            status_code=422,
+            detail={"erro": "corrida_nao_identificada",
+                    "mensagem": ("A sobreposição de parâmetros exige a corrida "
+                                 "identificada (dag_run_id) — reexecute pelo painel "
+                                 "da etapa, que informa a corrida.")})
+    # "O gesto novo é o que vale": um rerun SEM parâmetros nesta corrida apaga a
+    # sobreposição de um rerun anterior dela — senão o valor antigo seria
+    # reaplicado em silêncio enquanto a prévia mostra outro (achado 1 da
+    # revisão da F5). Com a corrida conhecida, antes do clear; no caminho
+    # histórico (só execution_id) o run_id nasce dentro do clear e o desfazer
+    # acontece logo depois dele.
+    overrides_limpos_antes = False
+    if dag_run_id and not parametros_raw:
+        _apagar_overrides_silencioso(oficial, dag_run_id)
+        overrides_limpos_antes = True
+    if parametros_raw:
+        conn = cur = None
+        try:
+            conn = get_db_conn(); cur = conn.cursor()
+            linhas, erros = rerun_params.validar_overrides(cur, oficial, parametros_raw)
+            if erros:
+                raise HTTPException(status_code=422, detail={"errors": erros,
+                                                             "mensagem": "; ".join(erros)})
+            rerun_params.gravar_overrides(cur, oficial, dag_run_id, linhas, usuario)
+            conn.commit()
+            overrides_nomes = [f"{p['job_name']}.{p['param_name']}" for p in linhas]
+        except HTTPException:
+            try:
+                conn and conn.rollback()
+            except Exception:
+                pass
+            raise
+        except Exception as e:
+            try:
+                conn and conn.rollback()
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail=f"Erro DB ao gravar a sobreposição: {e}")
+        finally:
+            for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+                try:
+                    f and f()
+                except Exception:
+                    pass
+
+    try:
+        tasks_limpas = await _clear_no_airflow(dag_id, dag_run_id, exec_id, task_id, cascata)
+    except Exception:
+        # Compensação: o clear não aconteceu — a sobreposição não pode ficar
+        # esperando um disparo que não virá (o próximo rerun gravaria a sua).
+        if overrides_nomes:
+            _apagar_overrides_silencioso(oficial, dag_run_id)
+        raise
+    dag_run_id = tasks_limpas["dag_run_id"]
+    tasks_limpas = tasks_limpas["tasks_limpas"]
+    if not overrides_limpos_antes and not overrides_nomes and dag_run_id:
+        # Caminho histórico: o run_id só existe agora. Best-effort, logo após o
+        # clear (o scheduler leva segundos para reagendar a task).
+        _apagar_overrides_silencioso(oficial, dag_run_id)
+
+    # 3. Reabertura dos dependentes (só com cascata) + auditoria. Fora do
+    # `async with`: nenhuma conexão de banco é aberta enquanto o cliente HTTP
+    # do Airflow está vivo.
+    # `matricula` é o mesmo campo que finalizacao.py e pipelines.py gravam em
+    # etl_pipeline_audit.changed_by — a auditoria do rerun entra na MESMA
+    # coluna, com o MESMO vocabulário, e aparece no histórico do pipeline que
+    # a tela de infra já lê.
+    pos = _aplicar_cascata(oficial, data_ref, task_id, dag_run_id, usuario,
+                           cascata, tasks_limpas, overrides=overrides_nomes)
+
+    return {
+        "ok": True,
+        "pipeline_name": pipeline,
+        "dag_id": dag_id,
+        "dag_run_id": dag_run_id,
+        "task_id": task_id,
+        "tasks_cleared": tasks_limpas,
+        "cascata": cascata,
+        "dependentes_reabertos": pos["dependentes_reabertos"],
+        "corridas_substituidas": pos["corridas_substituidas"],
+        "corridas_irmas_aposentadas": pos["corridas_irmas_aposentadas"],
+        "auditado": pos["auditado"],
+        "avisos": pos["avisos"],
+        "parametros_sobrepostos": overrides_nomes,
+    }
+
+
+def _apagar_overrides_silencioso(pipeline: str, dag_run_id: str) -> None:
+    """Compensação do F5 — best-effort: a recusa do clear já é o erro real."""
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        rerun_params.apagar_overrides(cur, pipeline, dag_run_id)
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        log.warning("[RERUN] sobreposicao de %s/%s nao desfeita apos clear recusado: %s",
+                    pipeline, dag_run_id, e)
+    finally:
+        for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            try:
+                f and f()
+            except Exception:
+                pass
+
+
+async def _clear_no_airflow(dag_id: str, dag_run_id: str, exec_id: str, task_id: str,
+                            cascata: bool) -> dict:
+    """O clear em si (o miolo histórico do POST /execucoes/rerun, intocado):
+    resolve o dag_run quando não veio, recusa DAG pausada e limpa a etapa com
+    o downstream. Devolve {dag_run_id, tasks_limpas}. Levanta HTTPException
+    nas recusas — o chamador desfaz a sobreposição da F5 antes de propagar."""
     async with get_airflow_client() as client:
         # 1. Resolver dag_run_id se não fornecido
         if not dag_run_id:
@@ -1415,32 +1588,7 @@ async def rerun_from_task(body: dict = Body(default={}),
         tasks_limpas = len(cleared.get("task_instances", []))
         log.info("Rerun %s/%s a partir de %s — %s tasks limpas (cascata=%s)",
                  dag_id, dag_run_id, task_id, tasks_limpas, cascata)
-
-    # 3. Reabertura dos dependentes (só com cascata) + auditoria. Fora do
-    # `async with`: nenhuma conexão de banco é aberta enquanto o cliente HTTP
-    # do Airflow está vivo.
-    # `matricula` é o mesmo campo que finalizacao.py e pipelines.py gravam em
-    # etl_pipeline_audit.changed_by — a auditoria do rerun entra na MESMA
-    # coluna, com o MESMO vocabulário, e aparece no histórico do pipeline que
-    # a tela de infra já lê.
-    usuario = str((auth or {}).get("matricula") or "?")
-    pos = _aplicar_cascata(oficial, data_ref, task_id, dag_run_id, usuario,
-                           cascata, tasks_limpas)
-
-    return {
-        "ok": True,
-        "pipeline_name": pipeline,
-        "dag_id": dag_id,
-        "dag_run_id": dag_run_id,
-        "task_id": task_id,
-        "tasks_cleared": tasks_limpas,
-        "cascata": cascata,
-        "dependentes_reabertos": pos["dependentes_reabertos"],
-        "corridas_substituidas": pos["corridas_substituidas"],
-        "corridas_irmas_aposentadas": pos["corridas_irmas_aposentadas"],
-        "auditado": pos["auditado"],
-        "avisos": pos["avisos"],
-    }
+    return {"dag_run_id": dag_run_id, "tasks_limpas": tasks_limpas}
 
 
 async def _dag_pausada(client, dag_id: str):

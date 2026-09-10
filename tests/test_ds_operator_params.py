@@ -87,8 +87,9 @@ class _Hook:
     defaults falha como o SQL Server falharia — tabela inexistente."""
 
     def __init__(self, etapa=None, odate=date(2026, 9, 9), erro_records=None, erro_first=None,
-                 pipeline=None):
+                 pipeline=None, overrides=None):
         self.etapa, self.odate, self.pipeline = etapa or [], odate, pipeline
+        self.overrides = overrides            # None = sem a 109 (tabela inexistente)
         self.erro_records, self.erro_first = erro_records, erro_first
         self.records_calls, self.first_calls, self.runs = [], [], []
 
@@ -100,6 +101,10 @@ class _Hook:
             if self.pipeline is None:
                 raise Exception("(208, b\"Invalid object name 'dbo.etl_pipeline_param'\")")
             return self.pipeline
+        if "dbo.etl_job_param_override" in sql:
+            if self.overrides is None:
+                raise Exception("(208, b\"Invalid object name 'dbo.etl_job_param_override'\")")
+            return self.overrides
         return self.etapa
 
     def get_first(self, sql, parameters=None):
@@ -410,6 +415,67 @@ def test_default_de_pipeline_com_data_de_referencia():
     op._trigger_run("2026-09-09")
     assert "-param pDataFim=2026-08-31 " in _cmd_run(op._exec)
     assert op._params_enviados[0]["fonte"] == "pipeline"
+
+
+# ═══════════ F5: sobreposição do rerun ══════════════════════════════════════
+
+def test_override_do_rerun_vence_e_carimba_consumido_em(caplog):
+    hook = _Hook(etapa=[_linha("pDataFim", "Date", "data_referencia", meses=-1, ancora="fim_mes")],
+                 pipeline=[], overrides=[("pDataFim", "2026-09-01")])
+    op = _op(hook)
+    op._exec = _exec_ok()
+    with caplog.at_level(logging.INFO):
+        op._trigger_run("2026-09-09")
+    assert "-param pDataFim=2026-09-01 " in _cmd_run(op._exec)
+    assert op._params_enviados[0]["fonte"] == "rerun"
+    assert "pDataFim=2026-09-01 (rerun · fixo)" in caplog.text
+    # lido pela chave (pipeline, job, run_id) e carimbado após o disparo aceito
+    lido = next(c for c in hook.records_calls if "etl_job_param_override" in c[0])
+    assert lido[1] == ("PIPE_VIDA", "SeqCarga", "scheduled__2026-09-09T06:00:00+00:00")
+    carimbos = [r for r in hook.runs if "consumido_em=GETDATE()" in r[0]]
+    assert len(carimbos) == 1 and "%s" in carimbos[0][0]
+    assert carimbos[0][1] == ("PIPE_VIDA", "SeqCarga", "scheduled__2026-09-09T06:00:00+00:00")
+
+
+def test_override_nao_e_carimbado_quando_o_disparo_e_recusado():
+    hook = _Hook(etapa=[_linha("pAmb", valor="PRD")], pipeline=[], overrides=[("pAmb", "HML")])
+    op = _op(hook)
+    op._exec = _Exec({"-jobinfo": (0, JOBINFO_PARADO, ""), "-lparams": (0, LPARAMS, ""),
+                      "-run": (255, SAIDA_REPERROR, ""), "-logsum": (0, "", "")})
+    with pytest.raises(AirflowException):
+        op._trigger_run("2026-09-09")
+    assert not any("consumido_em" in r[0] for r in hook.runs)
+
+
+def test_so_override_sem_parametro_cadastrado_ainda_vale_se_o_job_declara():
+    hook = _Hook(etapa=[], pipeline=[], overrides=[("pAmb", "HML")])
+    op = _op(hook)
+    op._exec = _exec_ok()
+    op._trigger_run("2026-09-09")
+    assert "-param pAmb=HML " in _cmd_run(op._exec)
+
+
+def test_override_de_encrypted_falha_antes_do_run(monkeypatch):
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key()
+    monkeypatch.setenv("ORQUESTRA_CONN_KEY", key.decode())
+    token = Fernet(key).encrypt(b"segredo!").decode()
+    hook = _Hook(etapa=[_linha("pSenha", "Encrypted", valor=token)], pipeline=[], overrides=[("pSenha", "novo")])
+    op = _op(hook)
+    op._exec = _exec_ok()
+    with pytest.raises(AirflowException) as e:
+        op._trigger_run("2026-09-09")
+    assert "Encrypted" in str(e.value) and "segredo" not in str(e.value)
+    assert not any(" -run " in c for c in op._exec.chamadas)
+
+
+def test_sem_migration_109_nada_muda():
+    hook = _Hook(etapa=[_linha("pAmb", valor="PRD")], pipeline=[], overrides=None)
+    op = _op(hook)
+    op._exec = _exec_ok()
+    op._trigger_run("2026-09-09")
+    assert "-param pAmb=PRD " in _cmd_run(op._exec)
+    assert not any("consumido_em" in r[0] for r in hook.runs)
 
 
 # ═══════════ a mensagem do DSJE_REPERROR cita os parâmetros enviados ════════
