@@ -164,3 +164,58 @@ def test_botao_so_em_datastage_com_o_backend_ligado(m):
 
 def test_clicar_abre_o_painel_com_as_boas_vindas(m):
     assert m["abrir"] == {"antes": 0, "depois": 1, "boasVindas": 1}
+
+
+# ═══════════ 6. F3: a lib do Admin (formulário do cenário) ══════════════════
+
+@pytest.fixture(scope="module")
+def adm() -> dict:
+    node = _node()
+    if node is None:
+        pytest.skip("front não instalado nesta máquina")
+    r = subprocess.run([node, str(HARNESS)], capture_output=True, text=True, cwd=str(RAIZ), timeout=180)
+    assert r.returncode == 0, f"bancada do front falhou:\n{r.stderr}"
+    return json.loads(r.stdout)["maestroAdmin"]
+
+
+def test_form_do_cenario_hidrata_e_o_corpo_normaliza(adm):
+    f = adm["form"]
+    assert f["codigo"] == "mensal_anterior" and f["ativo"] is True and f["exemplosTexto"] == "carga mensal\nmês passado"
+    assert f["linhas"] == [["<DATA_INICIAL>", "Date", "data_referencia", "", "-1", "inicio_mes", "0", "%Y-%m-%d"],
+                           ["<CAMINHO>", "Pathname", "fixo", "/dados/entrada", "", "", "", ""]]
+    assert adm["vazioTemUmaLinha"] == 1
+    c = adm["corpo"]
+    assert c["codigo"] == "mensal_anterior" and c["receita"]["exemplos"] == ["a", "b"]
+    # os marcadores passam como nomes; a receita sai no contrato da API (números, null)
+    assert c["receita"]["params"][0] == {"param_name": "<DATA_INICIAL>", "param_type": "Date", "param_source": "data_referencia",
+                                         "param_value": None, "param_offset_meses": -1, "param_ancora": "inicio_mes",
+                                         "param_offset_dias": 0, "param_formato": "%Y-%m-%d"}
+    assert c["receita"]["params"][1]["param_value"] == "/dados/entrada"
+    assert adm["exemplos"] == ["x", "y"]
+
+
+def test_regua_local_do_cenario(adm):
+    e = adm["erros"]
+    assert e["valido"] == []
+    assert any("Código" in x for x in e["vazio"]) and any("Título" in x for x in e["vazio"]) and any("Descrição" in x for x in e["vazio"])
+    assert any("pelo menos um parâmetro" in x for x in e["semParams"])
+    assert any('Parâmetro "a b"' in x for x in e["nomeRuim"])
+    assert any("origem de data só com tipo" in x for x in e["dataComInteger"])   # a régua do editor, via marcador → p_1
+    assert any("Código" in x for x in e["codigoRuim"])
+    assert any("120" in x for x in e["tituloLongo"])
+    assert any("10 exemplos" in x for x in e["exemplosDemais"])
+    # Encrypted na receita é salvável (sem valor — a régua do editor exigiria um); marcador repetido não
+    assert e["encrypted"] == []
+    assert e["repetido"] == ["Marcador/nome repetido na receita: <D>"]
+
+
+def test_encrypted_na_receita_vai_sem_valor(adm):
+    assert adm["encryptedNoCorpo"] == [{"param_name": "<SENHA>", "param_type": "Encrypted", "param_source": "fixo", "param_value": None,
+                                        "param_offset_meses": None, "param_ancora": None, "param_offset_dias": None, "param_formato": None}]
+    assert "vazou" not in json.dumps(adm["encryptedNoCorpo"])
+
+
+def test_mensagens_de_erro_do_admin_e_ids(adm):
+    assert adm["mensagens"] == ["a · b", "Já existe", "Maestro indisponível: migration 110 pendente", "padrão"]
+    assert adm["pendente110"] == [True, False, False]
+    assert adm["idsUnicos"] == 3

@@ -22,7 +22,7 @@ from datetime import date
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
-from deps import require_perm
+from deps import get_admin_user, require_perm
 from services import caixa_ia, maestro
 from services import job_params as jp
 
@@ -242,3 +242,171 @@ def maestro_historico(user: dict = Depends(_require_jobs)):
             raise HTTPException(status_code=503, detail=str(e))
     finally:
         _fechar(conn, cur)
+
+
+# ═══════════ Admin (F3): interruptor, catálogo e pedidos ═════════════════════
+# Tudo atrás de get_admin_user (acao_admin). Fica neste router, e não no
+# admin.py de 1.300 linhas, pelo mesmo motivo dos utilitários: o domínio é um.
+
+def _503(e: maestro.MaestroIndisponivel) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/maestro/admin/config", tags=["maestro-admin"])
+def maestro_admin_config(_user: dict = Depends(get_admin_user)):
+    """O que a aba mostra ao abrir: interruptor, provedor (sem a chave) e contagens."""
+    conn, cur = _abrir()
+    try:
+        interruptor, tem_chave, cfg = _estado(cur)
+        try:
+            numeros = maestro.contagens(cur)
+        except maestro.MaestroIndisponivel as e:
+            raise _503(e)
+        return {"enabled": interruptor, "ativo": interruptor and tem_chave,
+                "provedor": {"provider": cfg.get("provider") or "anthropic",
+                             "model": cfg.get("model") or caixa_ia.DEFAULT_MODEL.get(cfg.get("provider") or "anthropic", ""),
+                             "api_key_set": tem_chave},
+                "retencao_dias": maestro.RETENCAO_CONVERSAS_DIAS, **numeros}
+    finally:
+        _fechar(conn, cur)
+
+
+@router.post("/maestro/admin/config", tags=["maestro-admin"])
+def maestro_admin_config_set(body: dict = Body(default={}), user: dict = Depends(get_admin_user)):
+    """Liga/desliga. Ligar exige o provedor com chave (Admin › Caixa Seguro IA):
+    ligado sem provedor seria um avatar que nunca aparece e um 503 permanente."""
+    ligado = bool(body.get("enabled"))
+    conn, cur = _abrir()
+    try:
+        _interruptor, tem_chave, _cfg = _estado(cur)
+        if ligado and not tem_chave:
+            raise HTTPException(status_code=422, detail={
+                "code": "provedor_sem_chave",
+                "errors": ["Configure o provedor de IA com a chave de API em Admin › Caixa Seguro IA antes de ligar o Maestro"]})
+        maestro.gravar_enabled(cur, ligado, user["matricula"])
+        _fechar(conn, cur, commit=True)
+        return {"enabled": ligado}
+    except HTTPException:
+        _fechar(conn, cur)
+        raise
+    except Exception:
+        _fechar(conn, cur)
+        raise
+
+
+@router.get("/maestro/admin/cenarios", tags=["maestro-admin"])
+def maestro_admin_cenarios(_user: dict = Depends(get_admin_user)):
+    conn, cur = _abrir()
+    try:
+        try:
+            return {"cenarios": maestro.listar_cenarios(cur)}
+        except maestro.MaestroIndisponivel as e:
+            raise _503(e)
+    finally:
+        _fechar(conn, cur)
+
+
+@router.post("/maestro/admin/cenarios/validar", tags=["maestro-admin"])
+def maestro_admin_cenario_validar(body: dict = Body(default={}), _user: dict = Depends(get_admin_user)):
+    """O "Simular" do editor de cenário: a régua da RECEITA + a prévia numa
+    referência, com os marcadores no nome — sem gravar nada e sem banco.
+    Só a receita: o admin simula antes de ter código/título prontos."""
+    referencia = jp.parse_data(body.get("referencia")) if body.get("referencia") else date.today()
+    if referencia is None:
+        raise HTTPException(status_code=422, detail={"code": "cenario_invalido",
+                                                    "errors": ["referencia inválida — use AAAA-MM-DD"]})
+    corpo = body.get("cenario") if isinstance(body.get("cenario"), dict) else body
+    receita = corpo.get("receita") if isinstance(corpo.get("receita"), dict) else corpo
+    previa, erros = maestro.previa_da_receita(receita, referencia)
+    return {"erros": erros, "previa": previa, "referencia": referencia.isoformat()}
+
+
+def _salvar_cenario(body: dict, user: dict, cenario_id: int | None):
+    dados, erros = maestro.validar_cenario(body)
+    if erros:
+        raise HTTPException(status_code=422, detail={"code": "cenario_invalido", "errors": erros})
+    conn, cur = _abrir()
+    try:
+        try:
+            salvo = maestro.salvar_cenario(cur, dados, user["matricula"], cenario_id)
+        except maestro.CodigoExistente:
+            raise HTTPException(status_code=409, detail={
+                "code": "codigo_existente", "mensagem": f"Já existe um cenário com o código '{dados['codigo']}'"})
+        except maestro.MaestroIndisponivel as e:
+            raise _503(e)
+        if salvo is None:
+            raise HTTPException(status_code=404, detail="Cenário não encontrado")
+        _fechar(conn, cur, commit=True)
+        return {"cenario": salvo}
+    except HTTPException:
+        _fechar(conn, cur)
+        raise
+    except Exception:
+        _fechar(conn, cur)
+        raise
+
+
+@router.post("/maestro/admin/cenarios", tags=["maestro-admin"])
+def maestro_admin_cenario_criar(body: dict = Body(default={}), user: dict = Depends(get_admin_user)):
+    return _salvar_cenario(body, user, None)
+
+
+@router.post("/maestro/admin/cenarios/{cenario_id}", tags=["maestro-admin"])
+def maestro_admin_cenario_editar(cenario_id: int, body: dict = Body(default={}),
+                                 user: dict = Depends(get_admin_user)):
+    return _salvar_cenario(body, user, cenario_id)
+
+
+@router.post("/maestro/admin/cenarios/{cenario_id}/excluir", tags=["maestro-admin"])
+def maestro_admin_cenario_excluir(cenario_id: int, _user: dict = Depends(get_admin_user)):
+    conn, cur = _abrir()
+    try:
+        try:
+            ok = maestro.excluir_cenario(cur, cenario_id)
+        except maestro.MaestroIndisponivel as e:
+            raise _503(e)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Cenário não encontrado")
+        _fechar(conn, cur, commit=True)
+        return {"excluido": cenario_id}
+    except HTTPException:
+        _fechar(conn, cur)
+        raise
+    except Exception:
+        _fechar(conn, cur)
+        raise
+
+
+@router.get("/maestro/admin/pedidos", tags=["maestro-admin"])
+def maestro_admin_pedidos(tratados: bool = False, _user: dict = Depends(get_admin_user)):
+    conn, cur = _abrir()
+    try:
+        try:
+            return {"pedidos": maestro.listar_pedidos(cur, tratados=tratados)}
+        except maestro.MaestroIndisponivel as e:
+            raise _503(e)
+    finally:
+        _fechar(conn, cur)
+
+
+@router.post("/maestro/admin/pedidos/{pedido_id}/tratar", tags=["maestro-admin"])
+def maestro_admin_pedido_tratar(pedido_id: int, body: dict = Body(default={}),
+                                user: dict = Depends(get_admin_user)):
+    """`{tratado: true|false}` — carimba ou reabre um pedido não atendido."""
+    tratado = bool(body.get("tratado", True))
+    conn, cur = _abrir()
+    try:
+        try:
+            ok = maestro.marcar_pedido(cur, pedido_id, tratado, user["matricula"])
+        except maestro.MaestroIndisponivel as e:
+            raise _503(e)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Pedido não encontrado (ou não é um cenário não atendido)")
+        _fechar(conn, cur, commit=True)
+        return {"id": pedido_id, "tratado": tratado}
+    except HTTPException:
+        _fechar(conn, cur)
+        raise
+    except Exception:
+        _fechar(conn, cur)
+        raise

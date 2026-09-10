@@ -14,6 +14,7 @@ import { senhaParaEnviar } from '../lib/servicenowConfig'
 import { renderMarkdown } from '../lib/markdown'
 import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
 import { UtilitariosTab } from '../components/admin/UtilitariosTab'
+import { MaestroTab } from '../components/admin/MaestroTab'
 import {
   Edit2, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Save, X,
   CheckCircle2, Eye, Calendar, Download, Megaphone, Bold, Italic, Code, List, RefreshCw, Database,
@@ -3835,6 +3836,7 @@ const ADMIN_GROUPS = [
     { id: 'notificacoes', label: 'Notificações' },
     { id: 'powerbi', label: 'Power BI — Acessos' },
     { id: 'caixa-ia', label: 'Caixa Seguro IA' },
+    { id: 'maestro', label: 'Maestro' },
   ] },
   { id: 'relatorios', label: 'Relatórios', tabs: [
     { id: 'sla', label: 'Relatório SLA' },
@@ -4111,6 +4113,7 @@ export default function Admin() {
         {tab === 'sla' && <SlaReportTab />}
         {tab === 'powerbi' && <PowerBIAccessGuideTab />}
         {tab === 'caixa-ia' && <CaixaIATab />}
+        {tab === 'maestro' && <MaestroTab />}
       </div>
     </div>
   )
