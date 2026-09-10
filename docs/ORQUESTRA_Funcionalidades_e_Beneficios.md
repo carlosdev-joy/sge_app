@@ -90,6 +90,7 @@ Tudo do Operador, mais:
 #### Gerenciamento de jobs (aba Jobs)
 - Cadastro e edição completa: tipo, comando/job DataStage, conexão SSH, parâmetros.
 - **Parâmetros de execução do job DataStage** (`-param`): valor fixo ou calculado a partir da data de referência (meses → âncora → dias → formato — ex.: primeiro e último dia do mês anterior), Encrypted cifrado, defaults no pipeline com sobreposição por etapa, sobreposição só na reexecução, prévia calculada pelo servidor e rastro do valor enviado no detalhe da execução.
+- **Maestro, o assistente de parâmetros**: um chat na seção de parâmetros (Etapas e Fluxos) em que o usuário descreve o cenário ("carga mensal do mês anterior com data inicial e final") e recebe, campo a campo, como preencher — com a prévia calculada e o botão *Aplicar no editor*. Só promete o que está no catálogo de cenários do administrador e no vocabulário dos parâmetros; fora disso orienta a procurar o administrador e registra o pedido. Usa o provedor de IA já configurado (inclusive o gateway interno), nunca vê valores Encrypted e nunca salva nada sozinho.
 - Reordenar por arrastar-e-soltar.
 - Diagrama de execução: visualize a ordem e paralelismo dos jobs antes de salvar.
 - Lineage obrigatório por job.

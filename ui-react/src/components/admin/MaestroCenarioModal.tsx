@@ -168,7 +168,7 @@ export function MaestroCenarioModal({ aberto, salvando, onFechar, onSalvar }: Ma
           )}
         </div>
 
-        <Textarea label="Exemplos de pedido (uma frase por linha — viram as sugestões de abertura do chat)" value={form.exemplosTexto} rows={3}
+        <Textarea label="Exemplos de pedido (uma frase por linha; o 1º exemplo dos 4 primeiros cenários ativos vira sugestão de abertura do chat)" value={form.exemplosTexto} rows={3}
                   onChange={e => setForm({ ...form, exemplosTexto: e.target.value })}
                   placeholder={'carga mensal do mês anterior com data inicial e final\nprocessar o mês passado inteiro'} />
 

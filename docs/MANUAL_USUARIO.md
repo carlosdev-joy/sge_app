@@ -736,6 +736,60 @@ extenso), o bloco **Parâmetros enviados ao DataStage** no detalhe da execução
 (Logs › log DataStage) e a coluna `params_json` de `etl_ds_job_log`. Encrypted
 aparece sempre como `***`.
 
+Para preencher tudo isso sem decorar o vocabulário, descreva o cenário ao
+**Maestro** (§3.11) — ele propõe as linhas e você aplica no editor.
+
+### 3.11 Maestro — o assistente de parâmetros (Etapas e Fluxos)
+O **Maestro** é um chat que ajuda a preencher os parâmetros do §3.10 sem decorar
+o vocabulário: você descreve o cenário e ele diz como preencher cada campo. O
+botão com o avatar (um regente conduzindo as linhas do pipeline) fica na seção
+**Parâmetros do job**, ao lado de *Importar do DataStage* — na etapa `datastage`
+da tela **Etapas** e no painel do nó em **Fluxos**. Ele só aparece quando o
+administrador liga o Maestro (§4.9) e o provedor de IA está configurado.
+
+**Como usar.**
+1. Abra o chat e descreva o cenário em português — por exemplo, *"carga mensal
+   do mês anterior com data inicial e final"*. As sugestões de abertura são o
+   primeiro exemplo dos **quatro primeiros cenários ativos** do catálogo (§4.9);
+   os demais cenários o Maestro conhece, mas não sugere.
+2. O Maestro responde explicando **campo a campo** (nome, tipo, origem, meses,
+   âncora, dias, formato ou valor) e mostra um **cartão com a proposta**: cada
+   parâmetro com a prévia *com a referência X* — a mesma data do *Simular com a
+   referência* da seção. Se ele precisar de algo (os nomes dos parâmetros, por
+   exemplo), pergunta antes de propor.
+3. **Aplicar no editor** coloca as linhas na lista de parâmetros — o que já
+   existia com o mesmo nome é substituído no lugar, o resto fica como está.
+   Confira e **salve a etapa**: o Maestro nunca salva nada.
+
+**O que ele sabe.** O vocabulário do §3.10 (tipos, origens, âncoras, a ordem
+meses → âncora → dias → formato), o **catálogo de cenários** mantido pelo
+administrador e, quando o job tem lineage ISX (§3.9), os parâmetros que o job
+**declara** — ele usa esses nomes e avisa se propuser um que o job não declara.
+Sem lineage, ele pede os nomes ou propõe nomes convencionais e avisa que
+precisam ser iguais aos do Designer. Toda proposta passa pela **mesma régua do
+salvar**: o que a régua recusa nunca chega ao botão *Aplicar*.
+
+**Quando o cenário não existe.** Dias úteis, feriados, valor lido de tabela ou
+arquivo, condições, qualquer coisa fora do catálogo e do vocabulário: o Maestro
+diz que **não atende**, orienta a **procurar o administrador** e o pedido fica
+registrado — o administrador vê a lista em Admin › Maestro › *Pedidos não
+atendidos* (§4.9) e decide se cria o cenário.
+
+**Encrypted e o que sai da tela.** O Maestro nunca pede nem repete senhas: para
+um parâmetro Encrypted ele propõe a linha **sem valor** e você digita no editor.
+O que já está no editor (e os defaults do pipeline) vai ao provedor de IA como
+contexto — nome, tipo, origem, cálculo e **o valor fixo dos parâmetros
+não-Encrypted** (até 200 caracteres cada); o **valor de um Encrypted nunca sai da
+sua tela**. Não cole segredos no chat nem em valores fixos.
+
+**Conversas.** *Nova conversa* recomeça; o ícone de histórico reabre as suas
+conversas anteriores (sem as propostas — peça de novo se quiser aplicar).
+Mensagens de até 4.000 caracteres. Esc fecha o chat sem fechar a etapa.
+
+⚠️ A proposta aplicada é um **cadastro como outro qualquer**: a conferência
+definitiva continua sendo a do disparo (`dsjob -lparams`, §3.10) — nome que o
+job não declara falha antes de disparar.
+
 ## 4. Perfil Administrador
 
 Tudo dos demais, mais a aba **Admin** (visível apenas para administradores):
@@ -776,6 +830,11 @@ Lembretes:
   `dags/utils/`); `ORQUESTRA_CONN_KEY` também no **worker** (parâmetro Encrypted é
   decifrado no disparo). Roteiro e conferência pós-deploy em
   `docs/release-notes/parametros-datastage.md`.
+- **Maestro (§3.11 / §4.9)**: migration **110** na etapa 6c; `dags/etl_log_cleanup.py`
+  ganhou a limpeza das conversas (arquivo de DAG — **sem** restart do worker);
+  o provedor de IA é o de *Caixa Seguro IA* (chave cifrada com `ORQUESTRA_CONN_KEY`
+  na API); ligar em Admin › Acessos & Comunicação › **Maestro**. Roteiro em
+  `docs/release-notes/maestro.md`.
 
 ### 4.7 Utilitários (Admin → Sistema → Utilitários)
 É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança
@@ -927,6 +986,48 @@ exigir o token** da sessão — scripts externos que liam o lineage sem autentic
 param de funcionar. A extração unitária exige `acao_editar`; o lote, admin; o
 disparo genérico de DAGs da API também exige admin para esta DAG.
 
+### 4.9 Maestro (Admin → Acessos & Comunicação → Maestro)
+A aba governa o assistente de parâmetros do §3.11. Exige a migration **110**
+(sem ela a aba diz isso em vez de carregar).
+
+**Interruptor.** *Maestro ligado/desligado*. Ligar exige o **provedor de IA com
+chave** configurado em *Caixa Seguro IA* (o mesmo provedor dos assistentes do
+Caixa: Anthropic, OpenAI-compatível ou o gateway interno; o interruptor dos
+assistentes do Caixa é independente). Desligado — ou ligado sem chave — o
+avatar não aparece para ninguém. Ao lado, o provedor, o modelo, se a chave está
+configurada e as contagens (cenários ativos, pedidos em aberto, retenção).
+
+**Catálogo de cenários.** É o que o Maestro **pode prometer**. Cada cenário tem:
+- **Código** (`mensal_anterior`…): identificador, citado no rastro da conversa.
+- **Título** e **descrição** — a descrição é o que o Maestro lê para reconhecer
+  o cenário: diga quando usar e o que cada parâmetro representa.
+- **Receita**: um parâmetro por linha, no vocabulário do §3.10. O nome pode ser
+  um **marcador** entre `< >` (`<DATA_INICIAL>`): o Maestro o troca pelo nome
+  real do job (do lineage ISX ou informado pelo usuário). *Simular com a
+  referência* mostra a prévia com os marcadores e os erros da régua — a receita
+  passa pela **mesma régua do salvar** da etapa, então o catálogo não promete o
+  que o Orquestra recusaria. Parâmetro Encrypted entra **sem valor** (o
+  usuário digita na etapa); marcador repetido é recusado.
+- **Exemplos de pedido**: uma frase por linha; o primeiro exemplo dos **quatro
+  primeiros cenários ativos** (ordem de criação) vira sugestão de abertura do
+  chat — os demais o Maestro conhece pelo catálogo, mas não sugere.
+- **Ativo**: inativo some do Maestro sem apagar o cadastro.
+A instalação vem com 10 cenários (mês anterior, mês corrente, diário, D-1,
+semana anterior, trimestre anterior, ano anterior, competência AAAAMM, run id,
+caminho fixo) — edite, desative ou crie os seus. Excluir é definitivo (dois
+cliques).
+
+**Pedidos não atendidos.** Cada vez que o Maestro responde *não atendido*, o
+pedido entra aqui com quem pediu, pipeline/etapa, o texto e o motivo. É a
+demanda que o catálogo ainda não cobre: crie o cenário (se o vocabulário
+permite) ou registre o backlog, e marque **tratado** (dá para reabrir; a caixa
+*mostrar os já tratados* lista o histórico).
+
+**Retenção.** As conversas ficam em `etl_maestro_conversa` por **180 dias**; a
+DAG `etl_log_cleanup` (03h) apaga o que passa disso — inclusive os pedidos não
+atendidos, tratados ou não. Um pedido que mereça virar cenário deve ser tratado
+(ou registrado no backlog) antes disso.
+
 ---
 
 ## 5. Perguntas frequentes
@@ -970,3 +1071,11 @@ disparo genérico de DAGs da API também exige admin para esta DAG.
 **O lineage que eu cadastrei à mão sumiu da aba Lineage?** Não: ele continua no banco. Quando o job tem lineage ISX, a aba Lineage mostra o ISX (mais completo) no lugar do manual/DSX; o Job DataStage mostra só o ISX.
 
 **Não vejo o botão "Extrair todos (lote)".** Ele é só do administrador (§4.8); a extração unitária pede a permissão de cadastrar/editar (Desenvolvedor ETL).
+
+**O botão do Maestro não aparece na seção de parâmetros.** Ele só existe em etapa `datastage`, e só quando o administrador ligou o Maestro **e** o provedor de IA tem chave (Admin › Maestro, §4.9). Depois de ligar, quem já estava com a tela aberta pode precisar de F5 (o status é lido a cada 5 min). Sem a migration 110 o Maestro fica oculto.
+
+**O Maestro disse que "não atende" o meu cenário.** Ele só promete o que está no catálogo e se monta com o vocabulário do §3.10 (dias úteis, feriados e valor vindo de tabela ficam de fora). O pedido já ficou registrado para o administrador (§4.9); se o cenário for viável, ele cria o cenário no catálogo e o Maestro passa a atender.
+
+**Apliquei a proposta do Maestro e a etapa falhou no disparo ("o job NÃO declara…").** O Maestro não fala com o DataStage: sem lineage ISX ele usa os nomes que você informou ou nomes convencionais e avisa para conferir no Designer. Extraia o lineage (§3.9) para ele usar os nomes declarados, ou corrija a grafia na etapa.
+
+**O Maestro pediu a senha de um parâmetro Encrypted?** Não deveria — ele é instruído a nunca pedir nem repetir segredos e propõe a linha sem valor. Nunca digite a senha no chat: digite no campo Encrypted do editor, que é cifrado.
