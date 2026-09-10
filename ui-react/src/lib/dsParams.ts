@@ -186,6 +186,67 @@ export function previewItens(params: JobParam[]): JobParamApi[] {
   ))
 }
 
+// ── Importar do lineage ISX (F6) ────────────────────────────────────────────
+// O que o job DECLARA, extraído do .isx (Governança › Job DataStage):
+// [{name, type, default, description}] — `type` é o extendedType ou typeCode do
+// DataStage ("String", "Encrypted", "Integer", "Stringlist", "Parameterset"…);
+// `default` já vem `***` quando o parser julgou sensível.
+
+export interface IsxParameter {
+  name: string
+  type?: string | null
+  default?: string | null
+  description?: string | null
+}
+
+const ISX_TIPO: Record<string, DsParamType> = {
+  string: 'String', integer: 'Integer', float: 'Float', date: 'Date', time: 'Time',
+  timestamp: 'Timestamp', pathname: 'Pathname', list: 'List', stringlist: 'List',
+  encrypted: 'Encrypted',
+}
+
+export function tipoDsDoIsx(tipo?: string | null): DsParamType {
+  return ISX_TIPO[(tipo ?? '').trim().toLowerCase()] ?? 'String'
+}
+
+/** Junta ao editor os parâmetros do ISX que ainda não existem por nome.
+ *  Devolve as linhas novas (nome/tipo/default como valor fixo), os nomes já
+ *  presentes (intocados), os conjuntos (Parameter Set — o ISX lista o
+ *  conjunto, não os membros: cadastre `PSet.Param` à mão) e os nomes que a
+ *  régua recusa (ex.: variáveis de ambiente `$APT_…` que o job declara como
+ *  parâmetro): esses NÃO entram — entrariam só para falhar no salvar. */
+export function importarDoIsx(existentes: JobParam[], parametros: IsxParameter[]): {
+  novos: JobParam[]; jaExistiam: string[]; conjuntos: string[]; invalidos: string[]
+} {
+  const nomes = new Set(existentes.map(p => p.param_name.trim()))
+  const novos: JobParam[] = []
+  const jaExistiam: string[] = []
+  const conjuntos: string[] = []
+  const invalidos: string[] = []
+  for (const it of parametros) {
+    const nome = (it.name ?? '').trim()
+    if (!nome) continue
+    if ((it.type ?? '').trim().toLowerCase() === 'parameterset') { conjuntos.push(nome); continue }
+    if (!DS_PARAM_NAME_RE.test(nome) || nome.length > DS_LIMITE_NOME) { invalidos.push(nome); continue }
+    if (nomes.has(nome)) { jaExistiam.push(nome); continue }
+    nomes.add(nome)
+    const tipo = tipoDsDoIsx(it.type)
+    const padrao = (it.default ?? '').trim()
+    const encrypted = tipo === 'Encrypted'
+    novos.push({
+      id: `isx_${nome}`,
+      param_name: nome,
+      param_type: tipo,
+      param_source: 'fixo',
+      // Encrypted: o default do ISX é ofuscado/`***` — nunca serve de valor.
+      param_value: encrypted || padrao === DS_ENCRYPTED_MASCARA ? '' : padrao,
+      param_offset_meses: '', param_ancora: '', param_offset_dias: '', param_formato: '',
+      ...(encrypted ? { tem_valor: false } : {}),
+    })
+  }
+  return { novos, jaExistiam, conjuntos, invalidos }
+}
+
 // ── Validação (espelho de normalizar_item/normalizar_lista da API) ──────────
 
 function inteiroNaFaixa(v: string | undefined, rotulo: string, limite: number, erros: string[]) {

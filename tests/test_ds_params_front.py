@@ -181,6 +181,32 @@ def test_secao_do_wizard_reusa_o_editor_datastage(cen):
     assert "declarar o nome" in s["texto"] or "Parâmetros DataStage do pipeline" in s["texto"]
 
 
+# ═══════════ 6. F6: importar do lineage ISX ════════════════════════════════
+
+def test_importar_do_isx_acrescenta_so_o_que_falta_e_nunca_o_segredo(cen):
+    i = cen["isx"]
+    assert i["novos"] == [
+        ["pData", "Date", "fixo", "2026-01-01", None],
+        ["pQtd", "Integer", "fixo", "10", None],
+        ["ParmSenhaBanco", "Encrypted", "fixo", "", False],     # default ofuscado nunca vira valor
+        ["DbPassword", "String", "fixo", "", None],             # `***` do parser → vazio
+        ["pMisterio", "String", "fixo", "x", None],
+    ]
+    assert i["jaExistiam"] == ["pAmb"]
+    assert i["conjuntos"] == ["PSetSsdVida"]
+    # nome que a régua recusa ($APT_…) NÃO entra — entraria só para falhar no salvar
+    assert i["invalidos"] == ["$APT_NO_SORT_INSERTION"]
+    assert "OFUSCADO" not in json.dumps(i["novos"])
+
+
+def test_tipo_ds_do_isx(cen):
+    assert cen["isx"]["tipos"] == ["String", "Integer", "List", "String", "Encrypted", "String", "String"]
+
+
+def test_botao_importar_so_com_pipeline_e_job(cen):
+    assert cen["isx"]["botao"] == 1 and cen["isx"]["botaoSemJob"] == 0
+
+
 # ═══════════ 5. F5: a seção do modal de rerun ══════════════════════════════
 
 def test_rerun_envia_so_o_que_difere_e_nunca_encrypted(cen):

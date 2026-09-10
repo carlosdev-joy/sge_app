@@ -1,14 +1,16 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Maximize2, Plus } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
 import {
   DS_ENCRYPTED_MASCARA, DS_FORMATOS_SUGERIDOS, DS_PARAM_ANCORAS, DS_PARAM_SOURCES, DS_PARAM_TYPES,
-  dsParamErrors, ehOrigemData, hojeLocalISO, previewItens, type JobParam, type JobParamApi,
+  dsParamErrors, ehOrigemData, hojeLocalISO, importarDoIsx, previewItens,
+  type IsxParameter, type JobParam, type JobParamApi,
 } from '../../lib/dsParams'
 import { Button } from '../ui/Button'
 import { Hint } from '../ui/Hint'
 import { Input, Select, Textarea } from '../ui/Input'
+import { toast } from '../ui/Toast'
 
 export type { JobParam } from '../../lib/dsParams'
 
@@ -111,6 +113,9 @@ export interface JobTypeFieldsProps {
   // Pipeline da etapa — só para mostrar os defaults de parâmetro DataStage que
   // ela herda (F4). Ausente = sem a linha informativa.
   pipeline?: string
+  // Nome do job DataStage (a etapa) — habilita "Importar do DataStage" (F6),
+  // que lê os parâmetros declarados no lineage ISX já extraído.
+  jobName?: string
 }
 
 // ── Label / placeholder do campo de comando, por tipo ────────────────────────
@@ -477,7 +482,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
 // ── Componente principal ─────────────────────────────────────────────────────
 
 export function JobTypeFields({
-  value, onChange, sshConns, mssqlConns, compact, onMaximizar, pipeline,
+  value, onChange, sshConns, mssqlConns, compact, onMaximizar, pipeline, jobName,
 }: JobTypeFieldsProps) {
   const { job_type } = value
   // "Simular com a referência" da prévia dos parâmetros DataStage — padrão hoje (fuso local).
@@ -491,6 +496,51 @@ export function JobTypeFields({
     staleTime: 30_000,
   })
   const defaultsPipeline = defaultsQ.data?.parametros ?? []
+  // F6 — "Importar do DataStage": os parâmetros que o job DECLARA, do lineage
+  // ISX já extraído (Governança › Job DataStage). Só acrescenta nomes ausentes;
+  // nada é salvo até o usuário salvar a etapa.
+  const [importando, setImportando] = useState(false)
+  const podeImportar = job_type === 'datastage' && !!pipeline && !!(jobName ?? '').trim()
+  // A lista ATUAL do editor, para ler DEPOIS do await: o usuário pode editar
+  // uma linha enquanto o GET está em voo, e a closure do clique guardaria a
+  // lista velha (a mescla sobrescreveria a edição).
+  const paramsRef = useRef(value.params)
+  useEffect(() => { paramsRef.current = value.params }, [value.params])
+  async function importarDoDataStage() {
+    if (!podeImportar) return
+    setImportando(true)
+    try {
+      const q = new URLSearchParams({ pipeline_name: pipeline!, job_name: (jobName ?? '').trim() })
+      const d = await apiFetch<{ parameters?: IsxParameter[]; status?: string; erro?: string | null; extracted_at?: string | null }>(
+        `/lineage/isx/job?${q.toString()}`)
+      // Cabeçalho existe mas a ÚLTIMA extração falhou: o `parameters` vem
+      // vazio (ou velho) — dizer "nenhum parâmetro novo" seria mentir.
+      if (d.status && d.status !== 'ok') {
+        toast.info(`A última extração ISX deste job falhou${d.erro ? ` (${d.erro})` : ''} — reextraia em Governança › Job DataStage e volte aqui.`)
+        return
+      }
+      const atuais = paramsRef.current
+      const { novos, jaExistiam, conjuntos, invalidos } = importarDoIsx(atuais, d.parameters ?? [])
+      if (novos.length) onChange({ params: [...atuais, ...novos] })
+      const quando = d.extracted_at ? ` (extração de ${d.extracted_at})` : ''
+      const partes = [
+        novos.length ? `${novos.length} parâmetro(s) adicionado(s)${quando} — confira valor e origem antes de salvar` : `nenhum parâmetro novo${quando}`,
+        jaExistiam.length ? `${jaExistiam.length} já cadastrado(s)` : '',
+        conjuntos.length ? `Parameter Set: ${conjuntos.join(', ')} — cadastre os membros como PSet.Param` : '',
+        invalidos.length ? `ignorado(s) por nome fora da régua: ${invalidos.join(', ')}` : '',
+      ].filter(Boolean)
+      ;(novos.length ? toast.success : toast.info)(partes.join(' · '))
+    } catch (e: unknown) {
+      const err = e as { status?: number; message?: string }
+      if (err?.status === 404) {
+        toast.info('Este job ainda não tem lineage ISX extraído — extraia em Governança › Job DataStage e volte aqui.')
+      } else {
+        toast.error(err?.message || 'Não foi possível ler o lineage ISX do job')
+      }
+    } finally {
+      setImportando(false)
+    }
+  }
 
   // Bancos do SERVIDOR DA CONEXÃO SELECIONADA (regra de 100% do Orquestra —
   // mesma do nó SQL): conn_id primeiro (credencial NATIVA da conexão, enxerga
@@ -611,6 +661,13 @@ export function JobTypeFields({
                 </span>
               )}
             </label>
+            {podeImportar && (
+              <Button size="sm" variant="ghost" onClick={importarDoDataStage} disabled={importando}
+                title="Lê os parâmetros que o job declara no lineage ISX já extraído (Governança › Job DataStage) e acrescenta os que faltam aqui"
+                data-importar-isx>
+                {importando ? 'Importando…' : 'Importar do DataStage'}
+              </Button>
+            )}
             {value.params.length > 0 && (
               <label className={`ml-auto flex items-center gap-1 ${compact ? 'text-[10px]' : 'text-[11px]'} text-dim`}>
                 Simular com a referência

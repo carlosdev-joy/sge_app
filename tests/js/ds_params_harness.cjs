@@ -109,6 +109,11 @@ shims(tmp)
 // mas precisa carregar: dá um módulo vazio no lugar.
 fs.mkdirSync(path.join(tmp, 'lib'), { recursive: true })
 fs.writeFileSync(path.join(tmp, 'lib', 'api.js'), 'exports.apiFetch = async () => ({});')
+// ui/Toast usa zustand (store global) — o "Importar do DataStage" só o chama no
+// clique, que a bancada não exercita: um toast inerte no lugar.
+fs.mkdirSync(path.join(tmp, 'components', 'ui'), { recursive: true })
+fs.writeFileSync(path.join(tmp, 'components', 'ui', 'Toast.js'),
+  'exports.toast = { success() {}, error() {}, info() {} };')
 const D = require(path.join(tmp, 'lib/dsParams.js'))
 const { JobTypeFields, jobTypeFieldsErrors } = require(path.join(tmp, 'components/etapas/JobTypeFields.js'))
 const { ParametrosPipelineSecao } = require(path.join(tmp, 'components/pipelines/ParametrosPipeline.js'))
@@ -187,12 +192,13 @@ const saida = {}
 }
 
 // ── 3. a tela: JobTypeFields em modo datastage ──────────────────────────────
-function tela(params, previa, extra) {
+function tela(params, previa, extra, jobName) {
   global.__q = Object.assign({}, previa ? { 'ds-params-preview': previa } : {}, extra || {})
   const value = { job_type: 'datastage', job_command: 'SeqCarga', ssh_conn_id: '', verbose_log: false,
     mssql_conn_id: '', mssql_database: '', params }
   return mini.montar(el(JobTypeFields, Object.assign({ value, onChange: () => {}, sshConns: [], mssqlConns: [] },
-    extra && extra.__pipeline ? { pipeline: extra.__pipeline } : {})))
+    extra && extra.__pipeline ? { pipeline: extra.__pipeline } : {},
+    jobName ? { jobName } : {})))
 }
 {
   const semParams = tela([])
@@ -267,6 +273,32 @@ function tela(params, previa, extra) {
     previas: porAttr(secao, 'data-previa').map(n => n.props['data-previa']),
     texto: secao.texto,
   }
+}
+
+// ── 6. F6: importar do lineage ISX ──────────────────────────────────────────
+{
+  const existentes = [{ id: 'a', param_name: 'pAmb', param_type: 'String', param_source: 'fixo', param_value: 'HML' }]
+  const isx = [
+    { name: 'pAmb', type: 'String', default: 'PRD' },                       // já existe → intocado
+    { name: 'pData', type: 'Date', default: '2026-01-01', description: 'ref' },
+    { name: 'pQtd', type: 'Integer', default: '10' },
+    { name: 'ParmSenhaBanco', type: 'Encrypted', default: 'OFUSCADO' },     // Encrypted: default nunca vira valor
+    { name: 'DbPassword', type: 'String', default: '***' },                 // sensível pelo parser → vazio
+    { name: '$APT_NO_SORT_INSERTION', type: 'Stringlist', default: 'False' },
+    { name: 'PSetSsdVida', type: 'Parameterset', default: '(As pre-defined)' },
+    { name: 'pMisterio', type: 'Unicorn', default: 'x' },                   // desconhecido → String
+    { name: '  ', type: 'String', default: 'x' },                           // sem nome → ignorado
+  ]
+  const r = D.importarDoIsx(existentes, isx)
+  saida.isx = {
+    novos: r.novos.map(p => [p.param_name, p.param_type, p.param_source, p.param_value, p.tem_valor === undefined ? null : p.tem_valor]),
+    jaExistiam: r.jaExistiam, conjuntos: r.conjuntos, invalidos: r.invalidos,
+    tipos: ['string', 'INTEGER', 'Stringlist', 'Parameterset', 'Encrypted', '', null].map(t => D.tipoDsDoIsx(t)),
+  }
+  const comBotao = tela([], null, { __pipeline: 'PIPE_VIDA' }, 'SeqCarga')
+  const semJob = tela([], null, { __pipeline: 'PIPE_VIDA' })
+  saida.isx.botao = porAttr(comBotao, 'data-importar-isx').length
+  saida.isx.botaoSemJob = porAttr(semJob, 'data-importar-isx').length
 }
 
 // ── 5. F5: a seção do modal de rerun ────────────────────────────────────────

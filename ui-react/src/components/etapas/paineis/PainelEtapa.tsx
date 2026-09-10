@@ -171,6 +171,9 @@ export function PainelEtapa({ node, pipeline, sshConns, mssqlConns, onRename, on
             mssqlConns={mssqlConns}
             onMaximizar={onMaximizar}
             pipeline={pipeline}
+            // Nó novo nasce como NOVA_ETAPA_N: importar por esse nome só
+            // orientaria errado — o botão aparece depois de salvar.
+            jobName={isNew ? undefined : d.name}
           />
         </div>
       </div>
