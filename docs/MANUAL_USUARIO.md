@@ -220,6 +220,9 @@ Aba **Pipelines → + Novo pipeline**. O wizard tem etapas:
    (§3.10), enviados a **toda etapa DataStage cujo job declarar o nome**; job que
    não declara ignora (o nome sai como *ignorado* no log da task). A etapa pode
    sobrepor pelo mesmo nome. Não exige republicar a DAG: o operador lê em runtime.
+   O **Maestro** (§3.11) fica nesta seção também: descreva o cenário e ele propõe
+   os defaults dizendo quais etapas vão herdá-los — ou pergunte como a herança
+   funciona.
 5. **Jobs**: adicione os jobs com **ordem de execução**. Jobs com a **mesma ordem executam em paralelo**; a ordem seguinte só inicia quando todos da anterior terminam. Na edição, os jobs já cadastrados são carregados automaticamente. Remover uma linha aqui **não exclui** o job do banco — exclusão definitiva só na tela Jobs.
 6. **Lineage** (opcional aqui; obrigatório se cadastrar pela tela Jobs).
 7. **Revisão** → salvar. Depois clique em **Gerar DAG** para publicar no Airflow.
@@ -742,10 +745,25 @@ Para preencher tudo isso sem decorar o vocabulário, descreva o cenário ao
 ### 3.11 Maestro — o assistente de parâmetros (Etapas e Fluxos)
 O **Maestro** é um chat que ajuda a preencher os parâmetros do §3.10 sem decorar
 o vocabulário: você descreve o cenário e ele diz como preencher cada campo. O
-botão com o avatar (um regente conduzindo as linhas do pipeline) fica na seção
-**Parâmetros do job**, ao lado de *Importar do DataStage* — na etapa `datastage`
-da tela **Etapas** e no painel do nó em **Fluxos**. Ele só aparece quando o
-administrador liga o Maestro (§4.9) e o provedor de IA está configurado.
+botão com o avatar (um regente conduzindo as linhas do pipeline) fica em três
+lugares: na seção **Parâmetros do job** da etapa `datastage`, ao lado de
+*Importar do DataStage* — na tela **Etapas** e no painel do nó em **Fluxos** —
+e na seção **Parâmetros DataStage do pipeline** do cadastro do pipeline (§3.1,
+passo Execução). Ele só aparece quando o administrador liga o Maestro (§4.9) e o
+provedor de IA está configurado.
+
+**No pipeline, ele sabe que está cadastrando defaults.** O que ele propõe ali
+vale para toda etapa DataStage cujo job declarar o nome, sem configurar nada nas
+etapas; quando o pipeline já tem etapas com lineage ISX, o cartão da proposta
+diz **quais etapas vão herdar** cada parâmetro e quais vão ignorá-lo (por não
+declarar o nome), e avisa as que não têm lineage.
+
+**Ele também explica.** Pergunte "se eu cadastrar no pipeline, todas as etapas
+usam?", "as etapas herdam ou preciso configurar algo nelas?" ou "rodando todo
+dia 05, ele manda o mês anterior?" — o Maestro responde com as regras do §3.10
+(herança para quem declara o nome, sobreposição pela etapa, recálculo a cada
+disparo pela data de referência da corrida, reexecução com a referência daquela
+corrida, *Simular*, rastro) sem propor nada.
 
 **Como usar.**
 1. Abra o chat e descreva o cenário em português — por exemplo, *"carga mensal
@@ -759,7 +777,7 @@ administrador liga o Maestro (§4.9) e o provedor de IA está configurado.
    exemplo), pergunta antes de propor.
 3. **Aplicar no editor** coloca as linhas na lista de parâmetros — o que já
    existia com o mesmo nome é substituído no lugar, o resto fica como está.
-   Confira e **salve a etapa**: o Maestro nunca salva nada.
+   Confira e **salve a etapa** (ou o pipeline): o Maestro nunca salva nada.
 
 **O que ele sabe.** O vocabulário do §3.10 (tipos, origens, âncoras, a ordem
 meses → âncora → dias → formato), o **catálogo de cenários** mantido pelo

@@ -137,6 +137,11 @@ def _validar_corpo(body: dict) -> tuple[str, list[dict], dict, date]:
         v = contexto.get(chave)
         if v is not None and not isinstance(v, str):
             erros.append(f"contexto.{chave} deve ser texto")
+    nivel = contexto.get("nivel")
+    if nivel is None or nivel == "":
+        contexto["nivel"] = maestro.NIVEL_ETAPA
+    elif nivel not in maestro.NIVEIS:
+        erros.append(f"contexto.nivel deve ser um de {', '.join(maestro.NIVEIS)}")
     if erros:
         raise HTTPException(status_code=422, detail={"code": "maestro_corpo_invalido", "errors": erros})
     return conversa_id, limpas, contexto, referencia
@@ -145,8 +150,11 @@ def _validar_corpo(body: dict) -> tuple[str, list[dict], dict, date]:
 @router.post("/maestro/conversar", tags=["maestro"])
 async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(_require_jobs)):
     conversa_id, mensagens, contexto, referencia = _validar_corpo(body)
+    nivel = contexto["nivel"]
     pipeline = (contexto.get("pipeline_name") or "").strip()[:200] or None
-    job = (contexto.get("job_name") or "").strip()[:200] or None
+    # No pipeline não há "o job": o editor são os defaults, e o que interessa é
+    # o que CADA etapa declara.
+    job = None if nivel == maestro.NIVEL_PIPELINE else ((contexto.get("job_name") or "").strip()[:200] or None)
     editor = maestro.sanear_editor(contexto.get("params") or [])
     pergunta = mensagens[-1]["content"].strip()
 
@@ -166,12 +174,16 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
             catalogo = maestro.carregar_catalogo(cur)
         except maestro.MaestroIndisponivel as e:
             raise HTTPException(status_code=503, detail=str(e))
-        declarados = maestro.parametros_declarados(cur, pipeline, job)
-        defaults = maestro.defaults_pipeline(cur, pipeline)
+        if nivel == maestro.NIVEL_PIPELINE:
+            declarados = maestro.parametros_declarados_pipeline(cur, pipeline)
+            defaults = []   # o editor do wizard É a lista de defaults
+        else:
+            declarados = maestro.parametros_declarados(cur, pipeline, job)
+            defaults = maestro.defaults_pipeline(cur, pipeline)
     finally:
         _fechar(conn, cur)
 
-    ctx = {"pipeline_name": pipeline, "job_name": job, "declarados": declarados,
+    ctx = {"nivel": nivel, "pipeline_name": pipeline, "job_name": job, "declarados": declarados,
            "defaults": defaults, "editor": editor, "referencia": referencia.isoformat()}
     system = maestro.system_prompt(catalogo, ctx)
     codigos = {c["codigo"] for c in catalogo}
@@ -214,6 +226,7 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
         "avisos": resultado["avisos"],
         "orientacao": maestro.ORIENTACAO_ADMIN if resultado["status"] == maestro.STATUS_NAO_ATENDIDO else None,
         "referencia": referencia.isoformat(),
+        "nivel": nivel,
     }
 
 

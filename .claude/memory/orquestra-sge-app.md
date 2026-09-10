@@ -5,11 +5,14 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 86cdfd90-5683-49f4-922b-f8ee389b57c6
+  modified: 2026-09-10T11:21:21.531Z
 ---
 
 O projeto **Orquestra** (gestão de pipelines ETL DataStage sobre Airflow) vive no repo GitHub **carlosdev-joy/sge_app**, clonado em `/opt/orquestra-dev`.
 
 **Why:** Em 2026-06-29 o ambiente de runtime (Airflow, SQL Server, Postgres, Redis, orquestra-api, nginx) foi **removido completamente do LCServer** (migrado para outro ambiente) — só o código-fonte é trabalhado aqui. O clone anterior foi apagado junto; foi re-clonado em 2026-07-01 para melhorias.
+
+**⚠️ REGRA (pedido do usuário em 2026-09-10; PR #386 MERGEADA `41bcc3a`): as orientações vivem TAMBÉM no repo.** O repo versiona em `.claude/` uma cópia das skills de processo (`organizacao`, `gerador-spec`, `testes-automatizados`, `seguranca`, `performance`, `entrevista-projeto`, `inovacao`, `design-impactante-corporativo`, `automacoes`), dos agents `qa-adversarial`/`auditor-seguranca` e da memória do projeto (`.claude/memory/*.md` + `README.md` índice, só Orquestra + regras gerais, com o IP da VPS e a chave do gateway anonimizados), e o `CLAUDE.md` da raiz descreve o fluxo completo. **Ao fechar um marco, atualizar a memória viva (`~/.claude/projects/-root/memory/`) E a cópia em `.claude/memory/` na PR do marco** (mesmo arquivo, mesmo nome); ao mudar uma skill/agent global usada aqui, replicar a cópia no repo.
 
 **How to apply:** Para trabalhar no Orquestra, usar `/opt/orquestra-dev` (branch `main`). Stack: FastAPI + MSSQL (`api/`), React/Vite/Tailwind (`ui-react/`, `dist/` commitado), DAGs Airflow (`dags/`), migrations idempotentes em `sql/migrations/`. O repo tem CLAUDE.md próprio com convenções (nunca push direto na main; pytest + npm run build antes de commitar) e skills/subagents em `.claude/`. Não há ambiente de execução local — testes rodam com pyodbc stubbado. Relacionado: [[infra-lcseguranca]].
 

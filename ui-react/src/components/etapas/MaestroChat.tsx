@@ -13,9 +13,9 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { apiFetch, type ErroApi } from '../../lib/api'
 import {
-  MAESTRO_MAX_MENSAGEM, MAESTRO_NOME, contextoDoEditor, historicoParaEnvio, mensagemDeBoasVindas,
-  mensagemDeErro, novoConversaId, propostaParaEditor,
-  type JobParamLinha, type MaestroHistoricoConversa, type MaestroMensagem, type MaestroResposta,
+  MAESTRO_MAX_MENSAGEM, MAESTRO_NOME, chaveDaConversa, contextoDoEditor, esquecerConversa, guardarConversa,
+  historicoParaEnvio, lerConversaGuardada, mensagemDeBoasVindas, mensagemDeErro, novoConversaId, propostaParaEditor,
+  type JobParamLinha, type MaestroHistoricoConversa, type MaestroMensagem, type MaestroNivel, type MaestroResposta,
 } from '../../lib/maestro'
 import { Button } from '../ui/Button'
 import { toast } from '../ui/Toast'
@@ -33,18 +33,29 @@ export interface MaestroChatProps {
   /** Recebe as linhas da proposta já como draft do editor; o pai mescla com as suas. */
   onAplicar: (novos: JobParamLinha[]) => void
   compact?: boolean
+  /** 'etapa' (padrão) ou 'pipeline' (defaults do wizard: herança para as etapas). */
+  nivel?: MaestroNivel
 }
 
-export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, onAplicar, compact }: MaestroChatProps) {
-  const [aberto, setAberto] = useState(false)
-  const [conversaId, setConversaId] = useState(() => novoConversaId())
-  const [mensagens, setMensagens] = useState<MaestroMensagem[]>(() => [mensagemDeBoasVindas()])
+export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, onAplicar, compact, nivel = 'etapa' }: MaestroChatProps) {
+  // A conversa é guardada por chave (nível + pipeline + job) fora do
+  // componente: trocar de passo no wizard (ou reabrir o mesmo cadastro) volta
+  // com a conversa e a proposta ainda não aplicada, em vez de zerar.
+  const chave = chaveDaConversa(nivel, pipeline, jobName)
+  const guardada = lerConversaGuardada(chave)
+  const [aberto, setAberto] = useState(guardada?.aberto ?? false)
+  const [conversaId, setConversaId] = useState(() => guardada?.conversaId ?? novoConversaId())
+  const [mensagens, setMensagens] = useState<MaestroMensagem[]>(() => guardada?.mensagens ?? [mensagemDeBoasVindas(nivel)])
   const [entrada, setEntrada] = useState('')
   const [carregando, setCarregando] = useState(false)
   const [historico, setHistorico] = useState<MaestroHistoricoConversa[] | null>(null)
   const [historicoCarregando, setHistoricoCarregando] = useState(false)
   const rolagemRef = useRef<HTMLDivElement>(null)
-  const proximoId = useRef(1)
+  const proximoId = useRef((guardada?.mensagens ?? []).reduce((m, x) => Math.max(m, x.id), 0) + 1)
+
+  useEffect(() => {
+    guardarConversa(chave, { conversaId, mensagens, aberto })
+  }, [chave, conversaId, mensagens, aberto])
   // Pedido vigente: uma resposta que chega depois de "Nova conversa" / abrir
   // outra conversa (ou um histórico pedido e já fechado) é descartada em vez
   // de cair na conversa errada (achados 3 e 4 da revisão adversarial da F2).
@@ -79,7 +90,7 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
         body: JSON.stringify({
           conversa_id: conversaId,
           mensagens: historicoParaEnvio(historicoAtual),
-          contexto: contextoDoEditor(pipeline, jobName, params, referencia),
+          contexto: contextoDoEditor(pipeline, jobName, params, referencia, nivel),
         }),
       })
       if (pedidoRef.current !== meuPedido) return   // a conversa mudou enquanto esperava
@@ -107,8 +118,9 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
   function novaConversa() {
     pedidoRef.current++            // resposta em voo, se houver, é descartada
     setCarregando(false)
+    esquecerConversa(chave)
     setConversaId(novoConversaId())
-    setMensagens([mensagemDeBoasVindas()])
+    setMensagens([mensagemDeBoasVindas(nivel)])
     setEntrada('')
     setHistorico(null)
   }
@@ -139,7 +151,7 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
   function abrirConversa(c: MaestroHistoricoConversa) {
     pedidoRef.current++
     setCarregando(false)
-    const lidas: MaestroMensagem[] = [mensagemDeBoasVindas()]
+    const lidas: MaestroMensagem[] = [mensagemDeBoasVindas(nivel)]
     for (const r of c.rodadas) {
       lidas.push(novaMensagem({ papel: 'user', texto: r.mensagem }))
       if (r.resposta) lidas.push(novaMensagem({ papel: 'assistant', texto: r.resposta }))
@@ -166,6 +178,7 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
       onHistorico={() => { void alternarHistorico() }}
       onAbrirConversa={abrirConversa}
       referencia={referencia}
+      nivel={nivel}
       rolagemRef={rolagemRef}
       onKeyDown={e => {
         if (e.key === 'Escape') { e.stopPropagation(); setAberto(false) }

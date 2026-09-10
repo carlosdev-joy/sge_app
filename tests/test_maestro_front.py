@@ -166,6 +166,24 @@ def test_clicar_abre_o_painel_com_as_boas_vindas(m):
     assert m["abrir"] == {"antes": 0, "depois": 1, "boasVindas": 1}
 
 
+def test_nivel_pipeline_no_wizard(m):
+    """O Maestro na seção 'Parâmetros DataStage do pipeline': contexto com
+    nivel=pipeline e sem job, boas-vindas que explicam a herança, botão só
+    com o backend ligado."""
+    p = m["pipeline"]
+    assert p["nivel"] == "pipeline" and p["temJob"] is False
+    assert p["etapaNivel"] == "etapa" and p["etapaTemJob"] is True
+    assert "sem configurar nada nas etapas" in p["boasVindas"] and "salvar o pipeline" in p["boasVindas"]
+    assert "salvar a etapa" in p["boasVindasEtapa"]
+    assert p["botao"] == 1 and p["botaoDesligado"] == 0
+    # a conversa guardada por chave sobrevive à desmontagem; no pipeline o job não entra na chave
+    assert p["chaves"] == ["pipeline|PIPE_VIDA|", "etapa|P|J", "etapa|P|"]
+    assert p["guardada"] == [True, "c-1", 2, True, True]
+    assert p["resumo"] == ["1 substituído(s): a — confira os valores e salve o pipeline",
+                           "1 parâmetro(s) adicionado(s) — confira os valores e salve a etapa"]
+    assert p["alvo"] == ["salve o pipeline", "salve a etapa"]
+
+
 # ═══════════ 6. F3: a lib do Admin (formulário do cenário) ══════════════════
 
 @pytest.fixture(scope="module")

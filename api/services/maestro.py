@@ -36,8 +36,18 @@ K_ENABLED = "maestro_enabled"
 STATUS_ATENDIDO = "atendido"
 STATUS_NAO_ATENDIDO = "nao_atendido"
 STATUS_PERGUNTA = "pergunta"
+# O usuário só perguntou COMO algo funciona (herança, datas, rastro): resposta
+# sem proposta, e não é pedido não atendido nem pergunta do Maestro.
+STATUS_EXPLICACAO = "explicacao"
 STATUS_ERRO = "erro"
-STATUS_DO_MODELO = (STATUS_ATENDIDO, STATUS_NAO_ATENDIDO, STATUS_PERGUNTA)
+STATUS_DO_MODELO = (STATUS_ATENDIDO, STATUS_NAO_ATENDIDO, STATUS_PERGUNTA, STATUS_EXPLICACAO)
+
+# Onde o usuário está: na ETAPA (seção "Parâmetros do job") ou no PIPELINE
+# (wizard, seção "Parâmetros DataStage do pipeline" — os defaults).
+NIVEL_ETAPA = "etapa"
+NIVEL_PIPELINE = "pipeline"
+NIVEIS = (NIVEL_ETAPA, NIVEL_PIPELINE)
+MAX_JOBS_PIPELINE = 30
 
 # Limites defensivos (a tela manda mensagens curtas + o estado do editor).
 MAX_MENSAGEM = 4000         # o que o USUÁRIO digita (custo/abuso)
@@ -154,6 +164,29 @@ def parametros_declarados(cur, pipeline: str | None, job: str | None) -> dict:
             "extracted_at": str(extracted_at) if extracted_at else None, "itens": itens}
 
 
+def parametros_declarados_pipeline(cur, pipeline: str | None) -> dict:
+    """Nível pipeline: o que CADA etapa DataStage do pipeline declara (lineage
+    ISX), para o Maestro dizer quais etapas vão herdar um default —
+    {nivel: 'pipeline', jobs: [{job_name, disponivel, extracted_at, itens}]}.
+    Sem pipeline (cadastro novo) ou sem etapas → jobs vazio."""
+    saida = {"nivel": NIVEL_PIPELINE, "jobs": [], "truncados": 0}
+    if not pipeline:
+        return saida
+    try:
+        from services.rerun_params import _jobs_datastage
+        jobs = sorted(_jobs_datastage(cur, pipeline).values())
+    except Exception:
+        return saida
+    for job in jobs[:MAX_JOBS_PIPELINE]:
+        d = parametros_declarados(cur, pipeline, job)
+        saida["jobs"].append({"job_name": job, "disponivel": d["disponivel"],
+                              "extracted_at": d["extracted_at"], "itens": d["itens"]})
+    # O teto é DITO, não silencioso: uma etapa fora dele que declara o nome
+    # não pode virar "ninguém declara" (achado 3 da revisão do complemento).
+    saida["truncados"] = max(0, len(jobs) - MAX_JOBS_PIPELINE)
+    return saida
+
+
 def defaults_pipeline(cur, pipeline: str | None) -> list[dict]:
     """Defaults da 108 (nome/tipo/origem), sem valor Encrypted."""
     if not pipeline:
@@ -267,33 +300,92 @@ def system_prompt(catalogo: list[dict], contexto: dict) -> str:
         "que o usuário informar. Sem lineage e sem nome informado, use nomes convencionais (pDataIni, "
         "pDataFim, pData) e avise que precisam ser IGUAIS aos do Designer, ou faça uma pergunta.",
         "",
-        "## Contexto desta etapa",
+        "## Como os parâmetros se comportam (perguntas que o usuário costuma fazer — responda com status "
+        "explicacao quando ele só quer entender, sem pedir uma proposta)",
+        "- Parâmetro cadastrado no PIPELINE (seção 'Parâmetros DataStage do pipeline' do cadastro) é um "
+        "DEFAULT: vale para toda etapa DataStage do pipeline cujo job DECLARA o nome (conferido no "
+        "`dsjob -lparams` a cada disparo). As etapas HERDAM sem configurar nada nelas. Job que não "
+        "declara o nome simplesmente não o recebe (sem erro; o nome ignorado sai no log da task). "
+        "Etapas shell, python e stored procedure nunca recebem parâmetro de DataStage.",
+        "- A ETAPA sobrepõe o default pelo mesmo nome (caixa exata): cadastre na etapa só quando ela "
+        "precisar de um valor diferente. O painel da etapa mostra 'Defaults do pipeline: … · sobreposto "
+        "pela etapa'.",
+        "- O valor NÃO fica gravado: a cada disparo o operador calcula de novo a partir da base da "
+        "origem. Com origem data_referencia (a recomendada) a base é a DATA DE REFERÊNCIA da corrida "
+        "(a ODATE definida no check_agenda, a mesma que rege a malha e as dependências) — não o relógio; "
+        "só a origem data_execucao usa o relógio do worker. Exemplo com data_referencia: pipeline "
+        "mensal agendado todo dia 05 com '-1 mês + início do mês' e '-1 mês + fim do mês' manda "
+        "2026-09-01 e 2026-09-30 na corrida de 05/10/2026, e 2026-10-01 e 2026-10-31 na de 05/11/2026. "
+        "Se a corrida atrasar e a etapa rodar no dia 06, a referência continua sendo a do dia 05. "
+        "(Este exemplo fixo pode ser citado; para o pedido do usuário, não calcule datas — a prévia é "
+        "do Orquestra.)",
+        "- A ordem meses → âncora → dias garante 'mês anterior' em qualquer dia do mês (31/03 −1 mês = "
+        "28/02 → fim do mês = 28/02).",
+        "- Reexecutar uma corrida antiga usa a referência DAQUELA corrida; o modal de reexecução deixa "
+        "sobrepor um valor só naquela vez (Encrypted não).",
+        "- Mudar um parâmetro (do pipeline ou da etapa) NÃO exige republicar a DAG: é lido a cada disparo.",
+        "- Conferir antes de rodar: 'Simular com a referência' na própria seção mostra o valor que iria ao "
+        "DataStage para a data digitada. Depois de rodar, o rastro está na linha '[DS] parâmetros:' do "
+        "log da task e no bloco 'Parâmetros enviados ao DataStage' do detalhe da execução.",
+        "- Erro clássico: nome com caixa diferente do Designer (dat_inicio ≠ Dat_Inicio) — no pipeline o "
+        "default fica ignorado em todas as etapas; na etapa, o disparo falha antes de rodar.",
+        "",
     ]
+    nivel = contexto.get("nivel") or NIVEL_ETAPA
     pipeline = contexto.get("pipeline_name") or "(não informado)"
-    job = contexto.get("job_name") or "(não informado)"
-    linhas.append(f"- Pipeline: {pipeline} · Etapa (job DataStage): {job}")
     decl = contexto.get("declarados") or {}
-    if decl.get("disponivel") and decl.get("itens"):
-        itens = ", ".join(f"{i['name']} ({i['type'] or 'tipo desconhecido'})" for i in decl["itens"])
-        quando = f" (extração de {decl['extracted_at']})" if decl.get("extracted_at") else ""
-        linhas.append(f"- Parâmetros que o job declara segundo o lineage ISX{quando}: {itens}. "
-                      "Use SÓ estes nomes; 'parameterset' é um conjunto (os membros são PSet.Param).")
-    elif decl.get("disponivel"):
-        linhas.append("- O lineage ISX diz que o job NÃO declara parâmetro nenhum: avise que qualquer "
-                      "parâmetro falharia no disparo até o job declará-lo no Designer.")
+    if nivel == NIVEL_PIPELINE:
+        linhas += [
+            "## Onde o usuário está: cadastro do PIPELINE (defaults)",
+            f"- Pipeline: {pipeline}. O que você propor vira DEFAULT DO PIPELINE: chega a toda etapa "
+            "DataStage cujo job declarar o nome, sem configurar nada nas etapas. Diga isso quando propuser.",
+        ]
+        jobs = decl.get("jobs") or []
+        if jobs:
+            for j in jobs:
+                if j.get("disponivel") and j.get("itens"):
+                    nomes = ", ".join(i["name"] for i in j["itens"])
+                    linhas.append(f"- Etapa {j['job_name']} declara: {nomes}.")
+                elif j.get("disponivel"):
+                    linhas.append(f"- Etapa {j['job_name']} não declara parâmetro nenhum (lineage ISX).")
+                else:
+                    linhas.append(f"- Etapa {j['job_name']}: sem lineage ISX (nomes a confirmar no Designer).")
+            if decl.get("truncados"):
+                linhas.append(f"- E mais {decl['truncados']} etapa(s) DataStage não conferida(s) (teto de "
+                              f"{MAX_JOBS_PIPELINE}): diga que a lista acima é parcial.")
+            linhas.append("- Ao propor um nome, diga QUAIS etapas o declaram (vão herdar) e quais não "
+                          "(vão ignorar). Prefira nomes que várias etapas declaram (ex.: membros de "
+                          "Parameter Set, PSet.Param).")
+        else:
+            linhas.append("- O pipeline ainda não tem etapas DataStage cadastradas (ou ainda não foi salvo): "
+                          "proponha os nomes que o usuário informar e avise que só as etapas cujo job os "
+                          "declarar vão herdar.")
     else:
-        linhas.append("- Sem lineage ISX extraído para este job: os nomes precisam vir do usuário "
-                      "(ou confira-os no Designer). Diga isso.")
-    defaults = contexto.get("defaults") or []
-    if defaults:
-        linhas.append("- Defaults do pipeline: "
-                      + json.dumps(defaults, ensure_ascii=False, separators=(",", ":")))
+        job = contexto.get("job_name") or "(não informado)"
+        linhas += ["## Onde o usuário está: cadastro da ETAPA",
+                   f"- Pipeline: {pipeline} · Etapa (job DataStage): {job}"]
+        if decl.get("disponivel") and decl.get("itens"):
+            itens = ", ".join(f"{i['name']} ({i['type'] or 'tipo desconhecido'})" for i in decl["itens"])
+            quando = f" (extração de {decl['extracted_at']})" if decl.get("extracted_at") else ""
+            linhas.append(f"- Parâmetros que o job declara segundo o lineage ISX{quando}: {itens}. "
+                          "Use SÓ estes nomes; 'parameterset' é um conjunto (os membros são PSet.Param).")
+        elif decl.get("disponivel"):
+            linhas.append("- O lineage ISX diz que o job NÃO declara parâmetro nenhum: avise que qualquer "
+                          "parâmetro falharia no disparo até o job declará-lo no Designer.")
+        else:
+            linhas.append("- Sem lineage ISX extraído para este job: os nomes precisam vir do usuário "
+                          "(ou confira-os no Designer). Diga isso.")
+        defaults = contexto.get("defaults") or []
+        if defaults:
+            linhas.append("- Defaults do pipeline (a etapa herda; cadastre na etapa só para sobrepor): "
+                          + json.dumps(defaults, ensure_ascii=False, separators=(",", ":")))
     editor = contexto.get("editor") or []
+    onde = "do pipeline" if nivel == NIVEL_PIPELINE else "desta etapa"
     if editor:
-        linhas.append("- Linhas já no editor desta etapa (valores Encrypted omitidos): "
+        linhas.append(f"- Linhas já no editor {onde} (valores Encrypted omitidos): "
                       + json.dumps(editor, ensure_ascii=False, separators=(",", ":")))
     else:
-        linhas.append("- O editor desta etapa está vazio.")
+        linhas.append(f"- O editor {onde} está vazio.")
     linhas += [
         f"- Data de referência que o usuário escolheu para a prévia: {contexto.get('referencia') or date.today().isoformat()}.",
         "",
@@ -302,12 +394,15 @@ def system_prompt(catalogo: list[dict], contexto: dict) -> str:
         "cada parâmetro, uma linha por campo: Nome, Tipo, Origem, Meses, Âncora, Dias, Formato (ou "
         "Valor, na origem fixa). Se faltar uma informação essencial (ex.: os nomes), faça UMA pergunta "
         "objetiva em vez de adivinhar.",
+        "- Se o usuário só quer ENTENDER (herança, datas, rastro, 'as etapas herdam?'), explique com a "
+        "seção 'Como os parâmetros se comportam' e use status explicacao, sem proposta.",
         "- Termine SEMPRE com um único bloco ```json neste contrato (e nada depois dele):",
         '{"status": "atendido", "cenario": "<codigo do catálogo ou null>", "motivo": null, '
         '"params": [{"param_name": "pDataIni", "param_type": "Date", "param_source": "data_referencia", '
         '"param_value": null, "param_offset_meses": -1, "param_ancora": "inicio_mes", '
         '"param_offset_dias": 0, "param_formato": "%Y-%m-%d"}]}',
         '{"status": "pergunta", "cenario": null, "motivo": null, "params": []}',
+        '{"status": "explicacao", "cenario": null, "motivo": null, "params": []}',
         '{"status": "nao_atendido", "cenario": null, "motivo": "<por que, em uma frase>", "params": []}',
         "- Com origem fixo ou run_id, meses/âncora/dias/formato ficam null. Com origem de data, "
         "param_value fica null. Encrypted vai com param_value null.",
@@ -404,6 +499,9 @@ def avaliar(proposta: dict | None, referencia: date, declarados: dict | None,
         return {"status": STATUS_NAO_ATENDIDO, "cenario": cenario,
                 "motivo": motivo or "o cenário não se monta com o vocabulário atual",
                 "params": None, "previa": None, "avisos": avisos}
+    if status == STATUS_EXPLICACAO:
+        return {"status": STATUS_EXPLICACAO, "cenario": None, "motivo": None,
+                "params": None, "previa": None, "avisos": avisos}
     if status != STATUS_ATENDIDO:
         return {"status": STATUS_PERGUNTA, "cenario": cenario, "motivo": None,
                 "params": None, "previa": None, "avisos": avisos}
@@ -436,8 +534,53 @@ def avaliar(proposta: dict | None, referencia: date, declarados: dict | None,
                 "params": None, "previa": None, "avisos": avisos}
 
     decl = declarados or {}
-    por_nome = {i["name"]: i.get("type") for i in decl.get("itens") or []}
     saida: list[dict] = []
+    if decl.get("nivel") == NIVEL_PIPELINE:
+        # Nível pipeline: o aviso diz QUAIS etapas vão herdar cada nome (as que
+        # o declaram no ISX) e quais vão ignorar — é a pergunta que o usuário faz.
+        jobs = decl.get("jobs") or []
+        com_isx = [j for j in jobs if j.get("disponivel")]
+        truncados = int(decl.get("truncados") or 0)
+        for v in validos:
+            item = dict(v)
+            if item["param_type"] == "Encrypted":
+                item["param_value"] = ""
+                item["tem_valor"] = False
+            saida.append(item)
+            if not com_isx:
+                continue
+            herdam = [j["job_name"] for j in com_isx if any(i["name"] == item["param_name"] for i in j.get("itens") or [])]
+            ignoram = [j["job_name"] for j in com_isx if j["job_name"] not in herdam]
+            if herdam:
+                avisos.append(f"'{item['param_name']}' vai para: {', '.join(herdam)}"
+                              + (f"; ignorado por (não declara): {', '.join(ignoram)}" if ignoram else ""))
+            else:
+                avisos.append(f"nenhuma etapa com lineage ISX declara '{item['param_name']}' — "
+                              "confira o nome no Designer; o default seria ignorado por todas"
+                              + (" as conferidas" if truncados else ""))
+            # Tipo divergente do declarado — mesmo aviso do nível etapa.
+            for j in com_isx:
+                for i in j.get("itens") or []:
+                    if i["name"] == item["param_name"]:
+                        tipo_ds = _tipo_ds_do_isx(i.get("type"))
+                        if tipo_ds and tipo_ds != item["param_type"]:
+                            avisos.append(f"{j['job_name']} declara '{item['param_name']}' como {tipo_ds}; "
+                                          f"a proposta usa {item['param_type']}")
+        if not jobs:
+            avisos.append("o pipeline ainda não tem etapas DataStage cadastradas (ou ainda não foi salvo): "
+                          "só as etapas cujo job declarar o nome vão herdar — confira no Designer")
+        elif not com_isx:
+            avisos.append("nenhuma etapa deste pipeline tem lineage ISX: confira os nomes no Designer — "
+                          "só as etapas cujo job declarar o nome vão herdar")
+        sem_isx = [j["job_name"] for j in jobs if not j.get("disponivel")]
+        if com_isx and sem_isx:
+            avisos.append(f"sem lineage ISX (não dá para saber se herdam): {', '.join(sem_isx)}")
+        if truncados:
+            avisos.append(f"e mais {truncados} etapa(s) DataStage não conferida(s) (teto de {MAX_JOBS_PIPELINE})")
+        return {"status": STATUS_ATENDIDO, "cenario": cenario, "motivo": None,
+                "params": saida, "previa": previa, "avisos": avisos}
+
+    por_nome = {i["name"]: i.get("type") for i in decl.get("itens") or []}
     for v in validos:
         item = dict(v)
         if item["param_type"] == "Encrypted":

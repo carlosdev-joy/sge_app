@@ -11,8 +11,8 @@ import { ArrowLeft, Check, History, RotateCcw, Send, X } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { parseMarkdown, type BlocoMd, type PedacoInline } from '../../caixa/lib/markdown'
 import {
-  MAESTRO_MAX_MENSAGEM, MAESTRO_NOME, descricaoDaLinha,
-  type MaestroHistoricoConversa, type MaestroMensagem,
+  MAESTRO_MAX_MENSAGEM, MAESTRO_NOME, alvoDoSalvar, descricaoDaLinha,
+  type MaestroHistoricoConversa, type MaestroMensagem, type MaestroNivel,
 } from '../../lib/maestro'
 import { MaestroAvatar } from './MaestroAvatar'
 
@@ -33,6 +33,7 @@ export interface MaestroPainelProps {
   onHistorico: () => void
   onAbrirConversa: (c: MaestroHistoricoConversa) => void
   referencia: string
+  nivel?: MaestroNivel
   rolagemRef?: React.RefObject<HTMLDivElement | null>
   onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void
 }
@@ -83,7 +84,9 @@ function MaestroMarkdown({ texto }: { texto: string }) {
 
 /** O cartão que acompanha uma resposta com resultado: a proposta (com a
  *  prévia e o botão de aplicar), ou o "não atendido" com a orientação. */
-function CartaoResultado({ m, referencia, onAplicar }: { m: MaestroMensagem; referencia: string; onAplicar: (m: MaestroMensagem) => void }) {
+function CartaoResultado({ m, referencia, nivel, onAplicar }: {
+  m: MaestroMensagem; referencia: string; nivel: MaestroNivel; onAplicar: (m: MaestroMensagem) => void
+}) {
   const r = m.resultado
   if (!r) return null
   if (r.status === 'nao_atendido') {
@@ -128,7 +131,7 @@ function CartaoResultado({ m, referencia, onAplicar }: { m: MaestroMensagem; ref
       <div className="mt-2">
         {m.aplicada ? (
           <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300" data-maestro-aplicada>
-            <Check size={13} /> Aplicado no editor — confira e salve a etapa
+            <Check size={13} /> Aplicado no editor — confira e {alvoDoSalvar(nivel)}
           </span>
         ) : (
           <Button size="sm" variant="primary" onClick={() => onAplicar(m)} data-maestro-aplicar>
@@ -142,7 +145,8 @@ function CartaoResultado({ m, referencia, onAplicar }: { m: MaestroMensagem; ref
 
 export function MaestroPainel({
   mensagens, carregando, sugestoes, entrada, onEntrada, onEnviar, onSugestao, onAplicar, onFechar,
-  onNovaConversa, historico, historicoCarregando, onHistorico, onAbrirConversa, referencia, rolagemRef, onKeyDown,
+  onNovaConversa, historico, historicoCarregando, onHistorico, onAbrirConversa, referencia, nivel = 'etapa',
+  rolagemRef, onKeyDown,
 }: MaestroPainelProps) {
   const podeEnviar = !carregando && entrada.trim().length > 0 && entrada.length <= MAESTRO_MAX_MENSAGEM
   const soBoasVindas = mensagens.length <= 1 && !carregando
@@ -224,7 +228,7 @@ export function MaestroPainel({
                 {m.papel === 'assistant' && !m.erro
                   ? <MaestroMarkdown texto={m.texto} />
                   : <p className="whitespace-pre-wrap text-sm leading-snug">{m.texto}</p>}
-                <CartaoResultado m={m} referencia={referencia} onAplicar={onAplicar} />
+                <CartaoResultado m={m} referencia={referencia} nivel={nivel} onAplicar={onAplicar} />
               </div>
             </div>
           ))}

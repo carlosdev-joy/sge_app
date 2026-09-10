@@ -3,16 +3,33 @@
 // DataStage cujo job declara o nome — a etapa sobrepõe por nome. Reusa o mesmo
 // editor da etapa (JobParamsEditor em modo datastage), com a prévia do servidor
 // e o "Simular com a referência".
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Hint } from '../ui/Hint'
+import { toast } from '../ui/Toast'
 import { JobParamsEditor } from '../etapas/JobTypeFields'
+import { MaestroChat } from '../etapas/MaestroChat'
 import { DS_ENCRYPTED_MASCARA, hojeLocalISO, type JobParam } from '../../lib/dsParams'
+import { aplicarProposta, resumoAplicacao } from '../../lib/maestro'
+import { useMaestroStatus } from '../../lib/maestroStatus'
 
-export function ParametrosPipelineSecao({ params, onChange }: {
+export function ParametrosPipelineSecao({ params, onChange, pipeline }: {
   params: JobParam[]
   onChange: (params: JobParam[]) => void
+  /** Nome do pipeline (vazio no cadastro novo): dá ao Maestro as etapas e o que elas declaram. */
+  pipeline?: string
 }) {
   const [referencia, setReferencia] = useState(() => hojeLocalISO())
+  // Maestro no nível do pipeline: o que ele propõe vira DEFAULT (herdado pelas
+  // etapas cujo job declarar o nome). Mesma proteção do editor da etapa: a
+  // mescla lê a lista ATUAL via ref, depois do await.
+  const maestro = useMaestroStatus(true)
+  const paramsRef = useRef(params)
+  useEffect(() => { paramsRef.current = params }, [params])
+  function aplicarDoMaestro(novos: JobParam[]) {
+    const r = aplicarProposta(paramsRef.current, novos)
+    onChange(r.params)
+    toast.success(resumoAplicacao(r, 'pipeline'))
+  }
   return (
     <div className="flex flex-col gap-1.5" data-secao-params-pipeline>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -29,6 +46,16 @@ export function ParametrosPipelineSecao({ params, onChange }: {
             </span>
           )}
         </label>
+        {maestro.enabled && (
+          <MaestroChat
+            nivel="pipeline"
+            pipeline={(pipeline ?? '').trim() || undefined}
+            params={params}
+            referencia={referencia}
+            sugestoes={maestro.sugestoes}
+            onAplicar={aplicarDoMaestro}
+          />
+        )}
         {params.length > 0 && (
           <label className="ml-auto flex items-center gap-1 text-[11px] text-dim">
             Simular com a referência

@@ -459,6 +459,31 @@ function tela(params, previa, extra, jobName) {
     botao: { comMaestro: porAttr(comMaestro, 'data-maestro-botao').length, desligado: porAttr(desligado, 'data-maestro-botao').length,
              semJob: porAttr(semJobComMaestro, 'data-maestro-botao').length, storedproc: porAttr(storedprocComStatus, 'data-maestro-botao').length,
              importarContinua: porAttr(comMaestro, 'data-importar-isx').length },
+    // Nível pipeline (wizard): contexto com nivel, sem job; boas-vindas próprias; botão na seção do pipeline.
+    pipeline: (() => {
+      const ctx = M.contextoDoEditor('PIPE_VIDA', 'JobIgnorado', editor, '2026-03-15', 'pipeline')
+      global.__q = { 'maestro-status': status }
+      const secaoCom = mini.montar(el(ParametrosPipelineSecao, { params: [], onChange: () => {}, pipeline: 'PIPE_VIDA' }))
+      global.__q = { 'maestro-status': { enabled: false, sugestoes: [] } }
+      const secaoSem = mini.montar(el(ParametrosPipelineSecao, { params: [], onChange: () => {} }))
+      // A conversa sobrevive à desmontagem (trocar de passo no wizard): guardada por chave.
+      const chave = M.chaveDaConversa('pipeline', 'PIPE_VIDA', 'ignorado')
+      M.esquecerConversa(chave)
+      const antes = M.lerConversaGuardada(chave)
+      M.guardarConversa(chave, { conversaId: 'c-1', mensagens: [M.mensagemDeBoasVindas('pipeline'), { id: 1, papel: 'user', texto: 'oi' }], aberto: true })
+      const lida = M.lerConversaGuardada(chave)
+      M.esquecerConversa(chave)
+      const depois = M.lerConversaGuardada(chave)
+      return { nivel: ctx.nivel, temJob: 'job_name' in ctx, etapaTemJob: 'job_name' in M.contextoDoEditor('P', 'J', [], '2026-03-15'),
+               etapaNivel: M.contextoDoEditor('P', 'J', [], '2026-03-15').nivel,
+               boasVindas: M.mensagemDeBoasVindas('pipeline').texto, boasVindasEtapa: M.mensagemDeBoasVindas().texto,
+               botao: porAttr(secaoCom, 'data-maestro-botao').length, botaoDesligado: porAttr(secaoSem, 'data-maestro-botao').length,
+               chaves: [chave, M.chaveDaConversa('etapa', 'P', 'J'), M.chaveDaConversa('etapa', 'P')],
+               guardada: [antes === undefined, lida && lida.conversaId, lida && lida.mensagens.length, lida && lida.aberto, depois === undefined],
+               resumo: [M.resumoAplicacao({ params: [], substituidos: ['a'], adicionados: [] }, 'pipeline'),
+                        M.resumoAplicacao({ params: [], substituidos: [], adicionados: ['b'] })],
+               alvo: [M.alvoDoSalvar('pipeline'), M.alvoDoSalvar()] }
+    })(),
     abrir: { antes, depois, boasVindas: porAttr(chat, 'data-maestro-msg').length },
   }
 }
