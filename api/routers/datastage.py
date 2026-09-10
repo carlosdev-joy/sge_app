@@ -127,15 +127,17 @@ async def datastage_log_query(
             "log_summary, poll_snapshots, last_polled_at, created_at, updated_at, "
             "ds_start_time, ds_end_time"
         )
-        # rows_out (migration 049) — inclui na projeção só se a coluna existir.
-        try:
-            cursor.execute("SELECT COL_LENGTH('dbo.etl_ds_job_log','rows_out')")
-            if cursor.fetchone()[0] is not None:
-                base_cols = base_cols + ", rows_out"
-        except Exception:
-            try: conn.rollback()
-            except Exception: pass
-            cursor = conn.cursor()
+        # rows_out (migration 049) e params_json (107 — o que foi enviado no
+        # -param) — incluem na projeção só se a coluna existir.
+        for _col in ("rows_out", "params_json"):
+            try:
+                cursor.execute("SELECT COL_LENGTH('dbo.etl_ds_job_log', ?)", (_col,))
+                if cursor.fetchone()[0] is not None:
+                    base_cols = base_cols + f", {_col}"
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                cursor = conn.cursor()
         try:
             cursor.execute(
                 f"SELECT TOP (?) {base_cols}, queued_seconds "
@@ -157,7 +159,7 @@ async def datastage_log_query(
         cursor.close(); conn.close()
 
         for row in rows:
-            for field in ("child_jobs", "poll_snapshots"):
+            for field in ("child_jobs", "poll_snapshots", "params_json"):
                 raw = row.get(field)
                 if raw and isinstance(raw, str):
                     try:

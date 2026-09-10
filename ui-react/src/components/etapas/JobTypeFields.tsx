@@ -1,9 +1,16 @@
+import { useDeferredValue, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Maximize2, Plus } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
+import {
+  DS_ENCRYPTED_MASCARA, DS_FORMATOS_SUGERIDOS, DS_PARAM_ANCORAS, DS_PARAM_SOURCES, DS_PARAM_TYPES,
+  dsParamErrors, ehOrigemData, previewItens, type JobParam,
+} from '../../lib/dsParams'
 import { Button } from '../ui/Button'
 import { Hint } from '../ui/Hint'
 import { Input, Select, Textarea } from '../ui/Input'
+
+export type { JobParam } from '../../lib/dsParams'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FONTE ÚNICA de campos por TIPO de etapa (datastage | shell | python | storedproc).
@@ -18,14 +25,8 @@ import { Input, Select, Textarea } from '../ui/Input'
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Tipos de dado de parâmetro de stored procedure — mesma lista do wizard.
+// (Os tipos, origens e réguas dos parâmetros DataStage moram em lib/dsParams.)
 export const PARAM_TYPES = ['VARCHAR', 'INT', 'DATE', 'DATETIME', 'DECIMAL', 'BIT'] as const
-
-export interface JobParam {
-  id?: string
-  param_name: string
-  param_type: string
-  param_value: string
-}
 
 export type JobFieldsType = 'datastage' | 'shell' | 'python' | 'storedproc' | 'http'
 
@@ -185,6 +186,11 @@ export function jobTypeFieldsErrors(v: JobTypeFieldsValue): string[] {
       }
     }
   }
+  if (v.job_type === 'datastage') {
+    // Réguas do lib/dsParams (espelham a API): nome, tipo, origem, cálculo só
+    // com origem de data, valor fixo por tipo, Encrypted, duplicata por caixa.
+    errs.push(...dsParamErrors(v.params))
+  }
   if (v.job_type === 'storedproc') {
     if (!v.mssql_conn_id) errs.push('Conexão MSSQL é obrigatória para etapas storedproc')
     const vistos = new Set<string>()
@@ -209,24 +215,220 @@ export interface JobParamsEditorProps {
   params: JobParam[]
   onChange: (params: JobParam[]) => void
   compact?: boolean
+  // 'storedproc' (padrão): nome/tipo SQL/valor fixo. 'datastage': tipos do
+  // DataStage, origem do valor, cálculo de data e prévia do servidor.
+  modo?: 'storedproc' | 'datastage'
+  // Só no modo datastage: a data com que a prévia é calculada ("Simular com").
+  referencia?: string
 }
 
 function genParamId() {
   return `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
 }
 
-export function JobParamsEditor({ params, onChange, compact }: JobParamsEditorProps) {
+// Prévia dos parâmetros DataStage — "com a referência X, o valor enviado seria
+// Y" — calculada pelo SERVIDOR (POST /pipelines/jobs/params/preview), a mesma
+// rotina que valida o save. O front não tem cópia do cálculo (spec §3).
+// useDeferredValue segura a rajada de teclas; a query só muda quando o corpo
+// diferido muda. O segredo Encrypted nunca vai no corpo (previewItens).
+interface PreviewResp {
+  referencia: string
+  itens: { param_name: string; valor: string; descricao: string }[]
+  erros: string[]
+}
+function useDsParamsPreview(params: JobParam[], referencia: string, ativo: boolean) {
+  const itens = useMemo(() => previewItens(params), [params])
+  const corpo = useMemo(
+    () => JSON.stringify({ ...(referencia ? { referencia } : {}), itens }),
+    [itens, referencia],
+  )
+  const corpoDiferido = useDeferredValue(corpo)
+  return useQuery<PreviewResp>({
+    queryKey: ['ds-params-preview', corpoDiferido],
+    queryFn: () => apiFetch('/pipelines/jobs/params/preview', { method: 'POST', body: corpoDiferido }),
+    enabled: ativo && itens.length > 0,
+    staleTime: 60_000,
+    placeholderData: prev => prev,
+  })
+}
+
+export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc', referencia = '' }: JobParamsEditorProps) {
   const txt = compact ? 'text-xs' : 'text-sm'
   const inputCls = `bg-panel border text-ink rounded-md ${compact ? 'px-2 py-1 text-xs' : 'px-3 py-1.5 text-sm'} font-mono placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500`
+  const selectCls = `bg-panel border border-edge text-ink rounded-md ${compact ? 'px-1.5 py-1 text-xs' : 'px-2 py-1.5 text-sm'} focus:outline-none focus:ring-1 focus:ring-blue-500`
+  const ehDs = modo === 'datastage'
+  const preview = useDsParamsPreview(params, referencia, ehDs)
+  // Sem item nomeado a query fica desabilitada, mas `placeholderData` ainda
+  // devolve a ÚLTIMA resposta — prévia e erros velhos apareceriam ao lado de
+  // uma lista vazia (achado da revisão da F3). Só se lê a resposta com itens.
+  const temItens = useMemo(() => ehDs && previewItens(params).length > 0, [ehDs, params])
+  const previaPorNome = useMemo(() => {
+    const m = new Map<string, { valor: string; descricao: string }>()
+    if (temItens) for (const it of preview.data?.itens ?? []) m.set(it.param_name, it)
+    return m
+  }, [preview.data, temItens])
+  const errosPrevia = temItens ? (preview.data?.erros ?? []) : []
 
   function addParam() {
-    onChange([...params, { id: genParamId(), param_name: '', param_type: 'VARCHAR', param_value: '' }])
+    onChange([...params, ehDs
+      ? { id: genParamId(), param_name: '', param_type: 'String', param_source: 'fixo', param_value: '',
+          param_offset_meses: '', param_ancora: '', param_offset_dias: '', param_formato: '' }
+      : { id: genParamId(), param_name: '', param_type: 'VARCHAR', param_value: '' }])
   }
   function removeParam(idx: number) {
     onChange(params.filter((_, i) => i !== idx))
   }
   function updateParam(idx: number, patch: Partial<JobParam>) {
     onChange(params.map((p, i) => i === idx ? { ...p, ...patch } : p))
+  }
+
+  if (ehDs) {
+    // Cada parâmetro é um CARTÃO de duas linhas — cabe no modal `md` da tela
+    // Etapas (~400px úteis) e no dock do Fluxo: linha 1 = Nome | Tipo | Origem
+    // | ✕; linha 2 = valor (ou o bloco de cálculo) + a prévia do servidor.
+    // Inputs com `min-w-0 w-full`: input em trilha `1fr` não encolhe abaixo da
+    // largura intrínseca (size=20) e transbordaria (achado da revisão da F3).
+    const campo = `${inputCls} min-w-0 w-full`
+    const sel = `${selectCls} min-w-0 w-full`
+    return (
+      <div className="flex flex-col gap-1.5" data-editor-params="datastage">
+        {params.map((p, idx) => {
+          const origem = p.param_source || 'fixo'
+          const data = ehOrigemData(origem)
+          const previa = p.param_name.trim() ? previaPorNome.get(p.param_name.trim()) : undefined
+          return (
+            <div key={p.id ?? idx} data-param-linha={p.param_name}
+              className="flex flex-col gap-1 rounded-md border border-edge/70 bg-canvas/40 p-1.5">
+              <div className={`grid ${compact ? 'grid-cols-[minmax(0,1fr)_84px_128px_20px]' : 'grid-cols-[minmax(0,1fr)_96px_150px_24px]'} gap-1.5 items-center`}>
+                <input
+                  type="text"
+                  value={p.param_name}
+                  onChange={e => updateParam(idx, { param_name: e.target.value })}
+                  placeholder="pNome ou PSet.pNome"
+                  title="Nome exato do parâmetro no job (maiúsculas contam); membro de Parameter Set: PSet.Param"
+                  className={`${campo} ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`}
+                />
+                <select
+                  value={p.param_type}
+                  onChange={e => {
+                    const tipo = e.target.value
+                    // Tipo que não aceita origem de data volta para fixo; ao
+                    // trocar para/de Encrypted o valor anterior não sobrevive.
+                    const patch: Partial<JobParam> = { param_type: tipo }
+                    if (data && !['String', 'Date', 'Timestamp'].includes(tipo)) patch.param_source = 'fixo'
+                    if (origem === 'run_id' && tipo !== 'String') patch.param_source = 'fixo'
+                    if (tipo === 'Encrypted' || p.param_type === 'Encrypted') { patch.param_value = ''; patch.tem_valor = false }
+                    updateParam(idx, patch)
+                  }}
+                  title="Tipo do parâmetro no DataStage"
+                  className={sel}
+                >
+                  {DS_PARAM_TYPES.map(t => <option key={t}>{t}</option>)}
+                </select>
+                <select
+                  value={origem}
+                  onChange={e => updateParam(idx, { param_source: e.target.value })}
+                  title="De onde vem o valor a cada execução"
+                  className={sel}
+                  data-origem={origem}
+                >
+                  {DS_PARAM_SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => removeParam(idx)}
+                  className={`text-dim hover:text-red-500 ${txt} justify-self-center`}
+                  title="Remover parâmetro"
+                >✕</button>
+              </div>
+
+              {/* Linha 2: valor / cálculo — muda com a origem */}
+              {data ? (
+                <div className={`grid ${compact ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'} gap-1`} data-calculo>
+                  <input
+                    type="text" inputMode="numeric"
+                    value={p.param_offset_meses ?? ''}
+                    onChange={e => updateParam(idx, { param_offset_meses: e.target.value })}
+                    placeholder="meses (0)"
+                    title="Passo 1 — deslocamento em meses (dia truncado ao último válido do mês)"
+                    className={`${campo} border-edge`}
+                  />
+                  <select
+                    value={p.param_ancora ?? ''}
+                    onChange={e => updateParam(idx, { param_ancora: e.target.value })}
+                    title="Passo 2 — âncora dentro do período"
+                    className={sel}
+                  >
+                    {DS_PARAM_ANCORAS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                  </select>
+                  <input
+                    type="text" inputMode="numeric"
+                    value={p.param_offset_dias ?? ''}
+                    onChange={e => updateParam(idx, { param_offset_dias: e.target.value })}
+                    placeholder="dias (0)"
+                    title="Passo 3 — deslocamento em dias"
+                    className={`${campo} border-edge`}
+                  />
+                  <input
+                    type="text" list="ds-param-formatos"
+                    value={p.param_formato ?? ''}
+                    onChange={e => updateParam(idx, { param_formato: e.target.value })}
+                    placeholder="%Y-%m-%d"
+                    title="Passo 4 — formato (strftime): %Y %m %d %y %H %M %S e separadores - / . _ :"
+                    className={`${campo} border-edge`}
+                  />
+                </div>
+              ) : origem === 'run_id' ? (
+                <input type="text" value="run_id da corrida (preenchido em runtime)" disabled
+                  className={`${campo} border-edge opacity-60`} />
+              ) : p.param_type === 'Encrypted' ? (
+                <input
+                  type="password" autoComplete="new-password"
+                  value={p.param_value}
+                  onChange={e => updateParam(idx, { param_value: e.target.value })}
+                  placeholder={p.tem_valor ? 'mantido — digite para trocar' : 'valor (cifrado ao salvar)'}
+                  title={'Cifrado no banco; nunca aparece em log. Vazio com valor gravado = manter.'}
+                  className={`${campo} ${!p.param_value && !p.tem_valor ? 'border-red-500/60' : 'border-edge'}`}
+                  data-encrypted={p.tem_valor ? 'mantido' : 'novo'}
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={p.param_value}
+                  onChange={e => updateParam(idx, { param_value: e.target.value })}
+                  placeholder={p.param_type === 'Pathname' ? '/caminho/absoluto' : p.param_type === 'Date' ? 'YYYY-MM-DD' : 'valor fixo'}
+                  className={`${campo} border-edge`}
+                />
+              )}
+
+              {/* Prévia — o valor que iria ao DataStage com a referência escolhida */}
+              <p
+                className={`${compact ? 'text-[10px]' : 'text-[11px]'} text-dim break-all`}
+                title={previa?.descricao ?? ''}
+                data-previa={previa?.valor ?? ''}
+              >
+                Prévia: {previa
+                  ? <><span className="font-mono text-ink">{previa.valor}</span>{previa.descricao && previa.descricao !== 'fixo' ? <span className="text-dim/80"> · {previa.descricao}</span> : null}</>
+                  : <span>—</span>}
+              </p>
+            </div>
+          )
+        })}
+        <datalist id="ds-param-formatos">
+          {DS_FORMATOS_SUGERIDOS.map(f => <option key={f} value={f} />)}
+        </datalist>
+        {errosPrevia.length > 0 && (
+          <div className="flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 dark:border-amber-800/40 dark:bg-amber-900/20" data-previa-erros>
+            {errosPrevia.map(e => (
+              <p key={e} className="text-[11px] leading-snug text-amber-800 dark:text-amber-300">{e}</p>
+            ))}
+          </div>
+        )}
+        <Button size="sm" variant="ghost" onClick={addParam} className="self-start">
+          <Plus size={compact ? 10 : 12} /> Adicionar parâmetro
+        </Button>
+      </div>
+    )
   }
 
   return (
@@ -275,6 +477,12 @@ export function JobTypeFields({
   value, onChange, sshConns, mssqlConns, compact, onMaximizar,
 }: JobTypeFieldsProps) {
   const { job_type } = value
+  // "Simular com a referência" da prévia dos parâmetros DataStage — padrão HOJE
+  // no fuso local (toISOString é UTC: depois das 21h em BRT mostraria amanhã).
+  const [referenciaPrevia, setReferenciaPrevia] = useState(() => {
+    const d = new Date()
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+  })
 
   // Bancos do SERVIDOR DA CONEXÃO SELECIONADA (regra de 100% do Orquestra —
   // mesma do nó SQL): conn_id primeiro (credencial NATIVA da conexão, enxerga
@@ -374,6 +582,47 @@ export function JobTypeFields({
               </p>
             </div>
           </label>
+        </div>
+      )}
+
+      {/* datastage → parâmetros do job (-param no dsjob), spec F3 */}
+      {job_type === 'datastage' && (
+        <div className="flex flex-col gap-1.5" data-secao-params-ds>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <label className={`${labelCls} flex items-center gap-1.5`}>
+              Parâmetros do job (opcional)
+              <Hint texto={
+                'Enviados ao DataStage como -param a cada execução.\n'
+                + 'Se o job NÃO declarar o parâmetro, a etapa falha antes do disparo — o DataStage distingue maiúsculas de minúsculas. Membro de Parameter Set: PSet.Param.\n'
+                + 'Origem de data: o valor é calculado na ordem meses → âncora → dias → formato (ex.: -1 mês + fim do mês = último dia do mês anterior).\n'
+                + `Encrypted: cifrado no banco, nunca em log; ${DS_ENCRYPTED_MASCARA} = manter o valor gravado (vazio também mantém).`
+              } />
+              {value.params.length > 0 && (
+                <span className="bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800/40 rounded-full px-1.5 py-0 text-[9px] font-bold">
+                  {value.params.length}
+                </span>
+              )}
+            </label>
+            {value.params.length > 0 && (
+              <label className={`ml-auto flex items-center gap-1 ${compact ? 'text-[10px]' : 'text-[11px]'} text-dim`}>
+                Simular com a referência
+                <input
+                  type="date"
+                  value={referenciaPrevia}
+                  onChange={e => setReferenciaPrevia(e.target.value)}
+                  className={`bg-panel border border-edge text-ink rounded-md ${compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-0.5 text-xs'} focus:outline-none focus:ring-1 focus:ring-blue-500`}
+                  data-referencia-previa
+                />
+              </label>
+            )}
+          </div>
+          <JobParamsEditor
+            modo="datastage"
+            params={value.params}
+            onChange={params => onChange({ params })}
+            compact={compact}
+            referencia={referenciaPrevia}
+          />
         </div>
       )}
 

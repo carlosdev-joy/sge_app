@@ -131,7 +131,8 @@ export function PainelEtapa({ node, pipeline, sshConns, mssqlConns, onRename, on
               label="Tipo"
               value={d.type}
               disabled={!isNew}
-              onChange={e => onPatchData(node.id, { type: e.target.value as EtapaType })}
+              // Parâmetros são do TIPO: trocar o tipo do nó novo zera a lista.
+              onChange={e => onPatchData(node.id, { type: e.target.value as EtapaType, params: [] })}
               className={`text-xs ${!isNew ? 'opacity-60' : ''}`}
             >
               {CREATABLE_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t].label}</option>)}

@@ -24,6 +24,8 @@ import {
   JobTypeFields, jobTypeFieldsErrors, defaultPythonDraft, pythonFromApi, pythonToApi,
   type JobTypeFieldsValue, type JobParam, type PythonDraft, type PythonNodeApi,
 } from '../components/etapas/JobTypeFields'
+import { paramsFromApi, paramsToApi, type JobParamApi } from '../lib/dsParams'
+import type { ErroApi } from '../lib/api'
 import { ConferenciaDsJob } from '../components/console/ConferenciaDsJob'
 import { conferirNomeDs, sugestoesDs, useDsJobs, usePipelineProject } from '../lib/dsJobs'
 
@@ -183,7 +185,7 @@ function JobFormModal({
       depends_on_jobs?: string | null
       mssql_conn_id?: string | null
       mssql_database?: string | null
-      params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
+      params?: JobParamApi[]
       notify?: { grupo_id: number | null; template_id: number | null; mensagem: string } | null
       python?: PythonNodeApi | null
     }>(`/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
@@ -194,12 +196,8 @@ function JobFormModal({
           depends_on_jobs: (d.depends_on_jobs || '').split(',').map(s => s.trim()).filter(Boolean),
           mssql_conn_id: d.mssql_conn_id ?? '',
           mssql_database: d.mssql_database ?? '',
-          params: (d.params ?? []).map((p, i) => ({
-            id: `p_${i}_${p.param_name}`,
-            param_name: p.param_name,
-            param_type: p.param_type,
-            param_value: p.param_value ?? '',
-          })),
+          // storedproc e datastage (origem/cálculo/Encrypted mascarado) — lib/dsParams.
+          params: paramsFromApi(d.params),
           // python v2: null/ausente = legado 'modulo' (pré-seleciona o modo certo).
           python: pythonFromApi(d.python),
           grupo_id: notify.grupo_id ?? null,
@@ -275,15 +273,9 @@ function JobFormModal({
         depends_on_jobs: form.depends_on_jobs,
         mssql_conn_id: form.job_type === 'storedproc' ? (form.mssql_conn_id || null) : null,
         mssql_database: form.job_type === 'storedproc' ? (form.mssql_database || null) : null,
-        params: form.job_type === 'storedproc'
-          ? form.params
-              .filter(p => p.param_name.trim())
-              .map(p => ({
-                param_name: p.param_name.trim(),
-                param_type: p.param_type,
-                param_value: p.param_value,
-              }))
-          : [],
+        // storedproc: nome/tipo/valor; datastage: origem + cálculo + Encrypted
+        // (*** = manter); demais tipos: lista vazia (a chave sempre vai).
+        params: paramsToApi(form.job_type, form.params),
         ...(form.job_type === 'notificacao'
           ? {
               notify: {
@@ -305,8 +297,18 @@ function JobFormModal({
       qc.invalidateQueries({ queryKey: ['jobs'] })
       onClose()
     },
-    onError: (e: any) => {
-      const detail = e.message
+    onError: (e: unknown) => {
+      // 422 estruturado ({detail: {errors: [...]}}) chega em `err.detail` (api.ts) —
+      // `e.message` traz só "422 Unprocessable Entity". Antes da F3 as réguas do
+      // modal espelhavam 100% do servidor; agora há erros que SÓ ele detecta
+      // (Encrypted sem token gravado, migration 107 ausente) e precisam ser lidos.
+      const err = e as ErroApi
+      const d = err?.detail as { errors?: unknown } | string | undefined
+      if (d && typeof d === 'object' && Array.isArray(d.errors)) {
+        setErr(d.errors.filter((x): x is string => typeof x === 'string'))
+        return
+      }
+      const detail = typeof d === 'string' ? d : (err?.message ?? String(e))
       try {
         const parsed = JSON.parse(detail)
         setErr(parsed.errors ?? [detail])
@@ -408,7 +410,10 @@ function JobFormModal({
           </div>
 
           <Select label="Tipo *" value={form.job_type}
-            onChange={e => f('job_type', e.target.value as JobType)}>
+            // Parâmetros são do TIPO (storedproc guarda @p VARCHAR; datastage guarda
+            // pData String + origem): trocar o tipo zera a lista — senão o select
+            // de tipo DS mostraria "String" com VARCHAR no estado.
+            onChange={e => { const t = e.target.value as JobType; setForm(prev => ({ ...prev, job_type: t, params: [] })); setErr([]) }}>
             {JOB_TYPES.map(t => <option key={t}>{t}</option>)}
           </Select>
         </div>

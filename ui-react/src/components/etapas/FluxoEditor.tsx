@@ -69,6 +69,7 @@ import {
   jobTypeFieldsErrors, defaultPythonDraft, pythonFromApi, pythonToApi,
   type JobFieldsType, type JobParam, type PythonDraft, type PythonNodeApi,
 } from './JobTypeFields'
+import { paramsFromApi, paramsToApi, type JobParamApi } from '../../lib/dsParams'
 import {
   type Condition, type NotifyConfig, type SqlConfig, type AguardeConfig, type MsgGrupo,
   defaultNotify, toNotifyConfig, notifyLabel, defaultSql, toSqlConfig, sqlLabel,
@@ -120,7 +121,7 @@ interface FluxoNode {
   verbose_log?: boolean
   mssql_conn_id?: string | null
   mssql_database?: string | null
-  params?: { param_name: string; param_type: string; param_value: string | null; param_order?: number }[]
+  params?: JobParamApi[]
   // Nó python v2 (chave `python` da API) — null/ausente = modo legado 'modulo'.
   python?: PythonNodeApi | null
 }
@@ -198,12 +199,8 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       verbose_log: !!n.verbose_log,
       mssql_conn_id: n.mssql_conn_id ?? null,
       mssql_database: n.mssql_database ?? null,
-      params: (n.params ?? []).map((p, i) => ({
-        id: `p_${i}_${p.param_name}`,
-        param_name: p.param_name,
-        param_type: p.param_type,
-        param_value: p.param_value ?? '',
-      })),
+      // storedproc e datastage (origem/cálculo/Encrypted mascarado) — lib/dsParams.
+      params: paramsFromApi(n.params),
       // Nó python v2: draft local a partir da API (null/ausente = 'modulo' —
       // nó existente sem python pré-seleciona o modo legado).
       python: pythonFromApi(n.python),
@@ -1709,13 +1706,9 @@ function FluxoEditorInner({
           verbose_log: !!d.verbose_log,
           mssql_conn_id: (d.mssql_conn_id as string | null) ?? null,
           mssql_database: (d.mssql_database as string | null) ?? null,
-          params: rawParams
-            .filter(p => (p.param_name ?? '').trim())
-            .map(p => ({
-              param_name: p.param_name.trim(),
-              param_type: p.param_type,
-              param_value: p.param_value,
-            })),
+          // storedproc: nome/tipo/valor; datastage: origem + cálculo + Encrypted
+          // (*** = manter). A chave vai SEMPRE (presença = autoriza o replace-all).
+          params: paramsToApi(jobType, rawParams),
           // Nó python: a chave `python` vai SEMPRE (mesmo null) — é a presença
           // da chave que permite voltar ao legado ('modulo' → python: null
           // limpa o python_json no backend). Envia só o modo ativo do draft.
