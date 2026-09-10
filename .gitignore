@@ -48,6 +48,7 @@ config/*.local
 !.claude/agents/
 !.claude/commands/
 !.claude/rules/
+!.claude/memory/
 !.claude/settings.json
 .claude/settings.local.json
 .claude/*.local.json
