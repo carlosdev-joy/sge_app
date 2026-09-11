@@ -26,6 +26,7 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Ambiente DEV do Orquestra](vps-ambiente-dev-orquestra.md) — ▶️ NO AR (2026-08-31); UI :8090, credenciais em `.env.dev`; ⚠️ `dist/` é VOLUME — build local aparece na hora
 - [⚠️ GOTCHA: squash em PRs empilhadas conflita](gotcha-squash-prs-empilhadas.md) — `dist/` versionado agrava; resolver com `merge -s ours` DEPOIS de provar a ancestralidade
 - [⚠️ GOTCHA: ServiceNow devolve 200 vazio sem permissão](gotcha-servicenow-tabela-inacessivel.md) — integração fica VERDE coletando nada; as notas do Orquestra ficaram 0 desde sempre
+- [⚠️ GOTCHA: recriar a API deixa a UI com 502](gotcha-nginx-ip-do-upstream-cacheado.md) — o nginx `airflow-ui` guarda o IP do upstream do boot; `docker exec airflow-ui nginx -s reload` resolve
 - [⚠️ GOTCHA: `docker compose` sem `--env-file .env.dev` derruba o SQL Server do DEV](gotcha-compose-sem-env-file-dev.md) — recria o container com a senha default, `unhealthy` em loop; o dado está intacto, NÃO apagar o volume
 - [⚠️ GOTCHA: `docker cp` sobre symlink sobrescreve o ALVO](gotcha-docker-cp-symlink.md) — matou o busybox do sshd-amostra do DEV; recuperar copiando o binário da imagem, sem recriar o container
 - [⚠️ GOTCHA: `tsc --noEmit` não checa nada](gotcha-tsc-noemit-nao-checa.md) — o tsconfig raiz do template Vite tem `"files": []` e o comando sai 0 sem olhar arquivo; o verificador é `tsc -b`
