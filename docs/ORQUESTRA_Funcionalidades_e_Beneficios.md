@@ -104,6 +104,8 @@ Tudo do Operador, mais:
 - Registre mudanças planejadas em jobs e pipelines antes de executá-las.
 - Rastreamento de status (pendente/aprovado/executado) com histórico de aprovações.
 
+- **Aviso por e-mail no fim do fluxo**: um nó **E-mail** que se arrasta para o desenho e avisa quem precisa saber quando a carga fecha — assunto e corpo com marcadores (`{pipeline}`, `{linhas}`, `{status}`, `{duracao}`), lista própria somada à do fluxo, e anexo do arquivo que a própria corrida gerou (`relatorio_{odate}.xlsx`). Sai pelo servidor de e-mail que o DataStage já usa, sem conta nova. Mudar destinatário ou texto vale na corrida seguinte, sem republicar; se o arquivo do anexo não estiver lá, o aviso sai mesmo assim e o registro explica.
+
 ### 2.4 Perfil Administrador
 
 Tudo dos demais, mais a aba **Admin**:
@@ -115,6 +117,7 @@ Tudo dos demais, mais a aba **Admin**:
 - **Usuários & Perfis**: promova usuários, ajuste permissões por tela e ação, crie perfis personalizados (ex.: `auditoria`), configure TTL de sessão.
 - **Projetos**: CRUD dos projetos disponíveis para categorização de pipelines.
 - **Relatório diário automático**: geração e envio automático de relatório de execuções do dia anterior.
+- **E-mail**: liga ou desliga o canal inteiro num interruptor, define o remetente único, o peso máximo de anexo e — o ponto de controle — **de quais pastas do servidor um anexo pode sair**. Opcionalmente limita os domínios de destino. Um botão *Testar* percorre o mesmo caminho da corrida e devolve em que degrau parou. Todo envio fica registrado, com destinatário, anexo e resultado.
 
 ---
 

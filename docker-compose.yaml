@@ -57,6 +57,11 @@ x-airflow-common:
 
     PYTHONPATH: /opt/airflow/dags/Orquestrador:/opt/airflow
 
+    # ── ORQUESTRA: binário do MTA no servidor do DataStage (nó de e-mail) ──
+    # O EmailOperator roda no WORKER, então a variável precisa chegar aqui —
+    # a mesma do container da API, que só cobre o botão Testar do Admin.
+    EMAIL_SENDMAIL_BIN: "${EMAIL_SENDMAIL_BIN:-/usr/sbin/sendmail}"
+
     # ── ORQUESTRA: caminho dos arquivos .dsx no container ──────────────────
     # Deve coincidir com o volume montado em: ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx
     DSX_BASE_DIR: /opt/airflow/dsx
@@ -194,6 +199,11 @@ services:
       # aceita qualquer (paridade com o Console). Em produção, defina.
       DS_SSH_KNOWN_HOSTS: "${DS_SSH_KNOWN_HOSTS:-}"
       DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
+      # E-mail (spec docs/spec-notificacao-email.md): binário do MTA no servidor
+      # do DataStage. Config de SERVIDOR, nunca entrada de usuário. Em alguns
+      # hosts o Postfix instala como /usr/sbin/sendmail.postfix. Tem de estar
+      # nos DOIS containers: aqui (botão Testar) e no worker (as corridas).
+      EMAIL_SENDMAIL_BIN: "${EMAIL_SENDMAIL_BIN:-/usr/sbin/sendmail}"
       # ── Lineage ISX (spec docs/spec-lineage-isx.md) ────────────────────────
       # API REST do DataStage (serviços, porta 9443) e istool no servidor do
       # engine (pelo mesmo SSH das DS_SSH_*). Sem DS_ENGINE/DS_API_*, a

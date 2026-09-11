@@ -367,5 +367,15 @@ def test_log(ambiente):
     assert "WHERE pipeline_name = ?" in cur.execs[-1][0] and "TOP (5)" in cur.execs[-1][0]
     cliente.get("/email/log")
     assert "WHERE" not in cur.execs[-1][0]
+
+    # Filtro por CORRIDA feito no banco: a tela de execução filtrava em memória
+    # sobre os últimos do pipeline, e o bloco sumia das corridas antigas.
+    cliente.get("/email/log?pipeline=P&execution_id=20260910T100000")
+    sql = cur.execs[-1][0]
+    assert "WHERE pipeline_name = ? AND execution_id = ?" in sql
+    assert cur.execs[-1][1] == ("P", "20260910T100000")
+    cliente.get("/email/log?execution_id=20260910T100000")
+    assert "WHERE execution_id = ?" in cur.execs[-1][0]
+
     cur.sem_111 = True
     assert cliente.get("/email/log").status_code == 503

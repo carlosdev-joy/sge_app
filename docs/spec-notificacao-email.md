@@ -1,5 +1,5 @@
 # Spec: Notificação por e-mail — nó `email` e configuração no Admin — Orquestra
-Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F3; F1 = PR #388, F2 = PR #389, mergeadas)
+Data: 2026-09-10 · Status: **concluída 2026-09-11** — F1 = PR #388, F2 = PR #389, F3 = PR #390 (mergeadas), F4 = docs/release note
 
 Origem: documento do usuário `2026-09-10-notificacao-email.md` (enviado pelos
 Utilitários do DEV), avaliado contra o código em 2026-09-10. Esta spec mantém o
@@ -267,10 +267,20 @@ b) Assunto com quebra de linha no nó → 422 no salvar; destinatário fora do d
 c) Pipeline de teste com nó `email` após uma etapa DataStage: assunto `Carga {pipeline} concluída - {data}`, corpo com `{linhas}`, anexo `raiz/relatorio_{odate}.xlsx` existente → e-mail com anexo; `etl_email_log.status = 'enviado'`; detalhe da execução mostra o envio.
 d) Mesmo nó com o arquivo apagado → e-mail sem anexo, aviso no log, `sem_anexo`.
 e) Lista do pipeline + lista da etapa → destinatários = união sem duplicata; "incluir destinatários do pipeline" desmarcado → só a etapa.
-f) Interruptor desligado → task `skipped`; sem destinatário em lugar nenhum → task falha com mensagem clara.
+f) Interruptor desligado → task `skipped` **e o resto do fluxo segue** (o publish da corrida e os dependentes não podem ser arrastados pelo pulo — achado da revisão da F4); sem destinatário em lugar nenhum → task falha com mensagem clara.
 g) Corpo HTML marcado → renderiza no Outlook; desmarcado → texto simples.
 h) Destinatário de domínio externo (se permitido) → chega ou o relay recusa? (define a política).
 i) F3: regerar as DAGs com nó de notificação; trocar o template na tela → próxima corrida usa o novo.
+j) F2/F3 (achado da revisão): mudar destinatário do nó **sem republicar** → a corrida seguinte usa o novo. Se não usar, a DAG é anterior à F2: republicar uma vez.
+k) F3 (achado da revisão): desativar em Admin › Acessos & Comunicação › Notificações o grupo de um nó de notificação já republicado → o card **não** chega no canal padrão do sistema, a corrida **segue** e o log da etapa traz `[NOTIF] card NAO enviado` com o motivo.
+l) F2 (achado da revisão): `{odate}` no nome do anexo → confirmar, num pipeline **agendado**, que o arquivo buscado é o da data de referência da corrida (a mesma que o DataStage recebe no `-param`), e não o do dia anterior.
+
+**Estado do smoke:** a–l só valem em homologação/produção — o DEV não tem
+Postfix nem relay. O que foi verificado no DEV desta VPS, com um `sendmail` de
+mentira no servidor de amostra: F1 com 12 verificações, F2 com 19 (inclusive o operador
+rodando dentro do worker e o `{odate}` vindo da linha da corrida) e F3 com 7
+(o helper executado contra o banco real), todas sem falha. A conferência letrada para quem for
+implantar está em `docs/release-notes/email.md`.
 
 ## 8. Pendências e decisões em aberto (confirmar na aprovação)
 - **Decisão do usuário (2026-09-10):** anexo com diretório entre as raízes
@@ -293,6 +303,22 @@ i) F3: regerar as DAGs com nó de notificação; trocar o template na tela → p
      **não** foi tocada: além do tipo, aquele caminho exige origem/destino de
      lineage, que nó especial nenhum tem — consertá-la é replicar o
      `sem_lineage` da API num caminho que a F2 não usa. Fio solto registrado.
+- **Achados da revisão adversarial da F4 (2026-09-11), corrigidos:** a fase era
+  só documentação, mas conferir cada frase contra o código revelou **dois
+  defeitos de código** das fases anteriores. (1) O `AirflowSkipException` do
+  canal desligado arrastava tudo a jusante do nó **e o `publish_dataset`**: o
+  run não registrava SUCESSO e a cascata de dependentes não disparava, com
+  todas as tasks verdes ou puladas — falso verde induzido pelo próprio roteiro
+  de smoke que eu tinha escrito. Corrigido estendendo o conjunto "pode receber
+  SKIPPED de cima" aos descendentes dos nós de e-mail, e somando `has_email` à
+  condição do publish. (2) `EMAIL_SENDMAIL_BIN` não chegava a container nenhum
+  (não estava no compose); pior, documentá-la só "no `.env` da API" deixaria o
+  *Testar* verde e **toda corrida** falhando, porque quem envia nas corridas é
+  o worker. Adicionada aos dois serviços. Também corrigidos: o menu "Admin ›
+  Mensagens" não existe (é Notificações — o nome errado estava na tela, no log
+  gerado e na doc), o bloco de e-mails da execução sumia das corridas antigas
+  (filtrava em memória sobre os últimos do pipeline; agora o filtro é do banco,
+  por execução), e sete imprecisões de texto.
 - **Achados da revisão adversarial da F3 (2026-09-11), corrigidos:** a trava que
   eu tinha acrescentado ao nó de notificação (falhar quando não há canal)
   guardava o caso **impossível** — a API e a tela já exigem o canal para salvar

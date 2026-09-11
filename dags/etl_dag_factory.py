@@ -915,8 +915,16 @@ def _generate_dag_source(pipeline, jobs):
     for j in sorted_jobs:
         for d in _deps_of(j):
             _children[d].add(j["job_name"])
+    # `reachable` = quem pode receber um SKIPPED vindo de cima e por isso
+    # precisa de trigger rule tolerante. Duas origens de skip:
+    #   1. o ramo NÃO escolhido de uma decisão;
+    #   2. um nó de E-MAIL com o canal desligado no Admin (AirflowSkipException
+    #      — decisão §8 da spec de e-mail). Sem contar esta segunda, desligar o
+    #      canal arrastaria tudo a jusante do nó e o próprio publish_dataset:
+    #      o run não registraria SUCESSO e a cascata de dependentes não seria
+    #      disparada, com TODAS as tasks verdes ou puladas. Falso verde.
     reachable = set()
-    _stack = list(ramo_members)
+    _stack = list(ramo_members) + [d for e in email_nodes for d in _children.get(e, ())]
     while _stack:
         x = _stack.pop()
         if x in reachable:
@@ -1343,7 +1351,7 @@ def _generate_dag_source(pipeline, jobs):
         "        # deveria receber nao recebe. Sem destino, so o registro.",
         "        print(f'[NOTIF] card NAO enviado para o no {job}: grupo {grupo_id} '",
         "              + 'sem webhook ativo (apagado, inativo ou webhook_url vazio) — '",
-        "              + 'confira em Admin > Mensagens')",
+        "              + 'confira em Admin > Acessos e Comunicacao > Notificacoes')",
         "",
         "def _resolve_e_roda_sql(sql, conn_id, database, context, on_error='nulo'):",
         "    # Nó SQL: roda o SELECT e devolve o valor ESCALAR (1a coluna da 1a linha),",
@@ -2481,8 +2489,11 @@ def _generate_dag_source(pipeline, jobs):
         '    python_callable=_registrar_sucesso,',
         '    outlets=[Dataset(DATASET_URI)],',
         # Convergência final: tolera ramos pulados (≥1 t_end com sucesso).
+        # has_email entra pelo mesmo motivo da decisão: o nó de e-mail com o
+        # canal desligado chega PULADO aqui, e com ALL_SUCCESS o publish seria
+        # pulado junto — sem registrar SUCESSO e sem disparar os dependentes.
         ('    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
-         if (has_decision or has_notificacao or has_sql_node) else None),
+         if (has_decision or has_notificacao or has_sql_node or has_email) else None),
         ')',
     ]))
 

@@ -98,7 +98,7 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
               <span>
                 Incluir os destinatários do fluxo
                 <span className="block text-[10px] text-dim/70">
-                  Soma a lista cadastrada em Propriedades do fluxo › E-mail, sem repetir endereço.
+                  Soma a lista cadastrada no fluxo (cadastro do pipeline › Destinatários de e-mail do fluxo), sem repetir endereço.
                 </span>
               </span>
             </label>

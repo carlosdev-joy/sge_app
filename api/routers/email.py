@@ -192,16 +192,30 @@ def email_admin_testar(body: dict = Body(default={}), user: dict = Depends(get_a
 
 
 @router.get("/email/log", tags=["email"])
-def email_log(pipeline: str | None = None, limite: int = 50, _user: dict = Depends(get_current_user)):
+def email_log(pipeline: str | None = None, execution_id: str | None = None,
+              limite: int = 50, _user: dict = Depends(get_current_user)):
+    """Últimos envios. `execution_id` filtra NO BANCO os envios de uma corrida —
+    sem ele, a tela de execução teria de filtrar em memória sobre os N últimos
+    do pipeline, e o bloco sumiria das corridas antigas."""
     limite = max(1, min(int(limite or 50), 200))
     conn, cur = _abrir()
     try:
         try:
-            if pipeline:
+            colunas = ("id, pipeline_name, job_name, dag_run_id, execution_id, remetente, "
+                       "destinatarios, assunto, anexo_path, anexo_bytes, status, erro, duracao_ms, "
+                       "criado_por, CONVERT(VARCHAR(19), criado_em, 120)")
+            if pipeline and execution_id:
                 cur.execute(
-                    f"SELECT TOP ({limite}) id, pipeline_name, job_name, dag_run_id, execution_id, remetente, "
-                    "destinatarios, assunto, anexo_path, anexo_bytes, status, erro, duracao_ms, criado_por, "
-                    "CONVERT(VARCHAR(19), criado_em, 120) FROM dbo.etl_email_log WHERE pipeline_name = ? "
+                    f"SELECT TOP ({limite}) {colunas} FROM dbo.etl_email_log "
+                    "WHERE pipeline_name = ? AND execution_id = ? "
+                    "ORDER BY criado_em DESC, id DESC", (pipeline[:200], execution_id[:100]))
+            elif execution_id:
+                cur.execute(
+                    f"SELECT TOP ({limite}) {colunas} FROM dbo.etl_email_log "
+                    "WHERE execution_id = ? ORDER BY criado_em DESC, id DESC", (execution_id[:100],))
+            elif pipeline:
+                cur.execute(
+                    f"SELECT TOP ({limite}) {colunas} FROM dbo.etl_email_log WHERE pipeline_name = ? "
                     "ORDER BY criado_em DESC, id DESC", (pipeline[:200],))
             else:
                 cur.execute(
