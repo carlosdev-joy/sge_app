@@ -55,6 +55,7 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Spec da corrida de malha](orquestra-spec-corrida-malha.md) — 🏁 F1–F12 em produção (PRs #277–#288)
 - [Ajustes malha + inventário DAGs](orquestra-ajustes-malha-inventario.md) — ✅ PRs #293–#296 em produção; ⚖️ inversão D26/27
 - [Nó Aguarde](orquestra-no-aguarde.md) — junção de pernas paralelas; F1–F4 em produção; ⚠️ smoke §8.1 sem confirmação
+- [Publicar DAG: reparse imediato](orquestra-factory-reparse-imediato.md) — a DAG levava até 5 min para aparecer e o "Gerar DAG" da UI marcava TIMEOUT à toa; fila `dag_priority_parsing_request`; ⚠️ ajuste nasceu DIRETO em produção (branch `backup/producao-20260827`, sem push) e foi portado nesta PR
 - [⚠️ GOTCHA: factory_log órfão em RUNNING](orquestra-factory-log-orfao.md) — geração que falha vira "timeout" mudo; corrigido na PR #234
 - [⚠️ GOTCHA: schedule_type novo em 3 lugares](orquestra-agendamento-sob-demanda.md) — 'on_demand' virava cron 06:00; pipelines antigos precisam ser REGERADOS
 - [⚠️ Nome de job DataStage: case-sensitive](orquestra-nome-job-datastage.md) — DS distingue caixa, SQL Server não; PR #269
