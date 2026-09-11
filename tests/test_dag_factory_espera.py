@@ -793,7 +793,7 @@ _TROCA_DESTINO_NOTIF = (
         '        # deveria receber nao recebe. Sem destino, so o registro.',
         "        print(f'[NOTIF] card NAO enviado para o no {job}: grupo {grupo_id} '",
         "              + 'sem webhook ativo (apagado, inativo ou webhook_url vazio) — '",
-        "              + 'confira em Admin > Mensagens')",
+        "              + 'confira em Admin > Acessos e Comunicacao > Notificacoes')",
     ],
     ['        _teams_post_card(title=titulo_final, subtitle=corpo_final, facts=facts, status=card_status, button=button)'],
 )

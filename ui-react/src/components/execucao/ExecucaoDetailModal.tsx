@@ -469,18 +469,19 @@ export function LogDetailModal({
   const hasFail = row.jobs_falha > 0
   const dagId = row.pipeline
 
-  // E-mails enviados por nós `email` deste pipeline (spec de notificação por
-  // e-mail, F2). Filtra pela execução em memória — o endpoint devolve os
-  // últimos do pipeline, e é o `execution_id` que amarra à corrida aberta aqui.
+  // E-mails enviados por nós `email` nesta corrida (spec de notificação por
+  // e-mail, F2). O filtro é do BANCO, por execution_id: filtrar em memória
+  // sobre os últimos do pipeline fazia o bloco sumir das corridas antigas.
   // Degrada em silêncio: sem a migration 111 o endpoint responde 503 e o bloco
   // simplesmente não aparece.
   const { data: emailData } = useQuery<{ envios?: EmailEnvio[] }>({
     queryKey: ['exec-emails', row.pipeline, row.execution_id],
-    queryFn: () => apiFetch(`/email/log?pipeline=${encodeURIComponent(row.pipeline)}&limite=50`),
+    queryFn: () => apiFetch(`/email/log?pipeline=${encodeURIComponent(row.pipeline)}`
+                            + `&execution_id=${encodeURIComponent(row.execution_id)}`),
     retry: false,
     staleTime: 60_000,
   })
-  const emails = (emailData?.envios ?? []).filter(e => e.execution_id === row.execution_id)
+  const emails = emailData?.envios ?? []
 
   return (
     <Modal open title={`Execução: ${row.pipeline}`} onClose={onClose} size="2xl">

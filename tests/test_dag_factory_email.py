@@ -278,3 +278,59 @@ def test_decisao_so_com_etapas_comuns_segue_igual(factory):
             _job("A", order=2), _job("B", order=2)]
     src = factory._generate_dag_source(_pipeline(), jobs)
     assert "['log_start_A']" in src and "['log_start_B']" in src
+
+
+# ── âncora do skip (achado da revisão da F4) ────────────────────────────────
+
+def test_ancora_canal_desligado_nao_arrasta_o_resto_do_fluxo(factory):
+    """⛔ O canal desligado no Admin faz o nó levantar AirflowSkipException.
+
+    Com a trigger rule padrão (ALL_SUCCESS), esse pulo desce por tudo que vem
+    depois — INCLUSIVE o `publish_dataset`. E publish pulado significa: a
+    corrida não registra SUCESSO, o Dataset não é publicado e a cascata de
+    pipelines dependentes NÃO dispara. Tudo isso com as tasks verdes ou
+    puladas, ou seja, sem ninguém perceber.
+
+    Desligar o canal é justamente o gesto que o manual recomenda para suspender
+    envios, e o roteiro de smoke manda fazer — não pode ter esse efeito."""
+    jobs = [
+        _job("CargaVida", order=1),
+        _job("AvisaEquipe", jtype="email", order=2, depends="CargaVida", notify=CONFIG_NO),
+        _job("CargaDois", order=3, depends="AvisaEquipe"),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+
+    publish = src[src.index('task_id="publish_dataset"'):]
+    assert "NONE_FAILED_MIN_ONE_SUCCESS" in publish[:400], (
+        "publish_dataset seria PULADO junto com o nó de e-mail: sem SUCESSO da "
+        "corrida e sem disparar os dependentes")
+
+    filho = src[src.index("t_start_CargaDois = "):]
+    assert "NONE_FAILED_MIN_ONE_SUCCESS" in filho[:400], (
+        "a etapa seguinte ao nó de e-mail seria pulada junto")
+    _exec_source(src)
+
+
+def test_nos_a_jusante_de_email_em_cadeia_tambem_toleram(factory):
+    """O pulo desce por toda a cadeia, não só pelo filho direto."""
+    jobs = [
+        _job("A", order=1),
+        _job("Avisa", jtype="email", order=2, depends="A", notify=CONFIG_NO),
+        _job("B", order=3, depends="Avisa"),
+        _job("C", order=4, depends="B"),
+    ]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    for nome in ("t_start_B", "t_start_C"):
+        bloco = src[src.index(f"{nome} = "):]
+        assert "NONE_FAILED_MIN_ONE_SUCCESS" in bloco[:400], f"{nome} seria arrastado pelo pulo"
+
+
+def test_pipeline_sem_email_nao_ganha_trigger_rule_tolerante(factory):
+    """Não-regressão: sem nó de e-mail (nem decisão/notificação/SQL), o publish
+    e as etapas seguem com a regra padrão."""
+    jobs = [_job("A", order=1), _job("B", order=2, depends="A")]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    publish = src[src.index('task_id="publish_dataset"'):src.index('task_id="publish_dataset"') + 300]
+    assert "NONE_FAILED_MIN_ONE_SUCCESS" not in publish
+    filho = src[src.index("t_start_B = "):src.index("t_start_B = ") + 300]
+    assert "NONE_FAILED_MIN_ONE_SUCCESS" not in filho

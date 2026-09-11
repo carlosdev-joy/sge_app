@@ -71,7 +71,7 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
           <div className="flex flex-col gap-1">
             <Select
               label="Grupo (canal) *"
-              hint={'Canal do Teams cadastrado na tela Mensagens.\nSem webhook configurado no grupo, nada é enviado.'}
+              hint={'Canal do Teams cadastrado em Admin › Acessos & Comunicação › Notificações.\nGrupo sem webhook (ou desativado): o card não é enviado e o log da etapa diz o motivo.'}
               value={cfg.grupo_id != null ? String(cfg.grupo_id) : ''}
               onChange={onGrupoChange}
               className="text-xs"
@@ -87,7 +87,7 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
             </Select>
             {grupos.length === 0 && (
               <p className="text-[10px] text-dim/70">
-                Nenhum canal cadastrado — crie um em Mensagens (Teams) antes de notificar.
+                Nenhum canal cadastrado — crie um em Admin › Acessos & Comunicação › Notificações antes de notificar.
               </p>
             )}
           </div>

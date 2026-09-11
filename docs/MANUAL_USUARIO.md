@@ -436,8 +436,9 @@ Os dois aceitam marcadores, trocados na hora do envio:
 | `{data}` | Data e hora do envio |
 | `{odate}` | Data de referência da corrida no formato AAAAMMDD — a mesma que o DataStage recebe e que costuma nomear os arquivos. **Não é a data do relógio**: numa corrida que atravessa a meia-noite, ou num fluxo com hora de virada, ela continua sendo o dia do processamento. |
 | `{linhas}` | Linhas processadas pelas etapas logo antes do nó |
-| `{status}` | Como o fluxo terminou: `SUCCESS`, `FAILED`, `WARNING` ou `SKIPPED` |
+| `{status}` | Como o fluxo terminou: `SUCCESS`, `FAILED`, `WARNING`, `SKIPPED` — ou `INFO`, quando não há etapa registrada até ali |
 | `{inicio}` · `{duracao}` | Quando a corrida começou · quanto tempo levou |
+| `{execution_id}` | Identificador da execução, o mesmo que aparece na tela de Execuções |
 
 Um marcador que você escrever errado **aparece como está** no e-mail, em vez de
 quebrar o envio. É o sinal de que o nome não existe.
@@ -966,6 +967,13 @@ Lembretes:
   o provedor de IA é o de *Caixa Seguro IA* (chave cifrada com `ORQUESTRA_CONN_KEY`
   na API); ligar em Admin › Acessos & Comunicação › **Maestro**. Roteiro em
   `docs/release-notes/maestro.md`.
+- **E-mail (§3.5-A / §3.5-B / §4.10)**: migration **111** na etapa 6c;
+  `dags/utils/` ganhou dois arquivos → **reiniciar o worker** do Airflow;
+  opcional no `.env` do host: `EMAIL_SENDMAIL_BIN` (padrão `/usr/sbin/sendmail`),
+  repassada pelo compose à API **e** ao worker. Depois do deploy, configurar em
+  Admin › Acessos & Comunicação › **E-mail** e **republicar uma vez** os
+  pipelines que já tinham nó de notificação (§3.5-B) ou nó de e-mail. Roteiro e
+  conferência em `docs/release-notes/email.md`.
 
 ### 4.7 Utilitários (Admin → Sistema → Utilitários)
 É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança
@@ -1159,6 +1167,61 @@ DAG `etl_log_cleanup` (03h) apaga o que passa disso — inclusive os pedidos nã
 atendidos, tratados ou não. Um pedido que mereça virar cenário deve ser tratado
 (ou registrado no backlog) antes disso.
 
+### 4.10 E-mail (Admin → Acessos & Comunicação → E-mail)
+A aba governa o canal de e-mail do §3.5-A. Exige a migration **111** (sem ela a
+aba diz isso em vez de carregar).
+
+O Orquestra **não tem servidor de e-mail próprio**: a mensagem é montada aqui e
+entregue ao servidor de e-mail do próprio DataStage, pela mesma conexão que o
+console já usa. Não há conta nem senha de e-mail para cadastrar.
+
+**Interruptor.** *Canal de e-mail ligado/desligado*. Ligar exige o **remetente**
+preenchido. Com o canal desligado, os nós de e-mail dos fluxos ficam salvos e a
+corrida **pula** o envio — a etapa fica *pulada*, não falha, e o resto do fluxo
+segue normalmente. É o gesto para suspender todo envio sem mexer em pipeline
+nenhum.
+
+**Remetente.** Um endereço, usado em todos os envios. Ele vai no campo *De* da
+mensagem **e** no envelope de entrega. Essa segunda parte é o que faz devolução
+de mensagem voltar para a caixa certa: sem ela, o servidor assume o usuário
+técnico da conexão e a devolução se perde.
+
+**Limite de anexo (MB).** De 1 a 25. Arquivo maior que isso não é anexado: o
+e-mail sai sem ele e o registro explica.
+
+**Raízes permitidas para anexos.** Uma por linha, caminho absoluto no servidor
+do DataStage. **É a lista
+inteira do que pode ser anexado** — quem monta um fluxo só consegue escolher
+entre essas pastas, e o nome do arquivo, mesmo com marcadores, nunca escapa
+delas. Sem nenhuma pasta aqui, ninguém anexa nada. A raiz do servidor (`/`) é
+recusada de propósito.
+
+**Domínios permitidos (opcional).** Um por linha. Vazio = qualquer domínio.
+Com a lista preenchida, endereço de fora é recusado **na hora de salvar** o nó
+ou a lista do fluxo.
+
+⚠️ A regra também vale **na corrida**. Se você restringir os domínios depois,
+um nó já cadastrado com endereço que passou a ser proibido **falha** no próximo
+envio, e a falha derruba a etapa. Antes de apertar a lista, confira os nós que
+já existem.
+
+**Testar.** Manda um e-mail para você (ou para o endereço que informar) pelo
+mesmo caminho da corrida. O laudo diz em que degrau parou:
+
+| Laudo | O que aconteceu |
+|---|---|
+| *Enviado ao sendmail* | O servidor de e-mail aceitou a mensagem. Se ela não chegar, o problema é do relay para a frente. |
+| *O sendmail recusou* | Chegou ao servidor e ele devolveu erro. O texto do erro vem junto. |
+| *Não chegou ao servidor do DataStage* | A conexão falhou. Mesmo diagnóstico do console. |
+| *Configuração incompleta* | Falta a conexão SSH com o servidor do DataStage no ambiente da API (`DS_SSH_*`), a mesma do console — não um campo desta aba. |
+
+Abaixo do laudo ficam os últimos testes: data, resultado e quem disparou.
+
+**Registro de envios.** Cada envio ou tentativa, de teste ou de corrida, vira
+uma linha guardada: quem mandou, para quem, assunto, anexo, resultado e erro.
+Os envios de uma corrida aparecem na tela de **Execuções**, dentro do detalhe —
+buscados por aquela execução, então continuam lá quando a corrida é antiga.
+
 ---
 
 ## 5. Perguntas frequentes
@@ -1178,6 +1241,39 @@ atendidos, tratados ou não. Um pedido que mereça virar cenário deve ser trata
 **Jobs em paralelo não rodam juntos.** Confirme que têm exatamente a mesma ordem de execução e que há workers Celery disponíveis.
 
 **Execução manual rodou em feriado.** Comportamento esperado: execuções manuais ignoram calendário/blackout/horários.
+
+**Ninguém recebeu o e-mail, mas a etapa ficou verde.** O canal está desligado em
+Admin → E-mail: nesse caso a etapa fica *pulada*, de propósito. Se o canal está
+ligado, abra a corrida em Execuções e veja o bloco *E-mails enviados* — ele diz
+para quem foi e se houve erro.
+
+**O e-mail chegou sem o anexo.** O arquivo não estava lá na hora do envio, é
+maior que o limite, ou o nome não bate. O motivo exato fica no registro do
+envio, na tela da execução. O e-mail sai sem anexo de propósito: o aviso é mais
+importante que o arquivo.
+
+**A etapa de e-mail falhou e derrubou o fluxo.** É o comportamento definido: se
+o servidor recusa a mensagem, não dá para afirmar que o aviso saiu. O erro do
+servidor vem no log da etapa.
+
+**Mudei o destinatário e o e-mail foi para a lista antiga.** A lista é lida no
+instante em que a etapa de e-mail roda. Se ela já tinha rodado quando você
+salvou, aquele envio usou o que estava valendo; o próximo usa o novo. Se nem as
+corridas seguintes mudarem, a DAG é anterior à versão que lê em tempo de
+corrida: republique o pipeline uma vez.
+
+**Não consigo escolher a pasta do anexo.** Só aparecem as pastas liberadas em
+Admin → E-mail (§4.10). Sem nenhuma cadastrada, o campo de anexo fica
+indisponível.
+
+**O card do Teams continua com o texto antigo.** A DAG foi publicada antes da
+atualização que passou a ler o texto na hora do envio. Republique o pipeline
+uma vez (§3.5-B); daí em diante mudar o texto vale sem republicar.
+
+**O card do Teams parou de chegar.** O canal do nó foi apagado ou desativado em
+Admin → Acessos & Comunicação → Notificações. Antes o card ia para o canal padrão do sistema, o que
+escondia o problema. Agora ele não é enviado e o log da etapa diz qual canal
+está faltando.
 
 **Não vejo a aba Admin (ou outra aba).** Seu perfil não tem acesso a essa tela — solicite ao administrador em Admin → Usuários & Perfis.
 
