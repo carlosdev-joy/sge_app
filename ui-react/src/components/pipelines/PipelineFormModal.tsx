@@ -58,6 +58,9 @@ interface FormState {
   depends_on: string
   runbook_md: string
   motivo_inativacao: string
+  // Destinatários de e-mail do fluxo (migration 111): os nós `email` do
+  // desenho somam esta lista à própria. Um endereço por linha no formulário.
+  email_destinatarios: string
   // Janela e virada (migration 067) — 'HH:MM' ou '' (= sem regra → NULL).
   // hora_virada é rótulo ODATE de QUALQUER pipeline (o caso motivador é um
   // PAI com virada 20:00); os outros dois são da liberação por dependência.
@@ -101,7 +104,7 @@ const defaultForm = (): FormState => ({
   envia_msg_inicio: true, envia_msg_fim: true, envia_msg_erro: true,
   criticidade: 'Media', sla_minutos: '', ambiente: 'PROD',
   max_active_runs: 1, retries_count: 1, retry_delay_seconds: 300,
-  pool_name: '', depends_on: '', runbook_md: '', motivo_inativacao: '',
+  pool_name: '', depends_on: '', runbook_md: '', motivo_inativacao: '', email_destinatarios: '',
   hora_virada: '', nao_iniciar_antes: '', hora_limite_dependencia: '',
 })
 
@@ -142,6 +145,7 @@ function pipelineToForm(p: Pipeline): FormState {
     pool_name:               p.pool_name ?? '',
     depends_on:              p.depends_on ?? '',
     runbook_md:              p.runbook_md ?? '',
+    email_destinatarios:     (p.email_destinatarios ?? []).join('\n'),
     motivo_inativacao:       p.motivo_inativacao ?? '',
     // Round-trip D26: os três chegam do GET ('HH:MM' ou null) — antes eram
     // write-only e todo save os zerava no banco.
@@ -312,7 +316,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   const dagDirtyRef = useRef(false)
   const CADASTRO_FIELDS = new Set<string>([
     'tags_list', 'descricao', 'runbook_md',
-    'active', 'motivo_inativacao',
+    'active', 'motivo_inativacao', 'email_destinatarios',
   ])
   function markDagDirty() {
     dagDirtyRef.current = true
@@ -524,6 +528,9 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         nao_iniciar_antes:       temDependencia ? form.nao_iniciar_antes.trim() : '',
         hora_limite_dependencia: temDependencia ? form.hora_limite_dependencia.trim() : '',
         runbook_md:          form.runbook_md.trim() || null,
+        // Chave SEMPRE presente: lista vazia é remoção explícita. O nó lê esta
+        // lista em runtime, então mudar aqui NÃO pede republicação da DAG.
+        email_destinatarios: form.email_destinatarios.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean),
         changed_by:          user?.matricula ?? 'react-ui',
         dag_criada:          pipeline?.dag_criada ?? 0,
         // F4 — a chave só vai quando a API tem a 108 (senão o contrato antigo,
@@ -1083,6 +1090,11 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 <Textarea label="Runbook (Markdown)" value={form.runbook_md}
                   onChange={e => f('runbook_md', e.target.value)} rows={3}
                   placeholder="Como monitorar, tratar falhas, contato responsável…" />
+                <Textarea label="Destinatários de e-mail do fluxo"
+                  hint={'Um endereço por linha. Os nós de e-mail do desenho somam esta lista à própria.\nMudar aqui vale na próxima corrida, sem republicar a DAG.'}
+                  value={form.email_destinatarios}
+                  onChange={e => f('email_destinatarios', e.target.value)} rows={2}
+                  placeholder={'ana@cvp.com.br\ncarlos@cvp.com.br'} />
               </div>
             </div>
           </div>

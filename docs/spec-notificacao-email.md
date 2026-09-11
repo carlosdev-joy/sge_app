@@ -1,5 +1,5 @@
 # Spec: Notificação por e-mail — nó `email` e configuração no Admin — Orquestra
-Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F1)
+Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F2; F1 mergeada na PR #388)
 
 Origem: documento do usuário `2026-09-10-notificacao-email.md` (enviado pelos
 Utilitários do DEV), avaliado contra o código em 2026-09-10. Esta spec mantém o
@@ -276,6 +276,55 @@ i) F3: regerar as DAGs com nó de notificação; trocar o template na tela → p
 - **Decisão do usuário (2026-09-10):** anexo com diretório entre as raízes
   parametrizadas e **nome livre**, validado só na hora do envio (o arquivo
   ainda vai ser gerado) — incorporado em §3/§4/§5.
+- **Desvios de implementação da F2 (2026-09-11), decididos pelo precedente do
+  código:**
+  1. O nó vive **só no canvas** (Etapas › Fluxo), não na tela Lista. A §3 previa
+     "seção condicional em `pages/Jobs.tsx`", mas os dois nós especiais mais
+     recentes — `sql` (051) e `aguarde` (068) — também **não** estão lá: a lista
+     `JOB_TYPES` daquela tela nunca os ganhou. Seguir a spec ao pé da letra
+     criaria um terceiro formulário completo (destinatários, anexo, assunto,
+     corpo) num lugar onde ninguém monta nó de fluxo. O que entrou em
+     `pages/Jobs.tsx` foi a **cor do rótulo** do tipo, que faltava para `email`
+     e também para `sql`, `aguarde`, `decisao` e `notificacao` — todos caíam no
+     cinza genérico ao serem listados.
+  2. A DAG `dags/etl_pipeline_job_register.py` tem uma **segunda** lista
+     `VALID_JOB_TYPES`, defasada desde antes desta spec (só datastage, shell,
+     python, storedproc — sem http, decisao, notificacao, sql, aguarde). Ela
+     **não** foi tocada: além do tipo, aquele caminho exige origem/destino de
+     lineage, que nó especial nenhum tem — consertá-la é replicar o
+     `sem_lineage` da API num caminho que a F2 não usa. Fio solto registrado.
+- **Achados da revisão adversarial da F2 (2026-09-11), todos corrigidos:**
+  1. **Decisão com nó especial no ramo gerava `task_id` inexistente.** O
+     `_decision_block` só conhecia as notificações: qualquer outro membro do
+     ramo virava `log_start_<nome>`, task que nó sem `t_start` não tem, e o
+     `BranchPythonOperator` levantava "'branch_task_ids' must contain only
+     valid task_ids" — a DECISÃO falhava e derrubava o pipeline. Valia também
+     para `sql` e `aguarde` (defeito pré-existente), corrigido para os quatro.
+     Âncora: `test_ancora_decisao_roteia_nos_especiais_pelo_proprio_task_id`.
+  2. **`{linhas}` saía sempre vazio.** O factory liga o e-mail ao `t_end_*`,
+     cujo `task_id` é `log_end_<job>`, e o `rows_out` está no XCom de `<job>`.
+     O operador passou a tirar o prefixo e a cair para `etl_ds_job_log`, como o
+     nó Teams já fazia.
+  3. **`{odate}` usava `ds_nodash`**, que é o INÍCIO do intervalo — em pipeline
+     diário, o dia anterior. Passou a ler a data de referência da corrida
+     (`etl_pipeline_execucao`, a mesma fonte do `-param` do DataStage), com o
+     fim do intervalo como reserva.
+  4. **O 503 "aplique a migration 111" era engolido** por um `except
+     Exception: pass` — e, pior, abortava a gravação dos campos da 017 em TODO
+     save, porque a tela manda a chave sempre. A gravação saiu de dentro
+     daquele `try`.
+  5. **A lista do FLUXO não passava pela allowlist de domínios**: entrava no
+     cadastro e fazia a task falhar em toda corrida, já que os nós a herdam por
+     padrão.
+  6. **`{status}` era a string fixa "concluído"** — com um Aguarde de política
+     "todas_terminarem", o e-mail afirmaria sucesso depois de uma etapa que
+     falhou. Passou a ler o estado agregado do banco, como o card de fim.
+  Menores, também corrigidos: auditoria da lista do fluxo; falha de SSH ao
+  BUSCAR o anexo passou a gravar o log antes de falhar; nome de anexo vazio
+  deixou de sumir em silêncio; lista de pastas vazia por falha de rede não
+  trava mais o save; duração negativa; `anexo_path` truncado para a coluna.
+  O bloco **E-mails enviados** na tela de execução (§3 Front), que faltava,
+  entrou.
 - **Decisão da revisão adversarial da F1 (2026-09-11):** o comando ganhou
   `-f <remetente>` (envelope-from). Sem ele o Postfix assume o usuário do SSH
   e a falha aparece só depois do rc 0 (bounce na caixa errada, ou descarte por

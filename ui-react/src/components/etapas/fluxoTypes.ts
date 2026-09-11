@@ -38,6 +38,21 @@ export interface AguardeConfig {
   politica: 'todas_sucesso' | 'todas_terminarem'
 }
 
+// Config do nó de E-mail (round-trip com /fluxo no campo `email`).
+// Vive na mesma coluna do nó de notificação no banco (notify_json) — o tipo do
+// job é quem diz qual das duas é.
+export interface EmailNoConfig {
+  assunto: string
+  corpo: string
+  html: boolean
+  /** Lista própria do nó. Pode ser vazia se `incluir_pipeline` estiver ligado. */
+  destinatarios: string[]
+  /** Soma a lista cadastrada no fluxo (Propriedades do fluxo › E-mail). */
+  incluir_pipeline: boolean
+  /** Pasta entre as permitidas no Admin + nome livre (pode ainda não existir). */
+  anexo: { raiz: string; nome: string } | null
+}
+
 // Catálogo de mensagens (Teams) — alimentam os Selects do nó de notificação.
 export interface MsgGrupo { id: number; nome: string; descricao: string | null; has_webhook?: boolean; ativo?: boolean }
 export interface MsgTemplate { id: number; grupo_id: number | null; nome: string; titulo: string | null }
@@ -66,6 +81,89 @@ export function notifyLabel(cfg: NotifyConfig, gruposById?: Map<number, string>)
   if (cfg.grupo_id == null) return 'notificação'
   const nome = gruposById?.get(cfg.grupo_id)
   return `Teams: ${nome ?? `#${cfg.grupo_id}`}`
+}
+
+// ── Nó E-mail (aviso por e-mail pelo servidor do DataStage) ─────────────────
+// Config default de um nó recém-criado: herda a lista do fluxo (é o que quem
+// cadastrou a lista espera) e já traz um assunto que faz sentido sozinho.
+export function defaultEmailNo(): EmailNoConfig {
+  return {
+    assunto: '[Orquestra] {pipeline} — {status}',
+    corpo: 'O fluxo {pipeline} terminou em {data}.',
+    html: false,
+    destinatarios: [],
+    incluir_pipeline: true,
+    anexo: null,
+  }
+}
+
+// Lê a config de e-mail do payload da API (tolerante a null/parcial).
+export function toEmailNoConfig(raw: EmailNoConfig | null | undefined): EmailNoConfig {
+  if (!raw || typeof raw !== 'object') return defaultEmailNo()
+  const anexo = raw.anexo
+  const raiz = anexo && typeof anexo === 'object' ? `${anexo.raiz ?? ''}`.trim() : ''
+  const nome = anexo && typeof anexo === 'object' ? `${anexo.nome ?? ''}`.trim() : ''
+  return {
+    assunto: typeof raw.assunto === 'string' ? raw.assunto : '',
+    corpo: typeof raw.corpo === 'string' ? raw.corpo : '',
+    html: raw.html === true,
+    destinatarios: Array.isArray(raw.destinatarios) ? raw.destinatarios.map(d => `${d}`.trim()).filter(Boolean) : [],
+    // Ausente = ligado, igual ao backend: um round-trip não pode desligar a
+    // herança sozinho (o e-mail sairia para menos gente, em silêncio).
+    incluir_pipeline: raw.incluir_pipeline !== false,
+    anexo: raiz && nome ? { raiz, nome } : null,
+  }
+}
+
+/** Placeholders que o operador do worker resolve (dags/utils/email_operator). */
+export const EMAIL_PLACEHOLDERS = ['pipeline', 'job', 'data', 'odate', 'linhas',
+                                   'status', 'inicio', 'duracao', 'execution_id']
+
+// Resumo curto p/ o card: quem recebe, que é o que se quer ver sem abrir.
+export function emailNoLabel(cfg: EmailNoConfig): string {
+  const n = cfg.destinatarios.length
+  if (n === 0) return cfg.incluir_pipeline ? 'destinatários do fluxo' : 'sem destinatário'
+  const extra = cfg.incluir_pipeline ? ' + fluxo' : ''
+  return n === 1 ? `${cfg.destinatarios[0]}${extra}` : `${n} destinatários${extra}`
+}
+
+// Régua local do nó — espelha _validate_email do backend (api/routers/jobs.py).
+// `raizesPermitidas` vem do Admin (GET /email/status); vazia = nenhuma pasta
+// liberada, e aí qualquer anexo é recusado.
+export function errosDoEmailNo(cfg: EmailNoConfig, raizesPermitidas: string[]): string[] {
+  const erros: string[] = []
+  const assunto = (cfg.assunto || '').trim()
+  if (!assunto) erros.push('Informe o assunto')
+  else if (assunto.split(/\r|\n/).length > 1) erros.push('O assunto não pode ter quebra de linha')
+  else if (assunto.length > 500) erros.push('Assunto com mais de 500 caracteres')
+  if (!(cfg.corpo || '').trim()) erros.push('Informe o corpo da mensagem')
+  else if (cfg.corpo.length > 20000) erros.push('Corpo com mais de 20.000 caracteres')
+  const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
+  for (const d of cfg.destinatarios) {
+    if (!EMAIL_RE.test(d)) erros.push(`Destinatário inválido: ${d}`)
+  }
+  if (cfg.destinatarios.length > 50) erros.push('No máximo 50 destinatários')
+  if (!cfg.destinatarios.length && !cfg.incluir_pipeline) {
+    erros.push('Informe um destinatário ou marque "incluir os destinatários do fluxo"')
+  }
+  if (cfg.anexo) {
+    // `raizesPermitidas` vazio pode ser "Admin sem pasta liberada" OU falha ao
+    // consultar o status: quem chama decide (o editor só cobra a pasta quando
+    // a consulta respondeu), senão um erro de rede travaria o save do fluxo.
+    if (raizesPermitidas.length && !raizesPermitidas.includes(cfg.anexo.raiz)) {
+      erros.push('A pasta do anexo não está entre as permitidas no Admin › E-mail')
+    }
+    if (!cfg.anexo.raiz.trim()) erros.push('Escolha a pasta do anexo')
+    // Nome vazio some em silêncio na serialização (anexo vira null) — o
+    // usuário marcaria "Anexar", salvaria, e o anexo não existiria.
+    if (!cfg.anexo.nome.trim()) erros.push('Informe o nome do arquivo do anexo')
+    else if (/[/\\\r\n]/.test(cfg.anexo.nome) || cfg.anexo.nome === '..' || cfg.anexo.nome === '.') {
+      erros.push('O nome do anexo não pode ter barra, "." ou ".."')
+    } else if (cfg.anexo.nome.length > 200) {
+      erros.push('Nome do anexo com mais de 200 caracteres')
+    }
+  }
+  return erros
 }
 
 // ── Nó SQL (consulta que retorna 1 valor, lido por uma Decisão a jusante) ─────

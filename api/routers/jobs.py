@@ -36,7 +36,8 @@ def _fmt_dt(v):
     return str(v)
 
 
-VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "http", "decisao", "notificacao", "sql", "aguarde"}
+VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "http", "decisao", "notificacao", "sql", "aguarde",
+                   "email"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
@@ -683,6 +684,93 @@ def _normalize_notify(cfg: dict) -> dict:
                         else int(tid)),
         "mensagem": (msg if isinstance(msg, str) else ""),
     }
+
+
+# ── Nó E-mail (spec docs/spec-notificacao-email.md, F2) ─────────────────────
+# Mesmo molde do nó de notificação: a config vive em `notify_json` (o nó É uma
+# notificação, por e-mail em vez de Teams — reusar a coluna evita uma coluna
+# por canal e o tipo do job já diz qual é qual).
+#   {assunto, corpo, html, destinatarios[], incluir_pipeline, anexo{raiz,nome}|null}
+# As RAÍZES permitidas e os DOMÍNIOS vêm do Admin › E-mail (etl_app_config): a
+# régua do cadastro é a mesma do envio, então um anexo fora da raiz ou um
+# destinatário de domínio barrado falha aqui, na tela, e não na corrida.
+
+
+def _validate_email(cfg, raizes_permitidas=None, dominios_permitidos=None) -> list[str]:
+    """Valida a config do nó `email`. Lista de erros (vazia = ok).
+
+    O NOME do anexo é livre de propósito (decisão do usuário): o arquivo
+    costuma ser gerado pela própria corrida, então existência e tamanho só dá
+    para conferir na hora do envio — aqui vale a raiz e a forma do nome."""
+    from services import email_mime as _em
+
+    if not isinstance(cfg, dict):
+        return ["configuração do nó de e-mail ausente ou inválida"]
+    errs: list[str] = []
+    _, erro = _em.validar_assunto(cfg.get("assunto"))
+    if erro:
+        errs.append(erro)
+    _, erro = _em.validar_corpo(cfg.get("corpo"))
+    if erro:
+        errs.append(erro)
+    destinatarios, erros_d = _em.validar_destinatarios(cfg.get("destinatarios"), dominios_permitidos)
+    errs.extend(erros_d)
+    incluir = cfg.get("incluir_pipeline")
+    if incluir is not None and not isinstance(incluir, bool):
+        errs.append("'incluir destinatários do pipeline' deve ser verdadeiro ou falso")
+    if not destinatarios and not (incluir is None or incluir):
+        # Sem lista própria E sem herdar a do pipeline, o nó nunca teria para
+        # quem enviar — a corrida falharia no envio, longe de quem cadastrou.
+        errs.append("informe ao menos um destinatário ou marque 'incluir os destinatários do pipeline'")
+    html = cfg.get("html")
+    if html is not None and not isinstance(html, bool):
+        errs.append("'corpo em HTML' deve ser verdadeiro ou falso")
+    anexo = cfg.get("anexo")
+    if anexo not in (None, {}, ""):
+        if not isinstance(anexo, dict):
+            errs.append("anexo do e-mail inválido")
+        else:
+            _, erros_a = _em.validar_anexo_cadastro(anexo.get("raiz"), anexo.get("nome"),
+                                                    list(raizes_permitidas or []))
+            errs.extend(erros_a)
+    return errs
+
+
+def _normalize_email(cfg: dict, raizes_permitidas=None) -> dict:
+    """Normaliza a config do nó `email` para persistência em notify_json."""
+    from services import email_mime as _em
+
+    assunto, _ = _em.validar_assunto(cfg.get("assunto"))
+    corpo, _ = _em.validar_corpo(cfg.get("corpo"))
+    destinatarios, _ = _em.validar_destinatarios(cfg.get("destinatarios"))
+    anexo_raw = cfg.get("anexo")
+    anexo = None
+    if isinstance(anexo_raw, dict):
+        anexo, _ = _em.validar_anexo_cadastro(anexo_raw.get("raiz"), anexo_raw.get("nome"),
+                                              list(raizes_permitidas or []))
+    return {
+        "assunto": assunto or "",
+        "corpo": corpo or "",
+        "html": bool(cfg.get("html")),
+        "destinatarios": destinatarios,
+        # Default LIGADO: quem cadastra a lista no pipeline espera que os nós a
+        # usem; desmarcar é a exceção consciente.
+        "incluir_pipeline": True if cfg.get("incluir_pipeline") is None else bool(cfg.get("incluir_pipeline")),
+        "anexo": anexo,
+    }
+
+
+def _config_email_do_admin(cur) -> tuple[list[str], list[str]]:
+    """(raízes permitidas, domínios permitidos) do Admin › E-mail. Sem a
+    migration 111 as listas vêm vazias — e aí um anexo é recusado com a
+    mensagem da régua, que é o comportamento certo: não há raiz liberada."""
+    try:
+        from services import email_config as _ec
+
+        cfg = _ec.load_config(cur)
+        return list(cfg.get("raizes") or []), list(cfg.get("dominios") or [])
+    except Exception:  # noqa: BLE001 — validar é melhor que derrubar o salvar
+        return [], []
 
 
 # ── Nó Aguarde (migration 068) ──────────────────────────────────────────────
@@ -1866,10 +1954,15 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         known_jobs = req_names | db_names
         # Arestas para o detector de ciclo (apenas nós presentes no request).
         cycle_adj: dict[str, set[str]] = {n: set() for n in req_names}
+        # Régua do Admin › E-mail: lida UMA vez, e só se houver nó de e-mail no
+        # request (None = ainda não lida). Sem isso, um pipeline com 20 nós de
+        # e-mail faria 20 leituras iguais de etl_app_config.
+        _email_raizes: list[str] | None = None
+        _email_dominios: list[str] = []
 
         for idx, job in enumerate(jobs):
             cond_json_str = None     # preenchido só p/ jobs de decisão (persiste depois)
-            notify_json_str = None   # preenchido só p/ jobs de notificação (persiste depois)
+            notify_json_str = None   # notificação Teams E nó de e-mail (persiste depois)
             sql_json_str = None      # preenchido só p/ nós SQL (persiste depois)
             python_json_str = None   # preenchido só p/ python v2 (persiste depois)
             aguarde_json_str = None  # preenchido só p/ nós Aguarde (persiste depois)
@@ -1902,7 +1995,10 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             # O Aguarde é um ponto de encontro: não roda nada, logo não tem
             # lineage nem comando (a política vive em aguarde_json).
             is_aguarde = (j_type == "aguarde")
-            sem_lineage = is_decisao or is_notificacao or is_sql or is_aguarde
+            # O nó de e-mail é notificação por outro canal: também é efeito
+            # colateral, sem lineage nem comando (a config vive em notify_json).
+            is_email = (j_type == "email")
+            sem_lineage = is_decisao or is_notificacao or is_sql or is_aguarde or is_email
             if not origens and not transfs and require_lineage and not sem_lineage:
                 erros.append(f"Item {idx} ({j_name}): ao menos 1 origem é obrigatória"); continue
             if not destinos and not transfs and require_lineage and not sem_lineage:
@@ -1947,6 +2043,22 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                 if notify_errs:
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in notify_errs); continue
                 notify_json_str = json.dumps(_normalize_notify(raw_notify), ensure_ascii=False)
+
+            # E-mail: mesma coluna da notificação (notify_json), régua do Admin.
+            if is_email:
+                raw_email = job.get("email")
+                if not isinstance(raw_email, dict):
+                    re_ = job.get("notify_json")
+                    try:
+                        raw_email = json.loads(re_) if re_ else None
+                    except (ValueError, TypeError):
+                        raw_email = None
+                if _email_raizes is None:
+                    _email_raizes, _email_dominios = _config_email_do_admin(cur)
+                email_errs = _validate_email(raw_email, _email_raizes, _email_dominios)
+                if email_errs:
+                    erros.extend(f"Item {idx} ({j_name}): {e}" for e in email_errs); continue
+                notify_json_str = json.dumps(_normalize_email(raw_email, _email_raizes), ensure_ascii=False)
 
             # Nó SQL: valida a config (sql_json) — SELECT read-only + conexão.
             if is_sql:
@@ -2321,6 +2433,12 @@ def get_pipeline_job(
             # Mesma normalização do GET /fluxo: sem a 068 (ou com JSON inválido)
             # o painel recebe a política default em vez de vazio.
             aguarde_node = _normalize_aguarde(_raw_ag)
+        # O nó de e-mail guarda a config na MESMA coluna (notify_json), mas o
+        # front tem painel próprio: devolve em `email` e deixa `notify` nulo,
+        # senão a tela de notificação Teams tentaria ler grupo_id de um e-mail.
+        email_node = None
+        if (row[3] or "").lower().strip() == "email":
+            email_node, notify = notify, None
         cur.close(); conn.close()
         return {
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
@@ -2334,6 +2452,7 @@ def get_pipeline_job(
             "sql_node": sql_node,
             "python": python_node,
             "aguarde": aguarde_node,
+            "email": email_node,
         }
     except HTTPException:
         raise
@@ -2491,6 +2610,10 @@ def get_pipeline_fluxo(
                     except (ValueError, TypeError):
                         _raw_ag = None
                 aguarde_node = _normalize_aguarde(_raw_ag)
+            # E-mail: mesma coluna notify_json, chave própria no payload.
+            email_node = None
+            if r[1] == "email":
+                email_node, notify = notify, None
             lx = float(r[6]) if r[6] is not None else None
             ly = float(r[7]) if r[7] is not None else None
             nodes.append({
@@ -2504,6 +2627,7 @@ def get_pipeline_fluxo(
                 "sql_node": sql_node,
                 "python": python_node,
                 "aguarde": aguarde_node,
+                "email": email_node,
                 "layout_x": lx,
                 "layout_y": ly,
                 "ssh_conn_id": r[8] or None,
@@ -2626,6 +2750,9 @@ async def save_pipeline_fluxo(
         # Valida e prepara cada nó; monta o grafo (deps + ramos) para o ciclo.
         errors: list[str] = []
         cycle_adj: dict[str, set[str]] = {n: set() for n in known_jobs}
+        # Régua do Admin › E-mail, lida uma vez e só se houver nó de e-mail.
+        _email_raizes: list[str] | None = None
+        _email_dominios: list[str] = []
         prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, sql_json|None, python_json|None, aguarde_json|None, lx, ly)
         raw_by_name: dict[str, dict] = {}  # nó cru por nome (checa presença de chave no UPDATE)
         seen: set[str] = set()
@@ -2730,6 +2857,16 @@ async def save_pipeline_fluxo(
                 if notify_errs:
                     errors.extend(f"{j_name}: {e}" for e in notify_errs); continue
                 notify_json_str = json.dumps(_normalize_notify(raw_notify), ensure_ascii=False)
+
+            # E-mail — mesma coluna (notify_json), régua do Admin › E-mail.
+            if j_type == "email":
+                if _email_raizes is None:
+                    _email_raizes, _email_dominios = _config_email_do_admin(cur)
+                email_errs = _validate_email(node.get("email"), _email_raizes, _email_dominios)
+                if email_errs:
+                    errors.extend(f"{j_name}: {e}" for e in email_errs); continue
+                notify_json_str = json.dumps(_normalize_email(node.get("email"), _email_raizes),
+                                             ensure_ascii=False)
 
             # Nó SQL — valida a config (sql_json); SELECT read-only + conexão.
             sql_json_str = None
@@ -2874,7 +3011,7 @@ async def save_pipeline_fluxo(
             # Grava notify_json SÓ em notificação — análogo ao condition_json:
             # nunca zera a config de uma etapa de outro tipo (o canvas não troca o
             # tipo de um nó existente).
-            if has_notify and j_type == "notificacao":
+            if has_notify and j_type in ("notificacao", "email"):
                 cur.execute("UPDATE dbo.etl_pipeline_job SET notify_json=? "
                             "WHERE pipeline_name=? AND job_name=?",
                             (notify_json_str, pipeline_name, j_name))

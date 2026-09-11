@@ -289,3 +289,58 @@ def enviar(client, mensagem: bytes, remetente: str, timeout: int = 60, binario: 
         if exit_code == 0:
             exit_code = -1
     return {"exit_code": exit_code, "stderr": err[:2000], "duration_ms": int((_time.time() - t0) * 1000)}
+
+
+def resolver_anexo(sftp, raiz: str, nome: str, raizes_permitidas: list[str],
+                   limite_mb: int, mapa: dict) -> tuple[bytes | None, str | None, dict]:
+    """Lê o anexo do servidor do DataStage por SFTP, DEPOIS de trocar os
+    placeholders do nome (`relatorio_{odate}.xlsx`).
+
+    Devolve `(bytes|None, aviso|None, detalhe)`. `detalhe` sempre traz
+    `{"caminho": …, "bytes": …}` para o log, mesmo quando não leu nada.
+
+    Regra da spec: anexo ausente NÃO derruba a corrida — o e-mail sai sem ele
+    com aviso (`status='sem_anexo'`). O que é recusado de propósito:
+    - nome resolvido que escapa da raiz (um placeholder não pode inserir `..`
+      nem `/` — `caminho_do_anexo` devolve None e nem chegamos ao SFTP);
+    - caminho que NÃO é arquivo regular: um diretório ou um device em
+      `sftp.open()` pendura a task ou lê lixo; `S_ISREG` no `stat` resolve
+      antes de abrir (ressalva da revisão adversarial da F1);
+    - arquivo maior que o limite do Admin, medido pelo `stat` ANTES de ler —
+      ler para depois medir traria o arquivo inteiro para a memória do worker.
+    """
+    import errno as _errno
+    import stat as _stat
+
+    nome_resolvido = interpolar(str(nome or ""), mapa or {})
+    caminho = caminho_do_anexo(raiz, nome_resolvido, raizes_permitidas)
+    detalhe = {"caminho": caminho or f"{raiz}/{nome_resolvido}", "bytes": None}
+    if not caminho:
+        return None, (f"anexo recusado: '{nome_resolvido}' sai da raiz permitida "
+                      f"'{raiz}' depois de resolver os placeholders"), detalhe
+    try:
+        info = sftp.stat(caminho)
+    except OSError as e:
+        # `IOError` É `OSError` no Python 3: o paramiko usa a mesma classe para
+        # "não existe" e para canal caído. Só o errno separa os dois, e a
+        # diferença importa — ausente é rotina (e-mail sem anexo), SFTP fora do
+        # ar é problema de infraestrutura e não pode virar 'sem anexo' mudo.
+        if e.errno in (_errno.ENOENT, _errno.ENOTDIR):
+            return None, f"anexo não encontrado em {caminho} — e-mail enviado sem anexo", detalhe
+        return None, f"anexo não pôde ser consultado em {caminho} ({type(e).__name__}: {e})", detalhe
+    except Exception as e:   # noqa: BLE001
+        return None, f"anexo não pôde ser consultado em {caminho} ({type(e).__name__}: {e})", detalhe
+    if not _stat.S_ISREG(info.st_mode or 0):
+        return None, f"anexo ignorado: {caminho} não é um arquivo (é diretório ou especial)", detalhe
+    tamanho = int(info.st_size or 0)
+    detalhe["bytes"] = tamanho
+    teto = max(1, int(limite_mb or LIMITE_ANEXO_MB_PADRAO)) * 1024 * 1024
+    if tamanho > teto:
+        return None, (f"anexo maior que o limite: {caminho} tem {tamanho / 1048576:.1f} MB "
+                      f"(limite {limite_mb} MB) — e-mail enviado sem anexo"), detalhe
+    if tamanho == 0:
+        return None, f"anexo vazio (0 byte) em {caminho} — e-mail enviado sem anexo", detalhe
+    with sftp.open(caminho, "rb") as fh:
+        dados = fh.read()
+    detalhe["bytes"] = len(dados)
+    return dados, None, detalhe

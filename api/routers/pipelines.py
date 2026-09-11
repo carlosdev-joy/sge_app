@@ -126,6 +126,9 @@ AUDIT_FIELDS = {
     "runbook_md",
     # Janela e virada (migration 067) — auditados desde a F5 da retomada (D26).
     "hora_virada", "nao_iniciar_antes", "hora_limite_dependencia",
+    # Destinatários de e-mail do fluxo (migration 111): mudar quem recebe aviso
+    # de produção é gesto que precisa de rastro, e ele vale sem republicar a DAG.
+    "email_destinatarios",
 }
 
 # O que o gerador de DAGs (etl_dag_factory) CONSOME do cadastro: mudar qualquer
@@ -529,6 +532,7 @@ def _read_pipeline_record(cur, pipeline_name):
         (", CONVERT(VARCHAR(8), hora_virada, 108) AS hora_virada, "
          "CONVERT(VARCHAR(8), nao_iniciar_antes, 108) AS nao_iniciar_antes, "
          "CONVERT(VARCHAR(8), hora_limite_dependencia, 108) AS hora_limite_dependencia"),  # 067
+        ", email_destinatarios",                                     # migration 111
     ]
     for n in range(len(extras), -1, -1):
         try:
@@ -772,6 +776,15 @@ def list_pipelines(
         else:
             flag_dag_col = "NULL AS dag_config_pendente"
 
+        # coluna da migration 111 (destinatários de e-mail do fluxo) — degrada
+        # para NULL: sem a migration a tela some com o campo em vez de quebrar.
+        cur.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_pipeline' AND COLUMN_NAME='email_destinatarios'
+        """)
+        email_col = ("email_destinatarios" if cur.fetchone()[0]
+                     else "NULL AS email_destinatarios")
+
         data_sql = f"""
             SELECT
                 pipeline_name, project_name, domain, tags,
@@ -796,7 +809,7 @@ def list_pipelines(
                 ISNULL(CAST(retries_count      AS INT), 1)   AS retries_count,
                 ISNULL(CAST(retry_delay_seconds AS INT), 300) AS retry_delay_seconds,
                 pool_name, {runbook_col}, {sched_cols}, {inativ_cols}, {janela_cols},
-                {flag_dag_col}, last_execution, created_at, updated_at
+                {flag_dag_col}, {email_col}, last_execution, created_at, updated_at
             FROM dbo.etl_pipeline
             {where_sql}
             ORDER BY project_name, domain, pipeline_name
@@ -814,11 +827,20 @@ def list_pipelines(
             "trigger_por_dependencia", "horarios_especificos", "dias_semana",
             "dias_horarios_mes", "motivo_inativacao", "inativado_por", "inativado_em",
             "hora_virada", "nao_iniciar_antes", "hora_limite_dependencia",
-            "dag_config_pendente", "last_execution", "created_at", "updated_at",
+            "dag_config_pendente", "email_destinatarios",
+            "last_execution", "created_at", "updated_at",
         ]
         data = []
         for row in cur.fetchall():
             rec = dict(zip(cols, row))
+            # Guardado como JSON; a tela quer lista. JSON estragado à mão vira
+            # lista vazia — melhor um campo vazio do que a tela inteira em erro.
+            try:
+                rec["email_destinatarios"] = json.loads(rec["email_destinatarios"] or "[]")
+            except (TypeError, ValueError):
+                rec["email_destinatarios"] = []
+            if not isinstance(rec["email_destinatarios"], list):
+                rec["email_destinatarios"] = []
             rec["last_execution"] = _fmt_dt(rec["last_execution"])
             rec["created_at"]     = _fmt_dt(rec["created_at"])
             rec["updated_at"]     = _fmt_dt(rec["updated_at"])
@@ -1140,6 +1162,10 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
     # flag da 073 passou a expor como falso "publicar de novo").
     tem_calendario   = "calendario_nome" in body
     tem_somente_uteis = "somente_dias_uteis" in body
+    # Lista de destinatários do PIPELINE (migration 111, spec de e-mail): os nós
+    # `email` herdam dela. Chave ausente = valor atual preservado (Decisão 3);
+    # chave presente com lista vazia = remoção explícita.
+    tem_email_dest   = "email_destinatarios" in body
     calendario_nome  = (body.get("calendario_nome") or "").strip() or None
     somente_dias_uteis      = int(body.get("somente_dias_uteis") or 0)
     # Decisão 3 da F5: o checkbox saiu da tela (obsoleto desde a F3 — ter
@@ -1182,6 +1208,29 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         raise HTTPException(
             status_code=422,
             detail="Informe o motivo da inativação (por que o fluxo ficará indisponível).")
+
+    email_destinatarios: list[str] = []
+    if tem_email_dest:
+        from services import email_config as _ec
+        from services import email_mime as _em
+        # Mesma régua do nó: os domínios permitidos do Admin valem AQUI também.
+        # Sem isso, um endereço barrado entra na lista do fluxo, todo nó com
+        # "incluir os destinatários do fluxo" (o default) o herda, e a task
+        # falha em TODA corrida — longe de quem digitou.
+        _dominios: list[str] = []
+        try:
+            _conn_d = get_db_conn(); _cur_d = _conn_d.cursor()
+            try:
+                _dominios = list(_ec.load_config(_cur_d).get("dominios") or [])
+            finally:
+                _cur_d.close(); _conn_d.close()
+        except Exception:  # noqa: BLE001 — sem a régua, valida só o formato
+            _dominios = []
+        email_destinatarios, _erros_email = _em.validar_destinatarios(
+            body.get("email_destinatarios"), _dominios)
+        if _erros_email:
+            raise HTTPException(status_code=422,
+                                detail="Destinatários de e-mail do fluxo: " + "; ".join(_erros_email))
 
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -1307,6 +1356,22 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
                 )
         except Exception:
             pass  # colunas da migration 017 podem não existir ainda — degrada sem erro
+        # Destinatários de e-mail do fluxo (migration 111). FORA do try acima de
+        # propósito: aquele bloco tem `except Exception: pass`, que engoliria
+        # este 503 (a tela diria "salvo" sem ter gravado) E abortaria a gravação
+        # dos campos da 017 em TODO save, já que o front manda a chave sempre.
+        if tem_email_dest:
+            try:
+                cur.execute(
+                    "UPDATE dbo.etl_pipeline SET email_destinatarios=?, updated_at=GETDATE() "
+                    "WHERE pipeline_name=?",
+                    (json.dumps(email_destinatarios, ensure_ascii=False) if email_destinatarios else None,
+                     pipeline))
+            except Exception as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=("Destinatários de e-mail do fluxo: coluna etl_pipeline.email_destinatarios "
+                            f"ausente — aplique a migration 111 ({e})"))
         # Janela e virada (migration 067). Só grava o que veio NO BODY: o UPDATE
         # incondicional foi o defeito C1 — o diálogo de inativar monta um body
         # próprio, sem esses campos, e todo save os zerava (D26).
@@ -1391,6 +1456,19 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             new_vals["nao_iniciar_antes"] = nao_iniciar_antes
         if tem_hora_limite:
             new_vals["hora_limite_dependencia"] = hora_limite_dependencia
+        if tem_email_dest:
+            # Auditoria sim; CAMPOS_QUE_AFETAM_DAG não: o nó lê a lista em
+            # runtime, então mudar destinatários NÃO pede republicação.
+            # O valor ANTIGO vem como JSON do banco: normaliza os dois lados
+            # para a mesma forma legível, senão todo save acusaria mudança.
+            new_vals["email_destinatarios"] = ", ".join(email_destinatarios)
+            if isinstance(old_record, dict) and "email_destinatarios" in old_record:
+                try:
+                    _antigos = json.loads(old_record["email_destinatarios"] or "[]")
+                except (TypeError, ValueError):
+                    _antigos = []
+                old_record["email_destinatarios"] = ", ".join(
+                    str(x) for x in _antigos) if isinstance(_antigos, list) else ""
 
         # ── Pendência de publicação (Decisão 6/D30, migration 073) ──────────
         # O SERVIDOR decide, por diff sobre CAMPOS_QUE_AFETAM_DAG, se a DAG

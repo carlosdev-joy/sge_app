@@ -27,6 +27,8 @@ export interface Pipeline {
   retry_delay_seconds: number
   pool_name: string | null
   runbook_md: string | null
+  /** Destinatários de e-mail do fluxo (migration 111). Ausente sem a migration. */
+  email_destinatarios?: string[]
   // motivo de inativação (migration 031) — preenchido quando active=0
   motivo_inativacao?: string | null
   inativado_por?: string | null

@@ -395,6 +395,95 @@ isso — e nenhuma outra é.
 > **Depois de mexer no fluxo, republique o pipeline.** O desenho salvo só vira
 > execução quando a DAG é gerada de novo.
 
+### 3.5-A Nó E-mail (avisar por e-mail quando o fluxo termina)
+
+No editor de fluxo, arraste **E-mail** (grupo *Fluxo* da paleta) para mandar um
+aviso por e-mail no meio ou no fim do fluxo. Ele sai pelo mesmo servidor de
+e-mail que o DataStage já usa — nada de conta nova.
+
+```
+Carga_Vida ── ✉ Avisa_Equipe
+```
+
+Antes de usar, alguém com perfil de administrador precisa ligar o canal em
+**Admin › E-mail** (remetente, e as pastas liberadas para anexo). Com o canal
+desligado, o nó fica salvo e a corrida **pula** o envio, sem falhar.
+
+#### Para quem o e-mail vai
+
+Há duas listas, e elas se somam:
+
+| Lista | Onde se cadastra | Para que serve |
+|---|---|---|
+| **Do nó** | Painel do nó de e-mail | Quem interessa naquele aviso específico |
+| **Do fluxo** | Cadastro do fluxo › *Destinatários de e-mail do fluxo* | Quem acompanha o fluxo inteiro |
+
+O nó já nasce com **Incluir os destinatários do fluxo** marcado. Endereço
+repetido nas duas listas chega uma vez só. Desmarque quando o aviso for para
+um grupo diferente do resto.
+
+**Mudar destinatário não exige republicar o fluxo.** A lista é lida na hora do
+envio: salvou, vale na próxima corrida. Isso vale também para o assunto, o
+corpo e o anexo.
+
+#### Assunto e corpo
+
+Os dois aceitam marcadores, trocados na hora do envio:
+
+| Marcador | Vira |
+|---|---|
+| `{pipeline}` · `{job}` | Nome do fluxo · nome do nó |
+| `{data}` | Data e hora do envio |
+| `{odate}` | Data de referência da corrida no formato AAAAMMDD — a mesma que o DataStage recebe e que costuma nomear os arquivos. **Não é a data do relógio**: numa corrida que atravessa a meia-noite, ou num fluxo com hora de virada, ela continua sendo o dia do processamento. |
+| `{linhas}` | Linhas processadas pelas etapas logo antes do nó |
+| `{status}` | Como o fluxo terminou: `SUCCESS`, `FAILED`, `WARNING` ou `SKIPPED` |
+| `{inicio}` · `{duracao}` | Quando a corrida começou · quanto tempo levou |
+
+Um marcador que você escrever errado **aparece como está** no e-mail, em vez de
+quebrar o envio. É o sinal de que o nome não existe.
+
+⚠️ Use `{status}` quando o e-mail puder sair depois de uma falha — é o caso de
+um nó ligado a um **Aguarde** com a política "mesmo com falha". Um assunto fixo
+dizendo "concluído" afirmaria sucesso num fluxo quebrado.
+
+#### Anexar um arquivo gerado pela corrida
+
+Marque **Anexar um arquivo do servidor**, escolha a pasta entre as liberadas e
+escreva o nome. O nome aceita marcadores — `relatorio_{odate}.xlsx` anexa o
+arquivo daquele dia.
+
+O arquivo **não precisa existir na hora do cadastro**: normalmente ele é gerado
+pela própria corrida, minutos antes do envio.
+
+⚠️ Se na hora do envio o arquivo não estiver lá, ou passar do tamanho limite, o
+**e-mail sai assim mesmo, sem anexo**, e o registro do envio explica o motivo.
+O aviso nunca é perdido por causa do anexo.
+
+#### Onde conferir o que foi enviado
+
+Na tela de **Execuções**, abra a corrida: o bloco **E-mails enviados** mostra
+cada envio daquela corrida, para quem foi, com que assunto, se levou anexo e,
+quando algo deu errado, o motivo.
+
+#### Erros comuns
+
+- **Nó sem destinatário nenhum** — o fluxo não salva. Informe uma lista própria
+  ou marque para incluir a do fluxo.
+- **Pasta do anexo fora da lista** — só as pastas cadastradas em Admin › E-mail
+  aparecem no campo. Peça ao administrador para liberar a pasta.
+- **Assunto com quebra de linha** — não é aceito (quebraria o cabeçalho da
+  mensagem).
+- **Domínio não permitido** — se o administrador limitou os domínios, endereços
+  de fora são recusados ao salvar.
+
+> **O envio que falha derruba a etapa.** Se o servidor de e-mail recusar a
+> mensagem, o nó fica vermelho e o fluxo termina em erro — de propósito: aviso
+> que não chegou não pode passar por aviso entregue.
+
+> **Depois de incluir o nó, republique o pipeline.** O desenho salvo só vira
+> execução quando a DAG é gerada de novo. (Só a *primeira vez*: depois disso,
+> mudar texto ou destinatário já vale sem republicar.)
+
 ### 3.6 Componentes de malha (Início · Aguarde · Notificação · Fim)
 
 Na tela **Malha**, o diagrama de montagem tem uma paleta de **componentes** —
