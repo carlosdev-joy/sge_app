@@ -8,7 +8,7 @@ metadata:
   modified: 2026-09-11T06:46:35.992Z
 ---
 
-**Spec:** `docs/spec-notificacao-email.md` no repo Orquestra. **Status: APROVADA 2026-09-10 ("aprovado", decisões assumidas de §8 aceitas). ✅ **F1 MERGEADA 2026-09-11 (PR #388, squash `2e94d1d`)**; ✅ **F2 MERGEADA 2026-09-11 (PR #389, squash `0acc4d5`)**; ✅ **F3 MERGEADA 2026-09-11 (PR #390, squash `3855b5a`)**; 🔧 **F4 (manual, release note e smoke) em PR**.** Origem: documento do usuário `2026-09-10-notificacao-email.md` (enviado pelos Utilitários do DEV para `/dados/bi` do container `orquestra-dev-sshd-amostra`), avaliado contra o código.
+**Spec:** `docs/spec-notificacao-email.md` no repo Orquestra. **Status: APROVADA 2026-09-10 ("aprovado", decisões assumidas de §8 aceitas). ✅ **F1 MERGEADA 2026-09-11 (PR #388, squash `2e94d1d`)**; ✅ **F2 MERGEADA 2026-09-11 (PR #389, squash `0acc4d5`)**; ✅ **F3 MERGEADA 2026-09-11 (PR #390, squash `3855b5a`)**; 🔧 **F4 = PR #391 ABERTA (`feat/email-f4`), aguarda autorização de merge** — com ela a SPEC FECHA.** Origem: documento do usuário `2026-09-10-notificacao-email.md` (enviado pelos Utilitários do DEV para `/dados/bi` do container `orquestra-dev-sshd-amostra`), avaliado contra o código.
 
 **Fatos validados em produção (pelo usuário, via DataStage):** relay `smtp.adcorp.intranet` sem autenticação, remetente `orquestra@caixavidaeprevidencia.com.br`, Postfix em `lnxprd021`, `mailx` no PATH, entrega confirmada no domínio interno. O worker do Airflow NÃO foi testado no relay → envio a partir do servidor do DataStage por SSH.
 
