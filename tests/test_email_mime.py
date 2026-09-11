@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import errno
 import inspect
 import os
 import sys
@@ -260,3 +261,104 @@ def test_enviar_com_stdin_fechado_pelo_sendmail_e_diagnostico_e_nao_rede():
     c.stdin = _FluxoQueFecha(c.canal)
     r = ew.enviar(c, b"x" * 10, "a@x.com", binario="/usr/sbin/sendmail")
     assert r["exit_code"] == -1 and "fechou a entrada" in r["stderr"]
+
+
+# ═══════════ anexo pelo SFTP (F2) ════════════════════════════════════════════
+
+class _Stat:
+    def __init__(self, size, mode=0o100644):
+        self.st_size, self.st_mode = size, mode
+
+
+class _Arquivo:
+    def __init__(self, dados):
+        self.dados = dados
+
+    def read(self):
+        return self.dados
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _Sftp:
+    """SFTP de mentira: `arquivos` mapeia caminho -> (bytes, modo)."""
+
+    def __init__(self, arquivos=None, erro_stat=None):   # noqa: D107
+        self.arquivos = arquivos or {}
+        self.erro_stat = erro_stat
+        self.abertos = []
+
+    def stat(self, caminho):
+        if self.erro_stat:
+            raise self.erro_stat
+        if caminho not in self.arquivos:
+            raise IOError(errno.ENOENT, f"No such file: {caminho}")   # como o paramiko
+        dados, modo = self.arquivos[caminho]
+        return _Stat(len(dados), modo)
+
+    def open(self, caminho, modo="rb"):
+        self.abertos.append(caminho)
+        return _Arquivo(self.arquivos[caminho][0])
+
+
+RAIZES = ["/dados/saida"]
+MAPA = {"odate": "20260911", "pipeline": "CARGA_VIDA"}
+
+
+def test_resolver_anexo_le_o_arquivo_do_dia():
+    sftp = _Sftp({"/dados/saida/relatorio_20260911.xlsx": (b"conteudo", 0o100644)})
+    dados, aviso, det = ew.resolver_anexo(sftp, "/dados/saida", "relatorio_{odate}.xlsx", RAIZES, 5, MAPA)
+    assert dados == b"conteudo" and aviso is None
+    assert det == {"caminho": "/dados/saida/relatorio_20260911.xlsx", "bytes": 8}
+
+
+def test_resolver_anexo_ausente_nao_derruba_a_corrida():
+    dados, aviso, det = ew.resolver_anexo(_Sftp(), "/dados/saida", "relatorio_{odate}.xlsx", RAIZES, 5, MAPA)
+    assert dados is None and "não encontrado" in aviso and det["bytes"] is None
+    assert det["caminho"] == "/dados/saida/relatorio_20260911.xlsx"      # o log diz ONDE procurou
+
+
+def test_resolver_anexo_recusa_placeholder_que_escapa_da_raiz():
+    sftp = _Sftp({"/etc/passwd": (b"root:x:0:0", 0o100644)})
+    dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "{fuga}", RAIZES, 5, {"fuga": "../../etc/passwd"})
+    assert dados is None and "sai da raiz permitida" in aviso and sftp.abertos == []
+
+
+def test_resolver_anexo_recusa_o_que_nao_e_arquivo_regular():
+    """Ressalva da revisão da F1: `sftp.open()` num diretório pendura ou lê lixo."""
+    sftp = _Sftp({"/dados/saida/pasta": (b"", 0o040755)})
+    dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "pasta", RAIZES, 5, MAPA)
+    assert dados is None and "não é um arquivo" in aviso and sftp.abertos == []
+
+
+def test_resolver_anexo_respeita_o_limite_do_admin_antes_de_ler():
+    grande = b"x" * (2 * 1024 * 1024 + 1)
+    sftp = _Sftp({"/dados/saida/base.csv": (grande, 0o100644)})
+    dados, aviso, det = ew.resolver_anexo(sftp, "/dados/saida", "base.csv", RAIZES, 2, MAPA)
+    assert dados is None and "maior que o limite" in aviso
+    assert sftp.abertos == [] and det["bytes"] == len(grande)       # mediu pelo stat, não leu
+    dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "base.csv", RAIZES, 5, MAPA)
+    assert dados == grande and aviso is None
+
+
+def test_resolver_anexo_com_sftp_fora_do_ar_avisa_o_motivo():
+    """`IOError` É `OSError` no Python 3 — só o errno separa 'não existe' de
+    'canal caído', e confundir os dois esconderia falha de infraestrutura."""
+    sftp = _Sftp(erro_stat=OSError(errno.EPIPE, "Socket is closed"))
+    dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "x.csv", RAIZES, 5, MAPA)
+    # o Python promove OSError(EPIPE) a BrokenPipeError — o aviso nomeia a classe real
+    assert dados is None and "não pôde ser consultado" in aviso and "BrokenPipeError" in aviso
+    assert "não encontrado" not in aviso
+    sftp = _Sftp(erro_stat=PermissionError(errno.EACCES, "Permission denied"))
+    _, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "x.csv", RAIZES, 5, MAPA)
+    assert "não pôde ser consultado" in aviso and "PermissionError" in aviso
+
+
+def test_resolver_anexo_vazio_avisa_em_vez_de_anexar_zero_byte():
+    sftp = _Sftp({"/dados/saida/vazio.csv": (b"", 0o100644)})
+    dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "vazio.csv", RAIZES, 5, MAPA)
+    assert dados is None and "vazio" in aviso

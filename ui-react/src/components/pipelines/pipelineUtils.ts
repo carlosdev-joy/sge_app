@@ -248,6 +248,11 @@ export function typeBadgeColor(t: string) {
     python:     'bg-green-500/15 text-green-600 dark:text-green-400 border border-green-300 dark:border-green-800/40',
     storedproc: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-800/40',
     decisao:    'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-800/40',
+    http:       'bg-orange-500/15 text-orange-600 dark:text-orange-400 border border-orange-300 dark:border-orange-800/40',
+    sql:        'bg-violet-500/15 text-violet-600 dark:text-violet-400 border border-violet-300 dark:border-violet-800/40',
+    notificacao: 'bg-teal-500/15 text-teal-600 dark:text-teal-400 border border-teal-300 dark:border-teal-800/40',
+    email:      'bg-teal-500/15 text-teal-600 dark:text-teal-400 border border-teal-300 dark:border-teal-800/40',
+    aguarde:    'bg-amber-600/15 text-amber-700 dark:text-amber-500 border border-amber-300 dark:border-amber-800/40',
   }
   return m[t] ?? 'bg-slate-500/15 text-slate-500 border border-slate-300 dark:border-slate-700'
 }

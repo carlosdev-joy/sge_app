@@ -81,6 +81,13 @@ function typeBadgeColor(t: JobType | string) {
     python: 'bg-green-500/15 text-green-400 border border-green-800/40',
     storedproc: 'bg-purple-500/15 text-purple-400 border border-purple-800/40',
     http: 'bg-orange-500/15 text-orange-400 border border-orange-800/40',
+    // Nós de fluxo — criados no canvas (Etapas › Fluxo), mas LISTADOS aqui.
+    // Sem cor própria eles caíam todos no cinza genérico.
+    sql: 'bg-violet-500/15 text-violet-400 border border-violet-800/40',
+    decisao: 'bg-indigo-500/15 text-indigo-400 border border-indigo-800/40',
+    notificacao: 'bg-teal-500/15 text-teal-400 border border-teal-800/40',
+    email: 'bg-teal-500/15 text-teal-400 border border-teal-800/40',
+    aguarde: 'bg-amber-600/15 text-amber-500 border border-amber-800/40',
   }
   return m[t] ?? 'bg-slate-500/15 text-slate-400 border border-slate-700'
 }

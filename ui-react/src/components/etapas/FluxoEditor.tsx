@@ -53,7 +53,7 @@ import { Modal } from '../ui/Modal'
 import { toast } from '../ui/Toast'
 import {
   Activity,
-  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Table2, Split, Hourglass,
+  Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Table2, Split, Hourglass, Mail,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
   MousePointerClick, Pencil, Search, X, History, PauseCircle,
 } from 'lucide-react'
@@ -62,6 +62,7 @@ import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeC
 import { NotificacaoNode, type NotificacaoNodeData } from './NotificacaoNode'
 import { SqlNode, type SqlNodeData } from './SqlNode'
 import { AguardeNode, type AguardeNodeData } from './AguardeNode'
+import { EmailNode, type EmailNodeData } from './EmailNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { defaultCondition, toNodeCondition, conditionLabel } from './condition'
 import { useColorMode } from './useColorMode'
@@ -74,6 +75,7 @@ import {
   type Condition, type NotifyConfig, type SqlConfig, type AguardeConfig, type MsgGrupo,
   defaultNotify, toNotifyConfig, notifyLabel, defaultSql, toSqlConfig, sqlLabel,
   defaultAguarde, toAguardeConfig, aguardeLabel, pontasSoltas,
+  type EmailNoConfig, defaultEmailNo, toEmailNoConfig, emailNoLabel, errosDoEmailNo,
 } from './fluxoTypes'
 import { PropriedadesPanel } from './paineis/PropriedadesPanel'
 import { PainelPipeline, type ContagemNos } from './paineis/PainelPipeline'
@@ -88,7 +90,8 @@ import { ModalRerunEtapa } from './ModalRerunEtapa'
 import { ModalPausaEtapa } from './ModalPausaEtapa'
 import { useAuthStore } from '../../store/auth'
 
-const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode, aguarde: AguardeNode }
+const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode,
+                    aguarde: AguardeNode, email: EmailNode }
 
 // ── Dock inferior de propriedades (fase 3 do redesign) ──────────────────────
 type DockEstado = 'colapsado' | 'aberto' | 'max'
@@ -114,6 +117,8 @@ interface FluxoNode {
   sql_node: SqlConfig | null
   // Config do nó Aguarde — chave `aguarde` na API.
   aguarde?: AguardeConfig | null
+  // Config do nó de E-mail — chave `email` na API (guardada em notify_json).
+  email?: EmailNoConfig | null
   layout_x: number | null
   layout_y: number | null
   // Campos por tipo (round-trip). O backend usa presença de chave — sempre reenviados.
@@ -188,6 +193,11 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       const aguarde = toAguardeConfig(n.aguarde)
       const data: AguardeNodeData = { name: n.job_name, aguarde, label: aguardeLabel(aguarde) }
       return { id: n.job_name, type: 'aguarde' as const, position, data }
+    }
+    if (n.job_type === 'email') {
+      const email = toEmailNoConfig(n.email)
+      const data: EmailNodeData = { name: n.job_name, email, label: emailNoLabel(email) }
+      return { id: n.job_name, type: 'email' as const, position, data }
     }
     const data: EtapaNodeData = {
       name: n.job_name,
@@ -381,6 +391,8 @@ const PALETA_CATEGORIAS: PaletaCategoria[] = [
       // Hourglass, não GitMerge: o ícone precisa aderir ao NOME "Aguarde" e ser
       // o mesmo que o operador reencontra no medalhão do nó dentro do canvas.
       { tipo: 'aguarde', label: 'Aguarde', chip: 'bg-amber-600 text-white', Icon: Hourglass },
+      // Mesmo acento da Notificação: os dois avisam gente, mudando o canal.
+      { tipo: 'email', label: 'E-mail', chip: 'bg-teal-600 text-white', Icon: Mail },
     ],
   },
 ]
@@ -748,6 +760,19 @@ function FluxoEditorInner({
     [grupos],
   )
 
+  // Régua do Admin › E-mail: as pastas liberadas para anexo. Degrada para []
+  // (sem a migration 111, ou sem pasta cadastrada) — e aí a pendência do nó
+  // avisa, em vez de o save falhar com 422 vindo do servidor.
+  const { data: emailStatus } = useQuery<{ raizes?: string[] }>({
+    queryKey: ['email-status'],
+    queryFn: () => apiFetch('/email/status'),
+    staleTime: 300_000,
+  })
+  // Lista vazia quando a consulta ainda não respondeu (ou falhou) NÃO pode
+  // travar o save do fluxo inteiro: a régua da pasta só vale com resposta na
+  // mão — o backend continua sendo a palavra final.
+  const raizesEmail = useMemo(() => emailStatus?.raizes ?? [], [emailStatus])
+
   const decisaoSet = useMemo(
     () => new Set(nodes.filter(n => n.type === 'decisao').map(n => n.id)),
     [nodes],
@@ -757,7 +782,7 @@ function FluxoEditorInner({
   // Decisões (roteadores), notificações e nós SQL (não geram linhas) ficam de fora.
   const jobNames = useMemo(
     () => nodes.filter(n => n.type !== 'decisao' && n.type !== 'notificacao'
-      && n.type !== 'sql' && n.type !== 'aguarde').map(n => n.id),
+      && n.type !== 'sql' && n.type !== 'aguarde' && n.type !== 'email').map(n => n.id),
     [nodes],
   )
 
@@ -770,12 +795,13 @@ function FluxoEditorInner({
   // Contagem de nós por tipo (grafo VIVO, inclui não salvos) — exibida no
   // painel do PIPELINE quando nada está selecionado no dock.
   const contagemNos = useMemo<ContagemNos>(() => {
-    const c: ContagemNos = { etapas: 0, decisoes: 0, sql: 0, notificacoes: 0, aguardes: 0 }
+    const c: ContagemNos = { etapas: 0, decisoes: 0, sql: 0, notificacoes: 0, aguardes: 0, emails: 0 }
     for (const n of nodes) {
       if (n.type === 'decisao') c.decisoes += 1
       else if (n.type === 'sql') c.sql += 1
       else if (n.type === 'notificacao') c.notificacoes += 1
       else if (n.type === 'aguarde') c.aguardes += 1
+      else if (n.type === 'email') c.emails += 1
       else c.etapas += 1
     }
     return c
@@ -1013,6 +1039,23 @@ function FluxoEditorInner({
           position: { x, y },
           selected: true,
           data: { name, aguarde, label: aguardeLabel(aguarde), isNew: true } as AguardeNodeData,
+        }
+        setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
+        setDirty(true)
+        setSelectedId(name)
+        return
+      }
+      if (tipo === 'email') {
+        // E-mail: nasce herdando a lista do fluxo e com assunto/corpo prontos —
+        // arrastar e ligar já produz um aviso que faz sentido.
+        const name = nextName('AVISA_EMAIL', nameSet())
+        const email = defaultEmailNo()
+        const node: Node = {
+          id: name,
+          type: 'email',
+          position: { x, y },
+          selected: true,
+          data: { name, email, label: emailNoLabel(email), isNew: true } as EmailNodeData,
         }
         setNodes(nds => [...nds.map(n => n.selected ? { ...n, selected: false } : n), node])
         setDirty(true)
@@ -1368,6 +1411,17 @@ function FluxoEditorInner({
     setDirty(true)
   }
 
+  // Atualiza a config de um nó de E-mail (merge) e o rótulo do nó (quem recebe).
+  function patchEmail(nodeId: string, patch: Partial<EmailNoConfig>) {
+    setNodes(nds => nds.map(n => {
+      if (n.id !== nodeId || n.type !== 'email') return n
+      const cur = (n.data as EmailNodeData).email ?? defaultEmailNo()
+      const next = { ...cur, ...patch }
+      return { ...n, data: { ...n.data, email: next, label: emailNoLabel(next) } }
+    }))
+    setDirty(true)
+  }
+
   // Pontas soltas que a ação "prender" ligaria neste Aguarde (lógica pura em
   // fluxoTypes — testável sem React Flow).
   const pontasSoltasDe = useCallback(
@@ -1490,6 +1544,18 @@ function FluxoEditorInner({
         setSaving(false)
         return
       }
+      // Guard do nó de e-mail: a mesma régua do backend, para o operador ver o
+      // que falta junto do nome do nó em vez de um 422 com a lista crua.
+      const emailIncompleto = nodes
+        .filter(n => n.type === 'email')
+        .map(n => ({ id: n.id, erros: errosDoEmailNo((n.data as EmailNodeData).email ?? defaultEmailNo(), raizesEmail) }))
+        .filter(x => x.erros.length)
+      if (emailIncompleto.length) {
+        const primeiro = emailIncompleto[0]
+        toast.error(`E-mail ${primeiro.id}: ${primeiro.erros[0]}.`)
+        setSaving(false)
+        return
+      }
 
       const decisoes = new Set(nodes.filter(n => n.type === 'decisao').map(n => n.id))
 
@@ -1568,6 +1634,7 @@ function FluxoEditorInner({
         const isNotificacao = n.type === 'notificacao'
         const isSql = n.type === 'sql'
         const isAguarde = n.type === 'aguarde'
+        const isEmail = n.type === 'email'
         let condition: Record<string, unknown> | null = null
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
@@ -1646,11 +1713,12 @@ function FluxoEditorInner({
           : isNotificacao ? 'notificacao'
           : isSql ? 'sql'
           : isAguarde ? 'aguarde'
+          : isEmail ? 'email'
           : ((d.type as string) || 'datastage')
         const base = {
           job_name: n.id,
           job_type: jobType,
-          job_command: (isDecisao || isNotificacao || isSql || isAguarde)
+          job_command: (isDecisao || isNotificacao || isSql || isAguarde || isEmail)
             ? null : ((d.command as string | null) ?? null),
           execution_order: (d.order as number) ?? 1,
           depends_on_jobs: Array.from(depsByTarget.get(n.id) ?? []),
@@ -1681,6 +1749,23 @@ function FluxoEditorInner({
             ...base,
             aguarde: {
               politica: cur.politica === 'todas_terminarem' ? 'todas_terminarem' : 'todas_sucesso',
+            },
+          }
+        }
+        if (isEmail) {
+          // E-mail: emite a chave `email`. O backend grava na mesma coluna do
+          // `notify` (notify_json) — o job_type é quem diz qual das duas é.
+          const cur = (d.email as EmailNoConfig | undefined) ?? defaultEmailNo()
+          return {
+            ...base,
+            email: {
+              assunto: (cur.assunto ?? '').toString(),
+              corpo: (cur.corpo ?? '').toString(),
+              html: cur.html === true,
+              destinatarios: cur.destinatarios ?? [],
+              incluir_pipeline: cur.incluir_pipeline !== false,
+              anexo: cur.anexo && cur.anexo.raiz && cur.anexo.nome
+                ? { raiz: cur.anexo.raiz, nome: cur.anexo.nome } : null,
             },
           }
         }
@@ -1783,6 +1868,7 @@ function FluxoEditorInner({
       if (node.type === 'notificacao') return '#0d9488'
       if (node.type === 'sql') return '#8b5cf6'
       if (node.type === 'aguarde') return '#d97706'
+      if (node.type === 'email') return '#0d9488'
       const t = (node.data as { type?: EtapaType }).type
       return (t && TYPE_META[t]?.hex) || '#94a3b8'
     },
@@ -1915,6 +2001,11 @@ function FluxoEditorInner({
         }
       } else if (n.type === 'notificacao') {
         if ((n.data as NotificacaoNodeData).notify?.grupo_id == null) errs.push('sem canal (grupo de mensagem)')
+      } else if (n.type === 'email') {
+        // Mesma régua do backend, resumida: o que impediria o save aparece no
+        // nó antes de o operador tentar salvar.
+        const cfg = (n.data as EmailNodeData).email
+        if (cfg) errs.push(...errosDoEmailNo(cfg, raizesEmail).map(e => e.toLowerCase()))
       } else if (n.type === 'sql') {
         const s = (n.data as SqlNodeData).sql
         if (!(s?.sql || '').trim()) errs.push('SELECT vazio')
@@ -1932,7 +2023,7 @@ function FluxoEditorInner({
       if (errs.length) out.set(n.id, errs)
     }
     return out
-  }, [nodes, edges])
+  }, [nodes, edges, raizesEmail])
 
   // Contador HONESTO do que está aceso — o valor de mapeamento de processo do
   // pedido ("7 etapas dependem desta"). O texto acompanha o SENTIDO: o lado
@@ -2336,6 +2427,7 @@ function FluxoEditorInner({
                   : selNode.type === 'notificacao' ? 'Notificação'
                   : selNode.type === 'sql' ? 'Consulta SQL'
                   : selNode.type === 'aguarde' ? 'Aguarde'
+                  : selNode.type === 'email' ? 'E-mail'
                   : (TYPE_META as Record<string, { label: string }>)[
                       String((selNode.data as { type?: string }).type ?? '')
                     ]?.label ?? 'Etapa'}
@@ -2565,6 +2657,7 @@ function FluxoEditorInner({
               onPatchNotify={patchNotify}
               onPatchSql={patchSql}
               onPatchAguarde={patchAguarde}
+              onPatchEmail={patchEmail}
               aguardeEntradas={selAguardeEntradas}
               aguardePontasSoltas={selAguardePontasSoltas}
               onPrenderPontasSoltas={prenderPontasSoltas}

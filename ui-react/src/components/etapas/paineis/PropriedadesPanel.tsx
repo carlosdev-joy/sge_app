@@ -8,13 +8,14 @@
 import type { Node } from '@xyflow/react'
 import { MousePointerClick } from 'lucide-react'
 import type { NodeCondition } from '../DecisaoNode'
-import type { NotifyConfig, SqlConfig, AguardeConfig, MsgGrupo } from '../fluxoTypes'
+import type { NotifyConfig, SqlConfig, AguardeConfig, EmailNoConfig, MsgGrupo } from '../fluxoTypes'
 import type { CasoOps } from './shared'
 import { PainelEtapa } from './PainelEtapa'
 import { PainelDecisao } from './PainelDecisao'
 import { PainelNotificacao } from './PainelNotificacao'
 import { PainelSql } from './PainelSql'
 import { PainelAguarde } from './PainelAguarde'
+import { PainelEmail } from './PainelEmail'
 
 interface PropriedadesPanelProps extends CasoOps {
   node: Node | null
@@ -35,6 +36,7 @@ interface PropriedadesPanelProps extends CasoOps {
   onPatchNotify: (nodeId: string, patch: Partial<NotifyConfig>) => void
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
   onPatchAguarde: (nodeId: string, patch: Partial<AguardeConfig>) => void
+  onPatchEmail: (nodeId: string, patch: Partial<EmailNoConfig>) => void
   // Quantas etapas chegam no Aguarde selecionado, e quais pontas soltas a ação
   // "prender" ligaria nele. Derivados das arestas pelo editor.
   aguardeEntradas: number
@@ -52,7 +54,7 @@ interface PropriedadesPanelProps extends CasoOps {
 export function PropriedadesPanel({
   node, pipeline, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, grupos,
   readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete,
-  onPatchAguarde, aguardeEntradas, aguardePontasSoltas, onPrenderPontasSoltas,
+  onPatchAguarde, onPatchEmail, aguardeEntradas, aguardePontasSoltas, onPrenderPontasSoltas,
   onMaximizar, onHoverRamo,
   onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
 }: PropriedadesPanelProps) {
@@ -102,6 +104,14 @@ export function PropriedadesPanel({
           onRename={onRename}
           onPatchAguarde={onPatchAguarde}
           onPrenderPontasSoltas={onPrenderPontasSoltas}
+          onDelete={onDelete}
+        />
+      ) : node.type === 'email' ? (
+        <PainelEmail
+          key={node.id}
+          node={node}
+          onRename={onRename}
+          onPatchEmail={onPatchEmail}
           onDelete={onDelete}
         />
       ) : node.type === 'sql' ? (

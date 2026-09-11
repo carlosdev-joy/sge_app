@@ -18,6 +18,7 @@ export interface ContagemNos {
   sql: number
   notificacoes: number
   aguardes: number
+  emails: number
 }
 
 export interface PainelPipelineProps {
@@ -160,6 +161,7 @@ export function PainelPipeline({ pipeline, contagem, readOnly = false }: PainelP
                   {' · '}<strong>{contagem.sql}</strong> SQL
                   {' · '}<strong>{contagem.notificacoes}</strong> notificaç{contagem.notificacoes !== 1 ? 'ões' : 'ão'}
                   {' · '}<strong>{contagem.aguardes}</strong> aguarde{contagem.aguardes !== 1 ? 's' : ''}
+                  {' · '}<strong>{contagem.emails}</strong> e-mail{contagem.emails !== 1 ? 's' : ''}
                 </>
               )}
             </p>

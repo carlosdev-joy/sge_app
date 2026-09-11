@@ -112,4 +112,4 @@ def test_aguarde_e_tipo_valido(J):
 def test_tipos_anteriores_preservados(J):
     """Não-regressão: a 068 só ADICIONA um tipo."""
     assert {"datastage", "shell", "python", "storedproc", "http",
-            "decisao", "notificacao", "sql"} <= J.VALID_JOB_TYPES
+            "decisao", "notificacao", "sql", "email"} <= J.VALID_JOB_TYPES

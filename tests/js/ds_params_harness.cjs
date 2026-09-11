@@ -23,7 +23,7 @@ const mini = require(path.join(__dirname, 'minireact.cjs'))
 const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/JobTypeFields.tsx',
                   'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx',
                   'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx',
-                  'lib/maestroAdmin.ts', 'lib/emailAdmin.ts']
+                  'lib/maestroAdmin.ts', 'lib/emailAdmin.ts', 'components/etapas/fluxoTypes.ts']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -576,6 +576,48 @@ function tela(params, previa, extra, jobName) {
                 E.mensagemErroEmail({ status: 500, message: '500 Internal Server Error' }, 'padrão')],
     pendente111: [E.migration111Pendente({ status: 503, detail: 'E-mail indisponível: migration 111 pendente' }), E.migration111Pendente({ status: 503, detail: 'x' })],
     etapas: Object.keys(E.ETAPA_LAUDO),
+  }
+}
+
+// ── 10) Nó de e-mail no pipeline (F2 da spec de notificação por e-mail) ─────
+{
+  const F = require(path.join(tmp, 'components/etapas/fluxoTypes.js'))
+  const RAIZES = ['/dados/saida', '/opt/IBM/dados']
+  const padrao = F.defaultEmailNo()
+  const completo = {
+    assunto: 'Carga {pipeline} concluída - {data}',
+    corpo: 'Foram {linhas} linhas.',
+    html: false,
+    destinatarios: ['ana@cvp.com.br'],
+    incluir_pipeline: false,
+    anexo: { raiz: '/dados/saida', nome: 'relatorio_{odate}.xlsx' },
+  }
+  saida.emailNo = {
+    padrao,
+    // round-trip com o payload da API (tolerante a null/parcial)
+    doApi: [F.toEmailNoConfig(null), F.toEmailNoConfig(completo),
+            F.toEmailNoConfig({ assunto: 'x', corpo: 'y', destinatarios: ['  a@x.com  ', ''], anexo: { raiz: ' /dados/saida ', nome: ' r.csv ' } }),
+            // incluir_pipeline ausente NÃO pode virar false (mandaria para menos gente)
+            F.toEmailNoConfig({ assunto: 'x', corpo: 'y', destinatarios: ['a@x.com'] }).incluir_pipeline],
+    rotulos: [F.emailNoLabel(padrao), F.emailNoLabel(completo),
+              F.emailNoLabel({ ...completo, destinatarios: ['a@x.com', 'b@x.com'], incluir_pipeline: true }),
+              F.emailNoLabel({ ...completo, destinatarios: [], incluir_pipeline: false })],
+    erros: {
+      padraoSemDestinatario: F.errosDoEmailNo({ ...padrao, incluir_pipeline: false }, RAIZES),
+      padraoHerdando: F.errosDoEmailNo(padrao, RAIZES),
+      completo: F.errosDoEmailNo(completo, RAIZES),
+      semAssunto: F.errosDoEmailNo({ ...completo, assunto: '  ' }, RAIZES),
+      assuntoComQuebra: F.errosDoEmailNo({ ...completo, assunto: 'a\nBcc: x@y.com' }, RAIZES),
+      semCorpo: F.errosDoEmailNo({ ...completo, corpo: '' }, RAIZES),
+      destinatarioRuim: F.errosDoEmailNo({ ...completo, destinatarios: ['sem-arroba'] }, RAIZES),
+      anexoForaDaRaiz: F.errosDoEmailNo({ ...completo, anexo: { raiz: '/etc', nome: 'passwd' } }, RAIZES),
+      anexoComBarra: F.errosDoEmailNo({ ...completo, anexo: { raiz: '/dados/saida', nome: '../x' } }, RAIZES),
+      anexoSemNome: F.errosDoEmailNo({ ...completo, anexo: { raiz: '/dados/saida', nome: '  ' } }, RAIZES),
+      anexoSemPasta: F.errosDoEmailNo({ ...completo, anexo: { raiz: '', nome: 'x.csv' } }, RAIZES),
+      // lista vazia = status ainda não respondeu (ou falhou): a pasta não é
+      // cobrada aqui para um erro de rede não travar o save do fluxo inteiro
+      semRaizLiberada: F.errosDoEmailNo(completo, []),
+    },
   }
 }
 

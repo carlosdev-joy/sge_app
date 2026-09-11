@@ -6,6 +6,7 @@ import { copyToClipboard } from '../../lib/clipboard'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
+import type { EmailLogItem as EmailEnvio } from '../../lib/emailAdmin'
 import { PageSpinner } from '../ui/Spinner'
 import { toast } from '../ui/Toast'
 import {
@@ -468,6 +469,19 @@ export function LogDetailModal({
   const hasFail = row.jobs_falha > 0
   const dagId = row.pipeline
 
+  // E-mails enviados por nós `email` deste pipeline (spec de notificação por
+  // e-mail, F2). Filtra pela execução em memória — o endpoint devolve os
+  // últimos do pipeline, e é o `execution_id` que amarra à corrida aberta aqui.
+  // Degrada em silêncio: sem a migration 111 o endpoint responde 503 e o bloco
+  // simplesmente não aparece.
+  const { data: emailData } = useQuery<{ envios?: EmailEnvio[] }>({
+    queryKey: ['exec-emails', row.pipeline, row.execution_id],
+    queryFn: () => apiFetch(`/email/log?pipeline=${encodeURIComponent(row.pipeline)}&limite=50`),
+    retry: false,
+    staleTime: 60_000,
+  })
+  const emails = (emailData?.envios ?? []).filter(e => e.execution_id === row.execution_id)
+
   return (
     <Modal open title={`Execução: ${row.pipeline}`} onClose={onClose} size="2xl">
       <div className="flex flex-col gap-4">
@@ -492,6 +506,40 @@ export function LogDetailModal({
         {row.ack_by && (
           <div className="bg-green-50 border border-green-200 dark:bg-green-900/20 dark:border-green-800 rounded-lg px-3 py-2 text-xs text-green-700 dark:text-green-400">
             ✓ Reconhecida por <strong>{row.display_name ?? row.ack_by}</strong> em {fmtDt(row.ack_at)}
+          </div>
+        )}
+
+        {/* E-mails enviados nesta corrida (nó `email`) */}
+        {emails.length > 0 && (
+          <div className="border border-edge rounded-lg bg-canvas px-3 py-3">
+            <p className="text-xs text-dim font-medium mb-2">
+              E-mails enviados ({emails.length})
+            </p>
+            <div className="flex flex-col gap-2">
+              {emails.map(e => (
+                <div key={e.id} className="flex flex-col gap-0.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className={[
+                      'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                      e.status === 'enviado' ? 'bg-green-500/15 text-green-600 dark:text-green-400'
+                        : e.status === 'sem_anexo' ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                        : 'bg-red-500/15 text-red-600 dark:text-red-400',
+                    ].join(' ')}>
+                      {e.status === 'sem_anexo' ? 'sem anexo' : e.status}
+                    </span>
+                    <span className="font-mono text-[11px] text-dim">{e.job_name}</span>
+                    <span className="truncate text-ink" title={e.assunto}>{e.assunto}</span>
+                  </div>
+                  <p className="text-[11px] text-dim truncate" title={e.destinatarios.join(', ')}>
+                    para {e.destinatarios.join(', ')}
+                    {e.anexo_path ? ` · anexo ${e.anexo_path.split('/').pop()}` : ''}
+                  </p>
+                  {e.erro && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400">{e.erro}</p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

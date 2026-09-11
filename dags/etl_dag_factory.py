@@ -457,7 +457,7 @@ def _task_block(job, project, pipeline, branch_reachable=False):
     return "\n\n".join([log_start, main, log_end])
 
 
-def _decision_block(job, condition, job_names, notif_names=None):
+def _decision_block(job, condition, job_names, nos_especiais=None):
     """Bloco de um nó de Decisão: BranchPythonOperator que avalia a condição
     (via utils.conditions.eval_condition) e retorna os t_start do ramo escolhido.
     Não tem t_start/t_end próprios (é um roteador) — fica fora de end_tasks.
@@ -470,14 +470,19 @@ def _decision_block(job, condition, job_names, notif_names=None):
     eval_switch (primeiro caso que casar vence; nenhum → 'senao') e roteia pelo
     mapa nome-do-caso → t_start dos membros. Condições sem ``casos`` seguem o
     caminho binário INALTERADO (DAG byte-idêntica para fluxos existentes)."""
-    notif_names = notif_names or set()
+    # Nós SEM t_start (notificação, sql, aguarde, email): o branch tem de
+    # apontar para o PRÓPRIO task_id. Apontar para 'log_start_<nome>', que só
+    # existe em etapa comum, faz o BranchPythonOperator levantar
+    # "'branch_task_ids' must contain only valid task_ids" — a DECISÃO falha e
+    # derruba o pipeline na primeira corrida depois de publicar.
+    nos_especiais = nos_especiais or set()
     name  = job["job_name"]
     vname = _varname(name)
     casos = condition.get("casos") if isinstance(condition.get("casos"), list) else None
     if casos:
         def _ids(membros):
             ms = [j for j in (membros or []) if j in job_names and j != name]
-            return [(j if j in notif_names else "log_start_" + j) for j in ms]
+            return [(j if j in nos_especiais else "log_start_" + j) for j in ms]
         ramos_ids = {}
         for c in casos:
             cnome = str(c.get("nome") or "").strip() if isinstance(c, dict) else ""
@@ -503,10 +508,11 @@ def _decision_block(job, condition, job_names, notif_names=None):
         ])
     ramo_v = [j for j in (condition.get("ramo_verdadeiro") or []) if j in job_names and j != name]
     ramo_f = [j for j in (condition.get("ramo_falso") or []) if j in job_names and j != name]
-    # Notificação: o branch aponta para o próprio task_id (t_notif_* usa task_id=nome);
-    # demais membros entram pelo log_start_<nome>.
-    v_ids = [(j if j in notif_names else "log_start_" + j) for j in ramo_v]
-    f_ids = [(j if j in notif_names else "log_start_" + j) for j in ramo_f]
+    # Nó especial (notificação/sql/aguarde/email): o branch aponta para o
+    # próprio task_id (t_notif_*, t_sql_*, t_wait_* e t_email_* usam
+    # task_id=nome); demais membros entram pelo log_start_<nome>.
+    v_ids = [(j if j in nos_especiais else "log_start_" + j) for j in ramo_v]
+    f_ids = [(j if j in nos_especiais else "log_start_" + j) for j in ramo_f]
     return "\n".join([
         f'def _decide_{vname}(**context):',
         f'    cond = {condition!r}',
@@ -562,6 +568,36 @@ def _notify_block(job, notify_cfg, upstream_jobs, branch_reachable=False):
         f't_notif_{vname} = PythonOperator(',
         f'    task_id={name!r},',
         f'    python_callable=_notify_{vname},',
+        rule,
+        f')',
+    ]))
+
+
+def _email_block(job, branch_reachable=False):
+    """Bloco de um nó de E-mail (spec docs/spec-notificacao-email.md, F2).
+
+    Ao contrário do `_notify_block` — que embute grupo_id/template_id/mensagem
+    como LITERAIS no código gerado — aqui o bloco emite só os NOMES
+    (pipeline/job): o `EmailOperator` lê `notify_json` e a lista do pipeline do
+    banco na hora da corrida. É o que faz "mudar destinatários na tela vale na
+    próxima corrida, sem republicar a DAG" (critério de aceite da F2).
+
+    Sem t_start/t_end, como os demais nós especiais: é efeito colateral, não
+    tem lineage em etl_job_execution. Alcançável a partir de um branch, usa a
+    trigger rule tolerante a skip — senão o ramo não escolhido, que chega
+    SKIPPED, travaria o e-mail para sempre."""
+    name  = job["job_name"]
+    vname = _varname(name)
+    ssh = job.get("ssh_conn_id") or None
+    ssh_val = f'"{ssh}"' if ssh else 'SSH_CONN_ID'
+    rule = ('    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
+            if branch_reachable else None)
+    return "\n".join(filter(None, [
+        f't_email_{vname} = EmailOperator(',
+        f'    task_id={name!r},',
+        f'    pipeline_name=PIPELINE_NAME,',
+        f'    job_name={name!r},',
+        f'    ssh_conn_id={ssh_val},',
         rule,
         f')',
     ]))
@@ -724,7 +760,7 @@ def _generate_dag_source(pipeline, jobs):
     # Nós de Decisão (roteador), de Notificação (sem lineage) e SQL (roda o SELECT
     # e publica o valor escalar) não têm t_start/t_end próprios — ficam fora de
     # end_tasks.
-    _SPECIAL_NODES = ("decisao", "notificacao", "sql", "aguarde")
+    _SPECIAL_NODES = ("decisao", "notificacao", "sql", "aguarde", "email")
     all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs if _alias(j) not in _SPECIAL_NODES]
 
     def _jtypes(jobs):
@@ -822,6 +858,11 @@ def _generate_dag_source(pipeline, jobs):
             except (ValueError, TypeError):
                 notificacao_nodes[j["job_name"]] = {}
     has_notificacao = bool(notificacao_nodes)
+    # Nó de e-mail: a config vive na MESMA coluna (notify_json), mas aqui só
+    # interessa QUEM é nó de e-mail — o conteúdo é lido pelo operador em
+    # runtime, nunca embutido no código gerado.
+    email_nodes = {j["job_name"] for j in sorted_jobs if _alias(j) == "email"}
+    has_email = bool(email_nodes)
 
     # ── Nó SQL (migration 051) ─────────────────────────────────────────────
     # Parse de sql_json (degrada se ausente/invalido). O nó é executável mas sem
@@ -896,6 +937,8 @@ def _generate_dag_source(pipeline, jobs):
     if http_needed: _ops.append("HttpCallOperator")
     if _ops:
         import_lines.append("from utils.job_operators import " + ", ".join(_ops))
+    if has_email:
+        import_lines.append("from utils.email_operator import EmailOperator")
     if has_decision:
         # eval_switch só entra quando alguma decisão é N-way (casos) — pipelines
         # binários mantêm a linha de import (e a DAG) byte-idêntica.
@@ -2349,7 +2392,9 @@ def _generate_dag_source(pipeline, jobs):
         # dedup preservando ordem
         _notif_upstream[nname] = list(dict.fromkeys(ups))
 
-    _notif_set = set(notificacao_nodes)
+    # TODOS os nós sem t_start entram aqui, não só as notificações: cada um
+    # é roteado pelo próprio task_id (ver _decision_block).
+    _notif_set = set(notificacao_nodes) | set(sql_nodes) | set(aguarde_nodes) | set(email_nodes)
     job_blocks = []
     for j in sorted_jobs:
         if _alias(j) == "decisao":
@@ -2364,6 +2409,9 @@ def _generate_dag_source(pipeline, jobs):
             job_blocks.append(_sql_block(
                 j, sql_nodes.get(j["job_name"], {}),
                 branch_reachable=(j["job_name"] in reachable)))
+        elif _alias(j) == "email":
+            job_blocks.append(_email_block(
+                j, branch_reachable=(j["job_name"] in reachable)))
         elif _alias(j) == "aguarde":
             job_blocks.append(_wait_block(
                 j, aguarde_nodes.get(j["job_name"], {}),
@@ -2412,11 +2460,12 @@ def _generate_dag_source(pipeline, jobs):
     # sem deps explícitas/decisão continuam exatamente como antes.
     # (_job_names/_deps_of já definidos acima, junto do parsing das decisões.)
     explicit_deps = (has_decision or has_notificacao or has_sql_node or has_aguarde
-                     or any(_deps_of(j) for j in sorted_jobs))
+                     or has_email or any(_deps_of(j) for j in sorted_jobs))
 
     notif_task_refs = []   # t_notif_* a convergir no publish_dataset
     sql_task_refs = []     # t_sql_* a convergir no publish_dataset
     wait_task_refs = []    # t_wait_* a convergir no publish_dataset
+    email_task_refs = []   # t_email_* a convergir no publish_dataset
     if explicit_deps:
         root_anchor = "t_check_agenda"
         teams_start_done = False
@@ -2434,6 +2483,8 @@ def _generate_dag_source(pipeline, jobs):
                 return f"t_sql_{_varname(d)}"
             if d in aguarde_nodes:
                 return f"t_wait_{_varname(d)}"
+            if d in email_nodes:
+                return f"t_email_{_varname(d)}"
             return f"t_end_{_varname(d)}"
         for j in sorted_jobs:
             n = _varname(j["job_name"])
@@ -2471,6 +2522,14 @@ def _generate_dag_source(pipeline, jobs):
             if _alias(j) == "aguarde":
                 dep_lines.append(f"{up} >> t_wait_{n}")
                 wait_task_refs.append(f"t_wait_{n}")
+                continue
+            # Nó de E-mail: executável, sem t_start/t_end — mesmo desenho da
+            # notificação, trocando o Teams pelo sendmail do servidor do
+            # DataStage. Converge no fechamento para não ficar pendente quando
+            # é a última coisa do fluxo (o caso comum: avisar que a carga fechou).
+            if _alias(j) == "email":
+                dep_lines.append(f"{up} >> t_email_{n}")
+                email_task_refs.append(f"t_email_{n}")
                 continue
             is_root = (not deps) and (not parents)
             # Notificação de início no primeiro job raiz (sem deps/decisão)
@@ -2541,6 +2600,16 @@ def _generate_dag_source(pipeline, jobs):
         if f_err:
             dep_lines.append(f"{wref} >> t_teams_error")
         dep_lines.append(f"{wref} >> t_reg_falha")
+    # Nós de E-mail (sem t_end) convergem no fechamento como a notificação: o
+    # caso comum é justamente o e-mail ser a última coisa do fluxo, e sem isso
+    # ele ficaria fora do grafo de fechamento.
+    for eref in email_task_refs:
+        dep_lines.append(f"{eref} >> t_publish_dataset")
+        if f_fim:
+            dep_lines.append(f"{eref} >> t_teams_end")
+        if f_err:
+            dep_lines.append(f"{eref} >> t_teams_error")
+        dep_lines.append(f"{eref} >> t_reg_falha")
     # flow_close fecha DEPOIS de tudo (ends + nós especiais) e ANTES do card de
     # fim — assim o teams_end já enxerga as linhas SKIPPED que ele gravou.
     if has_decision:
@@ -2551,6 +2620,8 @@ def _generate_dag_source(pipeline, jobs):
             dep_lines.append(f"{sref} >> t_flow_close")
         for wref in wait_task_refs:
             dep_lines.append(f"{wref} >> t_flow_close")
+        for eref in email_task_refs:
+            dep_lines.append(f"{eref} >> t_flow_close")
         if f_fim:
             dep_lines.append("t_flow_close >> t_teams_end")
 
