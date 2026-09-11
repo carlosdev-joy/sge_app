@@ -736,6 +736,68 @@ _NOVO_PUSH_LIBERADO = [
 
 # As trocas, em pares (novo, velho). Removidas as adicoes, o que sobra tem de
 # voltar a ser, byte a byte, o texto do commit base.
+# ── F3 da spec de notificação por e-mail ────────────────────────────────────
+# O nó de notificação Teams deixou de receber grupo/modelo/mensagem como
+# LITERAIS no código gerado: agora o helper lê notify_json do banco a cada
+# corrida (trocar o texto na tela vale sem republicar a DAG). Como o helper é
+# emitido em TODA DAG, a fonte muda mesmo em pipeline sem notificação — daí a
+# troca da assinatura e o bloco novo entrarem aqui.
+_TROCA_ASSINATURA_NOTIF = (
+    ["def _resolve_e_envia_notificacao(job, up_jobs, execution_id, context):"],
+    ["def _resolve_e_envia_notificacao(job, grupo_id, template_id, mensagem, up_jobs, execution_id, context):"],
+)
+_DELTA_NOTIF_RUNTIME = [
+    '    # 0) Config do NO, lida do banco a cada corrida (F3): trocar canal,',
+    '    # modelo ou mensagem na tela vale na proxima execucao, sem republicar.',
+    "    grupo_id = None; template_id = None; mensagem = ''",
+    '    _erro_cfg = None',
+    '    try:',
+    '        _n = hook.get_first(',
+    '            "SELECT notify_json FROM dbo.etl_pipeline_job "',
+    '            "WHERE pipeline_name=%s AND job_name=%s",',
+    '            parameters=(PIPELINE_NAME, job),',
+    '        )',
+    '    except Exception as _e:',
+    "        _n = None; _erro_cfg = f'leitura da config falhou: {_e}'",
+    '    if _erro_cfg is None and not (_n and _n[0]):',
+    "        _erro_cfg = 'sem linha em etl_pipeline_job (no apagado ou renomeado sem republicar)'",
+    '    if _erro_cfg is None:',
+    '        try:',
+    '            _cfg = json.loads(_n[0])',
+    '            if not isinstance(_cfg, dict):',
+    "                raise ValueError('notify_json nao e um objeto')",
+    "            grupo_id = _cfg.get('grupo_id')",
+    "            template_id = _cfg.get('template_id')",
+    "            mensagem = _cfg.get('mensagem') or ''",
+    '        except Exception as _e:',
+    "            _erro_cfg = f'notify_json invalido: {_e}'",
+    '    if _erro_cfg is not None or grupo_id is None:',
+    '        # NAO derruba a corrida: o card e aviso LATERAL e esta task nunca',
+    '        # reprovou um pipeline — fazer isso agora travaria o Dataset e a',
+    '        # cascata de dependentes por causa de um aviso. Tambem NAO posta:',
+    '        # sem canal resolvido, o unico destino possivel seria o webhook',
+    '        # padrao, ou seja, o canal errado.',
+    "        print(f'[NOTIF] card NAO enviado para o no {job}: '",
+    "              + (_erro_cfg or 'sem canal (grupo) na configuracao do no'))",
+    '        return',
+]
+
+# Troca do destino quando o canal configurado não resolve: o card deixou de
+# cair no webhook padrão do Variable (canal errado, task verde) e passou a ser
+# só registrado no log da task.
+_TROCA_DESTINO_NOTIF = (
+    [
+        '        # Canal configurado que nao resolve (grupo apagado, inativo ou sem',
+        '        # webhook): o card NAO vai para o webhook padrao. Ir para la e o',
+        '        # falso verde classico — task verde, aviso no canal errado, e quem',
+        '        # deveria receber nao recebe. Sem destino, so o registro.',
+        "        print(f'[NOTIF] card NAO enviado para o no {job}: grupo {grupo_id} '",
+        "              + 'sem webhook ativo (apagado, inativo ou webhook_url vazio) — '",
+        "              + 'confira em Admin > Mensagens')",
+    ],
+    ['        _teams_post_card(title=titulo_final, subtitle=corpo_final, facts=facts, status=card_status, button=button)'],
+)
+
 _TROCAS_DA_CORRIDA = [
     (_NOVO_CABECALHO_ODATE, _VELHO_CABECALHO_ODATE),
     (_NOVO_REGISTRO_DATA, _VELHO_REGISTRO_DATA),
@@ -743,6 +805,8 @@ _TROCAS_DA_CORRIDA = [
     (_NOVO_PUSH_DATA, _VELHO_PUSH_DATA),
     (_NOVO_PUSH_LIBERADO, _VELHO_PUSH_LIBERADO),
     (_NOVO_PUSH_CONF, _VELHO_PUSH_CONF),
+    _TROCA_ASSINATURA_NOTIF,
+    _TROCA_DESTINO_NOTIF,
 ]
 
 
@@ -788,7 +852,7 @@ def _remover_delta(src: str) -> str:
                   _DELTA_DIVERGENCIA_IMPORT, _DELTA_DIVERGENCIA_IMPORT2,
                   _DELTA_DIVERGENCIA_IMPORT3, _DELTA_DIVERGENCIA,
                   _DELTA_PUSH_AMBIGUO, _DELTA_PUSH_GANHO,
-                  _DELTA_ODATE, _DELTA_MALHA_CICLO):
+                  _DELTA_ODATE, _DELTA_MALHA_CICLO, _DELTA_NOTIF_RUNTIME):
         ocorrencias = _ocorrencias(linhas, bloco)
         # Os blocos do PUSH só existem em pipeline com dependência: cenário
         # sem dependente gera o fonte sem eles, e ausência ali é correta.

@@ -484,6 +484,30 @@ quando algo deu errado, o motivo.
 > execução quando a DAG é gerada de novo. (Só a *primeira vez*: depois disso,
 > mudar texto ou destinatário já vale sem republicar.)
 
+### 3.5-B Notificação no Teams: o texto agora vale sem republicar
+
+O nó de **Notificação** (card no Teams) passou a funcionar como o nó de E-mail:
+canal, modelo e mensagem são lidos **na hora do disparo**. Trocar o texto do
+card, o modelo ou o canal na tela vale na **próxima corrida**, sem regerar nada.
+
+⚠️ **Uma vez, depois desta atualização, republique os pipelines que já têm nó
+de notificação** (Admin › Publicar DAGs). As DAGs publicadas antes ainda
+carregam o texto antigo gravado por dentro, e vão continuar mandando o card
+velho até serem regeradas. Depois dessa única republicação, mudar texto nunca
+mais pede republicação.
+
+**Card que não tem para onde ir não vai para o canal errado.** Se o canal do nó
+tiver sido apagado, desativado ou estiver sem endereço configurado, o card
+deixa de ser enviado e o log da etapa diz o motivo. Antes ele ia para o
+endereço padrão do sistema: a etapa ficava verde, o aviso chegava no lugar
+errado, e quem devia receber não recebia.
+
+A etapa **não falha** por isso, e é de propósito: o card é um aviso lateral, e
+derrubar a corrida (parando também os fluxos que dependem dela) por causa de um
+aviso seria pior que o aviso não sair. O que acontece está sempre no log da
+etapa, começando por `[NOTIF] card NAO enviado`. O mesmo vale se o nó tiver
+sido apagado ou renomeado sem republicar.
+
 ### 3.6 Componentes de malha (Início · Aguarde · Notificação · Fim)
 
 Na tela **Malha**, o diagrama de montagem tem uma paleta de **componentes** —
