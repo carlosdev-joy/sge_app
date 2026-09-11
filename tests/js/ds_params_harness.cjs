@@ -23,7 +23,7 @@ const mini = require(path.join(__dirname, 'minireact.cjs'))
 const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/JobTypeFields.tsx',
                   'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx',
                   'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx',
-                  'lib/maestroAdmin.ts']
+                  'lib/maestroAdmin.ts', 'lib/emailAdmin.ts']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -542,6 +542,40 @@ function tela(params, previa, extra, jobName) {
     pendente110: [A.migration110Pendente({ status: 503, detail: 'Maestro indisponível: migration 110 pendente' }),
                   A.migration110Pendente({ status: 503, detail: 'outra coisa' }), A.migration110Pendente({ status: 500, detail: 'migration 110' })],
     idsUnicos: new Set([A.linhaVazia().id, A.linhaVazia().id, A.linhaVazia().id]).size,
+  }
+}
+
+// ── 9. Admin › E-mail (F1 da spec docs/spec-notificacao-email.md): a lib pura ─
+{
+  const E = require(path.join(tmp, 'lib/emailAdmin.js'))
+  const cfg = { enabled: true, remetente: 'orquestra@cvp.com.br', limite_mb: 5, raizes: ['/dados/saida', '/opt/IBM/dados'],
+                dominios: ['cvp.com.br'], disponivel: true, ssh_configurado: true, ssh_host: 'lnxprd021' }
+  const form = E.formDaConfig(cfg)
+  const valido = Object.assign({}, form)
+  saida.emailAdmin = {
+    form,
+    corpo: E.configParaApi(Object.assign({}, form, { remetente: ' Orq@CVP.com.br ', limite_mb: '10', raizesTexto: '/a\n\n/b, /a', dominiosTexto: '' })),
+    listas: [E.listaDoTexto(' a@x.com ; b@y.org\n\na@x.com,c@z.io '), E.textoDaLista(['/a', '/b']), E.listaDoTexto('')],
+    erros: {
+      valido: E.errosDaConfig(valido),
+      ligadoSemRemetente: E.errosDaConfig(Object.assign({}, valido, { remetente: '' })),
+      desligadoSemRemetente: E.errosDaConfig(Object.assign({}, valido, { enabled: false, remetente: '' })),
+      remetenteRuim: E.errosDaConfig(Object.assign({}, valido, { remetente: 'sem-arroba' })),
+      limite: [E.errosDaConfig(Object.assign({}, valido, { limite_mb: '0' })).length, E.errosDaConfig(Object.assign({}, valido, { limite_mb: '26' })).length,
+               E.errosDaConfig(Object.assign({}, valido, { limite_mb: '2.5' })).length, E.errosDaConfig(Object.assign({}, valido, { limite_mb: '25' })).length],
+      raizes: E.errosDaConfig(Object.assign({}, valido, { raizesTexto: 'relativo\n/com espaco\n/a/../b\n/ok/' })),
+      raizBarra: E.errosDaConfig(Object.assign({}, valido, { raizesTexto: '/' })),
+      raizPonto: E.errosDaConfig(Object.assign({}, valido, { raizesTexto: '/a/./b' })),
+      dominios: E.errosDaConfig(Object.assign({}, valido, { dominiosTexto: 'ruim\n@cvp.com.br' })),
+      // teto de etl_app_config.config_value (VARCHAR(1000)) — a régua da API recusa
+      longa: E.errosDaConfig(Object.assign({}, valido, {
+        raizesTexto: Array.from({ length: 30 }, (_, i) => `/opt/IBM/InformationServer/Server/Projects/PROJ${i}/saida`).join('\n') })),
+    },
+    mensagens: [E.mensagemErroEmail({ status: 422, detail: { code: 'x', errors: ['a', 'b'] } }, 'p'),
+                E.mensagemErroEmail({ status: 503, detail: 'E-mail indisponível: migration 111 pendente' }, 'p'),
+                E.mensagemErroEmail({ status: 500, message: '500 Internal Server Error' }, 'padrão')],
+    pendente111: [E.migration111Pendente({ status: 503, detail: 'E-mail indisponível: migration 111 pendente' }), E.migration111Pendente({ status: 503, detail: 'x' })],
+    etapas: Object.keys(E.ETAPA_LAUDO),
   }
 }
 

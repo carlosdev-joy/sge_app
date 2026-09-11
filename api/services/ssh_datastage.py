@@ -134,6 +134,79 @@ def build_dsjob_command(command: str, project: str, job: str | None = None,
     return " ".join(parts), spec["timeout"]
 
 
+_ERRO_SEM_SSH = ("SSH do DataStage não configurado no servidor. "
+                 "Defina DS_SSH_HOST e DS_SSH_USER (e DS_SSH_PASSWORD ou DS_SSH_KEY_FILE) no ambiente da API.")
+
+
+def _conectar():
+    """SSHClient conectado ao servidor do DataStage com as variáveis DS_SSH_*.
+    Quem chama fecha (`client.close()`)."""
+    import paramiko  # import tardio: lib só é necessária em runtime, não nos testes
+
+    host = os.getenv("DS_SSH_HOST")
+    port = int(os.getenv("DS_SSH_PORT", "22"))
+    user = os.getenv("DS_SSH_USER")
+    password = os.getenv("DS_SSH_PASSWORD") or None
+    key_file = os.getenv("DS_SSH_KEY_FILE") or None
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=host, port=port, username=user,
+        password=password, key_filename=key_file,
+        timeout=10, banner_timeout=15, auth_timeout=15,
+    )
+    return client
+
+
+def comando_sendmail(remetente: str) -> str:
+    """`<bin> -t -i -f <remetente>` — o único comando do e-mail (espelha
+    `dags/utils/email_envio.comando_sendmail`). `-t` lê os destinatários do
+    To:; `-f` fixa o envelope-from no remetente do Admin (senão o Postfix usa
+    o usuário SSH e bounces/políticas do relay agem depois do rc 0). O
+    remetente é o único argumento vindo de configuração: já passou pela
+    allowlist EMAIL_RE (sem metacaractere) e ainda vai citado."""
+    from services.email_mime import validar_email
+    binario = os.getenv("EMAIL_SENDMAIL_BIN", "/usr/sbin/sendmail").strip()
+    if not re.match(r"^/[A-Za-z0-9_./\-]+$", binario) or "/../" in binario:
+        raise DsConsoleError(f"EMAIL_SENDMAIL_BIN inválido no ambiente da API: {binario!r}")
+    rem = validar_email(remetente)
+    if not rem:
+        raise DsConsoleError("remetente inválido para o envelope (-f)")
+    return f"{shlex.quote(binario)} -t -i -f {shlex.quote(rem)}"
+
+
+def run_sendmail(mensagem: bytes, remetente: str, timeout: int = 60) -> dict:
+    """Entrega uma mensagem MIME ao sendmail do servidor do DataStage pelo
+    stdin da sessão SSH (o botão Testar de Admin › E-mail; spec
+    docs/spec-notificacao-email.md). Nada digitado pelo usuário passa pela
+    linha de comando (só o remetente do Admin, por allowlist); destinatários e
+    assunto vão nos cabeçalhos. Devolve {exit_code, stderr, duration_ms, host}.
+    Lança DsConsoleError sem config, ou a exceção de rede do paramiko."""
+    if not ssh_configured():
+        raise DsConsoleError(_ERRO_SEM_SSH)
+    cmd = comando_sendmail(remetente)
+    t0 = time.time()
+    client = _conectar()
+    try:
+        stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
+        escrita_erro = ""
+        try:
+            stdin.write(mensagem)
+            stdin.channel.shutdown_write()
+        except OSError as e:  # o sendmail fechou a entrada antes de ler tudo
+            escrita_erro = f"sendmail fechou a entrada antes de ler a mensagem inteira ({e})"
+        exit_code = stdout.channel.recv_exit_status()
+        err = stderr.read().decode(errors="replace").strip()
+        if escrita_erro:
+            err = (err + " | " if err else "") + escrita_erro
+            if exit_code == 0:
+                exit_code = -1
+    finally:
+        client.close()
+    return {"exit_code": exit_code, "stderr": err[:2000],
+            "duration_ms": int((time.time() - t0) * 1000), "host": os.getenv("DS_SSH_HOST") or ""}
+
+
 def run_dsjob(command: str, project: str, job: str | None = None,
               max_lines: int = 200, event_id=None) -> dict:
     """
@@ -142,31 +215,15 @@ def run_dsjob(command: str, project: str, job: str | None = None,
     Lança DsConsoleError (config/validação) ou Exception (falha de SSH).
     """
     if not ssh_configured():
-        raise DsConsoleError(
-            "SSH do DataStage não configurado no servidor. "
-            "Defina DS_SSH_HOST e DS_SSH_USER (e DS_SSH_PASSWORD ou DS_SSH_KEY_FILE) no ambiente da API.")
+        raise DsConsoleError(_ERRO_SEM_SSH)
 
     dsjob_cmd, timeout = build_dsjob_command(command, project, job, max_lines, event_id)
 
-    import paramiko  # import tardio: lib só é necessária em runtime, não nos testes
-
-    host = os.getenv("DS_SSH_HOST")
-    port = int(os.getenv("DS_SSH_PORT", "22"))
-    user = os.getenv("DS_SSH_USER")
-    password = os.getenv("DS_SSH_PASSWORD") or None
-    key_file = os.getenv("DS_SSH_KEY_FILE") or None
-
     full_cmd = f"source {DS_DSHOME}/dsenv >/dev/null 2>&1; {dsjob_cmd}"
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     t0 = time.time()
+    client = _conectar()
     try:
-        client.connect(
-            hostname=host, port=port, username=user,
-            password=password, key_filename=key_file,
-            timeout=10, banner_timeout=15, auth_timeout=15,
-        )
         _, stdout, stderr = client.exec_command(full_cmd, timeout=timeout)
         exit_code = stdout.channel.recv_exit_status()
         out = stdout.read().decode(errors="replace").strip()
