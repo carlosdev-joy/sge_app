@@ -1,5 +1,6 @@
 # Spec: E-mail — prévia na tela, modelos institucionais e seletor de anexo — Orquestra
-Data: 2026-09-11 · Status: **aprovada 2026-09-11** · em execução (F3)
+Data: 2026-09-11 · Status: 🏁 **CONCLUÍDA 2026-09-11** — F1 #393 · F2 #394 · F3 #395 · F4 (esta PR)
+⏳ Deploy em produção **pendente**: roteiro e conferência em `docs/release-notes/email-modelos.md`.
 
 Continuação de `docs/spec-notificacao-email.md` (concluída, F1–F4 = PRs #388–#391).
 Aquela entregou o canal; esta trata de **como as pessoas escrevem o aviso**.
@@ -232,6 +233,12 @@ Nada muda em `etl_pipeline_job`: `modelo_id` entra no JSON de `notify_json`.
 - Manual (§3.5-A e §4.10 revisados, FAQ), `docs/release-notes/email-modelos.md`,
   funcionalidades, spec concluída, smoke §7 em homologação.
 - PR: `docs(email): modelos e navegação do anexo (F4)`.
+- ✅ **ENTREGUE.** Manual §3.5-A (modelo, prévia e seletor de anexo), §4.10
+  (catálogo e padronização), §4.6 (deploy) e §5 (FAQ: cinco perguntas novas);
+  `docs/release-notes/email-modelos.md` com roteiro, conferência pós-deploy e
+  reversão; `ORQUESTRA_Funcionalidades_e_Beneficios.md`. O smoke da §7 abaixo
+  fica para o ambiente real — o que pôde ser provado no DEV está registrado nas
+  fases (F2: 22 verificações; F3: 14).
 
 ## 6. Riscos e mitigações
 
@@ -245,6 +252,12 @@ Nada muda em `etl_pipeline_job`: `modelo_id` entra no JSON de `notify_json`.
 | 6 | Navegação abrindo pasta que o e-mail não pode anexar | Escolha que a régua depois recusa | O endpoint lista **só** sob as raízes do e-mail; o nível zero mostra exatamente as raízes que o Admin liberou |
 
 ## 7. Smoke pós-deploy
+
+⏳ **Pendente**: exige o ambiente real (servidor de e-mail e DataStage). O
+roteiro operacional, com o que conferir em cada passo, está em
+`docs/release-notes/email-modelos.md` — a lista abaixo é a da spec, mantida
+como está para conferência item a item.
+
 a) Admin › E-mail: a seção **Modelos** lista o modelo institucional semeado, marcado como padrão.
 b) Editar o modelo, mudar uma palavra do rodapé, salvar; a prévia ao lado acompanha enquanto digita.
 c) Num nó de e-mail já existente com modelo escolhido, rodar **sem republicar**: o e-mail chega com a palavra nova.
@@ -255,6 +268,8 @@ g) No anexo, clicar na pastinha: abre nas raízes do **e-mail**. Descer, escolhe
 h) Escolher um arquivo com data no nome: a sugestão de `{odate}` aparece; aceitar e rodar numa data diferente para ver o arquivo daquele dia ser anexado.
 i) Colar no corpo um `<script>alert(1)</script>` e abrir a prévia: nada executa.
 j) Navegar até uma pasta fora das raízes do e-mail pelo caminho digitado: 403.
+k) Com o navegador de pastas aberto sobre o canvas, apertar **Backspace**, **Esc** e as **setas**: nenhum deles mexe no fluxo atrás (achado da revisão da F3).
+l) Um **link de diretório** dentro de uma pasta liberada, apontando para fora: o navegador recusa entrar, e um nó apontando para ele envia **sem anexo**, com o motivo no registro.
 
 ## 8. Pendências e decisões em aberto
 

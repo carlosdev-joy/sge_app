@@ -1,6 +1,6 @@
 ---
 name: orquestra-spec-email-modelos-navegacao
-description: "Spec APROVADA 2026-09-11: prévia (F1) e catálogo de modelos (F2) MERGEADAS, seletor de arquivo do anexo (F3) em revisão; falta só a F4 (docs)"
+description: "🏁 Spec CONCLUÍDA 2026-09-11 (F1 #393, F2 #394, F3 #395, F4 #396): prévia do corpo, catálogo de modelos institucionais e seletor de arquivo do anexo no nó de e-mail; deploy em produção pendente"
 metadata:
   node_type: memory
   type: project
@@ -8,7 +8,7 @@ metadata:
   modified: 2026-09-11T16:31:39.318Z
 ---
 
-**Spec:** `docs/spec-email-modelos-e-navegacao.md` (✅ **APROVADA 2026-09-11**; ✅ F1 e F2 mergeadas; 🔧 **F3 em revisão**; falta a F4). Continuação de [[orquestra-spec-notificacao-email]], que entregou o canal (F1–F4, PRs #388–#391, concluída). Esta trata de **como as pessoas escrevem o aviso**.
+**Spec:** `docs/spec-email-modelos-e-navegacao.md` (🏁 **CONCLUÍDA 2026-09-11**: F1 #393, F2 #394, F3 #395, F4 #396). Continuação de [[orquestra-spec-notificacao-email]], que entregou o canal (F1–F4, PRs #388–#391, concluída). Esta trata de **como as pessoas escrevem o aviso**.
 
 **Pedido do usuário (2026-09-11), depois de aprovar um modelo HTML institucional que montamos e validamos numa prévia:** (1) visualizador do corpo direto na tela de configuração; (2) o modelo como opção, "algo que force todos utilizarem o mesmo modelo de comunicação"; (3) no anexo, a mesma navegação dos Utilitários — clica na pastinha, desce da raiz até o arquivo, e o clique já atribui.
 
@@ -37,7 +37,7 @@ metadata:
 
 **Validação da F2:** pytest **5283 passed** + as 8 falhas pré-existentes; `tsc -b` limpo; eslint **195 = 195**; `dist/` refeita; migração aplicada 6× no DEV (5 lotes, 0 erros); **smoke de 22 verificações no ambiente, todas OK** (`smoke_modelos_f2.py` no scratchpad), com o operador rodando dentro do worker.
 
-**F3 — seletor de arquivo do anexo (branch `feat/email-anexo-f3`):** rota `GET /email/anexo/listar` (raízes do e-mail + permissão de editar pipeline, reusando `preparar_pasta`/`listar_pasta`, o executor SSH e a auditoria dos Utilitários), `NavegadorPastas` + `CampoPasta` fiados no painel do nó, `lib/emailAnexo.ts` com a sugestão de `{odate}`.
+**F3 — PR #395 MERGEADA `b21ae66` (2026-09-11):** rota `GET /email/anexo/listar` (raízes do e-mail + permissão de editar pipeline, reusando `preparar_pasta`/`listar_pasta`, o executor SSH e a auditoria dos Utilitários), `NavegadorPastas` + `CampoPasta` fiados no painel do nó, `lib/emailAnexo.ts` com a sugestão de `{odate}`.
 
 **⚠️ O que a F3 fixou (revisão adversarial REPROVOU a 1ª rodada com 3 defeitos + 8 ressalvas):**
 1. **A pasta do anexo passou a aceitar SUBPASTA** (raiz liberada ou abaixo dela). O envio sempre aceitou (`caminho_do_anexo` mede o caminho final contra as raízes); era só o cadastro que recusava na tela o que a corrida entregaria. Sem isso o seletor não alcança o arquivo.
@@ -50,4 +50,11 @@ metadata:
 
 **Validação da F3:** pytest **5299 passed** + as 8 pré-existentes; `tsc -b` limpo; eslint **195 = 195**; **smoke de 14 verificações no ambiente** (`smoke_anexo_f3.py`), com navegação real por SFTP, o arquivo da subpasta chegando anexado com `{odate}` resolvido, e o link para fora recusado no envio.
 
-**Pendências:** F4 (docs). Deploy da F2: migração **112** na 6c, `api/`, `dist/`, `dags/` **com restart do worker** (`email_operator.py` mudou e `dags/utils/` é cacheado — [[orquestra-worker-cacheia-dags-utils]]), `config/` → **n**. Questão aberta da §8: excluir o modelo padrão deixa o catálogo sem padrão (o nó novo volta a nascer em Corpo livre, em silêncio).
+**F4 — docs (esta fase):** manual §3.5-A/§4.10/§4.6/§5, `docs/release-notes/email-modelos.md`, funcionalidades e a spec fechada. A revisão adversarial REPROVOU a 1ª rodada — os três defeitos eram de DOC QUE MENTE, a única classe que importa numa PR de documentação:
+1. **A conferência pós-deploy mandava desativar o modelo e nunca reativar.** Com o único modelo do catálogo inativo, a lista de escolha fica vazia: todo nó novo volta a nascer em Corpo livre e os que o usam mostram "fora da lista". Roteiro que deixa o ambiente pior que antes.
+2. **A seção de reversão descrevia efeito que não ocorre**: quem monta a mensagem é o WORKER — voltar só `dist/` e a imagem da API não traz o corpo do nó de volta (é preciso restaurar `dags/utils/` e reiniciar). E omitia que a versão anterior recusa anexo em SUBPASTA: fluxos salvos com o seletor passam a dar 422 ao editar.
+3. **Seção antiga contradizendo a nova**: a §4.10 ainda dizia "só consegue escolher entre essas pastas", regra que o seletor derrubou. Liberar uma raiz agora libera a árvore abaixo dela — e é a informação que o admin usa para decidir o que liberar.
+
+⚠️ **Também corrigido**: o texto dizia que a padronização tira o *Corpo livre* "para nós novos"; na verdade ela o esconde de **todo nó que não esteja nele**, inclusive de quem já escolheu um modelo e quisesse voltar atrás.
+
+**Pendências:** ⏳ **deploy em produção** (roteiro, conferência e reversão em `docs/release-notes/email-modelos.md`) e o smoke §7 da spec, que exige ambiente real. Deploy da F2: migração **112** na 6c, `api/`, `dist/`, `dags/` **com restart do worker** (`email_operator.py` mudou e `dags/utils/` é cacheado — [[orquestra-worker-cacheia-dags-utils]]), `config/` → **n**. Questão aberta da §8: excluir o modelo padrão deixa o catálogo sem padrão (o nó novo volta a nascer em Corpo livre, em silêncio).

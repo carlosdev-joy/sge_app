@@ -426,6 +426,45 @@ um grupo diferente do resto.
 envio: salvou, vale na próxima corrida. Isso vale também para o assunto, o
 corpo e o anexo.
 
+#### O modelo da mensagem
+
+O corpo do aviso é **escolhido numa lista** — os modelos que o administrador
+mantém em Admin › E-mail › Modelos, mais a opção **Corpo livre**:
+
+| Escolha | Quando usar |
+|---|---|
+| Um **modelo** do catálogo | O caso comum. O layout institucional (cabeçalho, cores, estrutura) vem pronto e igual para todo mundo. |
+| **Corpo livre** | O aviso que foge do padrão. Você escreve o texto ali mesmo, como antes. |
+
+O nó novo já nasce no **modelo padrão**, quando existe um — o caminho de menor
+esforço é usar o layout da casa.
+
+**O nó aponta para o modelo; não copia.** Quando o administrador corrige o
+layout, a correção vale para **todos os fluxos** que usam aquele modelo, já na
+corrida seguinte, sem republicar DAG e sem reabrir nó. Em troca, uma edição
+errada também chega em todos de uma vez — por isso o editor mostra a prévia ao
+lado e avisa em quantos fluxos o modelo está em uso.
+
+Escolher um modelo **não apaga** o texto que você já tinha escrito: ele fica
+guardado e volta se você escolher *Corpo livre* de novo.
+
+⚠️ Se o administrador ligar *exigir modelo do catálogo*, a opção **Corpo livre**
+some da lista — inclusive para um nó que já usa um modelo e quisesse voltar
+atrás. A exceção é o nó que **já estava** em corpo livre: esse continua como
+está, e salvando normalmente. Ligar a padronização não quebra o que está no ar,
+mas fecha o caminho de volta para quem já tinha escolhido um modelo.
+
+#### Ver como fica antes de enviar
+
+Abaixo do corpo há uma **prévia** da mensagem, do jeito que ela vai sair. Com um
+modelo escolhido, a prévia mostra o corpo **do modelo**, que é o que será
+enviado. Um botão alterna entre ver os marcadores (`{pipeline}`) e ver valores
+de exemplo no lugar deles.
+
+A prévia usa o motor do navegador. Clientes de e-mail — o Outlook em especial —
+têm suas próprias limitações: a validação final continua sendo a mensagem
+recebida.
+
 #### Assunto e corpo
 
 Os dois aceitam marcadores, trocados na hora do envio:
@@ -449,9 +488,19 @@ dizendo "concluído" afirmaria sucesso num fluxo quebrado.
 
 #### Anexar um arquivo gerado pela corrida
 
-Marque **Anexar um arquivo do servidor**, escolha a pasta entre as liberadas e
-escreva o nome. O nome aceita marcadores — `relatorio_{odate}.xlsx` anexa o
-arquivo daquele dia.
+Marque **Anexar um arquivo do servidor** e clique em **Navegar…**: a janela abre
+nas pastas liberadas em Admin › E-mail, você desce até onde o arquivo está e
+**clica nele** — a pasta e o nome são preenchidos de uma vez. É a mesma
+navegação da tela de Utilitários.
+
+A pasta pode ser uma das liberadas **ou qualquer subpasta delas** — nunca fora.
+Quem preferir digitar o caminho à mão continua podendo; o campo avisa na hora se
+ele sai das pastas permitidas.
+
+O nome aceita marcadores — `relatorio_{odate}.xlsx` anexa o arquivo daquele dia.
+Como o navegador traz o arquivo **de hoje**, ao escolher um nome com data o
+campo **oferece** trocá-la por `{odate}`, com um botão. Ela só é trocada se você
+clicar: arquivo com data fixa no nome é caso legítimo.
 
 O arquivo **não precisa existir na hora do cadastro**: normalmente ele é gerado
 pela própria corrida, minutos antes do envio.
@@ -470,8 +519,15 @@ quando algo deu errado, o motivo.
 
 - **Nó sem destinatário nenhum** — o fluxo não salva. Informe uma lista própria
   ou marque para incluir a do fluxo.
-- **Pasta do anexo fora da lista** — só as pastas cadastradas em Admin › E-mail
-  aparecem no campo. Peça ao administrador para liberar a pasta.
+- **Pasta do anexo fora da lista** — o anexo só sai de dentro das pastas
+  cadastradas em Admin › E-mail (ou de subpastas delas). Peça ao administrador
+  para liberar a pasta.
+- **"O modelo não está na lista de escolha"** — o modelo que o nó usa foi
+  desativado ou removido do catálogo. Desativado, o envio continua usando o
+  layout dele; removido, a corrida falha. Confira em Admin › E-mail › Modelos,
+  ou escolha outro modelo no nó.
+- **"Admin › E-mail exige um modelo do catálogo"** — a padronização está ligada
+  e este nó é novo: escolha um modelo para poder salvar.
 - **Assunto com quebra de linha** — não é aceito (quebraria o cabeçalho da
   mensagem).
 - **Domínio não permitido** — se o administrador limitou os domínios, endereços
@@ -974,6 +1030,12 @@ Lembretes:
   Admin › Acessos & Comunicação › **E-mail** e **republicar uma vez** os
   pipelines que já tinham nó de notificação (§3.5-B) ou nó de e-mail. Roteiro e
   conferência em `docs/release-notes/email.md`.
+- **Modelos de e-mail e seletor de anexo (§3.5-A / §4.10)**: migration **112**
+  na etapa 6c (traz o modelo institucional já semeado); `dags/utils/` mudou →
+  **reiniciar o worker** do Airflow. Sem migration nova nas fases do seletor.
+  **Nada a republicar**: nó existente segue igual, e quem escolher um modelo
+  passa a ler o layout do banco desde a primeira corrida. Roteiro e conferência
+  em `docs/release-notes/email-modelos.md`.
 
 ### 4.7 Utilitários (Admin → Sistema → Utilitários)
 É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança
@@ -1190,11 +1252,20 @@ técnico da conexão e a devolução se perde.
 e-mail sai sem ele e o registro explica.
 
 **Raízes permitidas para anexos.** Uma por linha, caminho absoluto no servidor
-do DataStage. **É a lista
-inteira do que pode ser anexado** — quem monta um fluxo só consegue escolher
-entre essas pastas, e o nome do arquivo, mesmo com marcadores, nunca escapa
-delas. Sem nenhuma pasta aqui, ninguém anexa nada. A raiz do servidor (`/`) é
+do DataStage. **É a lista inteira do que pode ser anexado** — nada fora daqui
+sai como anexo, e o nome do arquivo, mesmo com marcadores, nunca escapa dessas
+pastas. Sem nenhuma pasta aqui, ninguém anexa nada. A raiz do servidor (`/`) é
 recusada de propósito.
+
+⚠️ **Liberar uma pasta libera a árvore abaixo dela.** Quem monta o fluxo escolhe
+o arquivo navegando (§3.5-A) e pode descer até qualquer subpasta da raiz
+liberada — e quem tem permissão de editar pipeline consegue **listar** o
+conteúdo dessas pastas pela tela, sem precisar de acesso aos Utilitários.
+Cadastre o galho mais específico que resolve, não a pasta-mãe.
+
+⚠️ Um **link** dentro de uma pasta liberada que aponte para fora dela não vale:
+a navegação recusa entrar, e no envio o e-mail sai **sem anexo**, com o motivo
+no registro.
 
 **Domínios permitidos (opcional).** Um por linha. Vazio = qualquer domínio.
 Com a lista preenchida, endereço de fora é recusado **na hora de salvar** o nó
@@ -1221,6 +1292,46 @@ Abaixo do laudo ficam os últimos testes: data, resultado e quem disparou.
 uma linha guardada: quem mandou, para quem, assunto, anexo, resultado e erro.
 Os envios de uma corrida aparecem na tela de **Execuções**, dentro do detalhe —
 buscados por aquela execução, então continuam lá quando a corrida é antiga.
+
+#### Modelos (o layout institucional)
+
+Exige a migration **112** (sem ela, a seção diz isso e os nós seguem em corpo
+livre). O Orquestra já vem com o modelo **Aviso de fim de carga** cadastrado e
+marcado como padrão.
+
+Um modelo é o **layout** da mensagem: cabeçalho, cores, estrutura. Não é o texto
+de cada situação — esse continua sendo do nó, no assunto.
+
+| Campo | Para que serve |
+|---|---|
+| **Nome** | Como ele aparece na lista de quem monta o fluxo. Não pode repetir. |
+| **Quando usar** | Uma linha de orientação, mostrada abaixo da lista no painel do nó. |
+| **Assunto sugerido** | Sugestão. O assunto de cada nó continua sendo dele. |
+| **Corpo** | O HTML (ou texto) com os mesmos marcadores do nó. A prévia fica ao lado enquanto você edita. |
+| **Ativo** | Desativado, some da lista de escolha — e **quem já usa continua enviando**. |
+| **Padrão** | O modelo que vem escolhido no nó novo. Só um por vez. |
+
+> **O que você salvar aqui vale na próxima corrida de todos os fluxos que usam
+> o modelo.** O editor mostra em quantos fluxos ele está em uso antes de salvar.
+> É o mesmo motivo pelo qual a prévia fica ao lado: o erro daqui chega em muita
+> gente de uma vez.
+
+**Excluir × desativar.** Excluir um modelo **em uso é recusado**, e a mensagem
+nomeia os fluxos. Para tirar um modelo de circulação, **desative**: ele some da
+lista de escolha e quem já o usa segue enviando igual. Se um modelo for apagado
+direto no banco, a etapa que o usa **falha** dizendo qual é — em vez de mandar
+um aviso com a cara errada.
+
+**Exigir modelo do catálogo.** Interruptor, desligado por padrão. Ligado, a
+opção *Corpo livre* some da lista para **nós novos**; os que já existem seguem
+salvando como estão. Sem a migration 112 o interruptor não vale — sem catálogo
+não há modelo para escolher.
+
+⚠️ **Ficar sem padrão ativo** — por excluir o modelo marcado como padrão (quando
+ele não está em uso) ou apenas por **desativá-lo** — faz os nós novos voltarem a
+nascer em corpo livre, sem aviso. E se ele for o único modelo do catálogo, a
+lista de escolha fica vazia e os nós que o usam passam a mostrar "não está na
+lista de escolha". Depois de desativar ou excluir um padrão, marque outro.
 
 ---
 
@@ -1262,9 +1373,30 @@ salvou, aquele envio usou o que estava valendo; o próximo usa o novo. Se nem as
 corridas seguintes mudarem, a DAG é anterior à versão que lê em tempo de
 corrida: republique o pipeline uma vez.
 
-**Não consigo escolher a pasta do anexo.** Só aparecem as pastas liberadas em
-Admin → E-mail (§4.10). Sem nenhuma cadastrada, o campo de anexo fica
-indisponível.
+**Não consigo escolher a pasta do anexo.** O anexo só sai de dentro das pastas
+liberadas em Admin → E-mail (§4.10), ou de subpastas delas — é por isso que o
+**Navegar…** abre só nelas, e que um caminho digitado fora é recusado. Sem
+nenhuma pasta cadastrada, o campo de anexo fica indisponível.
+
+**Mudei o modelo no Admin e o e-mail saiu com o layout antigo.** O modelo é lido
+no instante em que a etapa roda: se ela já tinha rodado quando você salvou,
+aquele envio usou o que estava valendo. O próximo usa o novo — **sem republicar
+nada**. Se nem as corridas seguintes mudarem, confira se o nó está mesmo
+apontando para esse modelo, e não em *Corpo livre*.
+
+**Editei um modelo e a edição sumiu.** Alguém salvou aquele modelo depois de
+você: o catálogo é compartilhado e o último a salvar vence. Abra o modelo de
+novo (o editor sempre busca a versão do servidor) e refaça a mudança.
+
+**A etapa falhou dizendo que o modelo não existe mais no catálogo.** O modelo foi
+apagado direto no banco. É erro, não rotina: a forma de tirar um modelo de
+circulação é **desativar**, que não afeta quem já usa. Recadastre o modelo ou
+escolha outro no nó.
+
+**O navegador de pastas não deixa entrar numa pasta que existe.** Ela está fora
+das pastas liberadas — ou é um *link* que aponta para fora delas. O mesmo vale
+no envio: um link que sai das pastas permitidas faz o e-mail sair **sem anexo**,
+com o motivo no registro.
 
 **O card do Teams continua com o texto antigo.** A DAG foi publicada antes da
 atualização que passou a ler o texto na hora do envio. Republique o pipeline

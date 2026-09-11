@@ -105,6 +105,8 @@ Tudo do Operador, mais:
 - Rastreamento de status (pendente/aprovado/executado) com histórico de aprovações.
 
 - **Aviso por e-mail no fim do fluxo**: um nó **E-mail** que se arrasta para o desenho e avisa quem precisa saber quando a carga fecha — assunto e corpo com marcadores (`{pipeline}`, `{linhas}`, `{status}`, `{duracao}`), lista própria somada à do fluxo, e anexo do arquivo que a própria corrida gerou (`relatorio_{odate}.xlsx`). Sai pelo servidor de e-mail que o DataStage já usa, sem conta nova. Mudar destinatário ou texto vale na corrida seguinte, sem republicar; se o arquivo do anexo não estiver lá, o aviso sai mesmo assim e o registro explica.
+- **O aviso sai no layout da casa, sem escrever HTML**: o corpo é escolhido numa lista de **modelos institucionais** mantida pelo administrador, com **prévia na própria tela** — e *Corpo livre* continua disponível para o aviso fora do padrão. O nó aponta para o modelo em vez de copiá-lo: corrigir o layout no Admin vale para **todos os fluxos** na corrida seguinte, sem republicar nem reabrir nó.
+- **O arquivo do anexo se escolhe navegando**: clica na pastinha, desce das pastas liberadas até onde o arquivo está e clica nele — pasta e nome preenchidos de uma vez, com a oferta de trocar a data do nome pelo marcador da data de referência, para o fluxo buscar o arquivo do dia a cada corrida.
 
 ### 2.4 Perfil Administrador
 
@@ -118,6 +120,7 @@ Tudo dos demais, mais a aba **Admin**:
 - **Projetos**: CRUD dos projetos disponíveis para categorização de pipelines.
 - **Relatório diário automático**: geração e envio automático de relatório de execuções do dia anterior.
 - **E-mail**: liga ou desliga o canal inteiro num interruptor, define o remetente único, o peso máximo de anexo e — o ponto de controle — **de quais pastas do servidor um anexo pode sair**. Opcionalmente limita os domínios de destino. Um botão *Testar* percorre o mesmo caminho da corrida e devolve em que degrau parou. Todo envio fica registrado, com destinatário, anexo e resultado.
+- **Modelos de e-mail**: o catálogo do layout institucional, com prévia ao lado do editor e o aviso de em quantos fluxos cada modelo está em uso. Excluir modelo em uso é recusado — para tirar de circulação, desativa-se, e quem já usa segue enviando. Um interruptor opcional **exige** que todo nó novo use um modelo do catálogo.
 
 ---
 
