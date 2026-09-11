@@ -1,14 +1,14 @@
 ---
 name: orquestra-spec-email-modelos-navegacao
-description: "Spec APROVADA 2026-09-11: prévia do corpo na tela (F1 mergeada), catálogo de modelos institucionais (F2 em revisão) e seletor de arquivo do anexo no nó de e-mail do Orquestra"
+description: "Spec APROVADA 2026-09-11: prévia (F1) e catálogo de modelos (F2) MERGEADAS, seletor de arquivo do anexo (F3) em revisão; falta só a F4 (docs)"
 metadata:
   node_type: memory
   type: project
   originSessionId: 55c7dc0b-089c-4e39-9b3c-c60297f1190c
-  modified: 2026-09-11T16:10:46.008Z
+  modified: 2026-09-11T16:31:39.318Z
 ---
 
-**Spec:** `docs/spec-email-modelos-e-navegacao.md` (✅ **APROVADA 2026-09-11**; ✅ F1 mergeada; 🔧 **F2 em revisão**). Continuação de [[orquestra-spec-notificacao-email]], que entregou o canal (F1–F4, PRs #388–#391, concluída). Esta trata de **como as pessoas escrevem o aviso**.
+**Spec:** `docs/spec-email-modelos-e-navegacao.md` (✅ **APROVADA 2026-09-11**; ✅ F1 e F2 mergeadas; 🔧 **F3 em revisão**; falta a F4). Continuação de [[orquestra-spec-notificacao-email]], que entregou o canal (F1–F4, PRs #388–#391, concluída). Esta trata de **como as pessoas escrevem o aviso**.
 
 **Pedido do usuário (2026-09-11), depois de aprovar um modelo HTML institucional que montamos e validamos numa prévia:** (1) visualizador do corpo direto na tela de configuração; (2) o modelo como opção, "algo que force todos utilizarem o mesmo modelo de comunicação"; (3) no anexo, a mesma navegação dos Utilitários — clica na pastinha, desce da raiz até o arquivo, e o clique já atribui.
 
@@ -23,7 +23,7 @@ metadata:
 
 **F1 — PR #393 MERGEADA `35bbe2f`:** prévia no painel do nó (`PreviaEmail.tsx` + `previaEmailDados.ts`). A revisão adversarial REPROVOU com 7 defeitos — nenhum de segurança (o isolamento resistiu a script, `javascript:`, top-nav, form, meta-refresh, download e vazamento de CSS). ⚠️ LIÇÕES: `bg-white` cru no escuro = 1,87:1 (usar tokens); altura 300 num dock de 280 nasce fora da tela; embrulhar corpo que já é documento faz o navegador DESCARTAR os atributos do 2º `<body>`; trocar `srcdoc` a cada tecla recarrega o iframe; foco dentro de iframe de origem opaca não devolve teclado ao pai; `fieldset[disabled]` desliga `<button>` descendente (usar `span role=button`); teste de paridade por regex fica VERDE quando a chave é escrita de outra forma.
 
-**F2 — catálogo (branch `feat/email-modelos-f2`):** migration 112 (`etl_email_modelo` + chave `email_exigir_modelo` + semente do modelo institucional como padrão), `api/services/email_modelos.py`, 6 rotas em `routers/email.py`, Admin › E-mail › Modelos com a prévia ao lado, `Select` de modelo no painel do nó, `_ler_modelo` no `EmailOperator`.
+**F2 — PR #394 MERGEADA `8089e96` (2026-09-11):** migration 112 (`etl_email_modelo` + chave `email_exigir_modelo` + semente do modelo institucional como padrão), `api/services/email_modelos.py`, 6 rotas em `routers/email.py`, Admin › E-mail › Modelos com a prévia ao lado, `Select` de modelo no painel do nó, `_ler_modelo` no `EmailOperator`.
 
 **⚠️ DUAS RODADAS de revisão adversarial — a 1ª REPROVOU (6 defeitos + 2 sugestões), a 2ª aprovou com ressalvas depois de 1 defeito NOVO. As regras que sobraram valem para qualquer catálogo:**
 1. **Régua do salvar aceita INATIVO, recusa só o INEXISTENTE.** Desativar é o gesto que a API recomenda no 409 da exclusão; recusar inativo no salvar tornaria **insalvável** todo fluxo que usa o modelo (mexer em qualquer outro nó passaria a dar 422).
@@ -37,4 +37,17 @@ metadata:
 
 **Validação da F2:** pytest **5283 passed** + as 8 falhas pré-existentes; `tsc -b` limpo; eslint **195 = 195**; `dist/` refeita; migração aplicada 6× no DEV (5 lotes, 0 erros); **smoke de 22 verificações no ambiente, todas OK** (`smoke_modelos_f2.py` no scratchpad), com o operador rodando dentro do worker.
 
-**Pendências:** F3 (seletor de arquivo do anexo) e F4 (docs). Deploy da F2: migração **112** na 6c, `api/`, `dist/`, `dags/` **com restart do worker** (`email_operator.py` mudou e `dags/utils/` é cacheado — [[orquestra-worker-cacheia-dags-utils]]), `config/` → **n**. Questão aberta da §8: excluir o modelo padrão deixa o catálogo sem padrão (o nó novo volta a nascer em Corpo livre, em silêncio).
+**F3 — seletor de arquivo do anexo (branch `feat/email-anexo-f3`):** rota `GET /email/anexo/listar` (raízes do e-mail + permissão de editar pipeline, reusando `preparar_pasta`/`listar_pasta`, o executor SSH e a auditoria dos Utilitários), `NavegadorPastas` + `CampoPasta` fiados no painel do nó, `lib/emailAnexo.ts` com a sugestão de `{odate}`.
+
+**⚠️ O que a F3 fixou (revisão adversarial REPROVOU a 1ª rodada com 3 defeitos + 8 ressalvas):**
+1. **A pasta do anexo passou a aceitar SUBPASTA** (raiz liberada ou abaixo dela). O envio sempre aceitou (`caminho_do_anexo` mede o caminho final contra as raízes); era só o cadastro que recusava na tela o que a corrida entregaria. Sem isso o seletor não alcança o arquivo.
+2. **⛔ Modal aberto sobre o canvas do React Flow alimenta os atalhos do grafo.** O listener de `deleteKeyCode` é de `document` e só ignora campo de texto (`isInputDOMNode`) — o foco de overlay cai num `div tabIndex={-1}`. Resultado: Backspace no navegador de pastas (onde a tela ensina "Subir um nível (Backspace)") abria **"Excluir nó"**. Solução geral: a marca **`nokey`** (do @xyflow) no `Modal` da casa.
+3. **⛔ Atalho global precisa consultar a PILHA de overlays, não uma lista de estados à mão.** O `temModalAberto` do `FluxoEditor` só enxergava os modais dele; um modal nascido dentro do painel do nó deixava o Esc fechar o painel por baixo, o Enter maximizar o dock e as setas trocarem de nó. `ui/overlay.ts` ganhou `haOverlayAberto()`.
+4. **Componente reusado não pode fixar a tela de origem na mensagem**: o `CampoPasta` mandava cadastrar raiz em "Admin › Utilitários" — tela errada, tabela errada. Virou parâmetro.
+5. **Link de DIRETÓRIO fura régua lexical**: com subpasta livre, `/raiz/corrente -> /outra/area` passa no texto e o `stat` segue o link. O envio agora confere `sftp.normalize` contra as raízes (servidor sem `realpath` cai na régua lexical).
+6. **Espelho TS × Python precisa de teste cruzado**: entre `api/` e `dags/` o anti-drift compara o fonte; entre a tela e a API não dá — então os mesmos 20 casos rodam nas duas e o veredito tem de bater.
+7. Detalhes que a comparação por texto exige: **colapsar barras iniciais** (`//x` do POSIX, que o `normpath` preserva), **ignorar raiz que normaliza para `/`** (abriria o servidor inteiro) e **teto de tamanho** (o `anexo_path` do log tem 500; o corte no operador virou UTF-16, senão a linha do envio some em silêncio).
+
+**Validação da F3:** pytest **5299 passed** + as 8 pré-existentes; `tsc -b` limpo; eslint **195 = 195**; **smoke de 14 verificações no ambiente** (`smoke_anexo_f3.py`), com navegação real por SFTP, o arquivo da subpasta chegando anexado com `{odate}` resolvido, e o link para fora recusado no envio.
+
+**Pendências:** F4 (docs). Deploy da F2: migração **112** na 6c, `api/`, `dist/`, `dags/` **com restart do worker** (`email_operator.py` mudou e `dags/utils/` é cacheado — [[orquestra-worker-cacheia-dags-utils]]), `config/` → **n**. Questão aberta da §8: excluir o modelo padrão deixa o catálogo sem padrão (o nó novo volta a nascer em Corpo livre, em silêncio).

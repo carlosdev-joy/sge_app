@@ -16,10 +16,12 @@ export interface CampoPastaProps {
   ajuda?: string
   /** Abre o navegador; sem ele o botão não aparece. */
   onNavegar?: () => void
+  /** Tela que cadastra estas raízes (o anexo do e-mail tem as suas). */
+  ondeCadastrar?: string
 }
 
-export function CampoPasta({ value, onChange, raizes, disabled, ajuda, onNavegar }: CampoPastaProps) {
-  const aviso = avisoPasta(value, raizes)
+export function CampoPasta({ value, onChange, raizes, disabled, ajuda, onNavegar, ondeCadastrar }: CampoPastaProps) {
+  const aviso = avisoPasta(value, raizes, ondeCadastrar)
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-start gap-2">

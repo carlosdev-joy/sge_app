@@ -33,7 +33,7 @@ if "pyodbc" not in sys.modules:
 os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 
-from services import email_config, ssh_datastage  # noqa: E402
+from services import email_config, ssh_arquivos, ssh_datastage  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[1]
 FONTE = RAIZ / "api" / "routers" / "email.py"
@@ -212,7 +212,9 @@ def test_run_sendmail_comando_fixo_stdin_e_fecha(monkeypatch):
 def _rotas_admin() -> list[tuple[str, str]]:
     achados = []
     for no in ast.walk(ast.parse(FONTE.read_text(encoding="utf-8"))):
-        if not isinstance(no, ast.FunctionDef):
+        # `async def` é AsyncFunctionDef, NÃO FunctionDef: sem os dois, uma
+        # rota admin assíncrona passaria pela varredura sem ser conferida.
+        if not isinstance(no, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for dec in no.decorator_list:
             if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
@@ -406,3 +408,108 @@ def test_exigir_modelo_ausente_no_banco_e_desligado():
     assert cfg["exigir_modelo"] is False
     cfg = email_config.load_config(_Cur(config={**CONFIG_OK, "email_exigir_modelo": "1"}))
     assert cfg["exigir_modelo"] is True
+
+
+# ═══════════ navegação das pastas do anexo (F3) ══════════════════════════════
+#
+# Mesmo gesto dos Utilitários com OUTRAS raízes (as do e-mail) e OUTRA permissão
+# (quem edita pipeline). O que se prende: o nível zero não toca o SSH, a pasta
+# fora das raízes é recusada ANTES de qualquer conexão, e a navegação deixa
+# rastro de auditoria como a dos Utilitários.
+
+@pytest.fixture
+def navegacao(monkeypatch, ambiente):
+    """Reaproveita o ambiente (banco e usuário de mentira) e troca só o SFTP."""
+    from routers import email as rota
+
+    cliente, cur, conn, estado, _envio = ambiente
+    estado["perms"] = ["acao_editar", "tela_jobs"]
+    chamadas: list[tuple] = []
+    resposta = {"caminho": "/dados/saida", "caminho_real": "/dados/saida", "raiz": "/dados/saida",
+                "pai": None, "entradas": [{"nome": "rel.csv", "tipo": "arquivo",
+                                           "tamanho_bytes": 10, "modificado_em": None}],
+                "ocultos_omitidos": 0, "truncado": False, "links_nao_resolvidos": 0}
+    estado_ssh = {"resposta": resposta}
+
+    def _fake_listar(servidor, caminho, raizes, mostrar_ocultos):
+        chamadas.append((servidor, caminho, tuple(raizes), mostrar_ocultos))
+        if isinstance(estado_ssh["resposta"], Exception):
+            raise estado_ssh["resposta"]
+        return dict(estado_ssh["resposta"], caminho=caminho, caminho_real=caminho)
+    monkeypatch.setattr(rota, "_listar_anexo_sync", _fake_listar)
+
+    auditoria: list[dict] = []
+    monkeypatch.setattr(rota, "_auditar_arquivo", lambda **kw: auditoria.append(kw))
+    return cliente, cur, chamadas, auditoria, estado, estado_ssh
+
+
+def test_nivel_zero_lista_as_raizes_do_email_sem_tocar_o_ssh(navegacao):
+    cliente, _cur, chamadas, _aud, _estado, _ssh = navegacao
+    d = cliente.get("/email/anexo/listar").json()
+    assert d["caminho"] is None and d["entradas"] == [
+        {"nome": "/dados/saida", "tipo": "raiz", "tamanho_bytes": None, "modificado_em": None}]
+    assert chamadas == []          # nenhuma conexão para mostrar o que já está no banco
+
+
+def test_lista_a_pasta_e_audita(navegacao):
+    cliente, _cur, chamadas, auditoria, _estado, _ssh = navegacao
+    d = cliente.get("/email/anexo/listar?caminho=/dados/saida/2026&mostrar_ocultos=true").json()
+    assert d["caminho"] == "/dados/saida/2026"
+    # subpasta de uma raiz: é assim que se chega ao arquivo
+    assert chamadas == [("datastage", "/dados/saida/2026", ("/dados/saida",), True)]
+    assert auditoria[-1]["resultado"] == "ok" and "anexo de e-mail" in auditoria[-1]["detalhe"]
+
+
+def test_auditoria_registra_o_caminho_real_e_o_pedido(navegacao):
+    """Raiz que é link: o rastro guarda o caminho REAL e diz o que foi pedido —
+    sem isso a auditoria não mostra por onde se chegou fora da árvore."""
+    cliente, _cur, _chamadas, auditoria, _estado, ssh = navegacao
+    ssh["resposta"] = {**ssh["resposta"], "caminho_real": "/u02/area", "truncado": True,
+                       "ocultos_omitidos": 3}
+    cliente.get("/email/anexo/listar?caminho=/dados/saida/link")
+    linha = auditoria[-1]
+    assert linha["caminho"] == "/dados/saida/link"      # o fake devolve caminho=caminho_real
+    assert "truncada" in linha["detalhe"] and "3 ocultos" in linha["detalhe"]
+
+
+def test_pasta_fora_das_raizes_e_recusada_antes_do_ssh(navegacao):
+    cliente, _cur, chamadas, auditoria, _estado, _ssh = navegacao
+    r = cliente.get("/email/anexo/listar?caminho=/etc")
+    assert r.status_code == 403 and "liberados" in r.json()["detail"]
+    assert chamadas == []                                   # nem conectou
+    assert auditoria[-1]["resultado"] == "negado"
+    # e o prefixo de texto não basta: /dados/saidaX não está dentro de /dados/saida
+    assert cliente.get("/email/anexo/listar?caminho=/dados/saidaX").status_code == 403
+
+
+def test_sem_raiz_cadastrada_a_navegacao_explica_em_vez_de_conectar(navegacao):
+    cliente, cur, chamadas, auditoria, _estado, _ssh = navegacao
+    cur.config["email_anexo_raizes"] = "[]"
+    r = cliente.get("/email/anexo/listar?caminho=/dados/saida")
+    assert r.status_code == 403 and "Admin › E-mail" in r.json()["detail"]
+    assert chamadas == []
+    # a recusa também deixa rastro: sem ela o relatório não mostra a tentativa
+    assert auditoria[-1]["resultado"] == "negado" and "nenhuma pasta liberada" in auditoria[-1]["detalhe"]
+    # e o nível zero continua respondendo (lista vazia), para a tela abrir
+    assert cliente.get("/email/anexo/listar").json()["entradas"] == []
+
+
+def test_navegar_exige_permissao_de_editar(navegacao):
+    cliente, _cur, chamadas, _aud, estado, _ssh = navegacao
+    estado["perms"] = ["tela_jobs"]
+    assert cliente.get("/email/anexo/listar").status_code == 403
+    assert cliente.get("/email/anexo/listar?caminho=/dados/saida").status_code == 403
+    assert chamadas == []
+
+
+def test_falha_do_ssh_vira_a_mensagem_da_regua_e_fica_na_auditoria(navegacao):
+    cliente, _cur, _chamadas, auditoria, _estado, ssh = navegacao
+    ssh["resposta"] = ssh_arquivos.ArquivoError(504, "O servidor não respondeu em 90 s.")
+    r = cliente.get("/email/anexo/listar?caminho=/dados/saida")
+    assert r.status_code == 504 and "não respondeu" in r.json()["detail"]
+    assert auditoria[-1]["caminho"] == "/dados/saida"
+    # falha inesperada não vaza o traceback para a tela
+    ssh["resposta"] = RuntimeError("boom")
+    r = cliente.get("/email/anexo/listar?caminho=/dados/saida")
+    assert r.status_code == 502 and "boom" not in r.json()["detail"]
+    assert "inesperado" in auditoria[-1]["detalhe"]

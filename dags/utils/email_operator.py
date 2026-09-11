@@ -31,6 +31,19 @@ MSSQL_CONN_ID = "SQL14_DMDB41"
 PIPELINE_TESTE = "_teste_admin"
 
 
+def _cortar_utf16(texto: str, limite: int) -> str:
+    """Corta pelo que o NVARCHAR conta (unidades UTF-16), não por code points.
+
+    `[:500]` em code points deixa 500 caracteres astrais virarem 1000 unidades:
+    o INSERT do log estoura e a linha do envio some — o `_gravar_log` é
+    best-effort e engole a exceção. Com subpasta no anexo (F3) o caminho ficou
+    livre, então o estouro deixou de ser hipótese remota."""
+    unidades = (texto or "").encode("utf-16-le")
+    if len(unidades) // 2 <= limite:
+        return texto or ""
+    return unidades[:limite * 2].decode("utf-16-le", "ignore")
+
+
 def _formatar_data(valor) -> str:
     """AAAAMMDD a partir de date/datetime/str ('2026-09-11' ou '20260911')."""
     if hasattr(valor, "strftime"):
@@ -424,7 +437,7 @@ class EmailOperator(BaseOperator):
                     campos["remetente"][:200],
                     json.dumps(campos["destinatarios"], ensure_ascii=False),
                     campos["assunto"][:500],
-                    (campos["anexo_path"][:500] if campos.get("anexo_path") else None),
+                    (_cortar_utf16(campos["anexo_path"], 500) if campos.get("anexo_path") else None),
                     campos["anexo_bytes"],
                     campos["status"][:20],
                     (campos["erro"][:1000] if campos.get("erro") else None),

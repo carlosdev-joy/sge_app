@@ -24,7 +24,7 @@ const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/Jo
                   'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx',
                   'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx',
                   'lib/maestroAdmin.ts', 'lib/emailAdmin.ts', 'components/etapas/fluxoTypes.ts',
-                  'components/etapas/previaEmailDados.ts']
+                  'components/etapas/previaEmailDados.ts', 'lib/emailAnexo.ts']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -661,6 +661,30 @@ function tela(params, previa, extra, jobName) {
 {
   const E = require(path.join(tmp, 'lib/emailAdmin.js'))
   const F = require(path.join(tmp, 'components/etapas/fluxoTypes.js'))
+  const A = require(path.join(tmp, 'lib/emailAnexo.js'))
+  // [pasta, raízes] — a MESMA lista do lado Python (test_email_no_front.py).
+  const CASOS_PASTA = [
+    ['/dados/saida', ['/dados/saida']],
+    ['/dados/saida/2026/09', ['/dados/saida']],
+    ['/dados/saida/', ['/dados/saida']],
+    ['/dados//saida/x', ['/dados/saida']],
+    ['/dados/./saida', ['/dados/saida']],
+    ['/dados/saidaX', ['/dados/saida']],
+    ['/dados/saida/../../etc', ['/dados/saida']],
+    ['dados/saida', ['/dados/saida']],
+    ['/dados/saida', []],
+    ['//dados/saida', ['/dados/saida']],
+    ['/dados/saida', ['//dados/saida']],
+    ['/etc/shadow', ['']],
+    ['/etc/shadow', ['/']],
+    ['/dados/saida\n/etc', ['/dados/saida']],
+    ['/dados/saida\\etc', ['/dados/saida']],
+    ['/x'.repeat(200), ['/x']],
+    ['/dados/saida/' + 'a'.repeat(320), ['/dados/saida']],
+    ['', ['/dados/saida']],
+    ['/dados/saida/sub', ['/outra', '/dados/saida']],
+    ['/DADOS/SAIDA', ['/dados/saida']],
+  ]
   const vazio = E.formDoModelo(null)
   const cheio = E.formDoModelo({
     id: 1, nome: 'Aviso de fim de carga', descricao: 'quando usar',
@@ -701,6 +725,35 @@ function tela(params, previa, extra, jobName) {
     guardaAntigoExigindo: F.errosDoEmailNo(
       { ...F.defaultEmailNo(), modelo_id: null, destinatarios: ['a@x.com'] }, ['/dados/saida'],
       { exigirModelo: true, isNew: false }),
+    // ── anexo (F3): pasta abaixo da raiz e sugestão do marcador de data ──
+    // Os MESMOS casos rodam contra `pasta_do_anexo` da API em
+    // test_email_no_front.py — é o teste cruzado das duas réguas.
+    pastaCruzada: CASOS_PASTA.map(([pasta, raizes]) => F.pastaDentroDasRaizes(pasta, raizes)),
+    pastaDentro: [
+      F.pastaDentroDasRaizes('/dados/saida', ['/dados/saida']),            // a própria raiz
+      F.pastaDentroDasRaizes('/dados/saida/2026/09', ['/dados/saida']),    // subpasta: o caso do seletor
+      F.pastaDentroDasRaizes('/dados/saida/', ['/dados/saida']),           // barra à direita
+      F.pastaDentroDasRaizes('/dados/saidaX', ['/dados/saida']),           // prefixo de TEXTO não basta
+      F.pastaDentroDasRaizes('/dados/saida/../../etc', ['/dados/saida']),  // `..` não sai da raiz
+      F.pastaDentroDasRaizes('dados/saida', ['/dados/saida']),             // relativo
+      F.pastaDentroDasRaizes('/dados/saida', []),                          // sem raiz liberada
+    ],
+    anexoEmSubpasta: F.errosDoEmailNo(
+      { ...F.defaultEmailNo(), destinatarios: ['a@x.com'],
+        anexo: { raiz: '/dados/saida/2026', nome: 'r.csv' } }, ['/dados/saida']),
+    anexoForaDaRaizAgora: F.errosDoEmailNo(
+      { ...F.defaultEmailNo(), destinatarios: ['a@x.com'],
+        anexo: { raiz: '/dados/saidaX', nome: 'r.csv' } }, ['/dados/saida']),
+    odate: {
+      comData: A.sugerirOdate('relatorio_20260911.xlsx'),
+      semData: A.sugerirOdate('relatorio.xlsx'),
+      jaTemMarca: A.sugerirOdate('relatorio_{odate}.xlsx'),
+      duasDatas: A.sugerirOdate('de_20260901_a_20260911.csv'),
+      datasIguais: A.sugerirOdate('lote_20260911_parte_20260911.csv'),
+      dataInvalida: A.sugerirOdate('lote_20261301.csv'),
+      numeroLongo: A.sugerirOdate('id_2026091112.csv'),
+      legivel: A.dataLegivel('20260911'),
+    },
     // a lista de escolha × interruptor de padronização
     opcoes: {
       livreDesligado: F.opcoesDoModeloNo({ exigirModelo: false, isNew: true, modeloId: null }),

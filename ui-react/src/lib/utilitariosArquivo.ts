@@ -53,13 +53,18 @@ export type AvisoPasta =
   | null
 
 /** O que o campo Pasta diz enquanto o usuário digita. null = nada a dizer. */
-export function avisoPasta(bruto: string, raizes: string[]): AvisoPasta {
+/** `onde` = a tela que cadastra ESTAS raízes. O campo é reusado por telas com
+ * listas de raízes diferentes (o anexo do e-mail tem as suas, em Admin ›
+ * E-mail): mandar todo mundo para Admin › Utilitários é mandar para o lugar
+ * errado, onde a pessoa cadastraria numa tabela que esta tela não lê. */
+export function avisoPasta(bruto: string, raizes: string[],
+                           onde: string = 'Admin › Utilitários'): AvisoPasta {
   const s = (bruto || '').trim()
   if (!s) return null
   if (!s.startsWith('/')) return { tom: 'erro', texto: 'Precisa ser um caminho absoluto (começar com /).' }
   const n = normalizarCaminhoLexical(s)
   if (utf16Len(n) > LIMITE_CAMINHO) return { tom: 'erro', texto: `Caminho longo demais (máximo ${LIMITE_CAMINHO} caracteres).` }
-  if (raizes.length === 0) return { tom: 'erro', texto: 'Nenhum diretório liberado — cadastre uma raiz em Admin › Utilitários.' }
+  if (raizes.length === 0) return { tom: 'erro', texto: `Nenhum diretório liberado — cadastre uma raiz em ${onde}.` }
   const raiz = raizDe(n, raizes)
   if (!raiz) return { tom: 'erro', texto: 'Fora dos diretórios liberados.' }
   return { tom: 'neutro', texto: `abaixo de ${raiz}` }

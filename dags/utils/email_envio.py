@@ -22,6 +22,9 @@ LIMITE_ANEXO_MB_MIN = 1
 LIMITE_ANEXO_MB_MAX = 25
 LIMITE_ANEXO_MB_PADRAO = 5
 LIMITE_NOME_ANEXO = 200
+# Pasta do anexo: com subpasta o caminho ficou livre, e `etl_email_log.anexo_path`
+# tem 500 — o teto aqui deixa margem para o nome do arquivo.
+LIMITE_PASTA_ANEXO = 300
 
 # Endereço simples: local@dominio.tld, sem espaços, sem quebras, sem aspas.
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -149,20 +152,64 @@ def validar_corpo(valor) -> tuple[str | None, str | None]:
     return s.replace("\r\n", "\n"), None
 
 
+def pasta_do_anexo(bruta, raizes_permitidas: list[str]) -> str | None:
+    """Normaliza a pasta do anexo e confere que ela é uma raiz permitida **ou
+    uma pasta abaixo dela**. `None` = fora das permitidas (ou malformada).
+
+    Subpasta é o caso normal desde o seletor de arquivo: quem navega desce da
+    raiz até onde o arquivo está. O ENVIO sempre aceitou isso —
+    `caminho_do_anexo` mede o caminho final contra as raízes —, era só o
+    cadastro que exigia a raiz exata e recusava no salvar o que a corrida
+    entregaria sem reclamar.
+
+    Três cuidados que a comparação por texto exige:
+      * **barras iniciais colapsadas** antes de comparar: o POSIX trata `//x`
+        como caminho próprio e o `normpath` PRESERVA as duas barras, então uma
+        raiz gravada como `//dados/saida` nunca casaria com o `/dados/saida`
+        que o navegador devolve — e o save recusaria o caminho que a própria
+        tela acabou de entregar;
+      * **raiz que normaliza para `/` (ou vazia) é ignorada**: `startswith("/")`
+        aceitaria o servidor inteiro. `validar_raizes` já barra `/`, mas quem
+        escreve direto no `etl_app_config` passa por fora dela — é a mesma
+        guarda que `ssh_arquivos.raiz_de` tem do lado dos Utilitários;
+      * **teto de tamanho**: sem raiz exata o caminho ficou livre, e o
+        `anexo_path` do log tem 500."""
+    p = str(bruta or "").strip().rstrip("/")
+    if not p.startswith("/") or "\\" in p or "\n" in p or "\r" in p or "\x00" in p:
+        return None
+    if ".." in p.split("/"):
+        return None
+    if len(p.encode("utf-16-le")) // 2 > LIMITE_PASTA_ANEXO:
+        return None
+    caminho = posixpath.normpath(re.sub(r"^/+", "/", p))
+    for r in raizes_permitidas or []:
+        base = posixpath.normpath(re.sub(r"^/+", "/", str(r).strip().rstrip("/") or "/"))
+        if base in ("", "/", "."):
+            continue
+        if caminho == base or caminho.startswith(base + "/"):
+            return caminho
+    return None
+
+
 def validar_anexo_cadastro(raiz, nome, raizes_permitidas: list[str]) -> tuple[dict | None, list[str]]:
-    """Regra do CADASTRO (decisão do usuário): a raiz tem de ser uma das
-    permitidas; o NOME é livre — pode não existir ainda (o arquivo nasce na
-    corrida) e pode ter placeholders — mas é UM nome: sem barra, sem `..`,
-    sem quebra de linha. Existência e tamanho são conferidos só na hora."""
+    """Regra do CADASTRO (decisão do usuário): a pasta tem de estar dentro de
+    uma das permitidas; o NOME é livre — pode não existir ainda (o arquivo
+    nasce na corrida) e pode ter placeholders — mas é UM nome: sem barra, sem
+    `..`, sem quebra de linha. Existência e tamanho são conferidos só na
+    hora."""
     erros: list[str] = []
     r = str(raiz or "").strip().rstrip("/") or ""
     n = str(nome or "").strip()
     if not r and not n:
         return None, []
     if not r:
-        erros.append("anexo: escolha a raiz permitida")
-    elif r not in (raizes_permitidas or []):
-        erros.append(f"anexo: raiz '{r}' não está entre as permitidas no Admin › E-mail")
+        erros.append("anexo: escolha a pasta permitida")
+    else:
+        pasta = pasta_do_anexo(r, raizes_permitidas)
+        if pasta is None:
+            erros.append(f"anexo: a pasta '{r}' não está entre as permitidas no Admin › E-mail")
+        else:
+            r = pasta
     if not n:
         erros.append("anexo: informe o nome do arquivo")
     elif NOME_ANEXO_PROIBIDO_RE.search(n) or n in (".", "..") or ".." in n.split("."):
@@ -332,6 +379,23 @@ def resolver_anexo(sftp, raiz: str, nome: str, raizes_permitidas: list[str],
         return None, f"anexo não pôde ser consultado em {caminho} ({type(e).__name__}: {e})", detalhe
     if not _stat.S_ISREG(info.st_mode or 0):
         return None, f"anexo ignorado: {caminho} não é um arquivo (é diretório ou especial)", detalhe
+    # ⚠️ A régua do cadastro é LEXICAL (não há SSH no salvar): com um link de
+    # diretório dentro da raiz — `/dados/saida/corrente -> /u02/outra_area`, uso
+    # comum no DataStage — o caminho passa no texto e o `stat` segue o link,
+    # lendo um arquivo de FORA das pastas liberadas. O navegador de pastas já
+    # recusa entrar nesse link (confere nível a nível no servidor); aqui o
+    # equivalente é perguntar ao servidor o caminho real e medi-lo contra as
+    # mesmas raízes. Servidor que não implemente `realpath` não bloqueia o
+    # envio: aí vale o que a régua lexical já garantiu.
+    try:
+        real = sftp.normalize(caminho)
+    except Exception:  # noqa: BLE001
+        real = None
+    if real and real != caminho and not caminho_do_anexo(
+            posixpath.dirname(real), posixpath.basename(real), raizes_permitidas):
+        detalhe["caminho"] = real
+        return None, (f"anexo recusado: {caminho} aponta para {real}, fora das pastas "
+                      f"liberadas — e-mail enviado sem anexo"), detalhe
     tamanho = int(info.st_size or 0)
     detalhe["bytes"] = tamanho
     teto = max(1, int(limite_mb or LIMITE_ANEXO_MB_PADRAO)) * 1024 * 1024
