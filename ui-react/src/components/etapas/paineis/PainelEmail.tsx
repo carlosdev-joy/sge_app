@@ -15,6 +15,8 @@ import { Input, Select, Textarea } from '../../ui/Input'
 import { PlaceholderPicker } from '../../ui/PlaceholderPicker'
 import type { EmailNodeData } from '../EmailNode'
 import { defaultEmailNo, errosDoEmailNo, EMAIL_PLACEHOLDERS, type EmailNoConfig } from '../fluxoTypes'
+import { PreviaEmail } from '../PreviaEmail'
+import { dicaDoMarcador, marcadoresDesconhecidos } from '../previaEmailDados'
 import { NomeField } from './shared'
 
 interface EmailStatus {
@@ -49,6 +51,10 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
   })
   const raizes = status?.raizes ?? []
   const erros = errosDoEmailNo(cfg, raizes)
+  // Marcador que o operador não conhece sai literal no e-mail — melhor avisar
+  // aqui do que descobrir na caixa de quem recebeu.
+  const desconhecidos = marcadoresDesconhecidos(
+    `${cfg.assunto} ${cfg.corpo} ${cfg.anexo?.nome ?? ''}`)
 
   const anexoLigado = cfg.anexo != null
   function alternarAnexo(ligado: boolean) {
@@ -221,6 +227,20 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             <p className="text-[10px] text-dim/70">
               Com HTML ligado, quem não consegue ver HTML recebe a mesma mensagem sem as marcações.
             </p>
+            {desconhecidos.length > 0 && (
+              <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                {desconhecidos.length === 1 ? 'Marcador desconhecido' : 'Marcadores desconhecidos'}
+                {' '}no assunto, no corpo ou no nome do anexo:{' '}
+                {desconhecidos.map(m => {
+                  const dica = dicaDoMarcador(m)
+                  return dica ? `{${m}} (seria ${dica})` : `{${m}}`
+                }).join(', ')} — vai sair assim mesmo no e-mail.
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <PreviaEmail corpo={cfg.corpo} html={cfg.html} altura={210} />
           </div>
         </div>
       </div>

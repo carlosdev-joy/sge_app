@@ -23,7 +23,8 @@ const mini = require(path.join(__dirname, 'minireact.cjs'))
 const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/JobTypeFields.tsx',
                   'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx',
                   'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx',
-                  'lib/maestroAdmin.ts', 'lib/emailAdmin.ts', 'components/etapas/fluxoTypes.ts']
+                  'lib/maestroAdmin.ts', 'lib/emailAdmin.ts', 'components/etapas/fluxoTypes.ts',
+                  'components/etapas/previaEmailDados.ts']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -618,6 +619,41 @@ function tela(params, previa, extra, jobName) {
       // cobrada aqui para um erro de rede não travar o save do fluxo inteiro
       semRaizLiberada: F.errosDoEmailNo(completo, []),
     },
+  }
+}
+
+// ── 11) Prévia do e-mail (F1 da spec de modelos e navegação) ────────────────
+{
+  const P = require(path.join(tmp, 'components/etapas/previaEmailDados.js'))
+  saida.previaEmail = {
+    chaves: Object.keys(P.VALORES_EXEMPLO).sort(),
+    resolvido: P.interpolarExemplo('O fluxo {pipeline} terminou em {data} com {linhas} linhas.'),
+    // marcador desconhecido fica INTACTO, como no backend e no operador
+    intacto: P.interpolarExemplo('Fim de {pipeline} {variavel_errada}'),
+    vazio: [P.interpolarExemplo(''), P.interpolarExemplo(null), P.interpolarExemplo(undefined)],
+    // o {odate} da prévia é data de REFERÊNCIA (AAAAMMDD), não a data do relógio
+    odate: P.VALORES_EXEMPLO.odate,
+    desconhecidos: [
+      P.marcadoresDesconhecidos('{pipeline} {data}'),
+      P.marcadoresDesconhecidos('{pipeline} {nao_existe} {outro_errado} {nao_existe}'),
+      P.marcadoresDesconhecidos(''),
+      // caixa errada é o engano mais provável e passava calado
+      P.marcadoresDesconhecidos('{ODATE} {Pipeline} {pipeline}'),
+    ],
+    dicas: [P.dicaDoMarcador('ODATE'), P.dicaDoMarcador('Pipeline'),
+            P.dicaDoMarcador('nao_existe'), P.dicaDoMarcador('pipeline')],
+  }
+
+  // O documento que vai para o iframe: corpo que JÁ é um documento entra
+  // inteiro, senão o navegador descarta o style do <body> do modelo.
+  const V = P   // montarDocumento vive no módulo puro
+  const modelo = '<html><head><meta charset="utf-8"></head>'
+    + '<body style="background:#f4f4f4;font-family:Arial"><p>oi</p></body></html>'
+  saida.previaDocumento = {
+    modeloInteiro: V.montarDocumento(modelo, true),
+    fragmento: V.montarDocumento('<p>oi</p>', true),
+    texto: V.montarDocumento('a < b & c', false),
+    soBody: V.montarDocumento('<body style="background:#000">x</body>', true),
   }
 }
 
