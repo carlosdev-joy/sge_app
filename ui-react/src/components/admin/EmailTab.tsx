@@ -13,6 +13,7 @@ import { Input, Textarea } from '../ui/Input'
 import { PageSpinner } from '../ui/Spinner'
 import { Switch } from '../ui/Switch'
 import { toast } from '../ui/Toast'
+import { EmailModelos } from './EmailModelos'
 import {
   ETAPA_LAUDO, configParaApi, errosDaConfig, formDaConfig, mensagemErroEmail, migration111Pendente,
   type EmailConfigApi, type EmailConfigForm, type EmailLaudo, type EmailLogItem,
@@ -97,6 +98,16 @@ function EmailForm({ cfg }: { cfg: EmailConfigApi }) {
                   value={form.dominiosTexto} onChange={e => setForm({ ...form, dominiosTexto: e.target.value })}
                   placeholder="caixavidaeprevidencia.com.br"
                   ajuda="Vazio = qualquer domínio. O relay foi validado só para o domínio interno; um domínio externo que o relay recuse falha no envio, não no cadastro." />
+        <div className="flex flex-col gap-1 rounded-lg border border-edge bg-canvas px-3 py-2">
+          <Switch checked={form.exigirModelo}
+                  onChange={e => setForm({ ...form, exigirModelo: e.target.checked })}
+                  label="Exigir modelo do catálogo nos nós de e-mail" />
+          <p className="text-[11px] text-dim">
+            Ligado, a opção <em>Corpo livre</em> some da lista do nó: todo aviso passa a sair de um
+            modelo. Os nós que já usam corpo livre continuam funcionando — a trava vale para a
+            próxima escolha, não apaga o que existe.
+          </p>
+        </div>
         {erros.length > 0 && (
           <ul className="flex flex-col gap-0.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300" data-email-erros>
             {erros.map(e => <li key={e}>{e}</li>)}
@@ -108,6 +119,8 @@ function EmailForm({ cfg }: { cfg: EmailConfigApi }) {
           </Button>
         </div>
       </section>
+
+      <EmailModelos />
 
       <section className="flex flex-col gap-3 rounded-lg border border-edge bg-panel p-4 shadow-sm" data-email-testar>
         <div>

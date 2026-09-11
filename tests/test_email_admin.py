@@ -97,8 +97,9 @@ class _Conn:
 
 def test_load_config_le_e_degrada():
     cfg = email_config.load_config(_Cur())
-    assert cfg == {"enabled": True, "remetente": "orquestra@cvp.com.br", "limite_mb": 5, "raizes": ["/dados/saida"],
-                   "dominios": ["cvp.com.br"], "disponivel": True, "erro": None}
+    assert cfg == {"enabled": True, "remetente": "orquestra@cvp.com.br", "limite_mb": 5,
+                   "raizes": ["/dados/saida"], "dominios": ["cvp.com.br"],
+                   "exigir_modelo": False, "disponivel": True, "erro": None}
     cfg = email_config.load_config(_Cur(sem_111=True))
     assert cfg["disponivel"] is False and cfg["enabled"] is False and cfg["erro"] is None
 
@@ -290,7 +291,11 @@ def test_config_set_valida_grava_e_rele(ambiente):
     assert r.json()["config"]["remetente"] == "novo@cvp.com.br" and r.json()["config"]["enabled"] is False
     assert r.json()["config"]["raizes"] == ["/x", "/y"] and r.json()["config"]["limite_mb"] == 10
     merges = [e for e in cur.execs if e[0].startswith("MERGE")]
-    assert {m[1][0] for m in merges} == set(email_config.CHAVES) and all(m[1][2] == "ADM1" for m in merges)
+    # As 5 chaves base vão sempre; `email_exigir_modelo` só quando vem no corpo
+    # (chave ausente preserva o valor — uma tela antiga não pode desligar a
+    # padronização em silêncio).
+    base = set(email_config.CHAVES) - {email_config.K_EXIGIR_MODELO}
+    assert {m[1][0] for m in merges} == base and all(m[1][2] == "ADM1" for m in merges)
     cur.sem_111 = True
     assert cliente.post("/email/admin/config", json={"enabled": False}).status_code == 503
 
@@ -379,3 +384,25 @@ def test_log(ambiente):
 
     cur.sem_111 = True
     assert cliente.get("/email/log").status_code == 503
+
+
+def test_interruptor_de_exigir_modelo():
+    """Migration 112: ligado, a opção *Corpo livre* some da lista do nó."""
+    valores, erros = email_config.validar_config(
+        {"enabled": False, "remetente": "", "exigir_modelo": True})
+    assert erros == [] and valores[email_config.K_EXIGIR_MODELO] == "1"
+    valores, _ = email_config.validar_config({"enabled": False, "exigir_modelo": False})
+    assert valores[email_config.K_EXIGIR_MODELO] == "0"
+    # chave AUSENTE não grava: preserva o que estava valendo
+    valores, _ = email_config.validar_config({"enabled": False})
+    assert email_config.K_EXIGIR_MODELO not in valores
+    assert any("true/false" in e for e in
+               email_config.validar_config({"enabled": False, "exigir_modelo": "talvez"})[1])
+
+
+def test_exigir_modelo_ausente_no_banco_e_desligado():
+    """Ambiente sem a 112 não pode ficar com a padronização ligada por acidente."""
+    cfg = email_config.load_config(_Cur(config={k: v for k, v in CONFIG_OK.items()}))
+    assert cfg["exigir_modelo"] is False
+    cfg = email_config.load_config(_Cur(config={**CONFIG_OK, "email_exigir_modelo": "1"}))
+    assert cfg["exigir_modelo"] is True

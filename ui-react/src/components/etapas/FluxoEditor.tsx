@@ -75,7 +75,7 @@ import {
   type Condition, type NotifyConfig, type SqlConfig, type AguardeConfig, type MsgGrupo,
   defaultNotify, toNotifyConfig, notifyLabel, defaultSql, toSqlConfig, sqlLabel,
   defaultAguarde, toAguardeConfig, aguardeLabel, pontasSoltas,
-  type EmailNoConfig, defaultEmailNo, toEmailNoConfig, emailNoLabel, errosDoEmailNo,
+  type EmailNoConfig, defaultEmailNo, emailNoNovo, toEmailNoConfig, emailNoLabel, errosDoEmailNo,
 } from './fluxoTypes'
 import { PropriedadesPanel } from './paineis/PropriedadesPanel'
 import { PainelPipeline, type ContagemNos } from './paineis/PainelPipeline'
@@ -773,6 +773,26 @@ function FluxoEditorInner({
   // mão — o backend continua sendo a palavra final.
   const raizesEmail = useMemo(() => emailStatus?.raizes ?? [], [emailStatus])
 
+  // Catálogo de modelos (migration 112). Serve para o nó de e-mail NOVO já
+  // nascer no modelo padrão — o caminho de menor esforço passa a ser o layout
+  // institucional, que é o ponto do catálogo — e para a guarda do save cobrar
+  // o modelo quando o Admin exige um. Mesma queryKey do painel: a resposta é
+  // uma só, compartilhada pelo cache.
+  const { data: emailModelos } = useQuery<{
+    modelos: { id: number; padrao: boolean }[]; disponivel: boolean; exigir_modelo: boolean
+  }>({
+    queryKey: ['email-modelos'],
+    queryFn: () => apiFetch('/email/modelos'),
+    staleTime: 300_000,
+  })
+  const modeloPadraoId = useMemo(
+    () => emailModelos?.modelos?.find(m => m.padrao)?.id ?? null,
+    [emailModelos],
+  )
+  // `undefined` enquanto não respondeu (ou se falhou): a guarda do save trata
+  // isso como "não sei" e não cobra modelo nenhum.
+  const catalogoEmail = emailModelos?.disponivel === true ? emailModelos : undefined
+
   const decisaoSet = useMemo(
     () => new Set(nodes.filter(n => n.type === 'decisao').map(n => n.id)),
     [nodes],
@@ -1049,7 +1069,10 @@ function FluxoEditorInner({
         // E-mail: nasce herdando a lista do fluxo e com assunto/corpo prontos —
         // arrastar e ligar já produz um aviso que faz sentido.
         const name = nextName('AVISA_EMAIL', nameSet())
-        const email = defaultEmailNo()
+        // Já nasce no modelo padrão do catálogo quando existe um (o painel
+        // deixa trocar, inclusive para Corpo livre, se o Admin não exigir
+        // modelo). Sem catálogo — ou sem padrão marcado — segue Corpo livre.
+        const email = emailNoNovo(modeloPadraoId)
         const node: Node = {
           id: name,
           type: 'email',
@@ -1086,7 +1109,7 @@ function FluxoEditorInner({
       setDirty(true)
       setSelectedId(name)
     },
-    [rf, nameSet, maxOrder, setNodes, gruposById, travado],
+    [rf, nameSet, maxOrder, setNodes, gruposById, travado, modeloPadraoId],
   )
 
   // Atualiza o `data` de um nó (etapa) — usado pelo painel à direita ao vivo.
@@ -1548,7 +1571,15 @@ function FluxoEditorInner({
       // que falta junto do nome do nó em vez de um 422 com a lista crua.
       const emailIncompleto = nodes
         .filter(n => n.type === 'email')
-        .map(n => ({ id: n.id, erros: errosDoEmailNo((n.data as EmailNodeData).email ?? defaultEmailNo(), raizesEmail) }))
+        .map(n => ({
+          id: n.id,
+          erros: errosDoEmailNo(
+            (n.data as EmailNodeData).email ?? defaultEmailNo(), raizesEmail,
+            // A regra do catálogo só entra com a resposta do catálogo em mãos:
+            // sem ela, cobrar modelo travaria o save por um erro de rede.
+            catalogoEmail ? { exigirModelo: catalogoEmail.exigir_modelo === true,
+                              isNew: !!(n.data as EmailNodeData).isNew } : undefined),
+        }))
         .filter(x => x.erros.length)
       if (emailIncompleto.length) {
         const primeiro = emailIncompleto[0]
@@ -1762,6 +1793,9 @@ function FluxoEditorInner({
               assunto: (cur.assunto ?? '').toString(),
               corpo: (cur.corpo ?? '').toString(),
               html: cur.html === true,
+              // A chave vai SEMPRE (mesmo null): é a presença dela que permite
+              // voltar de um modelo para o Corpo livre.
+              modelo_id: cur.modelo_id ?? null,
               destinatarios: cur.destinatarios ?? [],
               incluir_pipeline: cur.incluir_pipeline !== false,
               anexo: cur.anexo && cur.anexo.raiz && cur.anexo.nome

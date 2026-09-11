@@ -85,3 +85,84 @@ def test_lista_de_pastas_vazia_nao_trava_o_save(e):
     status. Cobrar a pasta aqui travaria o fluxo inteiro por um erro de rede,
     sem caminho de saída — o backend continua sendo a palavra final."""
     assert e["erros"]["semRaizLiberada"] == []
+
+
+# ── catálogo de modelos (F2 da spec de modelos e navegação) ─────────────────
+
+@pytest.fixture(scope="module")
+def modelos():
+    import shutil as _sh
+    node = _sh.which("node")
+    if node is None:
+        pytest.skip("front não instalado nesta máquina")
+    r = subprocess.run([node, str(HARNESS)], capture_output=True, text=True, cwd=str(RAIZ), timeout=180)
+    assert r.returncode == 0, f"bancada do front falhou:\n{r.stderr}"
+    return json.loads(r.stdout)["emailModelos"]
+
+
+def test_modelo_novo_nasce_em_html_e_ativo(modelos):
+    f = modelos["formVazio"]
+    assert f["html"] is True and f["ativo"] is True and f["padrao"] is False
+
+
+def test_regua_do_modelo_espelha_a_do_backend(modelos):
+    e = modelos["erros"]
+    assert e["cheio"] == []
+    assert e["vazio"] == ["Informe o nome do modelo", "Informe o corpo do modelo"]
+    assert e["semNome"] == ["Informe o nome do modelo"]
+    assert "quebra de linha" in e["nomeComQuebra"][0]
+    assert e["semCorpo"] == ["Informe o corpo do modelo"]
+    assert "20.000" in e["corpoLongo"][0]
+    assert "quebra de linha" in e["assuntoComQuebra"][0]
+
+
+def test_ancora_com_modelo_o_corpo_do_no_nao_e_exigido(modelos):
+    """⛔ Âncora do catálogo: o corpo vem de lá no envio. Se a régua da tela
+    continuasse cobrando o corpo do nó, cada fluxo teria de duplicar o HTML —
+    exatamente o que o catálogo existe para evitar."""
+    assert modelos["noComModelo"] == []
+    assert modelos["noSemModelo"] == ["Informe o corpo da mensagem"]
+
+
+def test_ancora_no_anterior_ao_catalogo_vira_corpo_livre(modelos):
+    """⛔ Âncora da compatibilidade: nó gravado antes da F2 não tem a chave.
+    Ele entra como Corpo livre e segue enviando o que sempre enviou — a
+    mudança não pode alterar nenhum e-mail já configurado."""
+    assert modelos["doApiSemModelo"] is None
+    assert modelos["doApiComModelo"] == 5
+
+
+def test_no_novo_nasce_no_modelo_padrao(modelos):
+    """O layout institucional tem de ser o caminho de MENOR esforço: nó novo
+    já nasce nele. Sem catálogo (ou sem padrão marcado), nasce em Corpo livre
+    — igual a antes da F2."""
+    assert modelos["novoComPadrao"] == 4
+    assert modelos["novoSemPadrao"] is None
+    assert modelos["novoPreservaOResto"] is True      # o resto do default fica de pé
+
+
+def test_guarda_do_save_so_cobra_modelo_com_o_catalogo_em_maos(modelos):
+    """A guarda local do save existe para o erro aparecer junto do nome do nó,
+    em vez de um 422 com a lista crua. Ela só cobra o modelo quando recebeu a
+    resposta do catálogo: sem ela (rede fora), cobrar travaria o save do fluxo
+    inteiro por um erro que a tela não sabe explicar."""
+    assert modelos["guardaSemCatalogo"] == []
+    assert modelos["guardaNovoExigindo"] == [
+        'Escolha um modelo do catálogo (Admin › E-mail exige modelo)']
+    assert modelos["guardaAntigoExigindo"] == []
+
+
+def test_corpo_livre_some_com_a_padronizacao_menos_para_quem_ja_esta_nele(modelos):
+    """A regra que o painel aplica na lista de modelos.
+
+    Nó NOVO com a padronização ligada abre em "Selecione um modelo…", não em
+    Corpo livre — oferecer Corpo livre ali só produziria o 422 do backend. Nó
+    que JÁ está em Corpo livre continua vendo a opção: escondê-la faria o
+    select mostrar um modelo que a config não tem, e o nó trocaria de corpo
+    sozinho no primeiro save."""
+    o = modelos["opcoes"]
+    assert o["livreDesligado"] == {"podeCorpoLivre": True, "faltaEscolherModelo": False}
+    assert o["novoExigindo"] == {"podeCorpoLivre": False, "faltaEscolherModelo": True}
+    assert o["novoExigindoComModelo"] == {"podeCorpoLivre": False, "faltaEscolherModelo": False}
+    assert o["antigoEmCorpoLivre"] == {"podeCorpoLivre": True, "faltaEscolherModelo": False}
+    assert o["antigoComModelo"] == {"podeCorpoLivre": False, "faltaEscolherModelo": False}

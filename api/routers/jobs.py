@@ -696,12 +696,29 @@ def _normalize_notify(cfg: dict) -> dict:
 # destinatário de domínio barrado falha aqui, na tela, e não na corrida.
 
 
-def _validate_email(cfg, raizes_permitidas=None, dominios_permitidos=None) -> list[str]:
+def _validate_email(cfg, raizes_permitidas=None, dominios_permitidos=None,
+                    modelos_validos=None, exigir_modelo=False, no_novo=False) -> list[str]:
     """Valida a config do nó `email`. Lista de erros (vazia = ok).
 
     O NOME do anexo é livre de propósito (decisão do usuário): o arquivo
     costuma ser gerado pela própria corrida, então existência e tamanho só dá
-    para conferir na hora do envio — aqui vale a raiz e a forma do nome."""
+    para conferir na hora do envio — aqui vale a raiz e a forma do nome.
+
+    `modelos_validos` = ids dos modelos que EXISTEM no catálogo (migration
+    112), ativos ou não. Passado, um `modelo_id` fora da lista é recusado aqui;
+    sem ele (catálogo indisponível), a checagem é pulada e o nó segue sendo
+    aceito pelo corpo próprio.
+
+    ⚠️ A lista inclui os INATIVOS de propósito. Desativar um modelo é o gesto
+    que a API recomenda no lugar de excluir ("quem já usa continua enviando"),
+    e o operador de fato continua enviando. Se a régua do salvar recusasse
+    inativo, desativar tornaria **insalvável** todo fluxo que usa o modelo:
+    mexer em qualquer outro nó passaria a devolver 422. O que é recusado aqui
+    é id que não existe — esse sim faz a etapa falhar na corrida.
+
+    `exigir_modelo` + `no_novo`: com a padronização ligada, um nó **novo** não
+    pode nascer em Corpo livre. Os que já existem seguem salvando como estão —
+    ligar o interruptor não pode quebrar o que já roda."""
     from services import email_mime as _em
 
     if not isinstance(cfg, dict):
@@ -710,9 +727,26 @@ def _validate_email(cfg, raizes_permitidas=None, dominios_permitidos=None) -> li
     _, erro = _em.validar_assunto(cfg.get("assunto"))
     if erro:
         errs.append(erro)
-    _, erro = _em.validar_corpo(cfg.get("corpo"))
-    if erro:
-        errs.append(erro)
+
+    modelo_id = cfg.get("modelo_id")
+    if modelo_id is not None:
+        if not _inteiro(modelo_id):
+            errs.append("modelo do e-mail inválido")
+            modelo_id = None
+        elif modelos_validos is not None and int(modelo_id) not in set(modelos_validos):
+            errs.append("o modelo escolhido não existe mais no catálogo "
+                        "(Admin › E-mail › Modelos)")
+
+    # Com modelo escolhido, o corpo vem do catálogo NO ENVIO — o campo do nó
+    # deixa de ser exigido. O texto que já estava lá é preservado, para voltar
+    # ao Corpo livre não apagar o que a pessoa tinha escrito.
+    if modelo_id is None:
+        if exigir_modelo and no_novo:
+            errs.append("Admin › E-mail exige modelo do catálogo: escolha um modelo "
+                        "para este nó (a opção Corpo livre está desativada)")
+        _, erro = _em.validar_corpo(cfg.get("corpo"))
+        if erro:
+            errs.append(erro)
     destinatarios, erros_d = _em.validar_destinatarios(cfg.get("destinatarios"), dominios_permitidos)
     errs.extend(erros_d)
     incluir = cfg.get("incluir_pipeline")
@@ -736,6 +770,15 @@ def _validate_email(cfg, raizes_permitidas=None, dominios_permitidos=None) -> li
     return errs
 
 
+def _inteiro(valor) -> bool:
+    """Inteiro de verdade ou texto só com dígitos (o front manda número)."""
+    if isinstance(valor, bool):
+        return False
+    if isinstance(valor, int):
+        return True
+    return str(valor).strip().isdigit()
+
+
 def _normalize_email(cfg: dict, raizes_permitidas=None) -> dict:
     """Normaliza a config do nó `email` para persistência em notify_json."""
     from services import email_mime as _em
@@ -743,6 +786,8 @@ def _normalize_email(cfg: dict, raizes_permitidas=None) -> dict:
     assunto, _ = _em.validar_assunto(cfg.get("assunto"))
     corpo, _ = _em.validar_corpo(cfg.get("corpo"))
     destinatarios, _ = _em.validar_destinatarios(cfg.get("destinatarios"))
+    modelo_id = cfg.get("modelo_id")
+    modelo_id = int(modelo_id) if _inteiro(modelo_id) else None
     anexo_raw = cfg.get("anexo")
     anexo = None
     if isinstance(anexo_raw, dict):
@@ -750,8 +795,13 @@ def _normalize_email(cfg: dict, raizes_permitidas=None) -> dict:
                                               list(raizes_permitidas or []))
     return {
         "assunto": assunto or "",
+        # Preservado mesmo com modelo escolhido: voltar ao Corpo livre não pode
+        # apagar o que a pessoa já tinha escrito.
         "corpo": corpo or "",
         "html": bool(cfg.get("html")),
+        # null = Corpo livre. A chave existe SEMPRE: é ela que permite voltar
+        # do modelo para o corpo próprio.
+        "modelo_id": modelo_id,
         "destinatarios": destinatarios,
         # Default LIGADO: quem cadastra a lista no pipeline espera que os nós a
         # usem; desmarcar é a exceção consciente.
@@ -760,17 +810,52 @@ def _normalize_email(cfg: dict, raizes_permitidas=None) -> dict:
     }
 
 
-def _config_email_do_admin(cur) -> tuple[list[str], list[str]]:
-    """(raízes permitidas, domínios permitidos) do Admin › E-mail. Sem a
-    migration 111 as listas vêm vazias — e aí um anexo é recusado com a
-    mensagem da régua, que é o comportamento certo: não há raiz liberada."""
+def _config_email_do_admin(cur) -> tuple[list[str], list[str], list[int] | None, bool]:
+    """(raízes permitidas, domínios permitidos, ids dos modelos que EXISTEM,
+    exigir_modelo) do Admin › E-mail.
+
+    Sem a migration 111 as listas vêm vazias — e aí um anexo é recusado com a
+    mensagem da régua, que é o comportamento certo: não há raiz liberada. Sem
+    a 112 o terceiro item é **None**, não lista vazia: `None` significa
+    "catálogo indisponível, não valide o modelo", enquanto `[]` significaria
+    "nenhum modelo ativo" e recusaria todo nó que já aponta para um."""
+    raizes: list[str] = []
+    dominios: list[str] = []
     try:
         from services import email_config as _ec
 
         cfg = _ec.load_config(cur)
-        return list(cfg.get("raizes") or []), list(cfg.get("dominios") or [])
+        raizes = list(cfg.get("raizes") or [])
+        dominios = list(cfg.get("dominios") or [])
     except Exception:  # noqa: BLE001 — validar é melhor que derrubar o salvar
-        return [], []
+        pass
+    modelos: list[int] | None = None
+    try:
+        from services import email_modelos as _emod
+
+        if _emod.tabela_existe(cur):
+            # TODOS, inclusive inativos — ver a docstring de _validate_email.
+            modelos = [m["id"] for m in _emod.listar(cur, apenas_ativos=False, com_corpo=False)]
+    except Exception:  # noqa: BLE001
+        modelos = None
+    # ⚠️ A padronização só vale COM catálogo. A chave é gravada por MERGE em
+    # etl_app_config e pode existir sem a 112 (o interruptor do Admin não
+    # depende da tabela). Exigir modelo sem catálogo deixaria o nó de e-mail
+    # NOVO insalvável **sem gesto possível na tela**: o painel não renderiza a
+    # lista de modelos quando o catálogo está indisponível, então não haveria
+    # como escolher o modelo que a régua cobra. É a mesma conta que
+    # `GET /email/modelos` faz ao devolver `exigir_modelo: False` sem a 112 —
+    # as duas pontas precisam concordar, ou a tela promete o que o save recusa.
+    exigir = False
+    if modelos is not None:
+        try:
+            cur.execute("SELECT config_value FROM dbo.etl_app_config WHERE config_key = ?",
+                        ("email_exigir_modelo",))
+            linha = cur.fetchone()
+            exigir = bool(linha) and str(linha[0] or "").strip() == "1"
+        except Exception:  # noqa: BLE001
+            exigir = False
+    return raizes, dominios, modelos, exigir
 
 
 # ── Nó Aguarde (migration 068) ──────────────────────────────────────────────
@@ -1959,6 +2044,8 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         # e-mail faria 20 leituras iguais de etl_app_config.
         _email_raizes: list[str] | None = None
         _email_dominios: list[str] = []
+        _email_modelos: list[int] | None = None
+        _email_exigir = False
 
         for idx, job in enumerate(jobs):
             cond_json_str = None     # preenchido só p/ jobs de decisão (persiste depois)
@@ -2054,8 +2141,11 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                     except (ValueError, TypeError):
                         raw_email = None
                 if _email_raizes is None:
-                    _email_raizes, _email_dominios = _config_email_do_admin(cur)
-                email_errs = _validate_email(raw_email, _email_raizes, _email_dominios)
+                    (_email_raizes, _email_dominios, _email_modelos,
+                     _email_exigir) = _config_email_do_admin(cur)
+                email_errs = _validate_email(raw_email, _email_raizes, _email_dominios,
+                                             _email_modelos, _email_exigir,
+                                             no_novo=(j_name not in db_names))
                 if email_errs:
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in email_errs); continue
                 notify_json_str = json.dumps(_normalize_email(raw_email, _email_raizes), ensure_ascii=False)
@@ -2753,6 +2843,8 @@ async def save_pipeline_fluxo(
         # Régua do Admin › E-mail, lida uma vez e só se houver nó de e-mail.
         _email_raizes: list[str] | None = None
         _email_dominios: list[str] = []
+        _email_modelos: list[int] | None = None
+        _email_exigir = False
         prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, sql_json|None, python_json|None, aguarde_json|None, lx, ly)
         raw_by_name: dict[str, dict] = {}  # nó cru por nome (checa presença de chave no UPDATE)
         seen: set[str] = set()
@@ -2861,8 +2953,10 @@ async def save_pipeline_fluxo(
             # E-mail — mesma coluna (notify_json), régua do Admin › E-mail.
             if j_type == "email":
                 if _email_raizes is None:
-                    _email_raizes, _email_dominios = _config_email_do_admin(cur)
-                email_errs = _validate_email(node.get("email"), _email_raizes, _email_dominios)
+                    (_email_raizes, _email_dominios, _email_modelos,
+                     _email_exigir) = _config_email_do_admin(cur)
+                email_errs = _validate_email(node.get("email"), _email_raizes, _email_dominios,
+                                             _email_modelos, _email_exigir, no_novo=is_new)
                 if email_errs:
                     errors.extend(f"{j_name}: {e}" for e in email_errs); continue
                 notify_json_str = json.dumps(_normalize_email(node.get("email"), _email_raizes),
