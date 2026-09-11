@@ -141,6 +141,88 @@ def test_no_novo_nasce_no_modelo_padrao(modelos):
     assert modelos["novoPreservaOResto"] is True      # o resto do default fica de pé
 
 
+# A MESMA lista da bancada (tests/js/ds_params_harness.cjs, CASOS_PASTA), na
+# mesma ordem: é o par que faz o teste cruzado valer.
+CASOS_PASTA = [
+    ("/dados/saida", ["/dados/saida"]),
+    ("/dados/saida/2026/09", ["/dados/saida"]),
+    ("/dados/saida/", ["/dados/saida"]),
+    ("/dados//saida/x", ["/dados/saida"]),
+    ("/dados/./saida", ["/dados/saida"]),
+    ("/dados/saidaX", ["/dados/saida"]),
+    ("/dados/saida/../../etc", ["/dados/saida"]),
+    ("dados/saida", ["/dados/saida"]),
+    ("/dados/saida", []),
+    ("//dados/saida", ["/dados/saida"]),
+    ("/dados/saida", ["//dados/saida"]),
+    ("/etc/shadow", [""]),
+    ("/etc/shadow", ["/"]),
+    ("/dados/saida\n/etc", ["/dados/saida"]),
+    ("/dados/saida\\etc", ["/dados/saida"]),
+    ("/x" * 200, ["/x"]),
+    ("/dados/saida/" + "a" * 320, ["/dados/saida"]),
+    ("", ["/dados/saida"]),
+    ("/dados/saida/sub", ["/outra", "/dados/saida"]),
+    ("/DADOS/SAIDA", ["/dados/saida"]),
+]
+
+
+def test_ancora_regua_da_pasta_bate_com_a_da_api(modelos):
+    """⛔ Âncora do espelho front × backend.
+
+    O par api/ × dags/ tem o anti-drift por `inspect.getsource`; entre TS e
+    Python não dá para comparar fonte, então compara-se o VEREDITO nos mesmos
+    casos. Sem isto, a tela promete o que o save recusa (ou pior: aceita na
+    tela o que o save aceitaria por outro motivo) e a divergência só aparece
+    para quem estiver montando o fluxo."""
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "..", "api"))
+    from services import email_mime as em
+
+    da_api = [em.pasta_do_anexo(pasta, raizes) is not None for pasta, raizes in CASOS_PASTA]
+    do_front = modelos["pastaCruzada"]
+    assert len(do_front) == len(CASOS_PASTA), "a bancada e o teste saíram de sincronia"
+    divergentes = [(c, a, f) for c, a, f in zip(CASOS_PASTA, da_api, do_front) if a != f]
+    assert not divergentes, f"régua do front diverge da API em: {divergentes}"
+    # e o conjunto prova alguma coisa: tem caso aceito E caso recusado
+    assert any(da_api) and not all(da_api)
+
+
+def test_pasta_do_anexo_aceita_subpasta_e_so_dentro_da_raiz(modelos):
+    """O seletor de arquivo desce da raiz até onde o arquivo está — então a
+    pasta do anexo é a raiz **ou uma pasta abaixo dela**. Espelha
+    `pasta_do_anexo` da API; o envio sempre mediu o caminho final contra as
+    raízes, era o cadastro que recusava a subpasta."""
+    raiz, subpasta, comBarra, prefixo, pontoPonto, relativo, semRaiz = modelos["pastaDentro"]
+    assert raiz and subpasta and comBarra
+    # `/dados/saidaX` NÃO está dentro de `/dados/saida`: prefixo de texto não basta
+    assert not prefixo
+    assert not pontoPonto and not relativo and not semRaiz
+
+
+def test_regua_local_aceita_o_anexo_em_subpasta(modelos):
+    assert modelos["anexoEmSubpasta"] == []
+    assert modelos["anexoForaDaRaizAgora"] == [
+        'A pasta do anexo não está entre as permitidas no Admin › E-mail']
+
+
+def test_sugestao_do_marcador_de_data(modelos):
+    """Escolher pelo navegador traz o arquivo DE HOJE; amanhã a corrida
+    procuraria o mesmo nome. A troca é oferecida, nunca feita sozinha — nome
+    com data fixa é caso legítimo."""
+    o = modelos["odate"]
+    assert o["comData"] == {"sugestao": "relatorio_{odate}.xlsx", "data": "20260911"}
+    assert o["semData"] is None and o["jaTemMarca"] is None
+    # intervalo: a tela não sabe QUAL das duas datas é a da corrida
+    assert o["duasDatas"] is None
+    # a mesma data repetida vira marcador nas duas posições
+    assert o["datasIguais"]["sugestao"] == "lote_{odate}_parte_{odate}.csv"
+    # 13º mês não é data; sequência de 10 dígitos não é AAAAMMDD
+    assert o["dataInvalida"] is None and o["numeroLongo"] is None
+    assert o["legivel"] == "11/09/2026"
+
+
 def test_guarda_do_save_so_cobra_modelo_com_o_catalogo_em_maos(modelos):
     """A guarda local do save existe para o erro aparecer junto do nome do nó,
     em vez de um 422 com a lista crua. Ela só cobra o modelo quando recebeu a

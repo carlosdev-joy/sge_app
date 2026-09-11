@@ -50,6 +50,7 @@ import { apiFetch } from '../../lib/api'
 import { normalizeBusca } from '../../lib/busca'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
+import { haOverlayAberto } from '../ui/overlay'
 import { toast } from '../ui/Toast'
 import {
   Activity,
@@ -1954,6 +1955,12 @@ function FluxoEditorInner({
   useEffect(() => {
     if (temModalAberto) return
     const onKey = (e: KeyboardEvent) => {
+      // Overlay na frente = quem trata teclado é ele. A lista `temModalAberto`
+      // só enxerga os modais DESTE componente; o navegador de pastas do anexo
+      // (F3) nasce dentro do painel do nó, e sem esta consulta à pilha o Esc
+      // fechava o painel por baixo dele, o Enter maximizava o dock e as setas
+      // trocavam de nó — desmontando o navegador no meio do uso.
+      if (haOverlayAberto()) return
       const t = e.target as HTMLElement | null
       const emInput = !!t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

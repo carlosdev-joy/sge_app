@@ -1,5 +1,5 @@
 # Spec: E-mail — prévia na tela, modelos institucionais e seletor de anexo — Orquestra
-Data: 2026-09-11 · Status: **aprovada 2026-09-11** · em execução (F2)
+Data: 2026-09-11 · Status: **aprovada 2026-09-11** · em execução (F3)
 
 Continuação de `docs/spec-notificacao-email.md` (concluída, F1–F4 = PRs #388–#391).
 Aquela entregou o canal; esta trata de **como as pessoas escrevem o aviso**.
@@ -208,6 +208,25 @@ Nada muda em `etl_pipeline_job`: `modelo_id` entra no JSON de `notify_json`.
   que sai da raiz por link, então 403 com a mesma mensagem dos Utilitários.
 - Validação: completa. Revisão adversarial.
   PR: `feat(email): escolher o arquivo do anexo navegando pelas pastas (F3)`.
+- 🔧 **EM REVISÃO** — implementada. O que a execução fixou:
+  - **A pasta do anexo passa a ser a raiz liberada OU uma pasta abaixo dela.**
+    Sem isso o seletor não alcança o arquivo guardado numa subpasta, que é o
+    caso normal. O ENVIO sempre aceitou subpasta (`caminho_do_anexo` mede o
+    caminho final contra as raízes) — era só o cadastro que recusava, na tela,
+    o que a corrida entregaria sem reclamar.
+  - **A régua da pasta vale em três lugares** (API, worker e tela) e há
+    **teste cruzado**: os mesmos 20 casos rodam na bancada de node e em
+    `pasta_do_anexo`, e o veredito tem de bater. Entre TS e Python não dá para
+    comparar o fonte, como o anti-drift faz entre `api/` e `dags/`.
+  - **Link de diretório é conferido no ENVIO.** A régua do cadastro é lexical
+    (não há SSH no salvar), então `/dados/saida/corrente -> /u02/outra_area`
+    passa no texto e o `stat` seguiria o link para fora das pastas liberadas.
+    O envio agora pergunta o caminho real ao servidor (`sftp.normalize`) antes
+    de ler; servidor sem `realpath` cai na régua lexical, como antes.
+  - **Modal aberto não alimenta mais os atalhos do canvas.** O `Modal` da casa
+    ganhou a marca `nokey` (do React Flow) e o editor de fluxo consulta a pilha
+    de overlays: sem isso o Backspace anunciado como *Subir um nível* abria
+    "Excluir nó", e o Esc fechava o painel por baixo do navegador.
 
 ### F4 — Manual, release note e smoke
 - Manual (§3.5-A e §4.10 revisados, FAQ), `docs/release-notes/email-modelos.md`,
@@ -259,7 +278,15 @@ j) Navegar até uma pasta fora das raízes do e-mail pelo caminho digitado: 403.
 5. **Precedente a considerar antes de aprovar:** a Supervisão DS removeu o
    catálogo de templates por desuso (migration 063). Vale confirmar que o caso
    aqui é diferente — layout institucional único, não texto por situação.
-6. 🆕 **Excluir o modelo padrão deixa o catálogo sem padrão** (achado da F2). A
+6. 🆕 **As raízes de anexo do e-mail não passam pela lista de pastas
+   proibidas** (achado da F3). `ssh_arquivos.normalizar_raiz` barra `/etc`,
+   `/root` e afins nas raízes dos Utilitários; `email_mime.validar_raizes` não
+   tem essa lista, então `/etc` pode ser cadastrada em Admin › E-mail. A
+   navegação é barrada pela conferência no servidor, mas o **envio** leria o
+   arquivo. É anterior a esta spec (veio com a F1 da notificação) e a correção
+   mexe na régua de uma config que já pode estar gravada — por isso fica
+   registrado aqui em vez de entrar de carona.
+7. 🆕 **Excluir o modelo padrão deixa o catálogo sem padrão** (achado da F2). A
    exclusão é recusada quando o modelo está em uso, mas um padrão **sem uso**
    pode ser apagado e o catálogo fica sem nenhum marcado — e aí o nó novo volta
    a nascer em Corpo livre, em silêncio. Três saídas possíveis: (a) recusar a

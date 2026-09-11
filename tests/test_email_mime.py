@@ -46,10 +46,10 @@ from utils import email_envio as ew  # noqa: E402
 # ═══════════ 1. anti-drift ═══════════════════════════════════════════════════
 
 FUNCOES = ["_sem_quebra", "validar_email", "normalizar_lista", "validar_destinatarios", "validar_raizes", "validar_dominios",
-           "validar_limite_anexo", "validar_assunto", "validar_corpo", "validar_anexo_cadastro",
+           "validar_limite_anexo", "validar_assunto", "validar_corpo", "pasta_do_anexo", "validar_anexo_cadastro",
            "caminho_do_anexo", "interpolar", "montar_mensagem"]
 CONSTANTES = ["LIMITE_ASSUNTO", "LIMITE_CORPO", "LIMITE_DESTINATARIOS", "LIMITE_ANEXO_MB_MIN", "LIMITE_ANEXO_MB_MAX",
-              "LIMITE_ANEXO_MB_PADRAO", "LIMITE_NOME_ANEXO"]
+              "LIMITE_ANEXO_MB_PADRAO", "LIMITE_NOME_ANEXO", "LIMITE_PASTA_ANEXO"]
 
 
 @pytest.mark.parametrize("nome", FUNCOES)
@@ -153,7 +153,7 @@ def test_anexo_do_cadastro_raiz_permitida_e_nome_livre():
     assert em.validar_anexo_cadastro("/dados/saida/", "relatorio_{odate}.xlsx", raizes) == (
         {"raiz": "/dados/saida", "nome": "relatorio_{odate}.xlsx"}, [])
     assert em.validar_anexo_cadastro("", "", raizes) == (None, [])               # sem anexo
-    assert em.validar_anexo_cadastro("/tmp", "x.csv", raizes)[1] == ["anexo: raiz '/tmp' não está entre as permitidas no Admin › E-mail"]
+    assert em.validar_anexo_cadastro("/tmp", "x.csv", raizes)[1] == ["anexo: a pasta '/tmp' não está entre as permitidas no Admin › E-mail"]
     assert em.validar_anexo_cadastro("/dados/saida", "", raizes)[1] == ["anexo: informe o nome do arquivo"]
     for nome in ("sub/x.csv", "..", "../x", "x\ny", "a\\b", "."):
         _, erros = em.validar_anexo_cadastro("/dados/saida", nome, raizes)
@@ -287,14 +287,20 @@ class _Arquivo:
 class _Sftp:
     """SFTP de mentira: `arquivos` mapeia caminho -> (bytes, modo)."""
 
-    def __init__(self, arquivos=None, erro_stat=None):   # noqa: D107
+    def __init__(self, arquivos=None, erro_stat=None, links=None, sem_normalize=False):   # noqa: D107
         self.arquivos = arquivos or {}
         self.erro_stat = erro_stat
         self.abertos = []
+        # `links` mapeia link de DIRETÓRIO -> alvo real, como no servidor.
+        self.links = links or {}
+        self.sem_normalize = sem_normalize
 
     def stat(self, caminho):
         if self.erro_stat:
             raise self.erro_stat
+        # `stat` SEGUE link (é `lstat` que não segue) — é justamente por isso
+        # que a régua lexical do cadastro não basta.
+        caminho = self._real(caminho)
         if caminho not in self.arquivos:
             raise IOError(errno.ENOENT, f"No such file: {caminho}")   # como o paramiko
         dados, modo = self.arquivos[caminho]
@@ -302,7 +308,19 @@ class _Sftp:
 
     def open(self, caminho, modo="rb"):
         self.abertos.append(caminho)
-        return _Arquivo(self.arquivos[caminho][0])
+        return _Arquivo(self.arquivos[self._real(caminho)][0])
+
+    def _real(self, caminho):
+        for link, alvo in (self.links or {}).items():
+            if caminho == link or caminho.startswith(link.rstrip("/") + "/"):
+                return alvo.rstrip("/") + caminho[len(link.rstrip("/")):]
+        return caminho
+
+    def normalize(self, caminho):
+        """`realpath` do servidor: resolve o link de DIRETÓRIO, como o OpenSSH."""
+        if self.sem_normalize:
+            raise IOError("não implementado")
+        return self._real(caminho)
 
 
 RAIZES = ["/dados/saida"]
@@ -362,3 +380,36 @@ def test_resolver_anexo_vazio_avisa_em_vez_de_anexar_zero_byte():
     sftp = _Sftp({"/dados/saida/vazio.csv": (b"", 0o100644)})
     dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "vazio.csv", RAIZES, 5, MAPA)
     assert dados is None and "vazio" in aviso
+
+
+def test_ancora_link_de_diretorio_que_sai_da_raiz_e_recusado_no_envio(monkeypatch):
+    """⛔ Âncora. A régua do cadastro é LEXICAL — não há SSH no salvar — e com
+    subpasta livre (F3) um link de diretório dentro da raiz
+    (`/dados/saida/corrente -> /u02/outra_area`, comum no DataStage) passa no
+    texto. O `stat` segue o link e leria um arquivo de FORA das pastas
+    liberadas. O navegador de pastas já recusa entrar nesse link; aqui o
+    equivalente é perguntar o caminho real ao servidor antes de ler."""
+    sftp = _Sftp({"/u02/outra_area/segredo.csv": (b"dado de fora", 0o100644)},
+                 links={"/dados/saida/corrente": "/u02/outra_area"})
+    dados, aviso, det = ew.resolver_anexo(
+        sftp, "/dados/saida/corrente", "segredo.csv", RAIZES, 5, MAPA)
+    assert dados is None and sftp.abertos == []
+    assert "fora das pastas liberadas" in aviso and "/u02/outra_area/segredo.csv" in aviso
+    assert det["caminho"] == "/u02/outra_area/segredo.csv"    # o log diz o que era de verdade
+
+
+def test_link_que_continua_dentro_da_raiz_segue_valendo():
+    """Link para outra pasta DA MESMA raiz é legítimo e não pode virar recusa —
+    senão a correção acima quebraria quem já usa link para organizar."""
+    sftp = _Sftp({"/dados/saida/2026/rel.csv": (b"ok", 0o100644)},
+                 links={"/dados/saida/corrente": "/dados/saida/2026"})
+    dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida/corrente", "rel.csv", RAIZES, 5, MAPA)
+    assert dados == b"ok" and aviso is None
+
+
+def test_servidor_sem_realpath_nao_bloqueia_o_envio():
+    """A conferência é defesa em profundidade: servidor que não implemente
+    `realpath` cai na régua lexical, que é o que já valia antes."""
+    sftp = _Sftp({"/dados/saida/rel.csv": (b"ok", 0o100644)}, sem_normalize=True)
+    dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "rel.csv", RAIZES, 5, MAPA)
+    assert dados == b"ok" and aviso is None

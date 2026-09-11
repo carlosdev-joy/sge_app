@@ -10,6 +10,10 @@ docs/spec-notificacao-email.md): a configuração global e o envio de teste.
                                   do servidor do DataStage via SSH; laudo na
                                   resposta e uma linha em etl_email_log (admin)
   GET  /email/log                 últimos envios (autenticado; ?pipeline=)
+  GET  /email/modelos             catálogo para o painel do nó (F2)
+  *    /email/admin/modelos[/id]  CRUD do catálogo (admin, F2)
+  GET  /email/anexo/listar        navega pelas pastas liberadas do anexo, para
+                                  escolher o arquivo sem digitar (F3)
 
 O envio de verdade das corridas é o EmailOperator (dags/utils, F2). Aqui só o
 que o Admin precisa. Nada do usuário chega a uma linha de comando: o
@@ -25,8 +29,14 @@ import time
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
-from deps import get_admin_user, get_current_user
-from services import email_config, email_modelos, ssh_datastage
+from deps import PERM_EDITAR, get_admin_user, get_current_user, require_perm
+# O navegador de pastas do anexo reusa o executor SSH e a auditoria dos
+# Utilitários — é o mesmo gesto físico (listar por SFTP) e o mesmo relatório.
+# Duplicar os dois aqui deixaria duas auditorias para a mesma coisa e um
+# segundo pool de conexões competindo pelo servidor.
+from routers.utilitarios import _auditar as _auditar_arquivo
+from routers.utilitarios import _ms, _no_servidor
+from services import email_config, email_modelos, ssh_arquivos, ssh_datastage
 from services import email_mime as em
 from services.ssh_arquivos import cortar_utf16
 
@@ -393,3 +403,91 @@ def email_log(pipeline: str | None = None, execution_id: str | None = None,
             d["destinatarios"] = []
         saida.append(d)
     return {"envios": saida}
+
+
+# ── navegação das pastas do anexo (F3 da spec de modelos e navegação) ────────
+# Mesmo gesto dos Utilitários — descer das raízes até o arquivo — com DUAS
+# diferenças que justificam endpoint próprio em vez de um parâmetro no de lá:
+# as raízes vêm de `email_anexo_raizes` (etl_app_config), não de
+# `etl_utilitario_raiz`, e a permissão é a de editar pipeline, não
+# `tela_utilitarios`. O que é igual continua igual: `preparar_pasta` e
+# `listar_pasta` são os mesmos, com a defesa contra escape de raiz por symlink
+# (`resolver_real` confere nível a nível), e a navegação deixa o MESMO rastro
+# de auditoria — quem navega pelo e-mail é auditado como quem navega pela tela
+# de arquivos.
+def _listar_anexo_sync(servidor: str, caminho: str, raizes: list[str], mostrar_ocultos: bool) -> dict:
+    """Bloqueante (SSH): roda no executor dos Utilitários, nunca no loop."""
+    with ssh_arquivos.conexao_sftp(servidor) as sftp:
+        return ssh_arquivos.listar_pasta(sftp, caminho, raizes, mostrar_ocultos=mostrar_ocultos)
+
+
+@router.get("/email/anexo/listar", tags=["email"])
+async def email_anexo_listar(caminho: str | None = None, mostrar_ocultos: bool = False,
+                             user: dict = Depends(require_perm(PERM_EDITAR))):
+    """Nível zero (sem `caminho`) = as pastas liberadas em Admin › E-mail, sem
+    tocar o SSH. Com `caminho`, as entradas da pasta — que pode ser uma
+    SUBPASTA de uma raiz: é assim que se chega ao arquivo."""
+    t0 = time.time()
+    usuario = str(user.get("matricula") or "?")
+    conn, cur = _abrir()
+    try:
+        cfg = email_config.load_config(cur)
+    except Exception:  # noqa: BLE001
+        cfg = {"raizes": []}
+    finally:
+        _fechar(conn, cur)
+    raizes = list(cfg.get("raizes") or [])
+
+    if caminho is None or not str(caminho).strip():
+        return {
+            "caminho": None, "caminho_real": None, "raiz": None, "pai": None,
+            "entradas": [{"nome": r, "tipo": "raiz", "tamanho_bytes": None, "modificado_em": None}
+                         for r in raizes],
+            "ocultos_omitidos": 0, "truncado": False, "links_nao_resolvidos": 0,
+        }
+    if not raizes:
+        _auditar_arquivo(usuario=usuario, servidor="datastage", acao="listar",
+                         caminho=str(caminho), resultado="negado",
+                         detalhe="anexo de e-mail: nenhuma pasta liberada em Admin › E-mail",
+                         duracao_ms=_ms(t0))
+        raise HTTPException(
+            status_code=403,
+            detail="Nenhuma pasta liberada para anexo — cadastre as pastas em Admin › E-mail.")
+    try:
+        servidor = ssh_arquivos.servidor_valido("datastage")
+        pasta, _raiz = ssh_arquivos.preparar_pasta(caminho, raizes)
+    except ssh_arquivos.ArquivoError as e:
+        _auditar_arquivo(usuario=usuario, servidor="datastage", acao="listar",
+                         caminho=str(caminho), resultado=e.resultado,
+                         detalhe=f"anexo de e-mail: {e.interno or e.detail}", duracao_ms=_ms(t0))
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    try:
+        resultado = await _no_servidor(_listar_anexo_sync, servidor, pasta, raizes,
+                                       bool(mostrar_ocultos))
+    except ssh_arquivos.ArquivoError as e:
+        _auditar_arquivo(usuario=usuario, servidor=servidor, acao="listar", caminho=pasta,
+                         resultado=e.resultado, detalhe=f"anexo de e-mail: {e.interno or e.detail}",
+                         duracao_ms=_ms(t0))
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    except Exception as e:  # noqa: BLE001
+        log.exception("E-mail: falha inesperada ao listar %s", pasta)
+        _auditar_arquivo(usuario=usuario, servidor=servidor, acao="listar", caminho=pasta,
+                         resultado="erro", detalhe=f"anexo de e-mail: inesperado: {e!r}",
+                         duracao_ms=_ms(t0))
+        raise HTTPException(status_code=502,
+                            detail="Falha ao listar a pasta — detalhe registrado no log da API.")
+    # O rastro guarda o caminho REAL; o que o usuário pediu (e o link que ele
+    # atravessou) vai no detalhe, como na rota dos Utilitários — sem isso a
+    # auditoria não mostra por onde se chegou numa pasta fora da árvore.
+    detalhe = f"anexo de e-mail: {len(resultado['entradas'])} entradas"
+    if resultado["truncado"]:
+        detalhe += " (lista truncada)"
+    if resultado["ocultos_omitidos"]:
+        detalhe += f", {resultado['ocultos_omitidos']} ocultos omitidos"
+    if resultado["caminho_real"] != resultado["caminho"]:
+        detalhe += f", pedido: {resultado['caminho']}"
+    _auditar_arquivo(usuario=usuario, servidor=servidor, acao="listar",
+                     caminho=resultado["caminho_real"], resultado="ok",
+                     detalhe=detalhe, duracao_ms=_ms(t0))
+    resultado["duracao_ms"] = _ms(t0)
+    return resultado

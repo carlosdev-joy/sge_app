@@ -10,6 +10,18 @@ import React, { useEffect, useRef } from 'react'
 // meio do dispatch e o topo perde a vez — o Esc "pulava" a camada da frente.
 const overlayStack: symbol[] = []
 
+/** Há algum overlay (Modal/Sheet) aberto AGORA?
+ *
+ * Para quem tem atalhos de teclado globais e precisa se calar enquanto um
+ * overlay está na frente. Consultar a pilha no momento do evento — e não uma
+ * lista de estados montada à mão — cobre também o overlay que nasce DENTRO de
+ * um filho, que o dono dos atalhos não tem como enumerar: foi o que deixou o
+ * Esc do editor de fluxo fechar o painel do nó por baixo do navegador de
+ * pastas, e as setas trocarem de nó no meio da navegação. */
+export function haOverlayAberto(): boolean {
+  return overlayStack.length > 0
+}
+
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 // Pilha + Esc no topo + gestão de foco (o Radix da seção Caixa dava isso de

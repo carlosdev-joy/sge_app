@@ -28,6 +28,9 @@ LIMITE_ANEXO_MB_MIN = 1
 LIMITE_ANEXO_MB_MAX = 25
 LIMITE_ANEXO_MB_PADRAO = 5
 LIMITE_NOME_ANEXO = 200
+# Pasta do anexo: com subpasta o caminho ficou livre, e `etl_email_log.anexo_path`
+# tem 500 — o teto aqui deixa margem para o nome do arquivo.
+LIMITE_PASTA_ANEXO = 300
 
 # Endereço simples: local@dominio.tld, sem espaços, sem quebras, sem aspas.
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -155,20 +158,64 @@ def validar_corpo(valor) -> tuple[str | None, str | None]:
     return s.replace("\r\n", "\n"), None
 
 
+def pasta_do_anexo(bruta, raizes_permitidas: list[str]) -> str | None:
+    """Normaliza a pasta do anexo e confere que ela é uma raiz permitida **ou
+    uma pasta abaixo dela**. `None` = fora das permitidas (ou malformada).
+
+    Subpasta é o caso normal desde o seletor de arquivo: quem navega desce da
+    raiz até onde o arquivo está. O ENVIO sempre aceitou isso —
+    `caminho_do_anexo` mede o caminho final contra as raízes —, era só o
+    cadastro que exigia a raiz exata e recusava no salvar o que a corrida
+    entregaria sem reclamar.
+
+    Três cuidados que a comparação por texto exige:
+      * **barras iniciais colapsadas** antes de comparar: o POSIX trata `//x`
+        como caminho próprio e o `normpath` PRESERVA as duas barras, então uma
+        raiz gravada como `//dados/saida` nunca casaria com o `/dados/saida`
+        que o navegador devolve — e o save recusaria o caminho que a própria
+        tela acabou de entregar;
+      * **raiz que normaliza para `/` (ou vazia) é ignorada**: `startswith("/")`
+        aceitaria o servidor inteiro. `validar_raizes` já barra `/`, mas quem
+        escreve direto no `etl_app_config` passa por fora dela — é a mesma
+        guarda que `ssh_arquivos.raiz_de` tem do lado dos Utilitários;
+      * **teto de tamanho**: sem raiz exata o caminho ficou livre, e o
+        `anexo_path` do log tem 500."""
+    p = str(bruta or "").strip().rstrip("/")
+    if not p.startswith("/") or "\\" in p or "\n" in p or "\r" in p or "\x00" in p:
+        return None
+    if ".." in p.split("/"):
+        return None
+    if len(p.encode("utf-16-le")) // 2 > LIMITE_PASTA_ANEXO:
+        return None
+    caminho = posixpath.normpath(re.sub(r"^/+", "/", p))
+    for r in raizes_permitidas or []:
+        base = posixpath.normpath(re.sub(r"^/+", "/", str(r).strip().rstrip("/") or "/"))
+        if base in ("", "/", "."):
+            continue
+        if caminho == base or caminho.startswith(base + "/"):
+            return caminho
+    return None
+
+
 def validar_anexo_cadastro(raiz, nome, raizes_permitidas: list[str]) -> tuple[dict | None, list[str]]:
-    """Regra do CADASTRO (decisão do usuário): a raiz tem de ser uma das
-    permitidas; o NOME é livre — pode não existir ainda (o arquivo nasce na
-    corrida) e pode ter placeholders — mas é UM nome: sem barra, sem `..`,
-    sem quebra de linha. Existência e tamanho são conferidos só na hora."""
+    """Regra do CADASTRO (decisão do usuário): a pasta tem de estar dentro de
+    uma das permitidas; o NOME é livre — pode não existir ainda (o arquivo
+    nasce na corrida) e pode ter placeholders — mas é UM nome: sem barra, sem
+    `..`, sem quebra de linha. Existência e tamanho são conferidos só na
+    hora."""
     erros: list[str] = []
     r = str(raiz or "").strip().rstrip("/") or ""
     n = str(nome or "").strip()
     if not r and not n:
         return None, []
     if not r:
-        erros.append("anexo: escolha a raiz permitida")
-    elif r not in (raizes_permitidas or []):
-        erros.append(f"anexo: raiz '{r}' não está entre as permitidas no Admin › E-mail")
+        erros.append("anexo: escolha a pasta permitida")
+    else:
+        pasta = pasta_do_anexo(r, raizes_permitidas)
+        if pasta is None:
+            erros.append(f"anexo: a pasta '{r}' não está entre as permitidas no Admin › E-mail")
+        else:
+            r = pasta
     if not n:
         erros.append("anexo: informe o nome do arquivo")
     elif NOME_ANEXO_PROIBIDO_RE.search(n) or n in (".", "..") or ".." in n.split("."):

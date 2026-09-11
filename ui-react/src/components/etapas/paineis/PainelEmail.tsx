@@ -8,8 +8,13 @@
 import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
-import { Mail, Paperclip, Trash2 } from 'lucide-react'
+import { CalendarClock, Mail, Paperclip, Trash2 } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
+import { dataLegivel, sugerirOdate } from '../../../lib/emailAnexo'
+import type { Listagem } from '../../../lib/utilitariosNavegador'
+import { CampoPasta } from '../../utilitarios/CampoPasta'
+import { NavegadorPastas } from '../../utilitarios/NavegadorPastas'
+import { useNavegadorPastas } from '../../utilitarios/useNavegadorPastas'
 import { Button } from '../../ui/Button'
 import { Input, Select, Textarea } from '../../ui/Input'
 import { PlaceholderPicker } from '../../ui/PlaceholderPicker'
@@ -105,6 +110,15 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
     patch({ anexo: ligado ? { raiz: raizes[0] ?? '', nome: '' } : null })
   }
 
+  // Navegador de pastas dos Utilitários, com a rede apontando para o endpoint
+  // do e-mail: as raízes e a permissão são outras, o gesto é o mesmo.
+  const navegador = useNavegadorPastas('datastage', (_servidor, caminho, ocultos) => {
+    const q = new URLSearchParams({ mostrar_ocultos: String(ocultos) })
+    if (caminho) q.set('caminho', caminho)
+    return apiFetch(`/email/anexo/listar?${q}`) as Promise<Listagem>
+  })
+  const odate = anexoLigado ? sugerirOdate(cfg.anexo?.nome ?? '') : null
+
   return (
     <div className="flex flex-1 flex-col">
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
@@ -182,20 +196,21 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
               </p>
             ) : anexoLigado && cfg.anexo ? (
               <>
-                <Select
-                  label="Pasta"
-                  hint="Apenas as pastas liberadas em Admin › E-mail aparecem aqui."
+                {/* Pasta: caminho abaixo de uma raiz liberada. Era um Select
+                    só com as raízes — que não alcançava o arquivo guardado
+                    numa subpasta, o caso normal. O envio sempre aceitou a
+                    subpasta; era o cadastro que recusava. */}
+                <CampoPasta
                   value={cfg.anexo.raiz}
-                  onChange={e => patch({ anexo: { ...cfg.anexo!, raiz: e.target.value } })}
-                  className="text-xs"
-                >
-                  {!raizes.includes(cfg.anexo.raiz) && (
-                    <option value={cfg.anexo.raiz}>
-                      {cfg.anexo.raiz || 'Selecione…'}{cfg.anexo.raiz ? ' (fora da lista)' : ''}
-                    </option>
-                  )}
-                  {raizes.map(r => <option key={r} value={r}>{r}</option>)}
-                </Select>
+                  onChange={v => patch({ anexo: { ...cfg.anexo!, raiz: v } })}
+                  raizes={raizes}
+                  ajuda={'Caminho no servidor do DataStage, abaixo de uma pasta liberada em Admin › E-mail.\nUse Navegar… para escolher o arquivo sem digitar.'}
+                  // As raízes do anexo são de Admin › E-mail, não da tela de
+                  // Utilitários: sem isto o campo manda cadastrar no lugar
+                  // errado, numa tabela que este painel nem lê.
+                  ondeCadastrar="Admin › E-mail"
+                  onNavegar={navegador.disponivel ? () => navegador.abrir(cfg.anexo?.raiz || null) : undefined}
+                />
                 <Input
                   label="Nome do arquivo"
                   hint={'O arquivo pode ainda não existir: ele costuma ser gerado pela própria corrida.\nAceita placeholders — ex.: relatorio_{odate}.xlsx'}
@@ -204,6 +219,22 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
                   placeholder="relatorio_{odate}.xlsx"
                   className="text-xs"
                 />
+                {/* Escolher pelo navegador traz o arquivo DE HOJE; amanhã a
+                    corrida procuraria o mesmo nome. A troca pela marca da data
+                    é oferecida, nunca feita sozinha: nome com data fixa é caso
+                    legítimo (uma carga histórica). */}
+                {odate && (
+                  <div className="flex flex-wrap items-center gap-2 rounded border border-edge bg-canvas px-2 py-1.5">
+                    <span className="text-[10px] text-dim">
+                      O nome tem a data <strong>{dataLegivel(odate.data)}</strong>. Trocar por{' '}
+                      <code className="font-mono">{'{odate}'}</code> faz cada corrida buscar o arquivo do seu dia.
+                    </span>
+                    <Button variant="secondary" size="sm" className="ml-auto shrink-0"
+                            onClick={() => patch({ anexo: { ...cfg.anexo!, nome: odate.sugestao } })}>
+                      <CalendarClock size={12} /> Usar {'{odate}'}
+                    </Button>
+                  </div>
+                )}
                 <p className="text-[10px] text-dim/70">
                   Se o arquivo não estiver lá na hora do envio, o e-mail sai mesmo assim, sem anexo, e o log avisa.
                   Limite de {status?.limite_mb ?? 5} MB.
@@ -211,6 +242,25 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
               </>
             ) : null}
           </div>
+
+          <NavegadorPastas
+            aberto={navegador.aberto}
+            listagem={navegador.listagem}
+            carregando={navegador.carregando}
+            erro={navegador.erro}
+            mostrarOcultos={navegador.ocultos}
+            filtro={navegador.filtro}
+            onFiltro={navegador.mudarFiltro}
+            onNavegar={navegador.navegar}
+            onMostrarOcultos={navegador.mudarOcultos}
+            onUsarPasta={p => { patch({ anexo: { raiz: p, nome: cfg.anexo?.nome ?? '' } }); navegador.fechar() }}
+            // O pedido: clicar no arquivo já atribui — pasta e nome de uma vez.
+            onEscolherArquivo={(pasta, nome) => {
+              patch({ anexo: { raiz: pasta, nome } })
+              navegador.fechar()
+            }}
+            onFechar={navegador.fechar}
+          />
 
           {status && !status.enabled && (
             <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">

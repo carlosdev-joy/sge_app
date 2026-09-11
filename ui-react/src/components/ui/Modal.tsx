@@ -20,7 +20,15 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    // ⚠️ `nokey` é a marca do React Flow (@xyflow: `target.closest('.nokey')`
+    // em `isInputDOMNode`): sem ela, uma tecla digitada DENTRO de um modal
+    // aberto sobre o canvas de Etapas continua chegando aos atalhos do grafo,
+    // porque o listener do React Flow é de `document` e o foco do overlay cai
+    // num `div tabIndex={-1}` — que não é campo de texto. O caso que apareceu:
+    // Backspace no navegador de pastas do anexo (onde a própria tela ensina
+    // "Subir um nível (Backspace)") disparava o `deleteKeyCode` e abria
+    // "Excluir nó" por cima. Vale para todo modal, não só aquele.
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 nokey">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div
         ref={panelRef}

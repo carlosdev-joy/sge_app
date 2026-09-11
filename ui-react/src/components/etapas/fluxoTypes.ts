@@ -168,6 +168,39 @@ export function emailNoLabel(cfg: EmailNoConfig): string {
   return n === 1 ? `${cfg.destinatarios[0]}${extra}` : `${n} destinatários${extra}`
 }
 
+/** Teto da pasta do anexo — `LIMITE_PASTA_ANEXO` da API. */
+const LIMITE_PASTA_ANEXO = 300
+
+/** `//x` → `/x`, `/a/./b` → `/a/b`, `/a//b` → `/a/b` (sem tocar em `..`, que é
+ * recusado antes). Espelha o `posixpath.normpath` do backend no que importa
+ * para a comparação. */
+function normalizarPasta(bruta: string): string {
+  const partes = bruta.replace(/^\/+/, '/').split('/').filter(x => x !== '' && x !== '.')
+  return '/' + partes.join('/')
+}
+
+/** A pasta do anexo é uma raiz liberada, ou uma pasta abaixo de uma delas?
+ *
+ * Espelha `pasta_do_anexo` (api/services/email_mime.py) — e o teste
+ * `test_regua_da_pasta_bate_com_a_da_api` roda os MESMOS casos nas duas, para
+ * a tela não prometer o que o save recusa (nem o contrário).
+ *
+ * Comparar por prefixo de TEXTO exige a barra: sem ela `/dados/saidaX`
+ * passaria por estar dentro de `/dados/saida`. `..` é recusado — quem digita o
+ * caminho à mão não pode sair da raiz por caminho relativo — e raiz que
+ * normaliza para `/` é ignorada, senão abriria o servidor inteiro. */
+export function pastaDentroDasRaizes(pasta: string, raizes: string[]): boolean {
+  const p = (pasta || '').trim().replace(/\/+$/, '')
+  if (!p.startsWith('/') || /[\\\r\n\0]/.test(p) || p.split('/').includes('..')) return false
+  if (p.length > LIMITE_PASTA_ANEXO) return false
+  const alvo = normalizarPasta(p)
+  return (raizes || []).some(r => {
+    const base = normalizarPasta((r || '').trim().replace(/\/+$/, ''))
+    if (base === '/' || !base.startsWith('/')) return false
+    return alvo === base || alvo.startsWith(base + '/')
+  })
+}
+
 // Régua local do nó — espelha _validate_email do backend (api/routers/jobs.py).
 // `raizesPermitidas` vem do Admin (GET /email/status); vazia = nenhuma pasta
 // liberada, e aí qualquer anexo é recusado.
@@ -205,7 +238,10 @@ export function errosDoEmailNo(
     // `raizesPermitidas` vazio pode ser "Admin sem pasta liberada" OU falha ao
     // consultar o status: quem chama decide (o editor só cobra a pasta quando
     // a consulta respondeu), senão um erro de rede travaria o save do fluxo.
-    if (raizesPermitidas.length && !raizesPermitidas.includes(cfg.anexo.raiz)) {
+    // Espelha `pasta_do_anexo` do backend: vale a raiz liberada **ou uma
+    // pasta abaixo dela** — é assim que o seletor chega ao arquivo, e o envio
+    // sempre mediu o caminho final contra as raízes.
+    if (raizesPermitidas.length && !pastaDentroDasRaizes(cfg.anexo.raiz, raizesPermitidas)) {
       erros.push('A pasta do anexo não está entre as permitidas no Admin › E-mail')
     }
     if (!cfg.anexo.raiz.trim()) erros.push('Escolha a pasta do anexo')
