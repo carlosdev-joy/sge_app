@@ -24,7 +24,8 @@ const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/Jo
                   'components/pipelines/ParametrosPipeline.tsx', 'components/etapas/ParametrosRerun.tsx',
                   'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx',
                   'lib/maestroAdmin.ts', 'lib/emailAdmin.ts', 'components/etapas/fluxoTypes.ts',
-                  'components/etapas/previaEmailDados.ts', 'lib/emailAnexo.ts']
+                  'components/etapas/previaEmailDados.ts', 'lib/emailAnexo.ts',
+                  'components/etapas/paineis/PainelEmail.tsx']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -619,6 +620,89 @@ function tela(params, previa, extra, jobName) {
       // cobrada aqui para um erro de rede não travar o save do fluxo inteiro
       semRaizLiberada: F.errosDoEmailNo(completo, []),
     },
+    // Campo de destinatários: o que o nó guarda a partir do texto digitado.
+    destinatarios: {
+      umPorLinha: F.separarDestinatarios('ana@cvp.com.br\nbruno@cvp.com.br'),
+      porVirgula: F.separarDestinatarios('ana@cvp.com.br, bruno@cvp.com.br'),
+      porPontoEVirgula: F.separarDestinatarios('ana@cvp.com.br; bruno@cvp.com.br'),
+      comEspacoSobrando: F.separarDestinatarios('  ana@cvp.com.br  \n\n  bruno@cvp.com.br '),
+      // separador sozinho não vira destinatário vazio (o save recusaria)
+      soSeparadores: F.separarDestinatarios('\n,;\n'),
+      vazio: F.separarDestinatarios(''),
+      // repetido some, sem olhar a caixa — o envio faz igual
+      // (validar_destinatarios em dags/utils/email_envio.py)
+      repetido: F.separarDestinatarios('ana@cvp.com.br\nANA@CVP.COM.BR\nbruno@cvp.com.br'),
+      // ida e volta: o texto do campo depois do blur
+      textoDeVolta: F.textoDosDestinatarios(
+        F.separarDestinatarios('ana@cvp.com.br, bruno@cvp.com.br,')),
+    },
+  }
+
+  // ── O PAINEL DE VERDADE, no ciclo que quebrava ────────────────────────────
+  // Não basta exercitar `separarDestinatarios`: o defeito morava na LIGAÇÃO
+  // entre o texto que a tela mostra e a lista que o nó guarda. Aqui monta-se o
+  // `PainelEmail` real, com um palco que faz o que o FluxoEditor faz — recebe o
+  // patch e devolve o nó atualizado —, e digita-se tecla a tecla.
+  const { PainelEmail } = require(path.join(tmp, 'components/etapas/paineis/PainelEmail.js'))
+  const h = mini.hooks
+
+  function palco(cfgInicial, aoPatch) {
+    return function Palco() {
+      const [cfg, setCfg] = h.useState(cfgInicial)
+      const node = { id: 'AVISA_EMAIL_1', type: 'email',
+                     data: { name: 'AVISA_EMAIL_1', email: cfg } }
+      return el(PainelEmail, {
+        node,
+        onRename: () => true,
+        onDelete: () => {},
+        onPatchEmail: (_id, p) => setCfg(c => {
+          const novo = Object.assign({}, c, p)
+          if (aoPatch) aoPatch(novo)
+          return novo
+        }),
+      })
+    }
+  }
+
+  const campoDest = (tela) => tela.achar(n => n.tag === 'textarea'
+    && String(n.props.placeholder || '').includes('ana@cvp.com.br'))[0]
+
+  {
+    const tela = mini.montar(el(palco(F.defaultEmailNo()), null))
+    // digita `ana@cvp.com.br`, ENTER, `bruno@cvp.com.br` — uma tecla por vez,
+    // lendo do próprio campo o texto que a tela mostra a cada passo
+    let ultimaLista = []
+    for (const tecla of 'ana@cvp.com.br\nbruno@cvp.com.br') {
+      const campo = campoDest(tela)
+      tela.disparar(campo, 'onChange', { target: { value: String(campo.props.value ?? '') + tecla } })
+    }
+    const campoFinal = campoDest(tela)
+    // o blur normaliza o que ficou na tela
+    tela.disparar(campoFinal, 'onChange',
+                  { target: { value: String(campoFinal.props.value) + ', ANA@cvp.com.br,' } })
+    tela.disparar(campoDest(tela), 'onBlur', {})
+    ultimaLista = F.separarDestinatarios(String(campoDest(tela).props.value))
+    saida.emailNo.painel = {
+      // ⛔ Com o defeito (value derivado de `destinatarios.join`), este mesmo
+      // roteiro terminava em `["ana@cvp.com.brbruno@cvp.com.br"]`.
+      textoNaTela: String(campoDest(tela).props.value),
+      listaDoNo: ultimaLista,
+      rotuloDoCard: F.emailNoLabel({ ...F.defaultEmailNo(), destinatarios: ultimaLista }),
+    }
+  }
+
+  {
+    // Mudança vinda de FORA do campo (salvar o fluxo → refetch → o editor
+    // reconstrói o nó com a resposta do servidor, que normaliza o domínio):
+    // a tela tem de passar a contar a verdade, em vez de seguir mostrando o
+    // texto antigo.
+    const cfg = { ...F.defaultEmailNo(), destinatarios: ['Ana@CVP.COM.BR'] }
+    const tela = mini.montar(el(palco(cfg), null))
+    const antes = String(campoDest(tela).props.value)
+    // o pai troca o nó por baixo (é o que o rebuild do editor faz)
+    cfg.destinatarios = ['Ana@cvp.com.br']
+    tela.disparar(campoDest(tela), 'onChange', { target: { value: 'Ana@cvp.com.br' } })
+    saida.emailNo.painel.vindoDeFora = { antes, depois: String(campoDest(tela).props.value) }
   }
 }
 

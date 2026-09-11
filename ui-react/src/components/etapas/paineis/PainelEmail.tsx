@@ -5,7 +5,7 @@
 //
 // A régua (raízes de anexo permitidas, canal ligado) vem do Admin › E-mail por
 // GET /email/status: o que a tela oferece é exatamente o que o envio aceita.
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
 import { CalendarClock, Mail, Paperclip, Trash2 } from 'lucide-react'
@@ -21,6 +21,7 @@ import { PlaceholderPicker } from '../../ui/PlaceholderPicker'
 import type { EmailNodeData } from '../EmailNode'
 import {
   defaultEmailNo, errosDoEmailNo, opcoesDoModeloNo,
+  separarDestinatarios, textoDosDestinatarios,
   EMAIL_PLACEHOLDERS, type EmailNoConfig,
 } from '../fluxoTypes'
 import { PreviaEmail } from '../PreviaEmail'
@@ -59,6 +60,38 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
   const patch = (p: Partial<EmailNoConfig>) => onPatchEmail(node.id, p)
   const corpoRef = useRef<HTMLTextAreaElement>(null)
   const assuntoRef = useRef<HTMLInputElement>(null)
+
+  // Destinatários: o campo guarda o TEXTO CRU enquanto se digita, e o nó recebe
+  // a lista já separada a cada tecla.
+  //
+  // ⛔ Antes o `value` era `cfg.destinatarios.join('\n')`: como `separar…`
+  // descarta o pedaço vazio, o Enter (e a vírgula) era apagado no mesmo instante
+  // em que era digitado e o 2º endereço colava no 1º (`ana@x.combruno@y.com`),
+  // que a régua então recusava como inválido. Na prática só dava para cadastrar
+  // UM destinatário — ou colar a lista pronta, que chega inteira num `onChange`
+  // só. É o mesmo desenho do campo do fluxo (PipelineFormModal): texto cru na
+  // tela, separação na hora de gravar.
+  //
+  // Não precisa de efeito para acompanhar a troca de nó: o PropriedadesPanel
+  // monta este painel com `key={node.id}`, então o estado nasce do nó aberto.
+  const [textoDest, setTextoDest] = useState(() => textoDosDestinatarios(cfg.destinatarios))
+  // ⚠️ Espelho do que o campo emitiu por último. O nó também muda por FORA do
+  // campo: salvar o fluxo invalida a query e o editor reconstrói os nós com a
+  // resposta do servidor (que normaliza o domínio para minúsculas, e que pode
+  // não ter o endereço digitado durante o POST). Sem esta comparação o campo
+  // seguiria mostrando o texto antigo — contando uma coisa e o nó guardando
+  // outra. Comparar TEXTO (e não o array, novo a cada patch) é o que impede o
+  // laço: quando a mudança veio daqui, o espelho já bate e nada é reescrito —
+  // que é o motivo de isto não poder ser um `useEffect` com `[cfg.destinatarios]`,
+  // que reescreveria o campo a cada tecla e traria o defeito de volta.
+  // (ajuste de estado durante o render, o padrão do React para "prop mudou" —
+  // não pode ser `ref`, que o lint proíbe ler no render, nem `useEffect`.)
+  const listaDoNo = textoDosDestinatarios(cfg.destinatarios)
+  const [espelhoDest, setEspelhoDest] = useState(listaDoNo)
+  if (listaDoNo !== espelhoDest) {
+    setEspelhoDest(listaDoNo)
+    setTextoDest(listaDoNo)
+  }
 
   // Régua do Admin. Degrada para desligado/sem raízes: a tela então explica o
   // que falta em vez de oferecer um anexo que o envio recusaria.
@@ -144,11 +177,21 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             <Textarea
               label="Destinatários"
               hint={'Um endereço por linha (ou separados por vírgula).\nPode ficar vazio se você herdar a lista do fluxo abaixo.'}
-              value={cfg.destinatarios.join('\n')}
+              value={textoDest}
               rows={3}
-              onChange={e => patch({
-                destinatarios: e.target.value.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean),
-              })}
+              onChange={e => {
+                const lista = separarDestinatarios(e.target.value)
+                setTextoDest(e.target.value)
+                // O espelho acompanha o que ESTE campo acabou de emitir, senão
+                // o render seguinte leria a própria emissão como "mudou por
+                // fora" e redesenharia o texto, apagando o separador digitado.
+                setEspelhoDest(textoDosDestinatarios(lista))
+                patch({ destinatarios: lista })
+              }}
+              // Ao sair, o texto vira o que o nó de fato guarda: some a vírgula
+              // sobrando, o espaço e o endereço repetido, e o que ficou na tela
+              // é exatamente o que vai ser enviado.
+              onBlur={() => setTextoDest(textoDosDestinatarios(separarDestinatarios(textoDest)))}
               placeholder={'ana@cvp.com.br\ncarlos@cvp.com.br'}
               className="text-xs"
             />
