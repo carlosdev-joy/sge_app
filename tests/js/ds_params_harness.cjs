@@ -657,4 +657,59 @@ function tela(params, previa, extra, jobName) {
   }
 }
 
+// ── 12) Catálogo de modelos (F2 da spec de modelos e navegação) ─────────────
+{
+  const E = require(path.join(tmp, 'lib/emailAdmin.js'))
+  const F = require(path.join(tmp, 'components/etapas/fluxoTypes.js'))
+  const vazio = E.formDoModelo(null)
+  const cheio = E.formDoModelo({
+    id: 1, nome: 'Aviso de fim de carga', descricao: 'quando usar',
+    assunto: '[Orquestra] {pipeline}', corpo: '<p>oi</p>', html: true,
+    ativo: true, padrao: true, criado_por: 'ADM', criado_em: '2026-09-11 10:00',
+    atualizado_em: null,
+  })
+  saida.emailModelos = {
+    formVazio: vazio,
+    formCheio: cheio,
+    erros: {
+      vazio: E.errosDoModelo(vazio),
+      cheio: E.errosDoModelo(cheio),
+      semNome: E.errosDoModelo({ ...cheio, nome: '  ' }),
+      nomeComQuebra: E.errosDoModelo({ ...cheio, nome: 'a\nb' }),
+      semCorpo: E.errosDoModelo({ ...cheio, corpo: '   ' }),
+      corpoLongo: E.errosDoModelo({ ...cheio, corpo: 'x'.repeat(20001) }),
+      assuntoComQuebra: E.errosDoModelo({ ...cheio, assunto: 'a\nBcc: x@y.com' }),
+    },
+    // o nó: com modelo escolhido, o corpo próprio deixa de ser exigido
+    noComModelo: F.errosDoEmailNo(
+      { ...F.defaultEmailNo(), corpo: '', modelo_id: 3, destinatarios: ['a@x.com'] }, ['/dados/saida']),
+    noSemModelo: F.errosDoEmailNo(
+      { ...F.defaultEmailNo(), corpo: '', modelo_id: null, destinatarios: ['a@x.com'] }, ['/dados/saida']),
+    // nó gravado ANTES do catálogo entra como Corpo livre, sem perder nada
+    doApiSemModelo: F.toEmailNoConfig({ assunto: 'a', corpo: 'b', destinatarios: ['a@x.com'] }).modelo_id,
+    doApiComModelo: F.toEmailNoConfig({ assunto: 'a', corpo: 'b', modelo_id: 5 }).modelo_id,
+    // nó NOVO nasce no padrão do catálogo (e sem catálogo, em Corpo livre)
+    novoComPadrao: F.emailNoNovo(4).modelo_id,
+    novoSemPadrao: F.emailNoNovo(null).modelo_id,
+    novoPreservaOResto: F.emailNoNovo(4).incluir_pipeline,
+    // a guarda LOCAL do save espelhando a padronização
+    guardaSemCatalogo: F.errosDoEmailNo(
+      { ...F.defaultEmailNo(), modelo_id: null, destinatarios: ['a@x.com'] }, ['/dados/saida']),
+    guardaNovoExigindo: F.errosDoEmailNo(
+      { ...F.defaultEmailNo(), modelo_id: null, destinatarios: ['a@x.com'] }, ['/dados/saida'],
+      { exigirModelo: true, isNew: true }),
+    guardaAntigoExigindo: F.errosDoEmailNo(
+      { ...F.defaultEmailNo(), modelo_id: null, destinatarios: ['a@x.com'] }, ['/dados/saida'],
+      { exigirModelo: true, isNew: false }),
+    // a lista de escolha × interruptor de padronização
+    opcoes: {
+      livreDesligado: F.opcoesDoModeloNo({ exigirModelo: false, isNew: true, modeloId: null }),
+      novoExigindo: F.opcoesDoModeloNo({ exigirModelo: true, isNew: true, modeloId: null }),
+      novoExigindoComModelo: F.opcoesDoModeloNo({ exigirModelo: true, isNew: true, modeloId: 4 }),
+      antigoEmCorpoLivre: F.opcoesDoModeloNo({ exigirModelo: true, isNew: false, modeloId: null }),
+      antigoComModelo: F.opcoesDoModeloNo({ exigirModelo: true, isNew: false, modeloId: 4 }),
+    },
+  }
+}
+
 process.stdout.write(JSON.stringify(saida))

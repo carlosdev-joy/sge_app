@@ -143,7 +143,8 @@ NO_PADRAO = {
 
 class _Hook:
     def __init__(self, config=None, no=None, lista_pipeline=None, erro_lista=False,
-                 data_referencia="2026-09-11", status_geral="SUCCESS", rows_out=None):
+                 data_referencia="2026-09-11", status_geral="SUCCESS", rows_out=None,
+                 modelo=None, erro_modelo=False):
         self.config = dict(CONFIG_LIGADA if config is None else config)
         self.no = NO_PADRAO if no is None else no
         self.lista_pipeline = ["carlos@cvp.com.br"] if lista_pipeline is None else lista_pipeline
@@ -151,6 +152,9 @@ class _Hook:
         self.data_referencia = data_referencia
         self.status_geral = status_geral
         self.rows_out = rows_out          # fallback de {linhas} por etl_ds_job_log
+        # (corpo, html, nome) do catálogo — None simula modelo inexistente
+        self.modelo = modelo
+        self.erro_modelo = erro_modelo
         self.consultas: list[str] = []
         self.inseridos: list[tuple] = []
 
@@ -174,6 +178,10 @@ class _Hook:
             return (self.status_geral,) if self.status_geral else None
         if "etl_ds_job_log" in sql:
             return (self.rows_out,) if self.rows_out is not None else None
+        if "etl_email_modelo" in sql:
+            if self.erro_modelo:
+                raise Exception("Invalid object name 'dbo.etl_email_modelo'")
+            return self.modelo
         return None
 
     def run(self, sql, parameters=None):
@@ -509,3 +517,70 @@ def test_falha_de_ssh_ao_buscar_o_anexo_ainda_grava_o_log(mod, monkeypatch):
     assert saida["status"] == "sem_anexo"
     assert hook.inseridos[0][9] == "sem_anexo" and "não pôde ser buscado" in hook.inseridos[0][10]
     assert client._entrada.escrito            # o e-mail SAIU mesmo assim
+
+
+# ═══════════ modelo do catálogo (F2 da spec de modelos e navegação) ═════════
+
+def test_ancora_corpo_vem_do_modelo_a_cada_corrida(mod, monkeypatch):
+    """⛔ Âncora do vínculo VIVO: o corpo é lido do catálogo no envio, não
+    copiado para o nó. Trocar o layout no Admin vale para todos os nós sem
+    republicar DAG e sem reeditar nó — o motivo de o nó guardar só o id."""
+    no = dict(NO_PADRAO, modelo_id=7, corpo="corpo antigo do nó", html=False)
+    hook = _Hook(no=no, modelo=("<p>layout institucional {pipeline}</p>", 1, "Aviso de fim de carga"))
+    client = _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.execute(_contexto())
+    enviado = client._entrada.escrito.decode()
+    assert "layout institucional CARGA_VIDA" in enviado, "não usou o corpo do modelo"
+    assert "corpo antigo do nó" not in enviado
+    assert "text/html" in enviado, "o modelo define o html, e este é html=1"
+
+
+def test_sem_modelo_usa_o_corpo_do_proprio_no(mod, monkeypatch):
+    """A opção *Corpo livre*: `modelo_id` nulo mantém o comportamento de antes
+    da F2 — é o que faz os nós já existentes seguirem enviando o mesmo."""
+    hook = _Hook(no=dict(NO_PADRAO, modelo_id=None))
+    client = _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.execute(_contexto())
+    assert "A carga terminou com" in client._entrada.escrito.decode()
+
+
+def test_ancora_modelo_que_sumiu_falha_em_vez_de_enviar_errado(mod, monkeypatch):
+    """⛔ Âncora. O catálogo de cards do Teams cai em silêncio para a mensagem
+    embutida quando o template some, e o aviso sai com a cara errada sem
+    ninguém saber. Aqui a etapa falha nomeando o modelo."""
+    hook = _Hook(no=dict(NO_PADRAO, modelo_id=7), modelo=None)
+    client = _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    with pytest.raises(RuntimeError, match="não existe mais no catálogo"):
+        op.execute(_contexto())
+    # E nada foi entregue ao sendmail: `_entrada` só nasce dentro de
+    # `exec_command`, então a AUSÊNCIA do atributo é a prova de que o envio nem
+    # começou. (Escrito como `... if hasattr(...) else True`, este assert virava
+    # `assert True` e passava mesmo que a mensagem tivesse sido enviada.)
+    assert not hasattr(client, "_entrada"), "o envio começou antes de ler o modelo"
+
+
+def test_catalogo_indisponivel_tambem_falha_com_a_causa(mod, monkeypatch):
+    """Sem a migration 112, um nó que aponta para modelo não pode enviar um
+    corpo qualquer: falha dizendo o que falta."""
+    hook = _Hook(no=dict(NO_PADRAO, modelo_id=7), erro_modelo=True)
+    op = _preparar(mod, monkeypatch, hook, _Client(rc=0))
+    with pytest.raises(RuntimeError, match="migration 112"):
+        op.execute(_contexto())
+
+
+def test_modelo_desativado_continua_valendo_para_quem_ja_usa(mod, monkeypatch):
+    """Desativar tira da lista de ESCOLHA; não quebra quem já escolheu. Por
+    isso a leitura do operador não filtra por `ativo` — diferente do Teams,
+    onde o `AND ativo=1` é o que faz o card sumir sem aviso."""
+    hook = _Hook(no=dict(NO_PADRAO, modelo_id=7),
+                 modelo=("<p>modelo desativado</p>", 1, "Antigo"))
+    client = _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.execute(_contexto())
+    assert "modelo desativado" in client._entrada.escrito.decode()
+    sql_modelo = [q for q in hook.consultas if "etl_email_modelo" in q]
+    assert sql_modelo and "ativo" not in sql_modelo[0].lower(), (
+        "a leitura do modelo no envio não pode filtrar por ativo")

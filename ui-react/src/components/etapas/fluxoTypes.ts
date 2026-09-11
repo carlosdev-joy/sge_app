@@ -43,8 +43,13 @@ export interface AguardeConfig {
 // job é quem diz qual das duas é.
 export interface EmailNoConfig {
   assunto: string
+  /** Corpo próprio do nó. Só vale quando `modelo_id` é null (Corpo livre). */
   corpo: string
   html: boolean
+  /** Modelo do catálogo (migration 112). `null` = Corpo livre — a saída
+   *  explícita da padronização, que o Admin pode fechar. O corpo é lido do
+   *  modelo NO ENVIO: trocar o layout lá vale para todos os nós. */
+  modelo_id: number | null
   /** Lista própria do nó. Pode ser vazia se `incluir_pipeline` estiver ligado. */
   destinatarios: string[]
   /** Soma a lista cadastrada no fluxo (Propriedades do fluxo › E-mail). */
@@ -91,6 +96,10 @@ export function defaultEmailNo(): EmailNoConfig {
     assunto: '[Orquestra] {pipeline} — {status}',
     corpo: 'O fluxo {pipeline} terminou em {data}.',
     html: false,
+    // Corpo livre. Quem CRIA o nó (FluxoEditor) sobrescreve com o modelo
+    // padrão do catálogo quando existe um — aqui não dá para saber, esta
+    // função é pura e não consulta a API.
+    modelo_id: null,
     destinatarios: [],
     incluir_pipeline: true,
     anexo: null,
@@ -103,16 +112,48 @@ export function toEmailNoConfig(raw: EmailNoConfig | null | undefined): EmailNoC
   const anexo = raw.anexo
   const raiz = anexo && typeof anexo === 'object' ? `${anexo.raiz ?? ''}`.trim() : ''
   const nome = anexo && typeof anexo === 'object' ? `${anexo.nome ?? ''}`.trim() : ''
+  const modelo = raw.modelo_id
   return {
     assunto: typeof raw.assunto === 'string' ? raw.assunto : '',
     corpo: typeof raw.corpo === 'string' ? raw.corpo : '',
     html: raw.html === true,
+    // Nó gravado antes do catálogo não tem a chave: vira Corpo livre e segue
+    // enviando exatamente o que enviava.
+    modelo_id: typeof modelo === 'number' ? modelo : (modelo != null && `${modelo}`.trim() ? Number(modelo) : null),
     destinatarios: Array.isArray(raw.destinatarios) ? raw.destinatarios.map(d => `${d}`.trim()).filter(Boolean) : [],
     // Ausente = ligado, igual ao backend: um round-trip não pode desligar a
     // herança sozinho (o e-mail sairia para menos gente, em silêncio).
     incluir_pipeline: raw.incluir_pipeline !== false,
     anexo: raiz && nome ? { raiz, nome } : null,
   }
+}
+
+/** Config de um nó de e-mail RECÉM-CRIADO, já no modelo padrão do catálogo.
+ *
+ * O padrão vem de `GET /email/modelos` (quem cria o nó é que tem a lista em
+ * mãos). Sem catálogo — ou sem padrão marcado — nasce em Corpo livre, como
+ * antes da F2. É o que torna o layout institucional o caminho de menor
+ * esforço, que é o ponto do catálogo. */
+export function emailNoNovo(modeloPadraoId: number | null): EmailNoConfig {
+  return { ...defaultEmailNo(), modelo_id: modeloPadraoId }
+}
+
+/** O que a lista de modelos do painel oferece, dado o estado do nó.
+ *
+ * `podeCorpoLivre` — a saída explícita da padronização. Com *exigir modelo*
+ * ligado ela some da lista, MAS continua visível para o nó que já está nela:
+ * sem isso o select mostraria um modelo que a config não tem e o nó trocaria
+ * de corpo sozinho no primeiro save. Nó NOVO não herda essa tolerância — a
+ * API recusa Corpo livre em nó novo com a padronização ligada, e oferecer a
+ * opção aqui só produziria um 422 na cara de quem monta.
+ *
+ * `faltaEscolherModelo` — nó novo com a padronização ligada e nada escolhido:
+ * a lista abre em "Selecione um modelo…", não em Corpo livre. */
+export function opcoesDoModeloNo(
+  args: { exigirModelo: boolean; isNew: boolean; modeloId: number | null },
+): { podeCorpoLivre: boolean; faltaEscolherModelo: boolean } {
+  const podeCorpoLivre = !args.exigirModelo || (!args.isNew && args.modeloId == null)
+  return { podeCorpoLivre, faltaEscolherModelo: !podeCorpoLivre && args.modeloId == null }
 }
 
 /** Placeholders que o operador do worker resolve (dags/utils/email_operator). */
@@ -130,14 +171,28 @@ export function emailNoLabel(cfg: EmailNoConfig): string {
 // Régua local do nó — espelha _validate_email do backend (api/routers/jobs.py).
 // `raizesPermitidas` vem do Admin (GET /email/status); vazia = nenhuma pasta
 // liberada, e aí qualquer anexo é recusado.
-export function errosDoEmailNo(cfg: EmailNoConfig, raizesPermitidas: string[]): string[] {
+//
+// `modelo` traz o estado da padronização (GET /email/modelos) e se o nó é
+// novo. Sem ele a régua ignora a regra do catálogo — é o que quem não tem a
+// resposta do catálogo em mãos deve fazer, porque cobrar modelo sem saber se
+// há catálogo travaria o save por um erro de rede.
+export function errosDoEmailNo(
+  cfg: EmailNoConfig,
+  raizesPermitidas: string[],
+  modelo?: { exigirModelo: boolean; isNew: boolean },
+): string[] {
   const erros: string[] = []
+  if (modelo && opcoesDoModeloNo({ ...modelo, modeloId: cfg.modelo_id }).faltaEscolherModelo) {
+    erros.push('Escolha um modelo do catálogo (Admin › E-mail exige modelo)')
+  }
   const assunto = (cfg.assunto || '').trim()
   if (!assunto) erros.push('Informe o assunto')
   else if (assunto.split(/\r|\n/).length > 1) erros.push('O assunto não pode ter quebra de linha')
   else if (assunto.length > 500) erros.push('Assunto com mais de 500 caracteres')
-  if (!(cfg.corpo || '').trim()) erros.push('Informe o corpo da mensagem')
-  else if (cfg.corpo.length > 20000) erros.push('Corpo com mais de 20.000 caracteres')
+  if (cfg.modelo_id == null) {
+    if (!(cfg.corpo || '').trim()) erros.push('Informe o corpo da mensagem')
+    else if (cfg.corpo.length > 20000) erros.push('Corpo com mais de 20.000 caracteres')
+  }
   const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
   for (const d of cfg.destinatarios) {
     if (!EMAIL_RE.test(d)) erros.push(`Destinatário inválido: ${d}`)

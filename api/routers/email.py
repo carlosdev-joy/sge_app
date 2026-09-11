@@ -26,7 +26,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import get_admin_user, get_current_user
-from services import email_config, ssh_datastage
+from services import email_config, email_modelos, ssh_datastage
 from services import email_mime as em
 from services.ssh_arquivos import cortar_utf16
 
@@ -35,7 +35,10 @@ log = logging.getLogger("orquestra-api")
 router = APIRouter()
 
 _SEM_TABELA_RE = re.compile(r"Invalid object name", re.I)
+_NOME_REPETIDO_RE = re.compile(r"duplicate key|UNIQUE KEY|ux_etl_email_modelo_nome", re.I)
 ERRO_SEM_111 = "E-mail indisponível: migration 111 pendente (chaves email_* e dbo.etl_email_log)."
+ERRO_SEM_112 = ("Catálogo de modelos indisponível: migration 112 pendente "
+                "(dbo.etl_email_modelo).")
 PIPELINE_TESTE = "_teste_admin"
 
 
@@ -189,6 +192,155 @@ def email_admin_testar(body: dict = Body(default={}), user: dict = Depends(get_a
         log.warning("email: falha ao registrar o teste (%s)", e)
         laudo["persistido"] = False
     return {"laudo": laudo}
+
+
+# ── catálogo de modelos (migration 112, spec de modelos e navegação) ────────
+
+def _exigir_catalogo(cur) -> None:
+    if not email_modelos.tabela_existe(cur):
+        raise HTTPException(status_code=503, detail=ERRO_SEM_112)
+
+
+@router.get("/email/modelos", tags=["email"])
+def email_modelos_ativos(_user: dict = Depends(get_current_user)):
+    """Os modelos que o painel do nó oferece. Sem a 112, lista vazia e o painel
+    cai no corpo livre — a tela do nó não quebra por causa do catálogo."""
+    conn, cur = _abrir()
+    try:
+        if not email_modelos.tabela_existe(cur):
+            return {"modelos": [], "disponivel": False, "exigir_modelo": False}
+        cfg = email_config.load_config(cur)
+        return {"modelos": email_modelos.listar(cur, apenas_ativos=True),
+                "disponivel": True,
+                "exigir_modelo": _exigir_modelo(cur),
+                "dominios": cfg.get("dominios") or []}
+    finally:
+        _fechar(conn, cur)
+
+
+def _exigir_modelo(cur) -> bool:
+    """Interruptor `email_exigir_modelo`: ligado, a opção *Corpo livre* some da
+    lista do nó. Ausente (ou sem a 112) = desligado."""
+    try:
+        cur.execute("SELECT config_value FROM dbo.etl_app_config WHERE config_key = ?",
+                    ("email_exigir_modelo",))
+        linha = cur.fetchone()
+        return bool(linha) and str(linha[0] or "").strip() == "1"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@router.get("/email/admin/modelos", tags=["email-admin"])
+def email_admin_modelos(_user: dict = Depends(get_admin_user)):
+    conn, cur = _abrir()
+    try:
+        _exigir_catalogo(cur)
+        return {"modelos": email_modelos.listar(cur, com_corpo=False),
+                "exigir_modelo": _exigir_modelo(cur)}
+    finally:
+        _fechar(conn, cur)
+
+
+@router.get("/email/admin/modelos/{modelo_id}", tags=["email-admin"])
+def email_admin_modelo(modelo_id: int, _user: dict = Depends(get_admin_user)):
+    conn, cur = _abrir()
+    try:
+        _exigir_catalogo(cur)
+        modelo = email_modelos.obter(cur, modelo_id)
+        if not modelo:
+            raise HTTPException(status_code=404, detail="Modelo não encontrado")
+        return {"modelo": modelo, "pipelines": email_modelos.pipelines_que_usam(cur, modelo_id)}
+    finally:
+        _fechar(conn, cur)
+
+
+@router.post("/email/admin/modelos", tags=["email-admin"])
+def email_admin_modelo_criar(body: dict = Body(default={}), user: dict = Depends(get_admin_user)):
+    valores, erros = email_modelos.validar(body)
+    if erros:
+        raise HTTPException(status_code=422, detail={"code": "email_modelo_invalido", "errors": erros})
+    conn, cur = _abrir()
+    try:
+        _exigir_catalogo(cur)
+        try:
+            novo_id = email_modelos.criar(cur, valores, user["matricula"])
+        except Exception as e:  # noqa: BLE001 — nome repetido é 409, não 500
+            if _NOME_REPETIDO_RE.search(str(e)):
+                raise HTTPException(status_code=409,
+                                    detail=f"Já existe um modelo chamado '{valores['nome']}'")
+            raise
+        _fechar(conn, cur, commit=True)
+    except HTTPException:
+        _fechar(conn, cur); raise
+    except Exception:
+        _fechar(conn, cur); raise
+    conn, cur = _abrir()
+    try:
+        return {"modelo": email_modelos.obter(cur, novo_id)}
+    finally:
+        _fechar(conn, cur)
+
+
+@router.put("/email/admin/modelos/{modelo_id}", tags=["email-admin"])
+def email_admin_modelo_editar(modelo_id: int, body: dict = Body(default={}),
+                              _user: dict = Depends(get_admin_user)):
+    valores, erros = email_modelos.validar(body)
+    if erros:
+        raise HTTPException(status_code=422, detail={"code": "email_modelo_invalido", "errors": erros})
+    conn, cur = _abrir()
+    try:
+        _exigir_catalogo(cur)
+        if not email_modelos.obter(cur, modelo_id):
+            raise HTTPException(status_code=404, detail="Modelo não encontrado")
+        try:
+            email_modelos.atualizar(cur, modelo_id, valores)
+        except Exception as e:  # noqa: BLE001
+            if _NOME_REPETIDO_RE.search(str(e)):
+                raise HTTPException(status_code=409,
+                                    detail=f"Já existe um modelo chamado '{valores['nome']}'")
+            raise
+        _fechar(conn, cur, commit=True)
+    except HTTPException:
+        _fechar(conn, cur); raise
+    except Exception:
+        _fechar(conn, cur); raise
+    conn, cur = _abrir()
+    try:
+        return {"modelo": email_modelos.obter(cur, modelo_id)}
+    finally:
+        _fechar(conn, cur)
+
+
+@router.delete("/email/admin/modelos/{modelo_id}", tags=["email-admin"])
+def email_admin_modelo_excluir(modelo_id: int, _user: dict = Depends(get_admin_user)):
+    """Apagar modelo EM USO é recusado.
+
+    É a lição do catálogo de cards do Teams, onde apagar o template faz o envio
+    cair em silêncio para a mensagem embutida. Aqui, quem quer tirar um modelo
+    de circulação **desativa** — quem já usa continua enviando e ele some da
+    lista de escolha."""
+    conn, cur = _abrir()
+    try:
+        _exigir_catalogo(cur)
+        if not email_modelos.obter(cur, modelo_id):
+            raise HTTPException(status_code=404, detail="Modelo não encontrado")
+        usados = email_modelos.pipelines_que_usam(cur, modelo_id)
+        if usados:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "email_modelo_em_uso", "pipelines": usados,
+                        "errors": [f"Modelo em uso em {len(usados)} fluxo(s): "
+                                   + ", ".join(usados[:10])
+                                   + (" …" if len(usados) > 10 else "")
+                                   + ". Desative o modelo em vez de excluir — quem já usa "
+                                     "continua enviando e ele some da lista de escolha."]})
+        email_modelos.excluir(cur, modelo_id)
+        _fechar(conn, cur, commit=True)
+        return {"excluido": modelo_id}
+    except HTTPException:
+        _fechar(conn, cur); raise
+    except Exception:
+        _fechar(conn, cur); raise
 
 
 @router.get("/email/log", tags=["email"])

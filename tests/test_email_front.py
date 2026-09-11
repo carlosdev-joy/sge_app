@@ -46,8 +46,10 @@ def e() -> dict:
 
 def test_form_e_corpo(e):
     assert e["form"] == {"enabled": True, "remetente": "orquestra@cvp.com.br", "limite_mb": "5",
-                         "raizesTexto": "/dados/saida\n/opt/IBM/dados", "dominiosTexto": "cvp.com.br"}
-    assert e["corpo"] == {"enabled": True, "remetente": "Orq@CVP.com.br", "limite_mb": 10, "raizes": ["/a", "/b"], "dominios": []}
+                         "raizesTexto": "/dados/saida\n/opt/IBM/dados", "dominiosTexto": "cvp.com.br",
+                         "exigirModelo": False}
+    assert e["corpo"] == {"enabled": True, "remetente": "Orq@CVP.com.br", "limite_mb": 10,
+                          "raizes": ["/a", "/b"], "dominios": [], "exigir_modelo": False}
     assert e["listas"] == [["a@x.com", "b@y.org", "c@z.io"], "/a\n/b", []]
 
 

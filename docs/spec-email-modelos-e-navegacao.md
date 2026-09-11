@@ -1,5 +1,5 @@
 # Spec: E-mail — prévia na tela, modelos institucionais e seletor de anexo — Orquestra
-Data: 2026-09-11 · Status: **aprovada 2026-09-11** · em execução (F1)
+Data: 2026-09-11 · Status: **aprovada 2026-09-11** · em execução (F2)
 
 Continuação de `docs/spec-notificacao-email.md` (concluída, F1–F4 = PRs #388–#391).
 Aquela entregou o canal; esta trata de **como as pessoas escrevem o aviso**.
@@ -155,6 +155,7 @@ Nada muda em `etl_pipeline_job`: `modelo_id` entra no JSON de `notify_json`.
   a prévia mostra um estado vazio, não um quadro branco sem explicação.
 - Validação: tsc + eslint (baseline HEAD) + build + pytest. Revisão adversarial.
   PR: `feat(email): prévia do corpo na tela (F1)`.
+- ✅ **ENTREGUE — PR #393 `35bbe2f`** (2026-09-11).
 
 ### F2 — Catálogo de modelos
 - Entregável: administrador cadastra modelos; quem monta o fluxo escolhe um.
@@ -173,6 +174,26 @@ Nada muda em `etl_pipeline_job`: `modelo_id` entra no JSON de `notify_json`.
   com o corpo intacto e envia exatamente o que enviava.
 - Validação: completa. Revisão adversarial.
   PR: `feat(email): catálogo de modelos institucionais (F2)`.
+- 🔧 **EM REVISÃO** — implementada; duas rodadas de revisão adversarial (a
+  primeira REPROVOU com 6 defeitos + 2 sugestões, a segunda aprovou com
+  ressalvas depois de 1 defeito novo corrigido). Decisões que a execução fixou,
+  todas vindas da revisão:
+  - **A régua do salvar aceita modelo INATIVO** e recusa só o inexistente.
+    Desativar é o gesto que a API recomenda no lugar de excluir; se o salvar
+    recusasse inativo, desativar tornaria **insalvável** todo fluxo que usa o
+    modelo — mexer em qualquer outro nó passaria a devolver 422.
+  - **A padronização só vale com catálogo.** A chave `email_exigir_modelo` é
+    gravada por MERGE e não depende da tabela: ligada num ambiente sem a 112,
+    deixaria o nó novo insalvável **sem gesto possível na tela**, porque o
+    painel não mostra a lista quando o catálogo está indisponível.
+  - **Nó novo nasce no modelo padrão** (`emailNoNovo`, no ponto de criação);
+    com a padronização ligada, a lista abre em *Selecione um modelo…*, nunca em
+    Corpo livre — que a API recusaria.
+  - **A tela não afirma o que não sabe**: modelo fora da lista de escolha pode
+    ter sido desativado (segue enviando) ou removido (a corrida falha), e a
+    mensagem diz os dois casos em vez de escolher um.
+  - **A semente é guardada pelo catálogo vazio**, não pelo nome: renomeado o
+    modelo, a guarda por nome reinseriria a semente e criaria dois `padrao=1`.
 
 ### F3 — Seletor de arquivo do anexo
 - Entregável: clicar na pastinha, navegar e escolher o arquivo.
@@ -238,3 +259,10 @@ j) Navegar até uma pasta fora das raízes do e-mail pelo caminho digitado: 403.
 5. **Precedente a considerar antes de aprovar:** a Supervisão DS removeu o
    catálogo de templates por desuso (migration 063). Vale confirmar que o caso
    aqui é diferente — layout institucional único, não texto por situação.
+6. 🆕 **Excluir o modelo padrão deixa o catálogo sem padrão** (achado da F2). A
+   exclusão é recusada quando o modelo está em uso, mas um padrão **sem uso**
+   pode ser apagado e o catálogo fica sem nenhum marcado — e aí o nó novo volta
+   a nascer em Corpo livre, em silêncio. Três saídas possíveis: (a) recusar a
+   exclusão do padrão enquanto houver outro modelo para promover; (b) promover
+   automaticamente o mais antigo; (c) deixar como está e avisar na tela. Não
+   entra nesta fase.

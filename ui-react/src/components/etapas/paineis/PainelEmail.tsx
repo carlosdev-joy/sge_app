@@ -14,7 +14,10 @@ import { Button } from '../../ui/Button'
 import { Input, Select, Textarea } from '../../ui/Input'
 import { PlaceholderPicker } from '../../ui/PlaceholderPicker'
 import type { EmailNodeData } from '../EmailNode'
-import { defaultEmailNo, errosDoEmailNo, EMAIL_PLACEHOLDERS, type EmailNoConfig } from '../fluxoTypes'
+import {
+  defaultEmailNo, errosDoEmailNo, opcoesDoModeloNo,
+  EMAIL_PLACEHOLDERS, type EmailNoConfig,
+} from '../fluxoTypes'
 import { PreviaEmail } from '../PreviaEmail'
 import { dicaDoMarcador, marcadoresDesconhecidos } from '../previaEmailDados'
 import { NomeField } from './shared'
@@ -25,6 +28,16 @@ interface EmailStatus {
   raizes: string[]
   dominios: string[]
   disponivel: boolean
+}
+
+/** Catálogo de modelos + o interruptor de padronização (migration 112). */
+interface EmailModelosApi {
+  modelos: {
+    id: number; nome: string; descricao: string | null; assunto: string | null
+    corpo: string; html: boolean; padrao: boolean
+  }[]
+  disponivel: boolean
+  exigir_modelo: boolean
 }
 
 export interface PainelEmailProps {
@@ -49,8 +62,39 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
     queryFn: () => apiFetch('/email/status'),
     staleTime: 300_000,
   })
+  // Catálogo: sem a 112 vem `disponivel: false` e a lista some — o painel cai
+  // no corpo livre, e a tela do nó não quebra por causa do catálogo.
+  const { data: catalogo, isError: catalogoFalhou } = useQuery<EmailModelosApi>({
+    queryKey: ['email-modelos'],
+    queryFn: () => apiFetch('/email/modelos'),
+    staleTime: 300_000,
+  })
+  const temCatalogo = catalogo?.disponivel === true
+  const modelos = catalogo?.modelos ?? []
+  const exigirModelo = catalogo?.exigir_modelo === true
+  const modeloEscolhido = modelos.find(m => m.id === cfg.modelo_id) ?? null
+  const corpoDoModelo = modeloEscolhido?.corpo
+  const htmlDoModelo = modeloEscolhido?.html
+  // Escolhido, mas fora da lista de escolha (que só traz os ativos): ou foi
+  // DESATIVADO — e aí segue enviando, porque o envio de propósito não filtra
+  // por ativo — ou foi apagado do banco, e aí a etapa falha. A tela não
+  // consegue distinguir os dois casos, então não afirma nenhum dos dois.
+  // ⚠️ Só vale COM catálogo em mãos: enquanto a lista carrega (ou se a
+  // consulta falhar), `modelos` é [] e todo modelo pareceria "fora da lista".
+  const modeloForaDaLista = temCatalogo && cfg.modelo_id != null && !modeloEscolhido
+  // Catálogo que não respondeu, com um modelo já escolhido: nada mudou no
+  // envio — o worker lê o modelo do banco — mas a tela não tem o que mostrar.
+  const catalogoSemResposta = !temCatalogo && cfg.modelo_id != null
+  // A regra do Corpo livre × padronização mora em fluxoTypes (testada na
+  // bancada do front): é ela que precisa continuar batendo com a do backend.
+  const { podeCorpoLivre, faltaEscolherModelo } = opcoesDoModeloNo({
+    exigirModelo, isNew, modeloId: cfg.modelo_id,
+  })
+
   const raizes = status?.raizes ?? []
-  const erros = errosDoEmailNo(cfg, raizes)
+  // Só passa a regra do catálogo quando o catálogo respondeu — senão a tela
+  // cobraria um modelo que ela mesma não tem como oferecer.
+  const erros = errosDoEmailNo(cfg, raizes, temCatalogo ? { exigirModelo, isNew } : undefined)
   // Marcador que o operador não conhece sai literal no e-mail — melhor avisar
   // aqui do que descobrir na caixa de quem recebeu.
   const desconhecidos = marcadoresDesconhecidos(
@@ -187,6 +231,55 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             <span className="text-xs font-semibold text-ink">Mensagem</span>
           </div>
 
+          {/* Catálogo que não respondeu não pode sumir em silêncio: o backend
+              continua com a régua dele, e um nó novo com a padronização ligada
+              ficaria irrecusável sem nenhuma explicação na tela. */}
+          {catalogoFalhou && (
+            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              Não foi possível consultar os modelos agora. O que já está escolhido continua
+              valendo no envio; para trocar de modelo, recarregue a página.
+            </p>
+          )}
+
+          {temCatalogo && (
+            <div className="flex flex-col gap-1">
+              <Select
+                label="Modelo"
+                hint={'O layout vem do catálogo e é lido no envio: trocar o modelo em Admin › E-mail vale para todos os fluxos.\nCorpo livre é a saída para um aviso fora do padrão.'}
+                value={cfg.modelo_id != null ? String(cfg.modelo_id) : ''}
+                onChange={e => patch({ modelo_id: e.target.value ? Number(e.target.value) : null })}
+                className="text-xs"
+              >
+                {podeCorpoLivre && <option value="">Corpo livre (escrever aqui)</option>}
+                {/* Padronização ligada em nó novo: a lista abre sem escolha, e
+                    não em Corpo livre — que a API recusaria ao salvar. */}
+                {faltaEscolherModelo && <option value="">Selecione um modelo…</option>}
+                {modelos.map(m => <option key={m.id} value={m.id}>{m.nome}</option>)}
+                {modeloForaDaLista && (
+                  <option value={String(cfg.modelo_id)}>#{cfg.modelo_id} (fora da lista)</option>
+                )}
+              </Select>
+              {modeloEscolhido?.descricao && (
+                <p className="text-[10px] text-dim/70">{modeloEscolhido.descricao}</p>
+              )}
+              {faltaEscolherModelo && (
+                <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                  {modelos.length === 0
+                    ? 'Admin › E-mail exige um modelo do catálogo, e não há nenhum modelo ativo. Peça ao Admin para ativar um antes de salvar este nó.'
+                    : 'Admin › E-mail exige um modelo do catálogo: escolha um para salvar este nó.'}
+                </p>
+              )}
+              {modeloForaDaLista && (
+                <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                  O modelo #{cfg.modelo_id} não está na lista de escolha. Se foi apenas
+                  desativado, o envio continua usando o layout dele; se foi removido do
+                  catálogo, a corrida falha. Confira em Admin › E-mail › Modelos — ou
+                  escolha outro aqui.
+                </p>
+              )}
+            </div>
+          )}
+
           <Input
             ref={assuntoRef}
             label="Assunto *"
@@ -197,6 +290,12 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             className="text-xs"
           />
 
+          {cfg.modelo_id != null ? (
+            <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[10px] text-dim">
+              O corpo vem do modelo <strong>{modeloEscolhido?.nome ?? `#${cfg.modelo_id}`}</strong>,
+              lido na hora do envio. Para escrever um texto próprio, escolha <em>Corpo livre</em>.
+            </p>
+          ) : (
           <div className="flex flex-col gap-1">
             <Textarea
               ref={corpoRef}
@@ -238,9 +337,30 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
               </p>
             )}
           </div>
+          )}
 
           <div className="flex flex-col gap-1">
-            <PreviaEmail corpo={cfg.corpo} html={cfg.html} altura={210} />
+            {/* Com modelo escolhido, a prévia mostra o corpo DO MODELO: é o que
+                vai ser enviado. O corpo do nó continua guardado para a volta ao
+                Corpo livre, mas não é o que sai. */}
+            {modeloForaDaLista || catalogoSemResposta ? (
+              // Sem o corpo em mão, prévia em branco pareceria "o e-mail vai
+              // sair vazio" — falso tanto para um modelo apenas desativado
+              // (que segue enviando) quanto para o catálogo que não respondeu.
+              <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[10px] text-dim">
+                {catalogoSemResposta
+                  ? `Sem prévia: não foi possível carregar o modelo #${cfg.modelo_id} agora. O envio continua usando o layout dele.`
+                  : `Sem prévia: o modelo #${cfg.modelo_id} está fora da lista de escolha.`}
+                {' '}O conteúdo dele fica em Admin › E-mail › Modelos.
+              </p>
+            ) : (
+              <PreviaEmail
+                corpo={cfg.modelo_id != null ? (corpoDoModelo ?? '') : cfg.corpo}
+                html={cfg.modelo_id != null ? (htmlDoModelo ?? true) : cfg.html}
+                altura={210}
+                titulo={cfg.modelo_id != null ? 'Prévia do modelo' : 'Prévia'}
+              />
+            )}
           </div>
         </div>
       </div>

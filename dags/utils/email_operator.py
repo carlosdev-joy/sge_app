@@ -109,6 +109,32 @@ class EmailOperator(BaseOperator):
             return {}
         return cfg if isinstance(cfg, dict) else {}
 
+    def _ler_modelo(self, hook, modelo_id: int) -> dict:
+        """O modelo do catálogo (migration 112), lido A CADA CORRIDA.
+
+        É isso que faz trocar o layout no Admin valer para todos os nós sem
+        republicar DAG nem reeditar nó.
+
+        ⚠️ Modelo que sumiu **falha a etapa**. O catálogo de cards do Teams faz
+        o oposto — template apagado ou desativado cai em silêncio para a
+        mensagem embutida, e o aviso sai com a cara errada sem ninguém saber.
+        Aqui, o cadastro já recusa apagar modelo em uso, então chegar aqui sem
+        linha significa que alguém apagou direto no banco: é erro, não rotina.
+        Modelo DESATIVADO continua valendo para quem já o escolheu — desativar
+        tira da lista de escolha, não quebra quem está usando."""
+        try:
+            linha = hook.get_first(
+                "SELECT corpo, CAST(html AS INT), nome FROM dbo.etl_email_modelo WHERE id=%s",
+                parameters=(int(modelo_id),))
+        except Exception as e:  # noqa: BLE001 — sem a 112 o nó não deveria ter modelo
+            raise RuntimeError(
+                f"Modelo {modelo_id} não pôde ser lido (migration 112 pendente?): {e}")
+        if not linha or not linha[0]:
+            raise RuntimeError(
+                f"O modelo {modelo_id} não existe mais no catálogo (Admin › E-mail › Modelos). "
+                "Escolha outro modelo no nó, ou recadastre o modelo.")
+        return {"corpo": linha[0], "html": bool(linha[1]), "nome": linha[2]}
+
     def _ler_lista_do_pipeline(self, hook) -> list[str]:
         try:
             linha = hook.get_first(
@@ -302,9 +328,19 @@ class EmailOperator(BaseOperator):
             raise RuntimeError(
                 "Nó de e-mail sem destinatário: nem a lista do nó nem a do fluxo têm endereço.")
 
+        # Corpo: do MODELO quando o nó aponta para um; senão, o corpo próprio
+        # (a opção "Corpo livre" da lista).
+        modelo_id = no.get("modelo_id")
+        corpo_bruto = str(no.get("corpo") or "")
+        html = bool(no.get("html"))
+        if modelo_id is not None:
+            modelo = self._ler_modelo(hook, modelo_id)
+            corpo_bruto, html = modelo["corpo"], modelo["html"]
+            self.log.info("[EMAIL] corpo do modelo '%s' (#%s)", modelo["nome"], modelo_id)
+
         mapa = self._mapa(hook, context)
         assunto = ev.interpolar(str(no.get("assunto") or ""), mapa)
-        corpo = ev.interpolar(str(no.get("corpo") or ""), mapa)
+        corpo = ev.interpolar(corpo_bruto, mapa)
         assunto_ok, erro = ev.validar_assunto(assunto)
         if erro:
             raise RuntimeError(f"Assunto inválido depois de resolver os placeholders: {erro}")
@@ -343,7 +379,7 @@ class EmailOperator(BaseOperator):
 
         mensagem = ev.montar_mensagem(
             cfg["remetente"], destinatarios, assunto_ok, corpo,
-            html=bool(no.get("html")), anexo_nome=anexo_nome, anexo_bytes=anexo_bytes,
+            html=html, anexo_nome=anexo_nome, anexo_bytes=anexo_bytes,
             cabecalho_extra={"X-Orquestra-Pipeline": self.pipeline_name,
                              "X-Orquestra-Job": self.job_name})
 

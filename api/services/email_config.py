@@ -16,7 +16,9 @@ K_REMETENTE = "email_remetente"
 K_LIMITE_MB = "email_limite_anexo_mb"
 K_RAIZES = "email_anexo_raizes"
 K_DOMINIOS = "email_dominios_permitidos"
-CHAVES = (K_HABILITADO, K_REMETENTE, K_LIMITE_MB, K_RAIZES, K_DOMINIOS)
+# Migration 112: ligado, remove a opção "Corpo livre" da lista do nó.
+K_EXIGIR_MODELO = "email_exigir_modelo"
+CHAVES = (K_HABILITADO, K_REMETENTE, K_LIMITE_MB, K_RAIZES, K_DOMINIOS, K_EXIGIR_MODELO)
 
 DESCRICAO = "E-mail do Orquestra (Admin > E-mail)"
 LIMITE_VALOR = 1000   # dbo.etl_app_config.config_value VARCHAR(1000)
@@ -36,11 +38,12 @@ def load_config(cur) -> dict:
     tela diz que falta a migration. Banco fora do ar NÃO é "migration pendente":
     volta `erro` preenchido para o diagnóstico ser o certo."""
     cfg = {"enabled": False, "remetente": "", "limite_mb": em.LIMITE_ANEXO_MB_PADRAO,
-           "raizes": [], "dominios": [], "disponivel": False, "erro": None}
+           "raizes": [], "dominios": [], "exigir_modelo": False,
+           "disponivel": False, "erro": None}
     try:
         cur.execute(
             "SELECT config_key, config_value FROM dbo.etl_app_config "
-            "WHERE config_key IN (?,?,?,?,?)", list(CHAVES))
+            "WHERE config_key IN (?,?,?,?,?,?)", list(CHAVES))
         rows = dict(cur.fetchall())
     except Exception as e:
         cfg["erro"] = f"{type(e).__name__}: {str(e)[:300]}"
@@ -54,6 +57,9 @@ def load_config(cur) -> dict:
     cfg["limite_mb"] = limite or em.LIMITE_ANEXO_MB_PADRAO
     cfg["raizes"] = _lista_json(rows.get(K_RAIZES))
     cfg["dominios"] = _lista_json(rows.get(K_DOMINIOS))
+    # Ausente = desligado: a chave só existe a partir da 112, e um ambiente sem
+    # ela não pode ficar com a padronização ligada por acidente.
+    cfg["exigir_modelo"] = str(rows.get(K_EXIGIR_MODELO) or "").strip() == "1"
     return cfg
 
 
@@ -89,6 +95,10 @@ def validar_config(body: dict) -> tuple[dict, list[str]]:
         erros.append(f"raízes: lista longa demais ({len(raizes_json)} caracteres em JSON; limite {LIMITE_VALOR})")
     if len(dominios_json) > LIMITE_VALOR:
         erros.append(f"domínios: lista longa demais ({len(dominios_json)} caracteres em JSON; limite {LIMITE_VALOR})")
+    exigir = _bool(body.get("exigir_modelo"))
+    if exigir is None:
+        erros.append("exigir_modelo deve ser true/false")
+        exigir = False
     valores = {
         K_HABILITADO: "1" if enabled else "0",
         K_REMETENTE: remetente or "",
@@ -96,6 +106,10 @@ def validar_config(body: dict) -> tuple[dict, list[str]]:
         K_RAIZES: raizes_json,
         K_DOMINIOS: dominios_json,
     }
+    # Só entra quando a chave veio no corpo: sem isso, um POST de tela antiga
+    # (sem o campo) desligaria a padronização em silêncio.
+    if "exigir_modelo" in body:
+        valores[K_EXIGIR_MODELO] = "1" if exigir else "0"
     return valores, erros
 
 

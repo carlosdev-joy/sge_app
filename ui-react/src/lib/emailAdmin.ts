@@ -11,6 +11,8 @@ export interface EmailConfigApi {
   limite_mb: number
   raizes: string[]
   dominios: string[]
+  /** Migration 112: ligado, a opção *Corpo livre* some da lista do nó. */
+  exigir_modelo?: boolean
   disponivel: boolean
   ssh_configurado?: boolean
   ssh_host?: string
@@ -47,12 +49,68 @@ export interface EmailLogItem {
   criado_em: string
 }
 
+/** Modelo do catálogo (migration 112). O `corpo` não vem na lista do Admin —
+ *  só `corpo_tamanho` — para não trafegar todo o HTML de cada um. */
+export interface EmailModelo {
+  id: number
+  nome: string
+  descricao: string | null
+  assunto: string | null
+  corpo?: string
+  corpo_tamanho?: number
+  html: boolean
+  ativo: boolean
+  padrao: boolean
+  criado_por: string | null
+  criado_em: string
+  atualizado_em: string | null
+}
+
+export interface EmailModeloForm {
+  nome: string
+  descricao: string
+  assunto: string
+  corpo: string
+  html: boolean
+  ativo: boolean
+  padrao: boolean
+}
+
+export function formDoModelo(m: EmailModelo | null): EmailModeloForm {
+  return {
+    nome: m?.nome ?? '',
+    descricao: m?.descricao ?? '',
+    assunto: m?.assunto ?? '',
+    corpo: m?.corpo ?? '',
+    html: m?.html ?? true,
+    ativo: m?.ativo ?? true,
+    padrao: m?.padrao ?? false,
+  }
+}
+
+/** Régua local do modelo — espelha `services/email_modelos.validar`. */
+export function errosDoModelo(f: EmailModeloForm): string[] {
+  const erros: string[] = []
+  const nome = f.nome.trim()
+  if (!nome) erros.push('Informe o nome do modelo')
+  else if (nome.length > 120) erros.push('Nome com mais de 120 caracteres')
+  else if (nome.split(/\r|\n/).length > 1) erros.push('O nome não pode ter quebra de linha')
+  if (f.descricao.length > 400) erros.push('Descrição com mais de 400 caracteres')
+  const assunto = f.assunto.trim()
+  if (assunto && assunto.split(/\r|\n/).length > 1) erros.push('O assunto sugerido não pode ter quebra de linha')
+  if (assunto.length > 500) erros.push('Assunto sugerido com mais de 500 caracteres')
+  if (!f.corpo.trim()) erros.push('Informe o corpo do modelo')
+  else if (f.corpo.length > 20000) erros.push('Corpo com mais de 20.000 caracteres')
+  return erros
+}
+
 export interface EmailConfigForm {
   enabled: boolean
   remetente: string
   limite_mb: string
   raizesTexto: string
   dominiosTexto: string
+  exigirModelo: boolean
 }
 
 export const LIMITE_ANEXO_MB_MIN = 1
@@ -87,12 +145,14 @@ export function textoDaLista(lista: string[] | undefined | null): string {
 
 export function formDaConfig(c: EmailConfigApi): EmailConfigForm {
   return { enabled: c.enabled, remetente: c.remetente ?? '', limite_mb: String(c.limite_mb ?? 5),
-           raizesTexto: textoDaLista(c.raizes), dominiosTexto: textoDaLista(c.dominios) }
+           raizesTexto: textoDaLista(c.raizes), dominiosTexto: textoDaLista(c.dominios),
+           exigirModelo: c.exigir_modelo === true }
 }
 
 export function configParaApi(f: EmailConfigForm) {
   return { enabled: f.enabled, remetente: f.remetente.trim(), limite_mb: Number(f.limite_mb),
-           raizes: listaDoTexto(f.raizesTexto), dominios: listaDoTexto(f.dominiosTexto) }
+           raizes: listaDoTexto(f.raizesTexto), dominios: listaDoTexto(f.dominiosTexto),
+           exigir_modelo: f.exigirModelo }
 }
 
 /** Régua local — espelha validar_config: ligar exige remetente válido, limite
@@ -136,8 +196,20 @@ export function mensagemErroEmail(e: unknown, padrao: string): string {
   return padrao
 }
 
-export function migration111Pendente(e: unknown): boolean {
+// ⚠️ Migration pendente é 503 COM a migração nomeada. Banco fora do ar também
+// dá 503, e a API separa os dois de propósito ("Banco fora do ar NÃO é
+// 'migration pendente'"): tratar todo erro como migração faria a tela dar o
+// único diagnóstico errado justamente quando o problema é outro.
+function migrationPendente(e: unknown, numero: number): boolean {
   const err = e as { status?: number; message?: string; detail?: unknown } | null
   const texto = typeof err?.detail === 'string' ? err.detail : (err?.message ?? '')
-  return err?.status === 503 && /migration 111/i.test(texto)
+  return err?.status === 503 && new RegExp(`migration ${numero}`, 'i').test(texto)
+}
+
+export function migration111Pendente(e: unknown): boolean {
+  return migrationPendente(e, 111)
+}
+
+export function migration112Pendente(e: unknown): boolean {
+  return migrationPendente(e, 112)
 }
