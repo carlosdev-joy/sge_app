@@ -248,3 +248,98 @@ def test_corpo_livre_some_com_a_padronizacao_menos_para_quem_ja_esta_nele(modelo
     assert o["novoExigindoComModelo"] == {"podeCorpoLivre": False, "faltaEscolherModelo": False}
     assert o["antigoEmCorpoLivre"] == {"podeCorpoLivre": True, "faltaEscolherModelo": False}
     assert o["antigoComModelo"] == {"podeCorpoLivre": False, "faltaEscolherModelo": False}
+
+
+# ── Campo de destinatários (F1 da spec de tabela do SQL) ────────────────────
+# O defeito que estes testes prendem: o campo guardava o ARRAY e redesenhava o
+# texto com `destinatarios.join('\n')` a cada tecla. Como a separação descarta o
+# pedaço vazio, o Enter (e a vírgula) sumia no mesmo instante em que era
+# digitado e o 2º endereço colava no 1º — dava para cadastrar UM destinatário,
+# ou colar a lista pronta, que chega inteira num `onChange` só.
+
+
+def test_separa_por_linha_virgula_e_ponto_e_virgula(e):
+    dois = ["ana@cvp.com.br", "bruno@cvp.com.br"]
+    d = e["destinatarios"]
+    assert d["umPorLinha"] == dois
+    assert d["porVirgula"] == dois
+    assert d["porPontoEVirgula"] == dois
+    assert d["comEspacoSobrando"] == dois
+
+
+def test_separador_sozinho_nao_vira_destinatario_vazio(e):
+    d = e["destinatarios"]
+    assert d["soSeparadores"] == [] and d["vazio"] == []
+    # o que sobra na tela depois do blur é o que o nó guarda: a vírgula do fim some
+    assert d["textoDeVolta"] == "ana@cvp.com.br\nbruno@cvp.com.br"
+
+
+def test_repetido_some_sem_olhar_a_caixa(e):
+    """Espelha `validar_destinatarios` (dags/utils/email_envio.py), que descarta
+    o repetido comparando em minúsculas — endereço repetido no campo não pode
+    virar dois envios para a mesma pessoa."""
+    assert e["destinatarios"]["repetido"] == ["ana@cvp.com.br", "bruno@cvp.com.br"]
+
+
+def test_digitar_dois_enderecos_no_painel_de_verdade(e):
+    """O `PainelEmail` REAL, montado na bancada, digitado tecla a tecla.
+
+    Este é o teste que prende o defeito: exercitar só `separarDestinatarios`
+    não diria nada, porque a separação sempre funcionou — o defeito morava na
+    LIGAÇÃO entre o texto que a tela mostra e a lista que o nó guarda. O palco
+    da bancada faz o que o FluxoEditor faz (recebe o patch, devolve o nó novo).
+
+    Falsificação feita à mão antes de fechar a fase: com o `value` derivado de
+    `cfg.destinatarios.join('\\n')` de volta, este mesmo roteiro termina em
+    `["ana@cvp.com.brbruno@cvp.com.br"]` e o teste falha."""
+    p = e["painel"]
+    assert p["textoNaTela"] == "ana@cvp.com.br\nbruno@cvp.com.br"
+    assert p["listaDoNo"] == ["ana@cvp.com.br", "bruno@cvp.com.br"]
+    assert p["rotuloDoCard"] == "2 destinatários + fluxo"
+
+
+def test_painel_acompanha_mudanca_vinda_de_fora_do_campo(e):
+    """Salvar o fluxo invalida a query e o editor reconstrói os nós com a
+    resposta do servidor — que normaliza o domínio para minúsculas e pode não
+    ter o que se digitou durante o POST. O campo precisa passar a contar a
+    verdade, em vez de seguir mostrando o texto antigo.
+
+    É por isso que a sincronização compara TEXTO com o que o campo emitiu por
+    último, e não pode ser um `useEffect([cfg.destinatarios])`: a lista é um
+    array novo a cada tecla, e o efeito redesenharia o campo enquanto se digita
+    — exatamente o defeito que esta fase corrige."""
+    v = e["painel"]["vindoDeFora"]
+    assert v["antes"] == "Ana@CVP.COM.BR"
+    assert v["depois"] == "Ana@cvp.com.br"
+
+
+def test_campo_de_destinatarios_nao_redesenha_o_texto_a_cada_tecla():
+    """Trava ESTRUTURAL, complementar aos testes de comportamento acima.
+
+    O comportamento já é provado pela bancada, que monta o painel de verdade —
+    mas o minireact NÃO roda efeitos, e o caminho mais natural para o defeito
+    voltar é justamente um `useEffect([cfg.destinatarios])` "para sincronizar o
+    texto", que redesenharia o campo a cada tecla sem a bancada perceber. Esta
+    trava cobre esse ponto cego: o texto do campo só pode ser reescrito pelo
+    próprio campo (onChange/onBlur) e pela sincronização de fora, que é feita no
+    render, comparando texto."""
+    fonte = (RAIZ / "ui-react/src/components/etapas/paineis/PainelEmail.tsx").read_text(encoding="utf-8")
+    trecho = fonte[fonte.index('label="Destinatários"'):]
+    trecho = trecho[:trecho.index("</div>")]
+    assert "value={textoDest}" in trecho, "o campo voltou a derivar o texto da lista"
+    assert "separarDestinatarios(e.target.value)" in trecho, "o nó precisa receber a lista separada"
+    # O padrão exato do defeito, procurado só na região do campo: o comentário
+    # que explica o bug corrigido cita `destinatarios.join` de propósito, e
+    # varrer o arquivo inteiro faria este teste falhar por causa da explicação.
+    assert "destinatarios.join" not in trecho, "o texto do campo não pode ser remontado a cada tecla"
+
+    # Ponto cego da bancada: efeito não roda no minireact. `setTextoDest` pode
+    # aparecer em três lugares e só neles — onChange, onBlur e a sincronização
+    # do render. Um quarto (tipicamente dentro de um useEffect) traz o defeito
+    # de volta sem que nenhum outro teste perceba.
+    sem_comentarios = "\n".join(l for l in fonte.splitlines() if not l.strip().startswith("//"))
+    assert sem_comentarios.count("setTextoDest(") == 3, (
+        "o texto do campo passou a ser reescrito em outro lugar — se for um efeito "
+        "sobre cfg.destinatarios, o campo volta a apagar o separador a cada tecla")
+    assert "useEffect" not in sem_comentarios, (
+        "efeito novo neste painel: confira se ele não reescreve o campo de destinatários")

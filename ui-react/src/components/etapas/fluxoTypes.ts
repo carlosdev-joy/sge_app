@@ -156,6 +156,33 @@ export function opcoesDoModeloNo(
   return { podeCorpoLivre, faltaEscolherModelo: !podeCorpoLivre && args.modeloId == null }
 }
 
+/** Endereços digitados → lista, espelhando `validar_destinatarios` do envio
+ *  (dags/utils/email_envio.py): separa por quebra de linha, vírgula ou ponto e
+ *  vírgula, tira espaço em volta e DESCARTA o repetido sem olhar a caixa — o
+ *  envio faz o mesmo, e endereço repetido não pode virar dois e-mails.
+ *
+ *  ⚠️ Quem chama NÃO pode usar o resultado para redesenhar o campo a cada
+ *  tecla: como o separador vazio some aqui, o Enter (e a vírgula) seria apagado
+ *  no mesmo instante em que a pessoa o digita, e o 2º endereço colaria no 1º —
+ *  era o que deixava o painel do nó aceitar UM destinatário só. O campo guarda
+ *  o texto cru e chama isto para decidir o que o nó grava. */
+export function separarDestinatarios(texto: string): string[] {
+  const vistos = new Set<string>()
+  const lista: string[] = []
+  for (const bruto of `${texto ?? ''}`.split(/[\n,;]+/)) {
+    const e = bruto.trim()
+    if (!e || vistos.has(e.toLowerCase())) continue
+    vistos.add(e.toLowerCase())
+    lista.push(e)
+  }
+  return lista
+}
+
+/** Lista → texto do campo (um endereço por linha). */
+export function textoDosDestinatarios(lista: string[]): string {
+  return (lista ?? []).join('\n')
+}
+
 /** Placeholders que o operador do worker resolve (dags/utils/email_operator). */
 export const EMAIL_PLACEHOLDERS = ['pipeline', 'job', 'data', 'odate', 'linhas',
                                    'status', 'inicio', 'duracao', 'execution_id']
