@@ -51,6 +51,89 @@ BASE_LOG_ROOT = "/Projetos/BI_CVP/Logs/Airflow"
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
 
+def _solicitar_reparse(filelocs) -> None:
+    """Pede ao scheduler que leia JÁ os arquivos de DAG recém-gravados.
+
+    O Airflow varre a pasta de DAGs de tempos em tempos
+    (`scheduler.dag_dir_list_interval`, 5 min por padrão): sem isto, a DAG
+    publicada leva minutos para aparecer, e o fluxo "Gerar DAG" da UI fica
+    esperando a ativação — chegando a marcar TIMEOUT em publicação que deu
+    certo. `dag_priority_parsing_request` é a fila de prioridade do próprio
+    scheduler (Airflow 2.6+): uma linha ali faz o arquivo furar a fila.
+
+    **Best-effort, e de propósito.** Falha aqui não pode interromper a geração:
+    o arquivo já está gravado e o scheduler o leria de qualquer forma na
+    varredura seguinte. O que se perde é a pressa, não a publicação — e é por
+    isso que cada arquivo vai no seu próprio `try`: uma falha no terceiro de
+    oitenta não pode calar os setenta e sete seguintes.
+
+    Uma conexão para o lote — a regeração em massa passa por centenas de
+    pipelines, e uma conexão por arquivo seria uma conexão ao metastore para
+    gravar uma linha cada.
+    """
+    alvos = [f for f in dict.fromkeys(filelocs or []) if f]
+    if not alvos:
+        return
+    pedidos = 0
+    try:
+        import hashlib
+        from urllib.parse import unquote, urlparse
+
+        import psycopg2
+
+        bruto = (os.getenv("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN")
+                 or os.getenv("AIRFLOW__CORE__SQL_ALCHEMY_CONN") or "")
+        if not bruto.startswith(("postgresql", "postgres:")):
+            return                      # metastore que não é Postgres: nada a fazer
+        u = urlparse(re.sub(r"^postgres(ql)?\+\w+://", "postgresql://", bruto))
+        # A senha vem PERCENT-ENCODED na URL (`@` vira `%40`): sem o unquote, a
+        # conexão falharia justamente nas senhas com caractere especial.
+        #
+        # ⚠️ Os dois tetos de tempo são obrigatórios, e cobrem coisas
+        # diferentes: `connect_timeout` só limita o aperto de mão, enquanto o
+        # `statement_timeout` limita o comando já conectado. Sem o segundo, um
+        # lock nessa tabela (um `airflow db migrate` em andamento, por exemplo)
+        # penduraria o INSERT sem prazo — e como esta chamada acontece ANTES do
+        # fechamento do log da geração, o resultado seria o factory_log órfão em
+        # RUNNING que o repo já catalogou, com o operador descobrindo só pelo
+        # timeout do reconciliador, 15 minutos depois.
+        pg = psycopg2.connect(
+            host=u.hostname, port=u.port or 5432, dbname=unquote(u.path.lstrip("/")),
+            user=unquote(u.username or ""), password=unquote(u.password or ""),
+            connect_timeout=10, options="-c statement_timeout=15000",
+        )
+        try:
+            # É `autocommit` que persiste as linhas: não há commit explícito, e
+            # o `close()` do finally descartaria a transação implícita.
+            pg.autocommit = True
+            for fileloc in alvos:
+                try:
+                    with pg.cursor() as cur:
+                        # O id É o md5 do fileloc, como o próprio Airflow faz
+                        # (`generate_md5_hash` em models/dagbag.py): a tabela não
+                        # tem unique em `fileloc` — cabe índice demais para o
+                        # MySQL — e o md5 na PK é o jeito de o modelo impor a
+                        # unicidade. Usando o mesmo id, o ON CONFLICT volta a
+                        # valer e a deduplicação é ATÔMICA, o que um
+                        # `WHERE NOT EXISTS` não daria com duas gerações
+                        # simultâneas.
+                        cur.execute(
+                            "INSERT INTO dag_priority_parsing_request (id, fileloc) "
+                            "VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
+                            (hashlib.md5(fileloc.encode()).hexdigest(), fileloc),
+                        )
+                    pedidos += 1
+                except Exception as e:   # noqa: BLE001 — um arquivo não derruba o lote
+                    print(f"[FACTORY] aviso: reparse nao solicitado para {fileloc} "
+                          f"({type(e).__name__}: {e})")
+        finally:
+            pg.close()
+        if pedidos:
+            print(f"[FACTORY] reparse prioritario solicitado para {pedidos} arquivo(s)")
+    except Exception as e:
+        print(f"[FACTORY] aviso: reparse nao solicitado ({type(e).__name__}: {e})")
+
+
 def _get_output_root():
     try:
         root = Variable.get("DAG_FACTORY_OUTPUT").rstrip("/")
@@ -3123,6 +3206,8 @@ def gerar_dags(**context):
         jobs_by_pipeline[_chave_ci(j["pipeline_name"])].append(j)
 
     geradas, erros = [], []
+    # Arquivos gravados nesta corrida, para o reparse prioritário no fim do lote.
+    reparse_pedidos: list[str] = []
 
     # Isolamento de pendências de terceiros: a sp_etl_pipelines_pendentes_criar
     # é GLOBAL — devolve TODOS os pendentes (dag_criada=0 AND active=1), não só
@@ -3221,6 +3306,15 @@ def gerar_dags(**context):
         try:
             with open(dest_file, "w", encoding="utf-8") as f:
                 f.write(source)
+            # O ALVO do pedido fura a fila na hora, não no fim do lote: a SP de
+            # pendentes é GLOBAL, então o clique "Gerar DAG" de um pipeline entra
+            # num lote que pode ter dezenas de pendentes de terceiros à frente —
+            # e é justamente esse clique que fica esperando a ativação. Os demais
+            # vão juntos no fim, numa conexão só.
+            if _alvos_ci is not None and _chave_ci(pname) in _alvos_ci:
+                _solicitar_reparse([dest_file])
+            else:
+                reparse_pedidos.append(dest_file)
             msg = f"Arquivo da DAG gravado em {dest_file}"
             print(f"[FACTORY] OK -> {dest_file}")
             steps_log.append({"tipo": "gerada", "msg": msg})
@@ -3281,6 +3375,11 @@ def gerar_dags(**context):
                 steps_log.append({"tipo": "erro", "msg": f"Erro ao atualizar cadastro de '{pname}': {e}"})
 
         geradas.append(pname)
+
+    # Fora do laço: uma conexão para o lote todo. Se a geração morrer no meio, os
+    # pedidos não são enviados — e o scheduler lê os arquivos na varredura
+    # seguinte, como sempre leu.
+    _solicitar_reparse(reparse_pedidos)
 
     resumo = f"{len(geradas)} DAG(s) regenerada(s) com sucesso, {len(erros)} erro(s)"
     print(f"\n[FACTORY] Geradas: {len(geradas)} | Erros: {len(erros)}")
