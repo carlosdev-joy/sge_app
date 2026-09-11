@@ -232,8 +232,10 @@ def test_notificacao_teams_segue_intacta_ao_lado_do_email(factory):
         _job("AvisaEquipe", jtype="email", order=3, depends="CargaVida", notify=CONFIG_NO),
     ]
     src = factory._generate_dag_source(_pipeline(), jobs)
-    assert "t_notif_Card = PythonOperator(" in src and "_grupo_id = 3" in src
+    assert "t_notif_Card = PythonOperator(" in src
     assert "t_email_AvisaEquipe = EmailOperator(" in src
+    # F3: o nó Teams também deixou de embutir a config (grupo/modelo/mensagem)
+    assert "_grupo_id = 3" not in src and "fim" not in src.split("def _notify_Card")[1][:300]
     _exec_source(src)
 
 

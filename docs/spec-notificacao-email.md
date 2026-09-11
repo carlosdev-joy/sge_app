@@ -1,5 +1,5 @@
 # Spec: Notificação por e-mail — nó `email` e configuração no Admin — Orquestra
-Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F2; F1 mergeada na PR #388)
+Data: 2026-09-10 · Status: aprovada 2026-09-10 · em execução (F3; F1 = PR #388, F2 = PR #389, mergeadas)
 
 Origem: documento do usuário `2026-09-10-notificacao-email.md` (enviado pelos
 Utilitários do DEV), avaliado contra o código em 2026-09-10. Esta spec mantém o
@@ -293,6 +293,19 @@ i) F3: regerar as DAGs com nó de notificação; trocar o template na tela → p
      **não** foi tocada: além do tipo, aquele caminho exige origem/destino de
      lineage, que nó especial nenhum tem — consertá-la é replicar o
      `sem_lineage` da API num caminho que a F2 não usa. Fio solto registrado.
+- **Achados da revisão adversarial da F3 (2026-09-11), corrigidos:** a trava que
+  eu tinha acrescentado ao nó de notificação (falhar quando não há canal)
+  guardava o caso **impossível** — a API e a tela já exigem o canal para salvar
+  — e deixava passar o real: canal apagado, desativado ou sem webhook, que
+  continuava caindo no webhook padrão do Variable (task verde, card no canal
+  errado). Pior, o `except Exception` genérico fazia um **aviso lateral
+  derrubar a corrida**: nó apagado ou renomeado sem republicar, ou banco de
+  metadados fora, reprovavam a etapa, travando o Dataset e a cascata de
+  dependentes. Decisão final: a task de notificação **nunca** derruba o
+  pipeline (era assim antes da F3 e continua), e **nunca** posta sem canal
+  resolvido — os dois casos viram `[NOTIF] card NAO enviado` no log da etapa.
+  Os testes passaram a EXECUTAR o helper (o anterior só procurava texto no
+  código gerado, e por isso não pegou nada disso).
 - **Achados da revisão adversarial da F2 (2026-09-11), todos corrigidos:**
   1. **Decisão com nó especial no ramo gerava `task_id` inexistente.** O
      `_decision_block` só conhecia as notificações: qualquer outro membro do

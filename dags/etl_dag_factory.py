@@ -537,19 +537,23 @@ def _notify_block(job, notify_cfg, upstream_jobs, branch_reachable=False):
 
     Espelha o nó de Decisão por NÃO ter t_start/t_end (sem lineage em
     etl_job_execution — fica fora de end_tasks), mas, diferente do roteador,
-    ELE RODA: lê notify_json (grupo_id/template_id/mensagem), resolve o webhook
-    do grupo em etl_msg_grupo e o texto (mensagem inline; se vazia, o corpo do
-    etl_msg_template), interpola {pipeline} {job} {linhas} {status} {data} e
-    chama _teams_post_card.
+    ELE RODA: resolve o webhook do grupo em etl_msg_grupo e o texto (mensagem
+    inline; se vazia, o corpo do etl_msg_template), interpola
+    {pipeline} {job} {linhas} {status} {data} e chama _teams_post_card.
+
+    ⚠️ F3 da spec docs/spec-notificacao-email.md: canal, modelo e mensagem NÃO
+    entram mais no código gerado. O bloco emite só a identidade do nó e o
+    `_resolve_e_envia_notificacao` lê `notify_json` do banco no disparo — é o
+    que faz trocar o texto na tela valer na próxima corrida, sem republicar a
+    DAG (o nó de e-mail já nasceu assim, na F2). `notify_cfg` continua no
+    parâmetro só para o factory saber que o nó existe.
 
     É tipicamente o ramo_falso de uma decisão — usa trigger_rule tolerante a skip
     (NONE_FAILED_MIN_ONE_SUCCESS) quando alcançável a partir de um branch."""
     name  = job["job_name"]
     vname = _varname(name)
-    grupo_id    = notify_cfg.get("grupo_id")
-    template_id = notify_cfg.get("template_id")
-    mensagem    = notify_cfg.get("mensagem") or ""
-    # Jobs a montante (no run) cujo rows_out alimenta {linhas}.
+    # Jobs a montante (no run) cujo rows_out alimenta {linhas}. É TOPOLOGIA do
+    # desenho (já está na DAG pelas dependências), não configuração do nó.
     up_names = list(upstream_jobs or [])
     rule = (
         '    trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,'
@@ -558,12 +562,9 @@ def _notify_block(job, notify_cfg, upstream_jobs, branch_reachable=False):
     return "\n".join(filter(None, [
         f'def _notify_{vname}(**context):',
         f'    _job = {name!r}',
-        f'    _grupo_id = {grupo_id!r}',
-        f'    _template_id = {template_id!r}',
-        f'    _mensagem = {mensagem!r}',
         f'    _up_jobs = {up_names!r}',
         f'    _exec_id = context.get("ts_nodash")',
-        f'    _resolve_e_envia_notificacao(_job, _grupo_id, _template_id, _mensagem, _up_jobs, _exec_id, context)',
+        f'    _resolve_e_envia_notificacao(_job, _up_jobs, _exec_id, context)',
         f'',
         f't_notif_{vname} = PythonOperator(',
         f'    task_id={name!r},',
@@ -576,11 +577,11 @@ def _notify_block(job, notify_cfg, upstream_jobs, branch_reachable=False):
 def _email_block(job, branch_reachable=False):
     """Bloco de um nó de E-mail (spec docs/spec-notificacao-email.md, F2).
 
-    Ao contrário do `_notify_block` — que embute grupo_id/template_id/mensagem
-    como LITERAIS no código gerado — aqui o bloco emite só os NOMES
-    (pipeline/job): o `EmailOperator` lê `notify_json` e a lista do pipeline do
-    banco na hora da corrida. É o que faz "mudar destinatários na tela vale na
-    próxima corrida, sem republicar a DAG" (critério de aceite da F2).
+    O bloco emite só os NOMES (pipeline/job): o `EmailOperator` lê `notify_json`
+    e a lista do pipeline do banco na hora da corrida. É o que faz "mudar
+    destinatários na tela vale na próxima corrida, sem republicar a DAG"
+    (critério de aceite da F2). O `_notify_block` do Teams nasceu embutindo a
+    config como literais e passou a fazer o mesmo na F3.
 
     Sem t_start/t_end, como os demais nós especiais: é efeito colateral, não
     tem lineage em etl_job_execution. Alcançável a partir de um branch, usa a
@@ -1199,8 +1200,41 @@ def _generate_dag_source(pipeline, jobs):
         "        out = out.replace('{' + k + '}', str(v) if v is not None else '')",
         "    return out",
         "",
-        "def _resolve_e_envia_notificacao(job, grupo_id, template_id, mensagem, up_jobs, execution_id, context):",
+        "def _resolve_e_envia_notificacao(job, up_jobs, execution_id, context):",
         "    hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)",
+        "    # 0) Config do NO, lida do banco a cada corrida (F3): trocar canal,",
+        "    # modelo ou mensagem na tela vale na proxima execucao, sem republicar.",
+        "    grupo_id = None; template_id = None; mensagem = ''",
+        "    _erro_cfg = None",
+        "    try:",
+        "        _n = hook.get_first(",
+        '            "SELECT notify_json FROM dbo.etl_pipeline_job "',
+        '            "WHERE pipeline_name=%s AND job_name=%s",',
+        "            parameters=(PIPELINE_NAME, job),",
+        "        )",
+        "    except Exception as _e:",
+        "        _n = None; _erro_cfg = f'leitura da config falhou: {_e}'",
+        "    if _erro_cfg is None and not (_n and _n[0]):",
+        "        _erro_cfg = 'sem linha em etl_pipeline_job (no apagado ou renomeado sem republicar)'",
+        "    if _erro_cfg is None:",
+        "        try:",
+        "            _cfg = json.loads(_n[0])",
+        "            if not isinstance(_cfg, dict):",
+        "                raise ValueError('notify_json nao e um objeto')",
+        "            grupo_id = _cfg.get('grupo_id')",
+        "            template_id = _cfg.get('template_id')",
+        "            mensagem = _cfg.get('mensagem') or ''",
+        "        except Exception as _e:",
+        "            _erro_cfg = f'notify_json invalido: {_e}'",
+        "    if _erro_cfg is not None or grupo_id is None:",
+        "        # NAO derruba a corrida: o card e aviso LATERAL e esta task nunca",
+        "        # reprovou um pipeline — fazer isso agora travaria o Dataset e a",
+        "        # cascata de dependentes por causa de um aviso. Tambem NAO posta:",
+        "        # sem canal resolvido, o unico destino possivel seria o webhook",
+        "        # padrao, ou seja, o canal errado.",
+        "        print(f'[NOTIF] card NAO enviado para o no {job}: '",
+        "              + (_erro_cfg or 'sem canal (grupo) na configuracao do no'))",
+        "        return",
         "    # 1) Webhook do grupo (canal Teams). Sem webhook → cai no Variable padrão.",
         "    webhook = None; titulo = None",
         "    try:",
@@ -1303,7 +1337,13 @@ def _generate_dag_source(pipeline, jobs):
         "        except Exception as _e:",
         "            print(f'[NOTIF] falha ao postar no webhook do grupo: {_e}')",
         "    else:",
-        "        _teams_post_card(title=titulo_final, subtitle=corpo_final, facts=facts, status=card_status, button=button)",
+        "        # Canal configurado que nao resolve (grupo apagado, inativo ou sem",
+        "        # webhook): o card NAO vai para o webhook padrao. Ir para la e o",
+        "        # falso verde classico — task verde, aviso no canal errado, e quem",
+        "        # deveria receber nao recebe. Sem destino, so o registro.",
+        "        print(f'[NOTIF] card NAO enviado para o no {job}: grupo {grupo_id} '",
+        "              + 'sem webhook ativo (apagado, inativo ou webhook_url vazio) — '",
+        "              + 'confira em Admin > Mensagens')",
         "",
         "def _resolve_e_roda_sql(sql, conn_id, database, context, on_error='nulo'):",
         "    # Nó SQL: roda o SELECT e devolve o valor ESCALAR (1a coluna da 1a linha),",

@@ -131,3 +131,124 @@ def test_notificacao_depende_de_notificacao(factory):
     ast.parse(src)
     _exec_source(src)
     assert "t_notif_N1 >> t_notif_N2" in src
+
+
+# ── F3: config do nó lida em runtime ────────────────────────────────────────
+
+def test_ancora_dag_nao_embute_canal_modelo_nem_mensagem(factory):
+    """⛔ Âncora da F3 (spec docs/spec-notificacao-email.md).
+
+    Até aqui o factory escrevia `_grupo_id = 7`, `_template_id = 42` e a
+    mensagem inteira dentro do código gerado: trocar o texto do card na tela
+    não mudava nada até alguém regerar a DAG — e ninguém sabia disso. Agora o
+    bloco emite só a identidade do nó, e o helper lê `notify_json` do banco no
+    disparo, como o nó de e-mail já faz desde a F2.
+    """
+    cfg = {"grupo_id": 7, "template_id": 42, "mensagem": "Carga {pipeline} terminou"}
+    jobs = [_job("Carga", order=1),
+            _job("Avisa", jtype="notificacao", order=2, depends="Carga", notify=cfg)]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+
+    bloco = src[src.index("def _notify_Avisa"):src.index("t_notif_Avisa = PythonOperator(")]
+    for vazado in ("_grupo_id", "_template_id", "_mensagem", "42", "Carga {pipeline} terminou"):
+        assert vazado not in bloco, f"config do nó ainda embutida na DAG: {vazado!r}"
+    assert "_resolve_e_envia_notificacao(_job, _up_jobs, _exec_id, context)" in bloco
+
+    # e o helper passou a buscar a config por (pipeline, job)
+    assert "SELECT notify_json FROM dbo.etl_pipeline_job" in src
+    assert "parameters=(PIPELINE_NAME, job)," in src
+    _exec_source(src)
+
+
+def _helper(factory, **hook_resp):
+    """Executa o fonte gerado e devolve (helper, cards postados, hook de mentira).
+
+    Verificar o comportamento pela EXECUÇÃO, não por `in src`: um teste que só
+    procura texto passaria com a trava guardando a condição errada — foi
+    exatamente o que a revisão adversarial desta fase pegou."""
+    src = factory._generate_dag_source(
+        _pipeline(), [_job("Avisa", jtype="notificacao", order=1,
+                           notify={"grupo_id": 1, "template_id": None, "mensagem": "oi {pipeline}"})])
+    cards, posts = [], []
+
+    class _Hook:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_first(self, sql, parameters=None):
+            if "notify_json" in sql:
+                if hook_resp.get("erro_cfg"):
+                    raise Exception(hook_resp["erro_cfg"])
+                return hook_resp.get("notify_json", (None,))
+            if "etl_msg_grupo" in sql:
+                if hook_resp.get("erro_grupo"):
+                    raise Exception(hook_resp["erro_grupo"])
+                return hook_resp.get("grupo", None)
+            return None
+
+    ns = {}
+    exec(compile(src, "<dag>", "exec"), ns)
+    ns["MsSqlHook"] = _Hook
+    ns["_teams_post_card"] = lambda **k: cards.append(k)
+    ns["requests"] = type("R", (), {"post": staticmethod(lambda *a, **k: posts.append((a, k)) or
+                                                        type("Resp", (), {"status_code": 200})())})
+    return ns["_resolve_e_envia_notificacao"], cards, posts
+
+
+def test_ancora_canal_que_nao_resolve_nao_cai_no_webhook_padrao(factory):
+    """⛔ Âncora. Grupo apagado, inativo ou sem webhook: antes o card ia para o
+    webhook padrão do Variable — task VERDE, aviso no canal errado, e quem
+    deveria receber não recebia. É o falso verde que a revisão desta fase
+    encontrou. Agora o card não é enviado e o log da task diz o motivo."""
+    import json as _json
+    cfg = (_json.dumps({"grupo_id": 7, "template_id": None, "mensagem": "oi"}),)
+    for cenario in ({"grupo": None},                  # grupo apagado ou inativo
+                    {"grupo": ("",)},                 # webhook_url vazio
+                    {"erro_grupo": "timeout"}):       # erro ao consultar o grupo
+        helper, cards, posts = _helper(factory, notify_json=cfg, **cenario)
+        helper("Avisa", [], "20260911T060000", {"ti": None})
+        assert cards == [], f"card foi para o webhook padrão em {cenario}"
+        assert posts == [], f"card postado sem canal resolvido em {cenario}"
+
+
+def test_ancora_nada_disso_derruba_a_corrida(factory):
+    """⛔ Âncora. O card é aviso LATERAL e esta task nunca reprovou pipeline.
+    Fazer isso agora travaria o Dataset e a cascata de dependentes por causa de
+    um aviso — o nó apagado ou renomeado sem republicar viraria pipeline
+    vermelho. Nenhum destes cenários pode levantar."""
+    import json as _json
+    cenarios = [
+        {"notify_json": (None,)},                                   # nó apagado/renomeado
+        {"erro_cfg": "Login timeout expired"},                      # banco de metadados fora
+        {"notify_json": ("{lixo",)},                                # JSON corrompido
+        {"notify_json": (_json.dumps(["lista"]),)},                 # JSON que não é objeto
+        {"notify_json": (_json.dumps({"mensagem": "x"}),)},         # sem grupo_id
+    ]
+    for c in cenarios:
+        helper, cards, posts = _helper(factory, **c)
+        helper("Avisa", [], "20260911T060000", {"ti": None})        # não levanta
+        assert cards == [] and posts == [], f"postou sem config em {c}"
+
+
+def test_card_sai_com_a_config_lida_do_banco(factory):
+    """O caminho feliz: grupo com webhook, mensagem vinda da tabela."""
+    import json as _json
+    cfg = (_json.dumps({"grupo_id": 7, "template_id": None, "mensagem": "oi {pipeline}"}),)
+    helper, cards, posts = _helper(factory, notify_json=cfg, grupo=("https://webhook.exemplo/x",))
+    helper("Avisa", [], "20260911T060000", {"ti": None})
+    assert len(posts) == 1, "o card não foi postado no webhook do grupo"
+    url, payload = posts[0][0][0], posts[0][1]["json"]
+    assert url == "https://webhook.exemplo/x"
+    # a mensagem veio da TABELA e o {pipeline} foi resolvido
+    assert "oi PIPE_NOTIF" in str(payload)
+    assert cards == []          # não caiu no webhook padrão do Variable
+
+
+def test_jobs_a_montante_seguem_no_codigo_gerado(factory):
+    """`_up_jobs` é TOPOLOGIA (as dependências já estão na DAG), não config:
+    continua embutido, e é dele que sai o {linhas}."""
+    jobs = [_job("Carga", order=1),
+            _job("Avisa", jtype="notificacao", order=2, depends="Carga",
+                 notify={"grupo_id": 1, "template_id": None, "mensagem": ""})]
+    src = factory._generate_dag_source(_pipeline(), jobs)
+    assert "_up_jobs = ['Carga']" in src
