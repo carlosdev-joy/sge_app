@@ -185,7 +185,12 @@ export function textoDosDestinatarios(lista: string[]): string {
 
 /** Placeholders que o operador do worker resolve (dags/utils/email_operator). */
 export const EMAIL_PLACEHOLDERS = ['pipeline', 'job', 'data', 'odate', 'linhas',
-                                   'status', 'inicio', 'duracao', 'execution_id']
+                                   'status', 'inicio', 'duracao', 'execution_id',
+                                   // `{tabela}` = resultado do nó SQL imediatamente a
+                                   // montante; com mais de um, qualifique: {tabela:NOME_DO_NO}.
+                                   // No assunto ele vira um resumo ("3 linhas × 2 colunas"),
+                                   // porque tabela não cabe em cabeçalho de e-mail.
+                                   'tabela']
 
 // Resumo curto p/ o card: quem recebe, que é o que se quer ver sem abrir.
 export function emailNoLabel(cfg: EmailNoConfig): string {

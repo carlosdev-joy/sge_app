@@ -135,8 +135,16 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
   const erros = errosDoEmailNo(cfg, raizes, temCatalogo ? { exigirModelo, isNew } : undefined)
   // Marcador que o operador não conhece sai literal no e-mail — melhor avisar
   // aqui do que descobrir na caixa de quem recebeu.
-  const desconhecidos = marcadoresDesconhecidos(
-    `${cfg.assunto} ${cfg.corpo} ${cfg.anexo?.nome ?? ''}`)
+  //
+  // ⚠️ O NOME DO ANEXO tem uma lista MENOR: `{tabela}` não resolve ali (o anexo
+  // é um arquivo do servidor, procurado por nome), e um `relatorio_{tabela}.xlsx`
+  // faria o envio sair SEM anexo, com um aviso discreto no log. Sem esta
+  // separação, a chave nova passaria a ser aceita em silêncio nos três campos.
+  const desconhecidos = [
+    ...marcadoresDesconhecidos(`${cfg.assunto} ${cfg.corpo}`),
+    ...marcadoresDesconhecidos(cfg.anexo?.nome ?? '',
+                               EMAIL_PLACEHOLDERS.filter(p => p !== 'tabela')),
+  ].filter((m, i, todos) => todos.indexOf(m) === i)
 
   const anexoLigado = cfg.anexo != null
   function alternarAnexo(ligado: boolean) {

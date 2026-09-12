@@ -724,6 +724,42 @@ function tela(params, previa, extra, jobName) {
       // caixa errada é o engano mais provável e passava calado
       P.marcadoresDesconhecidos('{ODATE} {Pipeline} {pipeline}'),
     ],
+    // F5: o render da tabela do nó SQL. Os MESMOS casos rodam no Python
+    // (dags/utils/sql_node.py) e o veredito tem de bater byte a byte — a prévia
+    // é o que a pessoa aprova antes de salvar.
+    tabelas: {
+      simples: P.tabelaHtml({ columns: ['Produto', 'Qtd'], rows: [['ACIDO A', '3'], ['DIPIRONA', '1']],
+                              total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      perigosa: P.tabelaHtml({ columns: ['Razão & Cia'], rows: [['<b>negrito</b>'], [null]],
+                               total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      truncada: P.tabelaHtml({ columns: ['n'], rows: [['1'], ['2']],
+                               total: 60, truncado: true, havia_mais: false, colunas_ocultas: 3 }),
+      teto: P.tabelaHtml({ columns: ['n'], rows: [['1']],
+                           total: 1000, truncado: true, havia_mais: true, colunas_ocultas: 0 }),
+      semLinhas: P.tabelaHtml({ columns: ['a', 'b'], rows: [],
+                                total: 0, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      vazia: P.tabelaHtml({ columns: [], rows: [], total: 0, truncado: false,
+                            havia_mais: false, colunas_ocultas: 0 }),
+    },
+    // A tabela em TEXTO (corpo livre sem HTML) — espelho de `tabela_texto`.
+    tabelasTexto: {
+      simples: P.tabelaTexto({ columns: ['Produto', 'Qtd'], rows: [['ACIDO A', '3'], ['DIPIRONA', '1']],
+                               total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      comVazio: P.tabelaTexto({ columns: ['a', 'b'], rows: [['x', null]],
+                                total: 1, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      truncada: P.tabelaTexto({ columns: ['n'], rows: [['1']],
+                                total: 60, truncado: true, havia_mais: false, colunas_ocultas: 1 }),
+      semLinhas: P.tabelaTexto({ columns: ['a', 'b'], rows: [],
+                                 total: 0, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      vazia: P.tabelaTexto({ columns: [], rows: [], total: 0, truncado: false,
+                             havia_mais: false, colunas_ocultas: 0 }),
+    },
+    // O corpo NÃO-HTML (default do nó novo) recebe a tabela em texto, não markup
+    exemploTexto: P.interpolarExemplo('Segue:\n{tabela}', false),
+    exemploHtml: P.interpolarExemplo('Segue:\n{tabela}', true),
+    // `{tabela}` no NOME DO ANEXO é marcador inválido: ali ele nunca resolve
+    desconhecidosNoAnexo: P.marcadoresDesconhecidos('relatorio_{tabela}_{odate}.xlsx',
+                                                    ['pipeline', 'odate', 'data', 'job']),
     dicas: [P.dicaDoMarcador('ODATE'), P.dicaDoMarcador('Pipeline'),
             P.dicaDoMarcador('nao_existe'), P.dicaDoMarcador('pipeline')],
   }

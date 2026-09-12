@@ -100,7 +100,27 @@ def _chaves_do_operador() -> set[str]:
     # aspas simples E duplas; o operador usa duplas, mas nada impede a troca
     chaves = set(re.findall(r"""["']([A-Za-z_]+)["']\s*:""", corpo))
     assert len(chaves) >= 5, f"leitura do mapa do operador suspeita: {chaves}"
-    return chaves
+
+    # Chaves que NÃO vivem no `_mapa` de propósito: `{tabela}` é renderizada de
+    # um jeito no corpo HTML, de outro no corpo em texto e vira resumo no
+    # assunto, então ela é montada em `_marcadores_de_tabela` /
+    # `_marcadores_do_assunto`, já sabendo o destino. Declarar aqui mantém a
+    # âncora útil: chave nova fora do mapa sem passar por esta lista faz a
+    # paridade com a prévia e com o seletor quebrar, que é o ponto.
+    fora_do_mapa = {"tabela"}
+    # E o inverso: toda chave montada no estilo `marcadores["x"] = …` tem de
+    # estar declarada acima. Sem esta volta, uma chave futura criada do mesmo
+    # jeito passaria despercebida e os três conjuntos divergiriam com o teste
+    # VERDE — a "segunda lista à mão" do gotcha do RBAC_RECURSOS.
+    montadas = set(re.findall(r'marcadores\[["\']([a-z_]+)["\']\]\s*=', fonte))
+    assert montadas <= fora_do_mapa, (
+        f"chave montada fora do `_mapa` e não declarada no teste: "
+        f"{sorted(montadas - fora_do_mapa)}")
+    for chave in sorted(fora_do_mapa):
+        assert f'marcadores["{chave}"]' in fonte, (
+            f"`{chave}` declarada como chave de fora do mapa, mas não está no "
+            "operador — a lista e o código divergiram")
+    return chaves | fora_do_mapa
 
 
 def test_ancora_exemplo_cobre_exatamente_os_marcadores_do_operador(previa):

@@ -274,16 +274,24 @@ def _preparar(mod, monkeypatch, hook, client):
 
 
 class _Ti:
-    def __init__(self, xcoms=None):
+    """`xcoms` = XCom default (o `rows_out` das etapas); `tabelas` = a chave
+    `tabela` que o nó SQL publica (F4)."""
+
+    def __init__(self, xcoms=None, tabelas=None):
         self.xcoms = xcoms or {}
+        self.tabelas = tabelas or {}
 
-    def xcom_pull(self, task_ids=None):
-        return self.xcoms.get(task_ids)
+    def xcom_pull(self, task_ids=None, key=None):
+        if key in (None, "return_value"):
+            return self.xcoms.get(task_ids)
+        if key == "tabela":
+            return self.tabelas.get(task_ids)
+        return None
 
 
-def _contexto(xcoms=None, run_id="manual__2026-09-11"):
+def _contexto(xcoms=None, run_id="manual__2026-09-11", tabelas=None):
     import datetime as dt
-    return {"ti": _Ti(xcoms), "ds_nodash": "20260911", "ts_nodash": "20260911T060000",
+    return {"ti": _Ti(xcoms, tabelas), "ds_nodash": "20260911", "ts_nodash": "20260911T060000",
             "dag_run": types.SimpleNamespace(run_id=run_id,
                                              start_date=dt.datetime(2026, 9, 11, 6, 0, 0))}
 
@@ -590,3 +598,100 @@ def test_modelo_desativado_continua_valendo_para_quem_ja_usa(mod, monkeypatch):
     sql_modelo = [q for q in hook.consultas if "etl_email_modelo" in q]
     assert sql_modelo and "ativo" not in sql_modelo[0].lower(), (
         "a leitura do modelo no envio não pode filtrar por ativo")
+
+
+# ── {tabela}: o resultado do nó SQL dentro do aviso (F5) ────────────────────
+
+_TABELA = {"columns": ["Produto", "Qtd"], "rows": [["ACIDO A", "3"], ["DIPIRONA", "1"]],
+           "total": 2, "truncado": False, "havia_mais": False, "colunas_ocultas": 0}
+
+
+def test_tabela_do_no_sql_a_montante_entra_no_corpo(mod, monkeypatch):
+    """O pedido que originou a spec: o e-mail mostra o que a consulta trouxe."""
+    no = dict(NO_PADRAO, corpo="Resultado:\n{tabela}", html=True)
+    hook, client = _Hook(no=no), _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.upstream_task_ids = {"CONTA_SANCOES"}
+    op.execute(_contexto(tabelas={"CONTA_SANCOES": _TABELA}))
+
+    corpo = client._entrada.escrito.decode()
+    assert "ACIDO A" in corpo and "DIPIRONA" in corpo
+    assert "{tabela}" not in corpo
+
+
+def test_tabela_qualificada_escolhe_o_no(mod, monkeypatch):
+    no = dict(NO_PADRAO, corpo="{tabela:CONTA_SANCOES}", html=True)
+    hook, client = _Hook(no=no), _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.upstream_task_ids = {"CONTA_SANCOES", "OUTRO_SQL"}
+    outra = dict(_TABELA, columns=["Zzz"], rows=[["nao era essa"]])
+    op.execute(_contexto(tabelas={"CONTA_SANCOES": _TABELA, "OUTRO_SQL": outra}))
+
+    corpo = client._entrada.escrito.decode()
+    assert "ACIDO A" in corpo and "nao era essa" not in corpo
+
+
+def test_com_dois_nos_sql_o_marcador_sem_nome_nao_adivinha(mod, monkeypatch):
+    """⛔ Escolher um dos dois faria o aviso sair com o resultado da consulta
+    ERRADA — pior do que não sair. O bloco diz "(sem resultado)" e o log ensina
+    a qualificar."""
+    no = dict(NO_PADRAO, corpo="{tabela}", html=True)
+    hook, client = _Hook(no=no), _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.upstream_task_ids = {"UM", "DOIS"}
+    op.execute(_contexto(tabelas={"UM": _TABELA, "DOIS": dict(_TABELA)}))
+
+    corpo = client._entrada.escrito.decode()
+    assert "(sem resultado)" in corpo and "ACIDO A" not in corpo
+
+
+def test_marcador_de_no_inexistente_fica_literal(mod, monkeypatch):
+    """Regra da casa: marcador desconhecido aparece como está, em vez de sumir
+    ou virar a tabela de outro nó.
+
+    ⚠️ A tela NÃO confere o nome do nó (o painel não conhece o grafo a
+    montante), então quem denuncia é o log da task — por isso o operador avisa
+    explicitamente quando um `{tabela:NOME}` não resolve."""
+    no = dict(NO_PADRAO, corpo="{tabela:NAO_EXISTE}", html=True)
+    hook, client = _Hook(no=no), _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.upstream_task_ids = {"CONTA_SANCOES"}
+    op.execute(_contexto(tabelas={"CONTA_SANCOES": _TABELA}))
+    assert "{tabela:NAO_EXISTE}" in client._entrada.escrito.decode()
+
+
+def test_sem_no_sql_a_montante_o_email_sai_assim_mesmo(mod, monkeypatch):
+    """Nó de e-mail depois de uma etapa comum: `{tabela}` não pode derrubar o
+    envio nem deixar um buraco no meio do aviso."""
+    no = dict(NO_PADRAO, corpo="antes {tabela} depois", html=True)
+    hook, client = _Hook(no=no), _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.upstream_task_ids = {"log_end_CARGA"}
+    saida = op.execute(_contexto(xcoms={"CARGA": '{"rows_out": 10}'}))
+    assert saida["status"] == "enviado"
+    assert "(sem resultado)" in client._entrada.escrito.decode()
+
+
+def test_corpo_em_texto_recebe_a_tabela_em_texto(mod, monkeypatch):
+    """"Corpo livre" em texto simples não pode receber markup."""
+    no = dict(NO_PADRAO, corpo="{tabela}", html=False)
+    hook, client = _Hook(no=no), _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.upstream_task_ids = {"CONTA_SANCOES"}
+    op.execute(_contexto(tabelas={"CONTA_SANCOES": _TABELA}))
+    corpo = client._entrada.escrito.decode()
+    assert "ACIDO A" in corpo and "<td style" not in corpo
+
+
+def test_no_assunto_a_tabela_vira_resumo(mod, monkeypatch):
+    """⛔ Markup ou quebra de linha no assunto faria `validar_assunto` recusar a
+    mensagem DEPOIS de resolver os marcadores — a etapa falharia por algo que a
+    tela deixou escrever."""
+    no = dict(NO_PADRAO, assunto="[Orquestra] {tabela}", corpo="x", html=True)
+    hook, client = _Hook(no=no), _Client(rc=0)
+    op = _preparar(mod, monkeypatch, hook, client)
+    op.upstream_task_ids = {"CONTA_SANCOES"}
+    op.execute(_contexto(tabelas={"CONTA_SANCOES": _TABELA}))
+    bruto = client._entrada.escrito.decode().replace("\n ", "")
+    assert "Subject: [Orquestra] 2 linhas" in bruto
+    assert "<table" not in bruto.split("\n\n")[0]

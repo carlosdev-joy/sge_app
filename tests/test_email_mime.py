@@ -47,7 +47,8 @@ from utils import email_envio as ew  # noqa: E402
 
 FUNCOES = ["_sem_quebra", "validar_email", "normalizar_lista", "validar_destinatarios", "validar_raizes", "validar_dominios",
            "validar_limite_anexo", "validar_assunto", "validar_corpo", "pasta_do_anexo", "validar_anexo_cadastro",
-           "caminho_do_anexo", "interpolar", "documento_html", "montar_mensagem"]
+           "caminho_do_anexo", "interpolar", "documento_html", "html_para_texto",
+           "montar_mensagem"]
 CONSTANTES = ["LIMITE_ASSUNTO", "LIMITE_CORPO", "LIMITE_DESTINATARIOS", "LIMITE_ANEXO_MB_MIN", "LIMITE_ANEXO_MB_MAX",
               "LIMITE_ANEXO_MB_PADRAO", "LIMITE_NOME_ANEXO", "LIMITE_PASTA_ANEXO"]
 
