@@ -314,6 +314,65 @@ class EmailOperator(BaseOperator):
             "status": self._status_geral(hook, context),
         }
 
+    # ── tabela do nó SQL (F5 da spec de tabela do SQL) ──────────────────────
+    def _tabelas_a_montante(self, context) -> dict:
+        """`{nome do nó SQL: tabela}` dos nós imediatamente a montante.
+
+        A tabela é publicada pelo nó SQL em `xcom_push(key="tabela")` (F4). Nó
+        que não é SQL simplesmente não tem a chave, e nó SQL de uma DAG gerada
+        ANTES da F4 também não — nesse caso o marcador se comporta como se não
+        houvesse resultado, e o pipeline precisa ser republicado para ganhar o
+        recurso. Nada aqui pode levantar: o e-mail sai sem a tabela, nunca falha
+        por causa dela."""
+        ti = (context or {}).get("ti")
+        if ti is None:
+            return {}
+        achadas = {}
+        for job in self._jobs_a_montante():
+            try:
+                dados = ti.xcom_pull(task_ids=job, key="tabela")
+            except Exception as e:  # noqa: BLE001
+                self.log.info("[EMAIL] tabela de %s indisponível (%s)", job, e)
+                continue
+            if isinstance(dados, dict) and dados.get("columns") is not None:
+                achadas[job] = dados
+        return achadas
+
+    def _marcadores_de_tabela(self, context, html: bool) -> dict:
+        """As chaves `tabela` e `tabela:<NO>` já renderizadas.
+
+        `{tabela}` sem qualificador só resolve quando há UM nó SQL a montante.
+        Com dois, escolher um seria adivinhar — e o aviso sairia com o resultado
+        da consulta errada, que é pior do que não sair. Nesse caso o bloco diz
+        "(sem resultado)" e o log explica o que fazer (usar `{tabela:NOME}`)."""
+        from utils import sql_node as sq
+
+        render = sq.tabela_html if html else sq.tabela_texto
+        tabelas = self._tabelas_a_montante(context)
+        marcadores = {f"tabela:{nome}": render(t) for nome, t in tabelas.items()}
+        if len(tabelas) == 1:
+            marcadores["tabela"] = render(next(iter(tabelas.values())))
+        else:
+            marcadores["tabela"] = render({})
+            if tabelas:
+                self.log.warning(
+                    "[EMAIL] %d nós SQL a montante (%s): {tabela} não escolhe por você — "
+                    "use {tabela:NOME_DO_NO}.", len(tabelas), ", ".join(sorted(tabelas)))
+        return marcadores
+
+    def _marcadores_do_assunto(self, context) -> dict:
+        """No assunto a tabela vira um resumo (`3 linhas × 2 colunas`).
+
+        Markup — ou o bloco de texto com quebras de linha — num cabeçalho de
+        e-mail faria a régua do assunto recusar a mensagem DEPOIS de resolver os
+        marcadores, derrubando a etapa por algo que a tela deixou escrever."""
+        from utils import sql_node as sq
+
+        tabelas = self._tabelas_a_montante(context)
+        saida = {f"tabela:{nome}": sq.resumo_curto(t) for nome, t in tabelas.items()}
+        saida["tabela"] = sq.resumo_curto(next(iter(tabelas.values())) if len(tabelas) == 1 else {})
+        return saida
+
     # ── execução ────────────────────────────────────────────────────────────
     def execute(self, context):
         from utils import email_envio as ev
@@ -357,8 +416,12 @@ class EmailOperator(BaseOperator):
             self.log.info("[EMAIL] corpo do modelo '%s' (#%s)", modelo["nome"], modelo_id)
 
         mapa = self._mapa(hook, context)
-        assunto = ev.interpolar(str(no.get("assunto") or ""), mapa)
-        corpo = ev.interpolar(corpo_bruto, mapa)
+        # A tabela entra por último e em DUAS versões: no corpo ela é HTML (ou
+        # texto, se o corpo não for HTML) e no assunto vira resumo.
+        corpo = ev.interpolar(corpo_bruto,
+                              {**mapa, **self._marcadores_de_tabela(context, html)})
+        assunto = ev.interpolar(str(no.get("assunto") or ""),
+                                {**mapa, **self._marcadores_do_assunto(context)})
         assunto_ok, erro = ev.validar_assunto(assunto)
         if erro:
             raise RuntimeError(f"Assunto inválido depois de resolver os placeholders: {erro}")

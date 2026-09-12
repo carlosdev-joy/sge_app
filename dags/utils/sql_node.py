@@ -126,3 +126,134 @@ def resumo_para_log(tabela: dict) -> str:
     if t.get("colunas_ocultas"):
         partes.append(f"{t['colunas_ocultas']} coluna(s) fora")
     return ", ".join(partes)
+
+
+# ── render para o corpo do e-mail (F5) ──────────────────────────────────────
+# Paleta e medidas do modelo institucional (migration 112/113), para a tabela
+# não parecer colada de outro lugar.
+_BORDA = "#E2E8F0"
+_CABECALHO = "#F8FAFC"
+_TINTA = "#1E293B"
+_TINTA_FRACA = "#64748B"
+
+
+def _celula(valor) -> str:
+    """Texto da célula, já ESCAPADO.
+
+    ⚠️ Este é o primeiro lugar do e-mail onde entra dado de fora — tudo mais
+    (pipeline, status, datas) é gerado pelo próprio produto. Uma descrição com
+    `<b>` ou um `&` de razão social quebraria o layout do aviso; um `</table>`
+    quebraria o resto da mensagem."""
+    from html import escape
+
+    if valor is None or valor == "":
+        return f'<span style="color:{_TINTA_FRACA};">—</span>'
+    return escape(str(valor), quote=False)
+
+
+def tabela_html(tabela: dict) -> str:
+    """Tabela do nó SQL → HTML para o corpo do e-mail.
+
+    Sem colunas (nó que não rodou, SELECT sem conjunto) devolve um aviso
+    discreto em vez de nada: uma linha em branco no meio do aviso faria o leitor
+    achar que a mensagem veio quebrada."""
+    t = tabela or {}
+    colunas = t.get("columns") or []
+    linhas = t.get("rows") or []
+    if not colunas:
+        return (f'<div style="color:{_TINTA_FRACA};font-size:12px;">'
+                "(sem resultado)</div>")
+
+    th = "".join(
+        f'<th align="left" style="padding:8px 12px;border-bottom:1px solid {_BORDA};'
+        f'color:{_TINTA_FRACA};font-size:11px;font-weight:600;text-transform:uppercase;'
+        f'letter-spacing:0.5px;">{_celula(c)}</th>'
+        for c in colunas)
+
+    corpo = []
+    for i, linha in enumerate(linhas):
+        fundo = f' bgcolor="{_CABECALHO}"' if i % 2 else ""
+        tds = "".join(
+            f'<td style="padding:8px 12px;border-bottom:1px solid {_BORDA};'
+            f'color:{_TINTA};font-size:13px;">{_celula(v)}</td>' for v in linha)
+        corpo.append(f"<tr{fundo}>{tds}</tr>")
+    if not linhas:
+        corpo.append(
+            f'<tr><td colspan="{len(colunas)}" style="padding:10px 12px;'
+            f'color:{_TINTA_FRACA};font-size:12px;">A consulta não devolveu linhas.</td></tr>')
+
+    rodape = ""
+    aviso = _aviso_de_corte(t)
+    if aviso:
+        rodape = (f'<tr><td colspan="{len(colunas)}" style="padding:8px 12px;'
+                  f'color:{_TINTA_FRACA};font-size:11px;">{aviso}</td></tr>')
+
+    return (
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="width:100%;border:1px solid {_BORDA};border-radius:8px;'
+        'border-collapse:collapse;font-family:Segoe UI,Helvetica,Arial,sans-serif;">'
+        f'<tr bgcolor="{_CABECALHO}">{th}</tr>'
+        + "".join(corpo) + rodape + "</table>")
+
+
+def _aviso_de_corte(t: dict) -> str:
+    """A frase que diz o que ficou de fora — e que NUNCA afirma um total que não
+    foi contado: acima do teto de leitura o número é um piso, e o texto diz
+    "mais de", em vez de mentir um número exato."""
+    mostradas, total = len(t.get("rows") or []), t.get("total", 0)
+    partes = []
+    if t.get("havia_mais"):
+        # Milhar com ponto, explícito: `:n` depende do locale do processo, e o
+        # worker roda sem locale definido — sairia "1000" aqui e "1.000" na
+        # prévia da tela, com o teste cruzado acusando a diferença.
+        milhar = f"{total:,}".replace(",", ".")
+        partes.append(f"mostrando {mostradas} de mais de {milhar} linhas")
+    elif t.get("truncado"):
+        partes.append(f"mostrando {mostradas} de {total} linhas")
+    if t.get("colunas_ocultas"):
+        n = t["colunas_ocultas"]
+        partes.append(f"{n} coluna{'s' if n > 1 else ''} não cabem no aviso")
+    return " · ".join(partes)
+
+
+def tabela_texto(tabela: dict) -> str:
+    """A mesma tabela em TEXTO, para corpo que não é HTML.
+
+    O nó aceita "Corpo livre" em texto simples: mandar markup para lá encheria
+    o aviso de `<td style=…>`. E é esta versão que também vai para o
+    alternativo text/plain, já que o corpo HTML é limpo por regex no envio."""
+    t = tabela or {}
+    colunas = t.get("columns") or []
+    linhas = t.get("rows") or []
+    if not colunas:
+        return "(sem resultado)"
+    if not linhas:
+        return " | ".join(str(c) for c in colunas) + "\n(a consulta não devolveu linhas)"
+
+    matriz = [[str(c) for c in colunas]]
+    matriz += [["—" if v is None or v == "" else str(v) for v in linha] for linha in linhas]
+    larguras = [max(len(l[i]) for l in matriz) for i in range(len(colunas))]
+    saida = [" | ".join(c.ljust(larguras[i]) for i, c in enumerate(linha)).rstrip()
+             for linha in matriz]
+    saida.insert(1, "-+-".join("-" * w for w in larguras))
+    aviso = _aviso_de_corte(t)
+    if aviso:
+        saida.append(f"({aviso})")
+    return "\n".join(saida)
+
+
+def resumo_curto(tabela: dict) -> str:
+    """Para o ASSUNTO, onde uma tabela não cabe: `3 linhas × 2 colunas`.
+
+    Sem isto, `{tabela}` no assunto colocaria markup (ou um bloco de texto com
+    quebras de linha) num cabeçalho de e-mail — e a régua do assunto recusa
+    quebra de linha, fazendo a etapa falhar depois de resolver os marcadores."""
+    t = tabela or {}
+    colunas = t.get("columns") or []
+    if not colunas:
+        return "(sem resultado)"
+    linhas = len(t.get("rows") or [])
+    total = t.get("total", linhas)
+    quantas = f"mais de {total}" if t.get("havia_mais") else str(total)
+    return (f"{quantas} linha{'s' if total != 1 else ''} × "
+            f"{len(colunas)} coluna{'s' if len(colunas) != 1 else ''}")

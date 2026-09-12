@@ -34,7 +34,10 @@ RAIZ_RE = re.compile(r"^/[^\s'\"]*[^\s'\"/]$|^/$")
 # Placeholders `{odate}` etc. são permitidos — resolvidos na hora do envio.
 NOME_ANEXO_PROIBIDO_RE = re.compile(r"[/\\\r\n\x00]")
 # Placeholder `{nome}` como o nó de notificação usa.
-PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
+# `{chave}` e `{chave:QUALIFICADOR}` — o qualificador nasceu com `{tabela:NO_SQL}`,
+# que aponta para UM nó SQL a montante quando há mais de um. Nome de nó é
+# maiúsculo e pode ter dígito, `_` e `-`; a chave em si segue minúscula.
+PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)(?::([A-Za-z0-9_\-]{1,128}))?\}")
 # Cabeçalhos que só a montagem define: um `cabecalho_extra` com `Bcc` seria
 # entregue pelo `-t`; `To` duplicado explode na stdlib.
 CABECALHOS_RESERVADOS = {"from", "to", "cc", "bcc", "subject", "date", "message-id", "mime-version",
@@ -238,9 +241,14 @@ def caminho_do_anexo(raiz: str, nome_resolvido: str, raizes_permitidas: list[str
 
 def interpolar(texto: str, mapa: dict) -> str:
     """`{chave}` → valor; chave desconhecida fica INTACTA (regra do nó de
-    notificação: o e-mail sai com `{variavel_errada}` visível)."""
+    notificação: o e-mail sai com `{variavel_errada}` visível).
+
+    Com qualificador, a chave procurada é a COMPLETA (`tabela:NO_SQL`) e nunca a
+    base: `{tabela:XPTO}` apontando para um nó que não existe tem de aparecer
+    literal no e-mail, e não silenciosamente virar a tabela de outro nó — quem
+    escreveu o marcador pediu aquele nó, não "qualquer um"."""
     def _sub(m):
-        chave = m.group(1)
+        chave = f"{m.group(1)}:{m.group(2)}" if m.group(2) else m.group(1)
         return str(mapa[chave]) if chave in mapa and mapa[chave] is not None else m.group(0)
     return PLACEHOLDER_RE.sub(_sub, texto or "")
 

@@ -724,6 +724,23 @@ function tela(params, previa, extra, jobName) {
       // caixa errada é o engano mais provável e passava calado
       P.marcadoresDesconhecidos('{ODATE} {Pipeline} {pipeline}'),
     ],
+    // F5: o render da tabela do nó SQL. Os MESMOS casos rodam no Python
+    // (dags/utils/sql_node.py) e o veredito tem de bater byte a byte — a prévia
+    // é o que a pessoa aprova antes de salvar.
+    tabelas: {
+      simples: P.tabelaHtml({ columns: ['Produto', 'Qtd'], rows: [['ACIDO A', '3'], ['DIPIRONA', '1']],
+                              total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      perigosa: P.tabelaHtml({ columns: ['Razão & Cia'], rows: [['<b>negrito</b>'], [null]],
+                               total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      truncada: P.tabelaHtml({ columns: ['n'], rows: [['1'], ['2']],
+                               total: 60, truncado: true, havia_mais: false, colunas_ocultas: 3 }),
+      teto: P.tabelaHtml({ columns: ['n'], rows: [['1']],
+                           total: 1000, truncado: true, havia_mais: true, colunas_ocultas: 0 }),
+      semLinhas: P.tabelaHtml({ columns: ['a', 'b'], rows: [],
+                                total: 0, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      vazia: P.tabelaHtml({ columns: [], rows: [], total: 0, truncado: false,
+                            havia_mais: false, colunas_ocultas: 0 }),
+    },
     dicas: [P.dicaDoMarcador('ODATE'), P.dicaDoMarcador('Pipeline'),
             P.dicaDoMarcador('nao_existe'), P.dicaDoMarcador('pipeline')],
   }

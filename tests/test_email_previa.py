@@ -100,6 +100,18 @@ def _chaves_do_operador() -> set[str]:
     # aspas simples E duplas; o operador usa duplas, mas nada impede a troca
     chaves = set(re.findall(r"""["']([A-Za-z_]+)["']\s*:""", corpo))
     assert len(chaves) >= 5, f"leitura do mapa do operador suspeita: {chaves}"
+
+    # Chaves que NÃO vivem no `_mapa` de propósito: `{tabela}` é renderizada de
+    # um jeito no corpo HTML, de outro no corpo em texto e vira resumo no
+    # assunto, então ela é montada em `_marcadores_de_tabela` /
+    # `_marcadores_do_assunto`, já sabendo o destino. Declarar aqui mantém a
+    # âncora útil: chave nova fora do mapa sem passar por esta lista faz a
+    # paridade com a prévia e com o seletor quebrar, que é o ponto.
+    for chave, onde in (("tabela", 'marcadores["tabela"]'),):
+        assert onde in fonte, (
+            f"`{chave}` declarada como chave de fora do mapa, mas `{onde}` não "
+            "está no operador — a lista e o código divergiram")
+        chaves.add(chave)
     return chaves
 
 
