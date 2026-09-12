@@ -245,6 +245,46 @@ def interpolar(texto: str, mapa: dict) -> str:
     return PLACEHOLDER_RE.sub(_sub, texto or "")
 
 
+def documento_html(corpo: str) -> str:
+    """Corpo HTML → documento COMPLETO, com o `<head>` que o Outlook precisa.
+
+    O corpo do modelo é um fragmento (começa direto no `<table>`) e ia cru para
+    o `text/html`. Sem `<head>`, o Outlook desktop (motor do Word) fica sem o
+    `<o:PixelsPerInch>96</o:PixelsPerInch>`, e passa a dimensionar formas e
+    tamanhos com o DPI do WINDOWS: numa tela em 125% — o padrão de notebook
+    corporativo — o cabeçalho sai menor que a largura da mensagem e sobra uma
+    faixa de outra cor ao lado dele.
+
+    `color-scheme: light only` pede aos clientes que respeitam a diretiva
+    (Outlook novo, Apple Mail) que NÃO invertam as cores no modo escuro: a
+    inversão parcial é o que deixava o cabeçalho com dois tons de azul.
+
+    ⚠️ Corpo que JÁ é documento volta intacto. Embrulhar de novo criaria um
+    segundo `<body>`, cujos atributos o cliente descarta em silêncio — o mesmo
+    defeito que a prévia em iframe pagou na F1 da spec de modelos."""
+    texto = corpo or ""
+    if "<html" in texto.lower():
+        return texto
+    return (
+        "<!DOCTYPE html>\n"
+        '<html xmlns:v="urn:schemas-microsoft-com:vml" '
+        'xmlns:o="urn:schemas-microsoft-com:office:office">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="color-scheme" content="light only">\n'
+        '<meta name="supported-color-schemes" content="light only">\n'
+        "<!--[if mso]>\n"
+        "<xml><o:OfficeDocumentSettings><o:AllowPNG/>"
+        "<o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml>\n"
+        "<![endif]-->\n"
+        "</head>\n"
+        '<body style="margin:0;padding:0;">\n'
+        f"{texto}\n"
+        "</body>\n</html>"
+    )
+
+
 def montar_mensagem(remetente: str, destinatarios: list[str], assunto: str, corpo: str,
                     html: bool = False, anexo_nome: str | None = None,
                     anexo_bytes: bytes | None = None, cabecalho_extra: dict | None = None) -> bytes:
@@ -275,9 +315,12 @@ def montar_mensagem(remetente: str, destinatarios: list[str], assunto: str, corp
             msg[nome] = str(v)
     corpo = corpo or ""
     if html:
+        # O texto simples sai do corpo ORIGINAL: tirá-lo do documento embrulhado
+        # arrastaria o conteúdo do <head> para dentro da mensagem de quem lê em
+        # texto puro.
         texto = re.sub(r"<[^>]+>", "", corpo)
         msg.set_content(texto, subtype="plain", charset="utf-8")
-        msg.add_alternative(corpo, subtype="html", charset="utf-8")
+        msg.add_alternative(documento_html(corpo), subtype="html", charset="utf-8")
     else:
         msg.set_content(corpo, subtype="plain", charset="utf-8")
     if anexo_nome and anexo_bytes is not None:

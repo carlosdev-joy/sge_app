@@ -305,7 +305,12 @@ class EmailOperator(BaseOperator):
             "execution_id": str(ctx.get("ts_nodash") or ""),
             "inicio": inicio.strftime("%d/%m/%Y %H:%M") if inicio is not None else "",
             "duracao": duracao,
-            "linhas": self._linhas_a_montante(hook, context),
+            # Sem `rows_out` a montante (o caso de quem liga o e-mail direto num
+            # nó SQL ou numa Decisão), `{linhas}` vinha VAZIO e o modelo
+            # institucional mostrava a linha "Linhas processadas" em branco, como
+            # se a carga não tivesse trazido nada. O travessão diz "não se
+            # aplica" — que é a verdade.
+            "linhas": self._linhas_a_montante(hook, context) or "—",
             "status": self._status_geral(hook, context),
         }
 
