@@ -440,13 +440,19 @@ def test_linhas_cai_para_o_log_do_datastage_quando_nao_ha_xcom(mod, monkeypatch)
     assert "987 linhas" in client._entrada.escrito.decode()
 
 
-def test_sem_linhas_em_lugar_nenhum_o_texto_sai_sem_o_numero(mod, monkeypatch):
+def test_sem_linhas_em_lugar_nenhum_o_texto_sai_com_travessao(mod, monkeypatch):
+    """Sem `rows_out` a montante o e-mail continua saindo — e o número vira `—`.
+
+    Vazio deixava a célula "Linhas processadas" do modelo institucional EM
+    BRANCO, como se a carga não tivesse trazido nada; é o que se via no e-mail
+    de um fluxo cujo nó de e-mail vem depois de um nó SQL, que não tem
+    `rows_out` para somar. O travessão diz "não se aplica"."""
     hook, client = _Hook(), _Client(rc=0)
     op = _preparar(mod, monkeypatch, hook, client)
     op.upstream_task_ids = {"log_end_CARGA"}
     op.execute(_contexto(xcoms={}))
     corpo = client._entrada.escrito.decode()
-    assert "com  linhas" in corpo and "{linhas}" not in corpo
+    assert "com — linhas" in corpo and "{linhas}" not in corpo
 
 
 def test_odate_e_a_data_de_referencia_da_corrida_nao_a_logica(mod, monkeypatch):

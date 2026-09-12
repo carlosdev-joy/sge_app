@@ -47,7 +47,7 @@ from utils import email_envio as ew  # noqa: E402
 
 FUNCOES = ["_sem_quebra", "validar_email", "normalizar_lista", "validar_destinatarios", "validar_raizes", "validar_dominios",
            "validar_limite_anexo", "validar_assunto", "validar_corpo", "pasta_do_anexo", "validar_anexo_cadastro",
-           "caminho_do_anexo", "interpolar", "montar_mensagem"]
+           "caminho_do_anexo", "interpolar", "documento_html", "montar_mensagem"]
 CONSTANTES = ["LIMITE_ASSUNTO", "LIMITE_CORPO", "LIMITE_DESTINATARIOS", "LIMITE_ANEXO_MB_MIN", "LIMITE_ANEXO_MB_MAX",
               "LIMITE_ANEXO_MB_PADRAO", "LIMITE_NOME_ANEXO", "LIMITE_PASTA_ANEXO"]
 
@@ -413,3 +413,60 @@ def test_servidor_sem_realpath_nao_bloqueia_o_envio():
     sftp = _Sftp({"/dados/saida/rel.csv": (b"ok", 0o100644)}, sem_normalize=True)
     dados, aviso, _ = ew.resolver_anexo(sftp, "/dados/saida", "rel.csv", RAIZES, 5, MAPA)
     assert dados == b"ok" and aviso is None
+
+
+# ═══════════ 6. documento HTML para o Outlook (F3 da spec de tabela do SQL) ══
+
+def test_fragmento_vira_documento_com_o_head_que_o_outlook_precisa():
+    """Sem `<head>`, o Outlook desktop dimensiona formas com o DPI do WINDOWS.
+
+    Numa tela a 125% — o padrão em notebook corporativo — o cabeçalho saía menor
+    que a largura da mensagem e sobrava uma faixa de outra cor ao lado dele. O
+    `<o:PixelsPerInch>96</o:PixelsPerInch> `é o que fixa a escala."""
+    doc = em.documento_html('<table><tr><td>oi</td></tr></table>')
+    assert doc.startswith("<!DOCTYPE html>")
+    assert "<o:PixelsPerInch>96</o:PixelsPerInch>" in doc
+    assert 'charset="utf-8"' in doc
+    # pede aos clientes que respeitam a diretiva para não inverter as cores:
+    # a inversão PARCIAL é o que deixava o cabeçalho com dois tons de azul
+    assert 'content="light only"' in doc
+    assert "<table><tr><td>oi</td></tr></table>" in doc
+    assert doc.count("<body") == 1
+
+
+def test_corpo_que_ja_e_documento_volta_intacto():
+    """Embrulhar de novo criaria um segundo `<body>`, cujos atributos o cliente
+    descarta em silêncio — o defeito que a prévia em iframe já pagou."""
+    for pronto in ('<html><body>x</body></html>',
+                   '<!DOCTYPE html>\n<HTML lang="pt-br"><body>x</body></HTML>'):
+        assert em.documento_html(pronto) == pronto
+
+
+def test_o_texto_simples_nao_arrasta_o_head_para_dentro():
+    """Quem lê em texto puro não pode receber `PixelsPerInch` e `DOCTYPE`: o
+    alternativo text/plain sai do corpo ORIGINAL, não do documento embrulhado."""
+    bruto = em.montar_mensagem("orquestra@cvp.com.br", ["ana@cvp.com.br"], "Assunto",
+                               '<table><tr><td>Carga OK</td></tr></table>', html=True)
+    msg = email.message_from_bytes(bruto, policy=email.policy.default)
+    texto = msg.get_body(preferencelist=("plain",)).get_content()
+    html = msg.get_body(preferencelist=("html",)).get_content()
+    assert "Carga OK" in texto
+    assert "PixelsPerInch" not in texto and "DOCTYPE" not in texto
+    assert "PixelsPerInch" in html          # no HTML, sim
+
+
+def test_corpo_que_abre_direto_no_body_tambem_e_documento():
+    """⛔ A régua tem de ser a MESMA do front (`montarDocumento` em
+    previaEmailDados.ts, que testa `/<(html|body)\\b/i`).
+
+    Olhando só para `<html`, um corpo que começa em `<body style=…>` seria
+    embrulhado e a mensagem sairia com DOIS `<body>`. Pelas regras de parsing, os
+    atributos do segundo só entram se ainda não existirem no primeiro — e
+    `style` já existe no do embrulho: o fundo e a cor do modelo somem do e-mail
+    entregue e continuam aparecendo na prévia da tela. Tela e envio contando
+    histórias diferentes é o defeito que esta casa já catalogou."""
+    corpo = '<body style="background:#0F4C88;color:#ffffff">Carga OK</body>'
+    assert em.documento_html(corpo) == corpo
+    assert em.documento_html('<BODY>x</BODY>') == '<BODY>x</BODY>'
+    # e o fragmento continua ganhando exatamente um body
+    assert em.documento_html('<table><tr><td>x</td></tr></table>').count("<body") == 1
