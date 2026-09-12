@@ -798,6 +798,60 @@ _TROCA_DESTINO_NOTIF = (
     ['        _teams_post_card(title=titulo_final, subtitle=corpo_final, facts=facts, status=card_status, button=button)'],
 )
 
+# F4 da spec-email-tabela-sql: o nó SQL passou a publicar a TABELA do resultado
+# num XCom de chave própria, além do escalar de sempre. O escalar continua
+# saindo CRU — convertê-lo mudaria o que a Decisão `valor_sql` compara — e a
+# leitura do cursor é UMA só, senão o e-mail mostraria linhas diferentes das que
+# o fluxo usou para decidir.
+_NOVO_SQL_TABELA = [
+    "        try:",
+    "            _cur = _conn.cursor()",
+    "            _cur.execute(sql)",
+    "            # A TABELA do resultado (F4) sai da MESMA leitura do cursor que o",
+    "            # escalar: ler duas vezes daria linhas diferentes num SELECT sem",
+    "            # ORDER BY, e o fluxo decidiria por um valor que o e-mail nao",
+    "            # mostra. O escalar sai CRU — convertido, uma data viraria texto",
+    "            # e a Decisao 'valor_sql' passaria a comparar outra coisa.",
+    "            try:",
+    "                from utils.sql_node import ler_resultado, resumo_para_log",
+    "            except Exception as _ie:",
+    "                ler_resultado = None",
+    "                print('[SQL NODE] utils.sql_node indisponivel (' + str(_ie) + ')'",
+    "                      + ' — sem tabela; reinicie o worker depois do deploy.')",
+    "            if ler_resultado is not None:",
+    "                val, _tab = ler_resultado(_cur)",
+    "            else:",
+    "                row = _cur.fetchone()",
+    "                val, _tab = (row[0] if row else None), None",
+    "        finally:",
+    "            _conn.close()",
+    "        _resumo = ''",
+    "        if _tab is not None:",
+    "            _ti = (context or {}).get('ti')",
+    "            if _ti is not None:",
+    "                try:",
+    "                    _ti.xcom_push(key='tabela', value=_tab)",
+    "                    _resumo = ' | tabela: ' + resumo_para_log(_tab)",
+    "                except Exception as _pe:",
+    "                    # Publicar a tabela e EXTRA: falhar aqui nao pode derrubar",
+    "                    # o no, que existe para entregar o escalar a Decisao.",
+    "                    print('[SQL NODE] tabela nao publicada (' + str(_pe) + ').')",
+    "        print('[SQL NODE] conn=' + _cid + ' database=' + repr(_db) + ' -> valor=' + repr(val) + _resumo)",
+    "        return val",
+]
+_VELHO_SQL_TABELA = [
+    "        try:",
+    "            _cur = _conn.cursor()",
+    "            _cur.execute(sql)",
+    "            row = _cur.fetchone()",
+    "        finally:",
+    "            _conn.close()",
+    "        val = row[0] if row else None",
+    "        print('[SQL NODE] conn=' + _cid + ' database=' + repr(_db) + ' -> valor=' + repr(val))",
+    "        return val",
+]
+_TROCA_SQL_TABELA = (_NOVO_SQL_TABELA, _VELHO_SQL_TABELA)
+
 _TROCAS_DA_CORRIDA = [
     (_NOVO_CABECALHO_ODATE, _VELHO_CABECALHO_ODATE),
     (_NOVO_REGISTRO_DATA, _VELHO_REGISTRO_DATA),
@@ -807,6 +861,7 @@ _TROCAS_DA_CORRIDA = [
     (_NOVO_PUSH_CONF, _VELHO_PUSH_CONF),
     _TROCA_ASSINATURA_NOTIF,
     _TROCA_DESTINO_NOTIF,
+    _TROCA_SQL_TABELA,
 ]
 
 
