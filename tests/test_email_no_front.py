@@ -343,3 +343,15 @@ def test_campo_de_destinatarios_nao_redesenha_o_texto_a_cada_tecla():
         "sobre cfg.destinatarios, o campo volta a apagar o separador a cada tecla")
     assert "useEffect" not in sem_comentarios, (
         "efeito novo neste painel: confira se ele não reescreve o campo de destinatários")
+
+
+def test_aviso_do_anexo_aparece_mesmo_com_modelo_escolhido(e):
+    """⛔ Defeito pego na revisão da F6: o aviso de marcador desconhecido só era
+    renderizado no ramo "Corpo livre", enquanto o campo do NOME DO ANEXO aparece
+    sempre — inclusive com um modelo do catálogo, que é como o nó NOVO nasce.
+
+    Resultado: `relatorio_{tabela}.xlsx` passava calado na tela, e a corrida
+    mandava o e-mail SEM anexo com uma linha discreta no log. `{tabela}` nunca
+    resolve ali: o anexo é um arquivo procurado pelo nome no servidor."""
+    texto = e["painel"]["avisoDoAnexoComModelo"]
+    assert "{tabela}" in texto and "SEM anexo" in texto

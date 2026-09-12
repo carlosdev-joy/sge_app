@@ -140,11 +140,14 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
   // é um arquivo do servidor, procurado por nome), e um `relatorio_{tabela}.xlsx`
   // faria o envio sair SEM anexo, com um aviso discreto no log. Sem esta
   // separação, a chave nova passaria a ser aceita em silêncio nos três campos.
-  const desconhecidos = [
-    ...marcadoresDesconhecidos(`${cfg.assunto} ${cfg.corpo}`),
-    ...marcadoresDesconhecidos(cfg.anexo?.nome ?? '',
-                               EMAIL_PLACEHOLDERS.filter(p => p !== 'tabela')),
-  ].filter((m, i, todos) => todos.indexOf(m) === i)
+  const desconhecidos = marcadoresDesconhecidos(`${cfg.assunto} ${cfg.corpo}`)
+  // ⚠️ O aviso do ANEXO é SEPARADO e mora junto do campo dele: o aviso do
+  // assunto/corpo só é renderizado no ramo "Corpo livre", e o campo do nome do
+  // anexo aparece SEMPRE — com um modelo do catálogo escolhido (o padrão do nó
+  // novo), um `relatorio_{tabela}.xlsx` não receberia aviso nenhum e o e-mail
+  // sairia sem anexo.
+  const desconhecidosNoAnexo = marcadoresDesconhecidos(
+    cfg.anexo?.nome ?? '', EMAIL_PLACEHOLDERS.filter(p => p !== 'tabela'))
 
   const anexoLigado = cfg.anexo != null
   function alternarAnexo(ligado: boolean) {
@@ -270,6 +273,14 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
                   placeholder="relatorio_{odate}.xlsx"
                   className="text-xs"
                 />
+                {desconhecidosNoAnexo.length > 0 && (
+                  <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    {desconhecidosNoAnexo.map(m => `{${m}}`).join(', ')}
+                    {desconhecidosNoAnexo.includes('tabela')
+                      ? ' não vale no nome do anexo (o arquivo é procurado por nome no servidor) — o e-mail sairia SEM anexo.'
+                      : ' não é um marcador conhecido — vai sair assim mesmo no nome do arquivo.'}
+                  </p>
+                )}
                 {/* Escolher pelo navegador traz o arquivo DE HOJE; amanhã a
                     corrida procuraria o mesmo nome. A troca pela marca da data
                     é oferecida, nunca feita sozinha: nome com data fixa é caso
@@ -430,7 +441,7 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             {desconhecidos.length > 0 && (
               <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                 {desconhecidos.length === 1 ? 'Marcador desconhecido' : 'Marcadores desconhecidos'}
-                {' '}no assunto, no corpo ou no nome do anexo:{' '}
+                {' '}no assunto ou no corpo:{' '}
                 {desconhecidos.map(m => {
                   const dica = dicaDoMarcador(m)
                   return dica ? `{${m}} (seria ${dica})` : `{${m}}`

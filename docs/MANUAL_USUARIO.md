@@ -474,13 +474,50 @@ Os dois aceitam marcadores, trocados na hora do envio:
 | `{pipeline}` · `{job}` | Nome do fluxo · nome do nó |
 | `{data}` | Data e hora do envio |
 | `{odate}` | Data de referência da corrida no formato AAAAMMDD — a mesma que o DataStage recebe e que costuma nomear os arquivos. **Não é a data do relógio**: numa corrida que atravessa a meia-noite, ou num fluxo com hora de virada, ela continua sendo o dia do processamento. |
-| `{linhas}` | Linhas processadas pelas etapas logo antes do nó |
+| `{linhas}` | Linhas processadas pelas etapas logo antes do nó. Quando não há etapa com contagem antes dele — um nó de e-mail logo depois de uma consulta SQL, por exemplo — aparece `—`, e não em branco |
+| `{tabela}` | **O resultado da consulta do nó SQL ligado logo antes deste e-mail** (ver abaixo) |
 | `{status}` | Como o fluxo terminou: `SUCCESS`, `FAILED`, `WARNING`, `SKIPPED` — ou `INFO`, quando não há etapa registrada até ali |
 | `{inicio}` · `{duracao}` | Quando a corrida começou · quanto tempo levou |
 | `{execution_id}` | Identificador da execução, o mesmo que aparece na tela de Execuções |
 
 Um marcador que você escrever errado **aparece como está** no e-mail, em vez de
 quebrar o envio. É o sinal de que o nome não existe.
+
+#### `{tabela}` — o resultado de uma consulta dentro do aviso
+
+Ligue um **nó SQL** direto no nó de e-mail e escreva `{tabela}` no corpo: o
+e-mail chega com as colunas e as linhas que o SELECT trouxe. É o caminho para
+avisos do tipo "a carga fechou — e aqui está o que entrou".
+
+O campo do corpo só aparece quando o nó está em **Corpo livre**. Se ele estiver
+usando um modelo do catálogo, escolha *Corpo livre* na lista de modelos — ou
+acrescente o `{tabela}` ao **modelo**, em Admin › E-mail › Modelos, lembrando
+que ali a mudança vale para **todos** os fluxos que usam aquele modelo.
+
+Três coisas que vale saber antes de montar:
+
+- **só o vizinho imediato é lido.** Se entre a consulta e o e-mail houver uma
+  Decisão ou um Aguarde, o marcador não encontra a tabela e o corpo mostra
+  `(sem resultado)`. O log da etapa diz isso com todas as letras.
+- **com mais de um nó SQL antes do e-mail, diga qual:** `{tabela:NOME_DO_NO}`.
+  Sem o nome, o Orquestra **não escolhe por você** — mandar a consulta errada é
+  pior do que não mandar nada.
+- **o aviso não é um relatório.** Chegam até **50 linhas e 15 colunas**, e cada
+  célula é cortada em 200 caracteres. O que passa disso vira uma nota no rodapé
+  da tabela — *"mostrando 50 de mais de 1.000 linhas"*, porque acima de mil o
+  Orquestra para de contar em vez de afirmar um número que não conferiu. Para o
+  resultado completo, gere um arquivo e use o anexo.
+
+No **assunto**, `{tabela}` vira um resumo (`2 linhas × 2 colunas`) — uma tabela
+não cabe num assunto de e-mail.
+
+⚠️ No **nome do anexo**, `{tabela}` **não vale**. Os outros marcadores valem
+(`relatorio_{odate}.xlsx`, `{pipeline}`, `{status}`…), mas o do resultado não: o
+anexo é um arquivo procurado pelo nome no servidor, e um `relatorio_{tabela}.xlsx`
+faz o e-mail sair **sem anexo**, com apenas um aviso no log da etapa.
+
+⚠️ Um fluxo que já existia precisa ser **publicado de novo** para o nó SQL passar
+a oferecer a tabela.
 
 ⚠️ Use `{status}` quando o e-mail puder sair depois de uma falha — é o caso de
 um nó ligado a um **Aguarde** com a política "mesmo com falha". Um assunto fixo
@@ -1036,6 +1073,13 @@ Lembretes:
   **Nada a republicar**: nó existente segue igual, e quem escolher um modelo
   passa a ler o layout do banco desde a primeira corrida. Roteiro e conferência
   em `docs/release-notes/email-modelos.md`.
+- **Resultado do SQL no e-mail e ajustes do nó (§3.5-A / §4.10)**: migration
+  **113** na etapa 6c (corrige o cabeçalho do modelo institucional **só se
+  ninguém o editou**); `dags/utils/` mudou → **reiniciar o worker** do Airflow.
+  ⚠️ **Republicar os pipelines com nó SQL** que forem usar `{tabela}`: a
+  publicação do resultado vive no código gerado da DAG, e fluxo não republicado
+  continua rodando igual, só sem oferecer a tabela. Roteiro consolidado,
+  conferência e reversão em `docs/release-notes/email-tabela-sql.md`.
 
 ### 4.7 Utilitários (Admin → Sistema → Utilitários)
 É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança

@@ -263,6 +263,8 @@ def resumo_curto(tabela: dict) -> str:
         return "(sem resultado)"
     linhas = len(t.get("rows") or [])
     total = t.get("total", linhas)
-    quantas = f"mais de {total}" if t.get("havia_mais") else str(total)
+    # Milhar no MESMO formato do rodapé da tabela: assunto e corpo do mesmo
+    # e-mail dizendo "mais de 1000" e "mais de 1.000" é desleixo visível.
+    quantas = f"mais de {total:,}".replace(",", ".") if t.get("havia_mais") else str(total)
     return (f"{quantas} linha{'s' if total != 1 else ''} × "
             f"{len(colunas)} coluna{'s' if len(colunas) != 1 else ''}")
