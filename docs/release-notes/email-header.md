@@ -63,20 +63,35 @@ corpo — inclusive suas edições — permanece.
 
 ## Conferência pós-deploy
 
+⚠️ **O botão "enviar e-mail de teste" do Admin NÃO serve para conferir esta
+fase.** Ele monta a mensagem com corpo fixo em texto puro, sem `html=True` e sem
+passar pelo catálogo de modelos (`api/routers/email.py`) — aprovar a fase por ele
+seria olhar um e-mail de texto e declarar que o cabeçalho HTML está certo. Quem
+monta a mensagem do modelo é o **worker**, então a conferência é rodando um
+pipeline de verdade.
+
 a) Rodar a 113 e ler o log: precisa dizer `[OK] cabecalho … corrigido` (ou
    `[--] modelo EDITADO`, se for o seu caso — aí siga a seção acima).
 b) Rodar a 113 **de novo**: a segunda vez precisa dizer `[--]` e não alterar
    nada.
 c) **Admin › E-mail › Modelos**: abrir "Aviso de fim de carga" e conferir na
    prévia que o cabeçalho aparece inteiro.
-d) Enviar um **e-mail de teste** e abrir no **Outlook desktop**: cabeçalho
-   completo, sem corte e sem faixa de cor diferente à direita.
+d) **Rodar um pipeline com nó de e-mail apontando para o modelo** (é o único
+   caminho que exercita o embrulho) e abrir a mensagem no **Outlook desktop**:
+   cabeçalho completo, sem corte e sem faixa de cor diferente à direita.
+   ⚠️ Se o cabeçalho vier igual ao de antes, o worker está com `dags/utils/` em
+   cache: reinicie-o.
 e) Repetir (d) com o **fundo da mensagem invertido** (o botão de modo escuro do
    Outlook): o cabeçalho precisa continuar legível, num tom só.
-f) Rodar um fluxo cujo nó de e-mail **não** venha depois de uma etapa DataStage:
+f) No mesmo e-mail, **alternar para "exibir em texto sem formatação"**: a
+   mensagem não pode conter resto de comentário HTML (`-->`) nem texto de
+   desenvolvedor. Foi um defeito real desta fase, pego antes do merge.
+g) Rodar um fluxo cujo nó de e-mail **não** venha depois de uma etapa DataStage:
    a linha "Linhas processadas" precisa mostrar `—`, nunca vazia.
-g) Abrir o mesmo e-mail no **Outlook Web** e no celular: o layout não pode ter
-   regredido em quem já funcionava.
+h) Abrir o mesmo e-mail no **Outlook Web**, no **Gmail** e no celular: o layout
+   não pode ter regredido em quem já funcionava.
+i) Antes da 6c, confirmar a versão do banco (o `HASHBYTES` sobre `NVARCHAR(MAX)`
+   pede 2016+): `SELECT @@VERSION`.
 
 ## Reversão
 

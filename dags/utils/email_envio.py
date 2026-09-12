@@ -263,7 +263,13 @@ def documento_html(corpo: str) -> str:
     segundo `<body>`, cujos atributos o cliente descarta em silêncio — o mesmo
     defeito que a prévia em iframe pagou na F1 da spec de modelos."""
     texto = corpo or ""
-    if "<html" in texto.lower():
+    # `<body` conta tanto quanto `<html`: um corpo que abre direto no body já é
+    # documento, e embrulhá-lo criaria um segundo `<body>` cujos atributos o
+    # cliente descarta — o fundo e a cor do modelo sumiriam do e-mail entregue e
+    # continuariam aparecendo na prévia. É a MESMA régua do front
+    # (`montarDocumento` em previaEmailDados.ts), e as duas precisam bater para
+    # a tela e o envio contarem a mesma história.
+    if re.search(r"<(html|body)\b", texto, re.I):
         return texto
     return (
         "<!DOCTYPE html>\n"

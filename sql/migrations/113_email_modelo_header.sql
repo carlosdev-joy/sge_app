@@ -50,16 +50,19 @@ BEGIN
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;background-color:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;">
 
   <tr>
-    <!-- Cabecalho: cor SOLIDA, sem VML e sem gradiente. O v:rect com
-         v:textbox (sem mso-fit-shape-to-text) fazia o Outlook desktop
-         CLIPAR o conteudo, cortando "ORQUESTRA - Gestao de Pipelines" ao
-         meio; e o modo escuro inverte bgcolor mas NAO inverte
-         preenchimento VML, deixando dois azuis no mesmo cabecalho. -->
+    <!-- Cabecalho: cor SOLIDA, sem VML e sem gradiente. O retangulo VML
+         com textbox (sem mso-fit-shape-to-text) fazia o Outlook desktop
+         CLIPAR o conteudo, cortando o nome do produto ao meio; e o modo
+         escuro inverte bgcolor mas NAO inverte preenchimento VML,
+         deixando dois azuis no mesmo cabecalho.
+         Comentarios aqui nao podem citar tags: o texto simples do e-mail
+         e gerado tirando tudo entre "menor que" e o primeiro "maior que",
+         e o resto do comentario vazaria para quem le em texto puro. -->
     <td bgcolor="#0F4C88" style="background-color:#0F4C88;padding:22px 28px;border-radius:10px 10px 0 0;">
       <table cellpadding="0" cellspacing="0" border="0"><tr>
         <td valign="middle" style="padding-right:14px;">
-          <!-- Escadinha em CELULAS: o motor do Word ignora width/height
-               em <div>, e os quadrados sumiam. -->
+          <!-- Escadinha do logo em CELULAS: o motor do Word ignora largura
+               e altura em caixa flutuante, e os quadrados sumiam. -->
           <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
                 <tr><td style="padding-left:21px;font-size:0;line-height:0;"><table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td width="8" height="8" bgcolor="#7FE3F5" style="width:8px;height:8px;font-size:0;line-height:0;">&#160;</td></tr></table></td></tr>
                 <tr><td style="padding-left:14px;padding-top:3px;font-size:0;line-height:0;"><table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td width="8" height="8" bgcolor="#7FE3F5" style="width:8px;height:8px;font-size:0;line-height:0;">&#160;</td></tr></table></td></tr>

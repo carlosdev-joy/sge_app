@@ -90,3 +90,31 @@ def test_a_113_nao_toca_em_nada_quando_a_112_nao_rodou():
     sql = M113.read_text(encoding="utf-8")
     assert "IF OBJECT_ID('dbo.etl_email_modelo', 'U') IS NULL" in sql
     assert "migration 112 pendente" in sql
+
+
+def test_nenhum_comentario_do_corpo_vaza_para_o_texto_simples():
+    """⛔ Defeito real desta fase, pego na revisão: o alternativo em texto puro
+    é gerado por `re.sub(r"<[^>]+>", "", corpo)`, que casa até o PRIMEIRO `>`.
+
+    Um comentário HTML que cita uma tag — `<!-- o Word ignora width em <div> -->`
+    — faz o casamento terminar no `>` do `<div>`, e o RESTO do comentário fica
+    como texto: a primeira linha legível do e-mail em texto simples passava a
+    ser `, e os quadrados sumiam. -->`. Isso chega a quem lê em modo texto, a
+    leitores de tela e ao snippet da caixa de entrada.
+
+    O corpo da 112 não tinha o problema porque seus únicos comentários eram
+    `[if mso]`, sem `>` interno — ou seja, o defeito nasceu com o cabeçalho novo
+    e nenhum teste anterior o alcançava."""
+    import re as _re
+
+    corpo = _corpo_novo_da_113()
+    for comentario in _re.findall(r"<!--.*?-->", corpo, _re.S):
+        miolo = comentario[4:-3]
+        assert "<" not in miolo and ">" not in miolo, (
+            f"comentário cita uma tag e vazaria para o texto simples: {comentario[:80]!r}")
+
+    texto = _re.sub(r"<[^>]+>", "", corpo)
+    for linha in texto.splitlines():
+        assert "-->" not in linha, f"resto de comentário no texto simples: {linha.strip()[:80]!r}"
+        assert "Word" not in linha and "CELULAS" not in linha, (
+            f"comentário de desenvolvedor visível para quem recebe: {linha.strip()[:80]!r}")

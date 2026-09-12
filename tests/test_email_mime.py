@@ -453,3 +453,20 @@ def test_o_texto_simples_nao_arrasta_o_head_para_dentro():
     assert "Carga OK" in texto
     assert "PixelsPerInch" not in texto and "DOCTYPE" not in texto
     assert "PixelsPerInch" in html          # no HTML, sim
+
+
+def test_corpo_que_abre_direto_no_body_tambem_e_documento():
+    """⛔ A régua tem de ser a MESMA do front (`montarDocumento` em
+    previaEmailDados.ts, que testa `/<(html|body)\\b/i`).
+
+    Olhando só para `<html`, um corpo que começa em `<body style=…>` seria
+    embrulhado e a mensagem sairia com DOIS `<body>`. Pelas regras de parsing, os
+    atributos do segundo só entram se ainda não existirem no primeiro — e
+    `style` já existe no do embrulho: o fundo e a cor do modelo somem do e-mail
+    entregue e continuam aparecendo na prévia da tela. Tela e envio contando
+    histórias diferentes é o defeito que esta casa já catalogou."""
+    corpo = '<body style="background:#0F4C88;color:#ffffff">Carga OK</body>'
+    assert em.documento_html(corpo) == corpo
+    assert em.documento_html('<BODY>x</BODY>') == '<BODY>x</BODY>'
+    # e o fragmento continua ganhando exatamente um body
+    assert em.documento_html('<table><tr><td>x</td></tr></table>').count("<body") == 1
