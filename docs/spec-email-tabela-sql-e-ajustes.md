@@ -1,5 +1,5 @@
 # Spec: Resultado do SQL no e-mail + ajustes do nó — Orquestra
-Data: 2026-09-11 · Status: **aprovada pelo usuário em 2026-09-11** · em execução (F1)
+Data: 2026-09-11 · Status: 🏁 **CONCLUÍDA** — F1 #399, F2 #400, F3 #401, F4 #402, F5 #403, F6 (esta) · ⏳ deploy em produção pendente
 
 ## 1. Visão
 
@@ -204,7 +204,8 @@ confirma a versão de produção antes de fechar.
   - `PLACEHOLDER_RE` com qualificador nos **três** espelhos (`api/services/email_mime.py`,
     `dags/utils/email_envio.py`, `previaEmailDados.ts`) + teste anti-drift entre eles;
   - `tabela_html()` com `html.escape` em toda célula, largura fixa, zebra e rodapé
-    "mostrando 50 de 1.240 linhas" quando truncado;
+    "mostrando 50 de mais de 1.000 linhas" quando truncado — acima do teto de
+    leitura o total é um piso, e o texto nunca afirma um número que não contou;
   - `{tabela}` = único nó SQL a montante; `{tabela:NOME}` = nó nomeado; sem dado, um
     bloco discreto "(sem resultado)" — nunca a chave crua num e-mail institucional;
   - painel do nó listando o marcador com a dica, e a prévia mostrando a tabela exemplo.
@@ -244,10 +245,16 @@ confirma a versão de produção antes de fechar.
 
 ## 7. Smoke pós-deploy
 
-a) **Admin › Configurações de fluxo**: o campo mostra 60 em ambiente novo; salvar 280 persiste depois de recarregar.
+⚠️ **O botão "enviar e-mail de teste" (Admin › E-mail) NÃO serve para conferir
+o cabeçalho nem a tabela**: ele monta corpo fixo em TEXTO PURO, sem `html=True` e
+sem passar pelo catálogo de modelos (`api/routers/email.py`). Quem monta a
+mensagem do modelo é o **worker** — tudo que envolve HTML se confere rodando um
+pipeline de verdade.
+
+a) **Admin › Sistema › Configurações**: o campo mostra 60 em ambiente novo; salvar 280 persiste depois de recarregar.
 b) **Prévia de SQL**: rodar no nó SQL a consulta que hoje estoura em 15 s — deve trazer a amostra; uma consulta deliberadamente infinita deve ser cancelada com a mensagem citando o tempo em vigor.
 c) **Destinatários**: no painel do nó, digitar dois endereços separados por Enter, salvar, reabrir — os dois continuam lá, e o card mostra "2 destinatários".
-d) **Envio de teste** (Admin › E-mail) com o modelo institucional: abrir no Outlook desktop e conferir o cabeçalho inteiro, sem corte e sem faixa clara à direita.
+d) **Rodar um pipeline com nó de e-mail apontando para o modelo** e abrir a mensagem no Outlook desktop: cabeçalho inteiro, sem corte e sem faixa clara à direita.
 e) Repetir (d) com o fundo da mensagem invertido (botão de modo escuro do Outlook): cabeçalho legível.
 f) **Fluxo `SQL → E-mail`** no DEV com `{tabela}` no corpo: o e-mail chega com colunas e linhas; o log da task traz `[EMAIL] tabela de <NO>: N linha(s)`.
 g) Mesmo fluxo com SELECT de milhares de linhas: o corpo mostra 50 linhas e o rodapé "mostrando 50 de mais de 1.000".
@@ -255,6 +262,29 @@ h) Fluxo com Decisão `valor_sql` (já existente, não regerado): continua rotea
 i) Modelo editado à mão: conferir que a 113 **não** mexeu nele (comparar `atualizado_em`).
 
 ## 8. Pendências e decisões em aberto
+
+### Descobertas durante a execução (registradas, não resolvidas)
+
+1. **A tela não confere o nome do nó no qualificador.** `{tabela:CONTA}` escrito
+   para o nó `CONTA_SANCOES` passa no save e sai literal no e-mail — o painel não
+   conhece o grafo a montante. Quem denuncia é o log da etapa, em runtime. Para
+   resolver de verdade, o `PropriedadesPanel` precisaria passar ao painel a lista
+   de nós SQL a montante; fica como melhoria.
+2. **Só o vizinho imediato é lido.** `SQL → Decisão → E-mail` não alcança a
+   tabela. Atravessar a decisão exigiria caminhar o grafo para trás no runtime —
+   possível, mas muda o contrato de "o que está antes deste nó".
+3. **Tamanho da mensagem no Gmail**: 50 linhas × 15 colunas com estilo inline
+   chegam perto dos ~102 KB em que o Gmail corta a mensagem. Não afeta o Outlook,
+   que é o cliente da casa; se virar problema, o caminho é estilo por classe.
+4. **`documento_html` do lado da API não é exercitado em produção.** O módulo
+   `api/services/email_mime.py` TEM chamadores — é ele que monta e envia o e-mail
+   de teste do Admin (`api/routers/email.py`), além de emprestar as réguas para
+   `pipelines.py` e `jobs.py`. O que não roda por lá é o embrulho: o e-mail de
+   teste vai com `html=False`. Quem envia mensagem de MODELO é o worker.
+
+### Abertas desde o levantamento
+
+
 
 1. **Total exato acima de 1.000 linhas** — para escrever "50 de 1.240" seria preciso ler tudo ou rodar um `COUNT(*)` extra na origem. A spec assume o aviso honesto ("mais de 1.000"); se você preferir o número exato, entra um `COUNT` e o custo de uma segunda consulta.
 2. **Colunas acima de 15** — a proposta é cortar as excedentes e avisar no rodapé. A alternativa é quebrar a tabela em duas, que fica ruim de ler no Outlook.

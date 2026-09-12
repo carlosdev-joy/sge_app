@@ -704,6 +704,27 @@ function tela(params, previa, extra, jobName) {
     tela.disparar(campoDest(tela), 'onChange', { target: { value: 'Ana@cvp.com.br' } })
     saida.emailNo.painel.vindoDeFora = { antes, depois: String(campoDest(tela).props.value) }
   }
+
+  {
+    // ⚠️ O aviso de marcador inválido no NOME DO ANEXO precisa aparecer TAMBÉM
+    // com um modelo do catálogo escolhido — que é como o nó novo nasce. O aviso
+    // do assunto/corpo só é renderizado no ramo "Corpo livre", e o campo do
+    // anexo aparece sempre: sem isto, `relatorio_{tabela}.xlsx` passava calado e
+    // o e-mail saía SEM anexo.
+    global.__q = {
+      'email-status': { enabled: true, limite_mb: 5, raizes: ['/dados/saida'],
+                        dominios: [], disponivel: true },
+      'email-modelos': { modelos: [{ id: 4, nome: 'Institucional', descricao: null,
+                                     assunto: null, corpo: '<table></table>', html: true,
+                                     padrao: true }],
+                         disponivel: true, exigir_modelo: false },
+    }
+    const comModelo = { ...F.defaultEmailNo(), modelo_id: 4,
+                        anexo: { raiz: '/dados/saida', nome: 'relatorio_{tabela}.xlsx' } }
+    const tela = mini.montar(el(palco(comModelo), null))
+    saida.emailNo.painel.avisoDoAnexoComModelo = tela.texto
+    global.__q = undefined
+  }
 }
 
 // ── 11) Prévia do e-mail (F1 da spec de modelos e navegação) ────────────────

@@ -118,7 +118,9 @@ def test_no_assunto_a_tabela_vira_resumo():
     e-mail faz `validar_assunto` recusar a mensagem DEPOIS de resolver os
     marcadores — a etapa falharia por algo que a tela deixou escrever."""
     assert sq.resumo_curto(CASOS["simples"]) == "2 linhas × 2 colunas"
-    assert sq.resumo_curto(CASOS["teto"]) == "mais de 1000 linhas × 1 coluna"
+    # milhar no MESMO formato do rodapé da tabela: assunto e corpo do mesmo
+    # e-mail dizendo "mais de 1000" e "mais de 1.000" é desleixo visível
+    assert sq.resumo_curto(CASOS["teto"]) == "mais de 1.000 linhas × 1 coluna"
     assert sq.resumo_curto(CASOS["vazia"]) == "(sem resultado)"
     for caso in CASOS.values():
         resumo = sq.resumo_curto(caso)
