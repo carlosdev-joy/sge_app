@@ -219,6 +219,12 @@ function ConfigTab() {
         </div>
       </div>
 
+      {/* Configurações de fluxo — vieram da aba NOTIFICAÇÕES, onde estavam
+          renderizadas no rodapé dos canais do Teams. Ninguém procura o timeout
+          da prévia de SQL ali, e quem precisava dele não o encontrava. Entram
+          no FIM desta aba, para não reordenar o que já existe aqui. */}
+      <FlowConfigSection />
+
       <ConfirmModal
         open={!!delKey}
         title="Remover Parâmetro"
@@ -2903,6 +2909,11 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
 // Parâmetros do motor de fluxo (decisões/SQL). Hoje só o timeout de
 // preview/simulação de SQL — GET/PUT /jobs/flow-config (degrada se a
 // tabela/endpoint não existir: backend devolve o default).
+//
+// Renderizada na aba SISTEMA › CONFIGURAÇÕES (F2 da spec de tabela do SQL).
+// Antes morava no rodapé da aba de Notificações, entre os canais do Teams:
+// quem precisava aumentar o tempo da prévia de SQL não achava o campo, e a
+// prévia seguia sendo cancelada no valor de fábrica.
 function FlowConfigSection() {
   const [timeout, setTimeoutVal] = useState('')
 
@@ -2922,13 +2933,20 @@ function FlowConfigSection() {
     onSuccess: () => {
       toast.success('Configurações de fluxo salvas')
       queryClient.invalidateQueries({ queryKey: ['flow-config'] })
+      // A MESMA chave aparece crua na tabela de parâmetros no topo desta aba
+      // (`config_list` devolve tudo de etl_app_config). Sem invalidar as duas,
+      // a tabela acima continuaria mostrando o valor velho por até 30s — dois
+      // números diferentes para a mesma configuração, na mesma tela.
+      queryClient.invalidateQueries({ queryKey: ['admin-config'] })
       setTimeoutVal('')
     },
     onError: (e: any) => toast.error(e?.message || 'Falha ao salvar configurações de fluxo'),
   })
 
   const n = parseInt(valorInput, 10)
-  const valido = Number.isFinite(n) && n >= 1 && n <= 120
+  // Teto 280s, o mesmo do backend: o nginx corta a resposta em 300s, e sem a
+  // folga o erro viria do proxy, sem explicação.
+  const valido = Number.isFinite(n) && n >= 1 && n <= 280
 
   return (
     <div className="flex flex-col gap-3">
@@ -2945,14 +2963,17 @@ function FlowConfigSection() {
                 label="Timeout de preview/simulação (s)"
                 type="number"
                 min={1}
-                max={120}
+                max={280}
                 value={valorInput}
                 onChange={e => setTimeoutVal(e.target.value)}
                 className="w-56"
-                error={valorInput !== '' && !valido ? 'Use um valor entre 1 e 120' : undefined}
+                error={valorInput !== '' && !valido ? 'Use um valor entre 1 e 280' : undefined}
               />
               <p className="text-[11px] text-dim">
-                Tempo máximo que um preview/simulação de SQL roda antes de ser cancelado no servidor.
+                Tempo máximo que um preview/simulação de SQL roda antes de ser cancelado no
+                servidor. Padrão 60s, teto 280s. Cada prévia em andamento ocupa um processo
+                da API — valores altos com muita gente prevendo ao mesmo tempo deixam o
+                sistema lento para todos.
               </p>
             </div>
             <Button
@@ -3097,9 +3118,6 @@ function NotificacoesTab() {
           </div>
         )}
       </div>
-
-      {/* Seção 3 — Configurações de fluxo */}
-      <FlowConfigSection />
 
       {grupoForm.open && <GrupoFormModal grupo={grupoForm.grupo} onClose={() => setGrupoForm({ open: false, grupo: null })} />}
       {tplForm.open && <TemplateFormModal template={tplForm.template} grupos={grupos} onClose={() => setTplForm({ open: false, template: null })} />}

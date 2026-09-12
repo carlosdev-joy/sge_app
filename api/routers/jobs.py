@@ -1,6 +1,7 @@
 """api/routers/jobs.py — GET /jobs, POST/DELETE /pipelines/jobs, POST /pipelines/jobs/reorder."""
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import decimal as _decimal
 import json
@@ -1140,10 +1141,38 @@ def _compara_tipado(obtido, operador, valor, comparacao) -> bool:
 
 
 # ── Config de fluxo: timeout do preview SQL (etl_app_config) ─────────────────
-_PREVIEW_TIMEOUT_DEFAULT = 15
+# Default 60s: com 15s (o valor até a F2 da spec de tabela do SQL) a prévia de
+# consulta comum de produção era cancelada, e como quase ninguém achava o campo
+# para regular — ele morava na aba de Notificações —, o valor de fábrica é o que
+# vale na prática.
+#
+# ⚠️ Teto 280s e NÃO 300: o nginx corta a resposta de /orquestra/ em 300s
+# (`config/nginx.conf`, proxy_read_timeout). Empatando os dois, quem estoura o
+# limite receberia o erro do PROXY (502/504 sem explicação) em vez da mensagem
+# da API dizendo o que aconteceu e onde regular. A folga é para a resposta
+# chegar antes do corte.
+_PREVIEW_TIMEOUT_DEFAULT = 60
 _PREVIEW_TIMEOUT_MIN = 1
-_PREVIEW_TIMEOUT_MAX = 120
+_PREVIEW_TIMEOUT_MAX = 280
 _PREVIEW_TIMEOUT_KEY = "sql_preview_timeout_s"
+# ⚠️ Timeout de CONEXÃO (login), fixo e curto — nada a ver com o de execução.
+# `pyodbc.connect(timeout=…)` limita o LOGIN; `conn.timeout` limita a consulta.
+# Confundir os dois faz um servidor inalcançável pendurar a requisição pelo
+# tempo da CONSULTA: com o teto de 280s, a prévia do wizard de Cópia de Dados
+# esperaria 4min40 por um host que nunca vai responder, e o nginx cortaria
+# antes (504 sem explicação) — o oposto do que o teto pretende evitar.
+_CONNECT_TIMEOUT_S = 5
+
+
+def _msg_timeout_previa(segundos: int, acao: str) -> str:
+    """Mensagem do 400 de timeout. Uma só para a prévia e para a simulação: era
+    só a da prévia que dizia onde aumentar o limite, e quem estourava simulando
+    a decisão continuava sem saber que o valor é configurável — foi exatamente
+    o que aconteceu com o default de 15s, que ninguém achava onde mexer."""
+    return (f"A consulta excedeu o tempo limite de {segundos}s {acao} e foi cancelada "
+            "no servidor. Refine o SELECT (filtros, menos colunas) — ou aumente o "
+            "limite em Admin › Sistema › Configurações › Configurações de fluxo "
+            f"(até {_PREVIEW_TIMEOUT_MAX}s).")
 
 
 def _clamp_preview_timeout(v: int) -> int:
@@ -1152,7 +1181,7 @@ def _clamp_preview_timeout(v: int) -> int:
 
 def _get_preview_timeout_s() -> int:
     """Lê o timeout (s) do preview SQL de dbo.etl_app_config (key sql_preview_timeout_s),
-    com fallback 15 e clamp 1..120. Degrada para o default se a tabela faltar/erro."""
+    com fallback 60 e clamp 1..280. Degrada para o default se a tabela faltar/erro."""
     try:
         from routers.admin import _get_app_config_value
         raw = _get_app_config_value(_PREVIEW_TIMEOUT_KEY)
@@ -1172,7 +1201,7 @@ def get_flow_config(_auth: dict = Depends(get_current_user)):
     """Config de fluxo (parâmetros operacionais do editor de pipelines).
 
     Hoje: {sql_preview_timeout_s: int} — timeout (s) do preview/simulação SQL,
-    lido de dbo.etl_app_config (default 15, clamp 1..120). Degrada para o default."""
+    lido de dbo.etl_app_config (default 60, clamp 1..280). Degrada para o default."""
     return {"sql_preview_timeout_s": _get_preview_timeout_s()}
 
 
@@ -1181,7 +1210,7 @@ def put_flow_config(
     body: dict = Body(default={}),
     _auth: dict = Depends(require_perm(PERM_EDITAR)),
 ):
-    """Atualiza a config de fluxo. Body: {sql_preview_timeout_s: int} (clamp 1..120).
+    """Atualiza a config de fluxo. Body: {sql_preview_timeout_s: int} (clamp 1..280).
 
     Persiste em dbo.etl_app_config (MERGE, mesmo padrão de admin config_upsert).
     Degrada com erro claro (400) se a tabela não existir — nunca 500 cru."""
@@ -1440,16 +1469,29 @@ async def sql_preview(
     # Timeout de EXECUÇÃO (não só de conexão): o driver cancela a query no
     # servidor se passar disso — evita deixar um SELECT pesado pendurado.
     conn.timeout = _PREVIEW_TIMEOUT_S
-    try:
+
+    def _rodar():
         cur = conn.cursor()
         # Leitura sem tomar/esperar lock (preview é descartável; dirty read ok) —
         # não bloqueia gravações nem fica preso esperando lock de outra sessão.
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
         cur.execute(preview_sql)
-        columns = [d[0] for d in (cur.description or [])]
-        fetched = cur.fetchall()
-        rows = [[_json_safe(v) for v in r] for r in fetched]
+        cols = [d[0] for d in (cur.description or [])]
+        linhas = [[_json_safe(v) for v in r] for r in cur.fetchall()]
         cur.close(); conn.close()
+        return cols, linhas
+
+    try:
+        # ⚠️ Em THREAD, não no event loop. O handler é `async def`, e o FastAPI
+        # roda handler assim NO PRÓPRIO LOOP — o `cur.execute` do pyodbc é uma
+        # chamada C bloqueante, então a prévia congelava o processo inteiro pelo
+        # tempo da consulta. Com o teto de 280s e 2 workers uvicorn
+        # (api/Dockerfile), duas prévias pesadas parariam TODA a API: login,
+        # dashboard, e os laços de fundo do lifespan (reconcile/monitor) junto.
+        # Enquanto o timeout era 15s o estrago era pequeno; ao subir o limite,
+        # deixar de sair do loop deixou de ser aceitável. Mesmo padrão de
+        # utilitarios.py e lineage_isx.py.
+        columns, rows = await asyncio.to_thread(_rodar)
     except Exception as e:
         try:
             conn.close()
@@ -1459,9 +1501,7 @@ async def sql_preview(
         if "timeout" in msg.lower() or "HYT00" in msg or "HYT01" in msg:
             raise HTTPException(
                 status_code=400,
-                detail=(f"A consulta excedeu o tempo limite de {_PREVIEW_TIMEOUT_S}s na "
-                        "pré-visualização e foi cancelada no servidor. Refine o SELECT "
-                        "(filtros, menos colunas) para conferir a amostra."))
+                detail=_msg_timeout_previa(_PREVIEW_TIMEOUT_S, "na pré-visualização"))
         raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
     total = len(rows)
     return {
@@ -1607,10 +1647,18 @@ async def decisao_simular(
         except Exception:
             pass
         raise HTTPException(status_code=400, detail=f"Falha ao iniciar a sessão: {e}")
-    try:
+
+    def _rodar_simulacao():
         cur.execute(sql)
-        row = cur.fetchone()
+        linha = cur.fetchone()
         cur.close(); conn.close()
+        return linha
+
+    try:
+        # Em THREAD pelo mesmo motivo da prévia: `async def` roda no event loop
+        # e o execute do pyodbc bloqueia o processo inteiro pelo tempo da
+        # consulta (são 2 workers uvicorn — ver api/Dockerfile).
+        row = await asyncio.to_thread(_rodar_simulacao)
     except Exception as e:
         try:
             conn.close()
@@ -1618,11 +1666,8 @@ async def decisao_simular(
             pass
         msg = str(e)
         if "timeout" in msg.lower() or "HYT00" in msg or "HYT01" in msg:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"A consulta excedeu o tempo limite de {timeout_s}s na simulação "
-                        "e foi cancelada no servidor. Refine o SELECT (filtros, menos "
-                        "colunas) para simular a decisão."))
+            raise HTTPException(status_code=400,
+                                detail=_msg_timeout_previa(timeout_s, "na simulação"))
         raise HTTPException(status_code=400, detail=f"Erro ao executar o SELECT: {e}")
 
     obtido = row[0] if row else None
