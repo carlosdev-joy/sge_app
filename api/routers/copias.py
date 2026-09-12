@@ -46,7 +46,7 @@ from routers.airflow import get_airflow_client
 # swap de SERVER/DATABASE na conn str do app, conexão pronta com READ
 # UNCOMMITTED + timeout, serialização JSON-safe e timeout configurável.
 from routers.jobs import (
-    _get_preview_timeout_s, _json_safe, _list_mssql_hosts,
+    _CONNECT_TIMEOUT_S, _get_preview_timeout_s, _json_safe, _list_mssql_hosts,
     _open_swapped_conn,
 )
 from services import copy_sql
@@ -381,9 +381,12 @@ def _consulta_direta(server: str, database: str, sql: str, params=(),
     conn = cur = None
     if conn_id:
         try:
-            par = abrir_conexao_nativa(conn_id, database, timeout_s)
+            # `timeout_s` é o limite de EXECUÇÃO: entra em `conn.timeout`, nunca
+            # no connect (que é login e precisa ser curto).
+            par = abrir_conexao_nativa(conn_id, database, _CONNECT_TIMEOUT_S)
             if par is not None:
                 conn, cur = par
+                conn.timeout = timeout_s
         except RuntimeError as e:
             raise HTTPException(status_code=400, detail=str(e))
     if conn is None:
@@ -612,9 +615,11 @@ async def introspect_query_columns(body: dict = Body(default={}),
     timeout_s = _get_preview_timeout_s()
     conn = cur = None
     try:
-        par = abrir_conexao_nativa(src_conn_id, src_database, timeout_s)
+        # connect = login (curto e fixo); `timeout_s` é o limite de EXECUÇÃO.
+        par = abrir_conexao_nativa(src_conn_id, src_database, _CONNECT_TIMEOUT_S)
         if par is not None:
             conn, cur = par
+            conn.timeout = timeout_s
     except RuntimeError as e:
         log.info("copias: query-columns com credencial da conexão falhou (%s) "
                  "— tentando credencial do app", e)
@@ -686,9 +691,11 @@ async def copias_preview(body: dict = Body(default={}),
     timeout_s = _get_preview_timeout_s()
     conn = cur = None
     try:
-        par = abrir_conexao_nativa(src_conn_id, src_database, timeout_s)
+        # connect = login (curto e fixo); `timeout_s` é o limite de EXECUÇÃO.
+        par = abrir_conexao_nativa(src_conn_id, src_database, _CONNECT_TIMEOUT_S)
         if par is not None:
             conn, cur = par
+            conn.timeout = timeout_s
     except RuntimeError as e:
         log.info("copias: preview com credencial da conexão falhou (%s) — "
                  "tentando credencial do app", e)

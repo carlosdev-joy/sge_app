@@ -986,7 +986,14 @@ def test_consulta_direta_usa_credencial_nativa_primeiro():
         rows = _consulta_direta("SQL69,1478", "master", "SELECT 1",
                                 conn_id="SQL69")
     assert [r[0] for r in rows] == ["DBBUCC", "master"]
-    nativa.assert_called_once_with("SQL69", "master", 15)
+    # ⚠️ O 3º argumento é o timeout de LOGIN do pyodbc, e precisa ser o valor
+    # curto e fixo — não o de execução (que aqui era 15 só porque esse era o
+    # default de `sql_preview_timeout_s`). Passar o de execução no connect fazia
+    # um host inalcançável pendurar a requisição pelo tempo da CONSULTA: com o
+    # teto de 280s da F2, quase 5 minutos antes de rodar qualquer SQL.
+    nativa.assert_called_once_with("SQL69", "master", 5)
+    # e o limite de execução vai para o objeto da conexão, que é onde ele vale
+    assert conn.timeout == 15
     swapped.assert_not_called()               # app credential nem tentada
 
 
