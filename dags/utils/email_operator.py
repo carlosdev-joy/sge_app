@@ -27,6 +27,12 @@ try:                                           # Airflow 2.x
 except ImportError:                            # pragma: no cover
     AirflowSkipException = Exception           # type: ignore[assignment,misc]
 
+import re as _re
+
+# `{tabela:NOME}` — o mesmo alfabeto de `PLACEHOLDER_RE` (utils/email_envio.py),
+# usado só para avisar sobre marcador que não resolve.
+_QUALIFICADOS_RE = _re.compile(r"\{tabela:([A-Za-z0-9_.\-]{1,128})\}")
+
 MSSQL_CONN_ID = "SQL14_DMDB41"
 PIPELINE_TESTE = "_teste_admin"
 
@@ -338,26 +344,61 @@ class EmailOperator(BaseOperator):
                 achadas[job] = dados
         return achadas
 
-    def _marcadores_de_tabela(self, context, html: bool) -> dict:
+    def _marcadores_de_tabela(self, context, html: bool, texto: str = "") -> dict:
         """As chaves `tabela` e `tabela:<NO>` já renderizadas.
 
         `{tabela}` sem qualificador só resolve quando há UM nó SQL a montante.
         Com dois, escolher um seria adivinhar — e o aviso sairia com o resultado
         da consulta errada, que é pior do que não sair. Nesse caso o bloco diz
-        "(sem resultado)" e o log explica o que fazer (usar `{tabela:NOME}`)."""
+        "(sem resultado)" e o log explica o que fazer (usar `{tabela:NOME}`).
+
+        `texto` é o que vai ser interpolado: os avisos só saem quando o marcador
+        é REALMENTE usado. Sem isso, um nó de e-mail que só diz "carga fechou",
+        posto depois de duas consultas, passaria a reclamar em toda corrida de um
+        marcador que ninguém escreveu."""
         from utils import sql_node as sq
 
         render = sq.tabela_html if html else sq.tabela_texto
         tabelas = self._tabelas_a_montante(context)
         marcadores = {f"tabela:{nome}": render(t) for nome, t in tabelas.items()}
+        usa_marcador = "{tabela" in (texto or "")
+
         if len(tabelas) == 1:
-            marcadores["tabela"] = render(next(iter(tabelas.values())))
+            nome, dados = next(iter(tabelas.items()))
+            marcadores["tabela"] = render(dados)
         else:
             marcadores["tabela"] = render({})
-            if tabelas:
+            if tabelas and usa_marcador:
                 self.log.warning(
                     "[EMAIL] %d nós SQL a montante (%s): {tabela} não escolhe por você — "
                     "use {tabela:NOME_DO_NO}.", len(tabelas), ", ".join(sorted(tabelas)))
+
+        if usa_marcador:
+            if tabelas:
+                # ⚠️ Linha de SUCESSO — é por ela que o smoke sabe que o worker
+                # está com o código novo. Worker com `dags/utils/` em cache e
+                # worker funcionando produziriam logs idênticos sem isto, e um
+                # e-mail sem tabela passaria por "a consulta não trouxe nada".
+                for nome, dados in sorted(tabelas.items()):
+                    self.log.info("[EMAIL] tabela de %s: %s", nome,
+                                  sq.resumo_para_log(dados))
+            else:
+                # Zero tabelas com o marcador escrito: o caso comum é o nó de
+                # e-mail NÃO estar ligado direto ao nó SQL (`SQL → Decisão →
+                # E-mail`, por exemplo), porque só o vizinho imediato é lido. Sem
+                # esta linha o operador não tem como descobrir o porquê.
+                self.log.warning(
+                    "[EMAIL] {tabela} usado, mas nenhum nó SQL imediatamente a montante "
+                    "(vizinhos: %s). Só o vizinho IMEDIATO é lido — ligue o nó de e-mail "
+                    "direto no nó SQL, e republique o pipeline se ele é anterior à "
+                    "publicação da tabela.", ", ".join(self._jobs_a_montante()) or "nenhum")
+            nao_resolvidos = [m for m in _QUALIFICADOS_RE.findall(texto or "")
+                              if f"tabela:{m}" not in marcadores]
+            if nao_resolvidos:
+                self.log.warning(
+                    "[EMAIL] {tabela:%s} não resolve: a montante existem %s. O marcador sai "
+                    "literal no e-mail.", "}, {tabela:".join(nao_resolvidos),
+                    ", ".join(sorted(tabelas)) or "nenhum nó SQL")
         return marcadores
 
     def _marcadores_do_assunto(self, context) -> dict:
@@ -419,7 +460,7 @@ class EmailOperator(BaseOperator):
         # A tabela entra por último e em DUAS versões: no corpo ela é HTML (ou
         # texto, se o corpo não for HTML) e no assunto vira resumo.
         corpo = ev.interpolar(corpo_bruto,
-                              {**mapa, **self._marcadores_de_tabela(context, html)})
+                              {**mapa, **self._marcadores_de_tabela(context, html, corpo_bruto)})
         assunto = ev.interpolar(str(no.get("assunto") or ""),
                                 {**mapa, **self._marcadores_do_assunto(context)})
         assunto_ok, erro = ev.validar_assunto(assunto)

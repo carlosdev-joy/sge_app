@@ -647,7 +647,11 @@ def test_com_dois_nos_sql_o_marcador_sem_nome_nao_adivinha(mod, monkeypatch):
 
 def test_marcador_de_no_inexistente_fica_literal(mod, monkeypatch):
     """Regra da casa: marcador desconhecido aparece como está, em vez de sumir
-    ou virar a tabela de outro nó. A tela já avisa antes de salvar."""
+    ou virar a tabela de outro nó.
+
+    ⚠️ A tela NÃO confere o nome do nó (o painel não conhece o grafo a
+    montante), então quem denuncia é o log da task — por isso o operador avisa
+    explicitamente quando um `{tabela:NOME}` não resolve."""
     no = dict(NO_PADRAO, corpo="{tabela:NAO_EXISTE}", html=True)
     hook, client = _Hook(no=no), _Client(rc=0)
     op = _preparar(mod, monkeypatch, hook, client)

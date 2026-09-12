@@ -107,12 +107,20 @@ def _chaves_do_operador() -> set[str]:
     # `_marcadores_do_assunto`, já sabendo o destino. Declarar aqui mantém a
     # âncora útil: chave nova fora do mapa sem passar por esta lista faz a
     # paridade com a prévia e com o seletor quebrar, que é o ponto.
-    for chave, onde in (("tabela", 'marcadores["tabela"]'),):
-        assert onde in fonte, (
-            f"`{chave}` declarada como chave de fora do mapa, mas `{onde}` não "
-            "está no operador — a lista e o código divergiram")
-        chaves.add(chave)
-    return chaves
+    fora_do_mapa = {"tabela"}
+    # E o inverso: toda chave montada no estilo `marcadores["x"] = …` tem de
+    # estar declarada acima. Sem esta volta, uma chave futura criada do mesmo
+    # jeito passaria despercebida e os três conjuntos divergiriam com o teste
+    # VERDE — a "segunda lista à mão" do gotcha do RBAC_RECURSOS.
+    montadas = set(re.findall(r'marcadores\[["\']([a-z_]+)["\']\]\s*=', fonte))
+    assert montadas <= fora_do_mapa, (
+        f"chave montada fora do `_mapa` e não declarada no teste: "
+        f"{sorted(montadas - fora_do_mapa)}")
+    for chave in sorted(fora_do_mapa):
+        assert f'marcadores["{chave}"]' in fonte, (
+            f"`{chave}` declarada como chave de fora do mapa, mas não está no "
+            "operador — a lista e o código divergiram")
+    return chaves | fora_do_mapa
 
 
 def test_ancora_exemplo_cobre_exatamente_os_marcadores_do_operador(previa):

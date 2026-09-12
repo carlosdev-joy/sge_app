@@ -11,12 +11,39 @@
  *  o que a pessoa aprova antes de salvar, e um estilo diferente aqui faria a
  *  tela prometer um aviso que não é o que chega. O teste cruzado roda os mesmos
  *  dados nos dois lados e compara. */
+export function tabelaExemploTexto(): string {
+  return tabelaTexto(TABELA_EXEMPLO)
+}
+
+/** Espelho de `tabela_texto` (dags/utils/sql_node.py) — colunas alinhadas pela
+ *  maior célula, que é como o aviso em texto simples chega. */
+export function tabelaTexto(t: TabelaSql): string {
+  const colunas = t.columns ?? []
+  const linhas = t.rows ?? []
+  if (!colunas.length) return '(sem resultado)'
+  if (!linhas.length) return colunas.join(' | ') + '\n(a consulta não devolveu linhas)'
+
+  const matriz = [colunas.map(c => String(c))]
+  for (const linha of linhas) {
+    matriz.push(linha.map(v => (v === null || v === '' ? '—' : String(v))))
+  }
+  const larguras = colunas.map((_, i) => Math.max(...matriz.map(l => l[i].length)))
+  const saida = matriz.map(linha =>
+    linha.map((c, i) => c.padEnd(larguras[i])).join(' | ').replace(/\s+$/, ''))
+  saida.splice(1, 0, larguras.map(w => '-'.repeat(w)).join('-+-'))
+  const aviso = avisoDeCorte(t)
+  if (aviso) saida.push(`(${aviso})`)
+  return saida.join('\n')
+}
+
 export function tabelaExemploHtml(): string {
-  return tabelaHtml({
-    columns: ['Produto', 'Sanções'],
-    rows: [['ACIDO ACETILSALICILICO 100MG', '3'], ['DIPIRONA 500MG', '1']],
-    total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0,
-  })
+  return tabelaHtml(TABELA_EXEMPLO)
+}
+
+const TABELA_EXEMPLO: TabelaSql = {
+  columns: ['Produto', 'Sanções'],
+  rows: [['ACIDO ACETILSALICILICO 100MG', '3'], ['DIPIRONA 500MG', '1']],
+  total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0,
 }
 
 export interface TabelaSql {
@@ -43,7 +70,11 @@ function avisoDeCorte(t: TabelaSql): string {
   const partes: string[] = []
   if (t.havia_mais) partes.push(`mostrando ${mostradas} de mais de ${String(t.total).replace(/\B(?=(\d{3})+(?!\d))/g, '.')} linhas`)
   else if (t.truncado) partes.push(`mostrando ${mostradas} de ${t.total} linhas`)
-  if (t.colunas_ocultas) partes.push(`${t.colunas_ocultas} coluna${t.colunas_ocultas > 1 ? 's' : ''} não cabem no aviso`)
+  if (t.colunas_ocultas) {
+    partes.push(t.colunas_ocultas === 1
+      ? '1 coluna não cabe no aviso'
+      : `${t.colunas_ocultas} colunas não cabem no aviso`)
+  }
   return partes.join(' · ')
 }
 
@@ -103,14 +134,19 @@ export const VALORES_EXEMPLO: Record<string, string> = {
 
 /** Mesma regra do backend: `{chave}` conhecida vira valor, desconhecida fica
  *  INTACTA — na prévia e no e-mail, um marcador errado aparece como está. */
-export function interpolarExemplo(texto: string): string {
+export function interpolarExemplo(texto: string, html = true): string {
   // `{tabela:NO_SQL}` (com qualificador) também resolve na prévia: ela mostra a
   // MESMA tabela de exemplo, porque na tela não há corrida para saber qual nó
   // trouxe o quê — o que importa é ver como o aviso fica com uma tabela dentro.
-  return (texto ?? '').replace(/\{([a-z_]+)(?::[A-Za-z0-9_-]{1,128})?\}/g, (achado, chave: string) =>
-    Object.prototype.hasOwnProperty.call(VALORES_EXEMPLO, chave)
-      ? VALORES_EXEMPLO[chave]
-      : achado)
+  return (texto ?? '').replace(/\{([a-z_]+)(?::[A-Za-z0-9_.-]{1,128})?\}/g, (achado, chave: string) => {
+    if (!Object.prototype.hasOwnProperty.call(VALORES_EXEMPLO, chave)) return achado
+    // `{tabela}` tem DOIS formatos no envio: markup no corpo HTML e tabela
+    // alinhada no "Corpo livre" em texto (que é o default do nó novo). Mostrar
+    // sempre o HTML faria a prévia exibir `<td style=…>` escapado dentro de um
+    // <pre> — a tela prometendo o que o e-mail não manda.
+    if (chave === 'tabela' && !html) return tabelaExemploTexto()
+    return VALORES_EXEMPLO[chave]
+  })
 }
 
 /** Marcadores usados no texto que o operador NÃO conhece. Alimenta o aviso do
@@ -120,10 +156,12 @@ export function interpolarExemplo(texto: string): string {
  *  - nome inexistente (`{linas}`);
  *  - **caixa errada** (`{ODATE}`, `{Pipeline}`) — o erro mais provável de todos,
  *    e que passaria calado, porque o backend só resolve minúsculas. */
-export function marcadoresDesconhecidos(texto: string): string[] {
+export function marcadoresDesconhecidos(texto: string, permitidos?: string[]): string[] {
   const achados: string[] = []
-  for (const [, chave] of (texto ?? '').matchAll(/\{([A-Za-z_]+)(?::[A-Za-z0-9_-]{1,128})?\}/g)) {
-    const conhecido = Object.prototype.hasOwnProperty.call(VALORES_EXEMPLO, chave)
+  for (const [, chave] of (texto ?? '').matchAll(/\{([A-Za-z_]+)(?::[A-Za-z0-9_.-]{1,128})?\}/g)) {
+    const conhecido = permitidos
+      ? permitidos.includes(chave)
+      : Object.prototype.hasOwnProperty.call(VALORES_EXEMPLO, chave)
     if (!conhecido && !achados.includes(chave)) achados.push(chave)
   }
   return achados

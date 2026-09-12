@@ -42,8 +42,10 @@ NOME_ANEXO_PROIBIDO_RE = re.compile(r"[/\\\r\n\x00]")
 # Placeholder `{nome}` como o nó de notificação usa.
 # `{chave}` e `{chave:QUALIFICADOR}` — o qualificador nasceu com `{tabela:NO_SQL}`,
 # que aponta para UM nó SQL a montante quando há mais de um. Nome de nó é
-# maiúsculo e pode ter dígito, `_` e `-`; a chave em si segue minúscula.
-PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)(?::([A-Za-z0-9_\-]{1,128}))?\}")
+# maiúsculo e pode ter dígito, `_`, `-` e `.` — o mesmo alfabeto que
+# `_JOB_NAME_STRICT_RE` (api/routers/jobs.py) aceita no cadastro do nó.
+# Alfabeto menor aqui deixaria um nó salvável inalcançável pelo marcador.
+PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)(?::([A-Za-z0-9_.\-]{1,128}))?\}")
 # Cabeçalhos que só a montagem define: um `cabecalho_extra` com `Bcc` seria
 # entregue pelo `-t`; `To` duplicado explode na stdlib.
 CABECALHOS_RESERVADOS = {"from", "to", "cc", "bcc", "subject", "date", "message-id", "mime-version",
@@ -252,7 +254,11 @@ def interpolar(texto: str, mapa: dict) -> str:
     Com qualificador, a chave procurada é a COMPLETA (`tabela:NO_SQL`) e nunca a
     base: `{tabela:XPTO}` apontando para um nó que não existe tem de aparecer
     literal no e-mail, e não silenciosamente virar a tabela de outro nó — quem
-    escreveu o marcador pediu aquele nó, não "qualquer um"."""
+    escreveu o marcador pediu aquele nó, não "qualquer um".
+
+    ⚠️ A TELA NÃO CONFERE o nome do nó (ela não conhece o grafo a montante no
+    painel): um `{tabela:CONTA}` escrito para o nó `CONTA_SANCOES` passa no save
+    e sai literal no e-mail. Quem denuncia é o log da task, em runtime."""
     def _sub(m):
         chave = f"{m.group(1)}:{m.group(2)}" if m.group(2) else m.group(1)
         return str(mapa[chave]) if chave in mapa and mapa[chave] is not None else m.group(0)
@@ -305,6 +311,26 @@ def documento_html(corpo: str) -> str:
     )
 
 
+def html_para_texto(corpo: str) -> str:
+    """HTML → texto simples legível, para o alternativo `text/plain`.
+
+    ⚠️ Tirar as tags com um `re.sub` só COLA o conteúdo das células: uma tabela
+    de resultado virava `ProdutoQtdACIDO A3DIPIRONA1`, em que o número de uma
+    linha encosta no nome da seguinte — ilegível e ambíguo para quem lê em modo
+    texto, para leitor de tela e para o snippet da caixa de entrada. As
+    fronteiras de bloco viram separador ANTES do strip."""
+    texto = corpo or ""
+    texto = re.sub(r"<!--.*?-->", "", texto, flags=re.S)          # comentário some inteiro
+    texto = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", texto)   # e o que não é conteúdo
+    texto = re.sub(r"(?i)</t[dh]\s*>", " | ", texto)              # célula → separador
+    texto = re.sub(r"(?i)<br\s*/?>|</(tr|p|div|h[1-6]|li|table)\s*>", "\n", texto)
+    texto = re.sub(r"<[^>]+>", "", texto)
+    texto = texto.replace("&#160;", " ").replace("&nbsp;", " ")
+    # `A | B | ` → `A | B`; e no máximo uma linha em branco entre blocos
+    texto = "\n".join(re.sub(r"\s*\|\s*$", "", l.strip()) for l in texto.splitlines())
+    return re.sub(r"\n{3,}", "\n\n", texto).strip()
+
+
 def montar_mensagem(remetente: str, destinatarios: list[str], assunto: str, corpo: str,
                     html: bool = False, anexo_nome: str | None = None,
                     anexo_bytes: bytes | None = None, cabecalho_extra: dict | None = None) -> bytes:
@@ -338,7 +364,7 @@ def montar_mensagem(remetente: str, destinatarios: list[str], assunto: str, corp
         # O texto simples sai do corpo ORIGINAL: tirá-lo do documento embrulhado
         # arrastaria o conteúdo do <head> para dentro da mensagem de quem lê em
         # texto puro.
-        texto = re.sub(r"<[^>]+>", "", corpo)
+        texto = html_para_texto(corpo)
         msg.set_content(texto, subtype="plain", charset="utf-8")
         msg.add_alternative(documento_html(corpo), subtype="html", charset="utf-8")
     else:

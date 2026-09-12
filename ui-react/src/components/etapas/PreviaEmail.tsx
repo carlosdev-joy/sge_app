@@ -41,8 +41,10 @@ export function PreviaEmail({ corpo, html, altura = 220, titulo = 'Prévia' }: P
   const corpoEstavel = useTextoEstavel(corpo)
 
   const conteudo = useMemo(
-    () => (comValores ? interpolarExemplo(corpoEstavel) : corpoEstavel),
-    [corpoEstavel, comValores],
+    // `html` importa: `{tabela}` vira markup no corpo HTML e tabela alinhada no
+    // corpo em texto — é o que o envio faz, e a prévia tem de mostrar o mesmo.
+    () => (comValores ? interpolarExemplo(corpoEstavel, html) : corpoEstavel),
+    [corpoEstavel, comValores, html],
   )
 
   const documento = useMemo(() => montarDocumento(conteudo, html), [conteudo, html])

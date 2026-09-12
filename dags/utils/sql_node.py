@@ -49,8 +49,13 @@ def valor_publicavel(v):
         texto = f"<{len(bytes(v))} bytes>"
     else:
         texto = str(v)
-    if isinstance(texto, str) and len(texto) > LIMITE_CELULA:
-        return texto[:LIMITE_CELULA - 1] + "…"
+    if isinstance(texto, str):
+        # Quebra de linha DENTRO da célula destrói o alinhamento da versão em
+        # texto (a tabela vira degrau) e não acrescenta nada no HTML, onde a
+        # célula já quebra sozinha.
+        texto = " ".join(texto.split())
+        if len(texto) > LIMITE_CELULA:
+            return texto[:LIMITE_CELULA - 1] + "…"
     return texto
 
 
@@ -212,7 +217,8 @@ def _aviso_de_corte(t: dict) -> str:
         partes.append(f"mostrando {mostradas} de {total} linhas")
     if t.get("colunas_ocultas"):
         n = t["colunas_ocultas"]
-        partes.append(f"{n} coluna{'s' if n > 1 else ''} não cabem no aviso")
+        partes.append(f"{n} coluna não cabe no aviso" if n == 1
+                      else f"{n} colunas não cabem no aviso")
     return " · ".join(partes)
 
 
@@ -220,8 +226,11 @@ def tabela_texto(tabela: dict) -> str:
     """A mesma tabela em TEXTO, para corpo que não é HTML.
 
     O nó aceita "Corpo livre" em texto simples: mandar markup para lá encheria
-    o aviso de `<td style=…>`. E é esta versão que também vai para o
-    alternativo text/plain, já que o corpo HTML é limpo por regex no envio."""
+    o aviso de `<td style=…>`.
+
+    ⚠️ NÃO é esta versão que vai para o alternativo `text/plain` de um corpo
+    HTML — lá quem trabalha é `html_para_texto` (email_envio.py), que transforma
+    as fronteiras de célula e de linha em separadores antes de tirar as tags."""
     t = tabela or {}
     colunas = t.get("columns") or []
     linhas = t.get("rows") or []

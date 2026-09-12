@@ -46,14 +46,24 @@ CASOS = {
 
 
 @pytest.fixture(scope="module")
-def do_front():
+def do_front_texto(_bancada):
+    return _bancada["tabelasTexto"]
+
+
+@pytest.fixture(scope="module")
+def do_front(_bancada):
+    return _bancada["tabelas"]
+
+
+@pytest.fixture(scope="module")
+def _bancada():
     node = shutil.which("node")
     if node is None:
         pytest.skip("front não instalado nesta máquina")
     r = subprocess.run([node, str(RAIZ / "tests/js/ds_params_harness.cjs")],
                        capture_output=True, text=True, cwd=str(RAIZ), timeout=180)
     assert r.returncode == 0, f"bancada do front falhou:\n{r.stderr}"
-    return json.loads(r.stdout)["previaEmail"]["tabelas"]
+    return json.loads(r.stdout)["previaEmail"]
 
 
 @pytest.mark.parametrize("caso", sorted(CASOS))
@@ -113,3 +123,76 @@ def test_no_assunto_a_tabela_vira_resumo():
     for caso in CASOS.values():
         resumo = sq.resumo_curto(caso)
         assert "<" not in resumo and "\n" not in resumo
+
+
+# ── correções da revisão adversarial ────────────────────────────────────────
+
+@pytest.mark.parametrize("caso", ["simples", "comVazio", "truncada", "semLinhas", "vazia"])
+def test_a_tabela_em_texto_tambem_bate_nos_dois_lados(do_front_texto, caso):
+    """O corpo NÃO-HTML é o default do nó novo (`defaultEmailNo`), então este
+    render é o mais provável de chegar a quem recebe."""
+    casos = {
+        "simples": CASOS["simples"],
+        "comVazio": {"columns": ["a", "b"], "rows": [["x", None]], "total": 1,
+                     "truncado": False, "havia_mais": False, "colunas_ocultas": 0},
+        "truncada": {"columns": ["n"], "rows": [["1"]], "total": 60,
+                     "truncado": True, "havia_mais": False, "colunas_ocultas": 1},
+        "semLinhas": CASOS["semLinhas"],
+        "vazia": CASOS["vazia"],
+    }
+    assert sq.tabela_texto(casos[caso]) == do_front_texto[caso]
+
+
+def test_concordancia_de_uma_coluna_oculta():
+    """"1 coluna não cabem" — o erro passou pelo teste cruzado porque os DOIS
+    lados erravam igual, que é o buraco clássico desse tipo de teste."""
+    um = {"columns": ["a"], "rows": [["x"]], "total": 1, "truncado": False,
+          "havia_mais": False, "colunas_ocultas": 1}
+    assert "1 coluna não cabe no aviso" in sq.tabela_html(um)
+    assert "não cabem" not in sq.tabela_html(um)
+
+
+def test_celula_com_quebra_de_linha_nao_destroi_o_alinhamento():
+    """`valor_publicavel` preserva o que vem do banco, e um `\\n` numa célula
+    fazia a tabela em texto virar degrau."""
+    assert sq.valor_publicavel("linha1\nlinha2") == "linha1 linha2"
+    t = {"columns": ["obs", "n"], "rows": [[sq.valor_publicavel("a\nb"), "9"]],
+         "total": 1, "truncado": False, "havia_mais": False, "colunas_ocultas": 0}
+    linhas = sq.tabela_texto(t).splitlines()
+    assert len(linhas) == 3 and linhas[2].startswith("a b")
+
+
+def test_a_previa_mostra_texto_quando_o_corpo_nao_e_html(_bancada):
+    """⛔ O corpo em texto é o DEFAULT do nó novo. A prévia mostrava o markup
+    escapado dentro de um `<pre>` enquanto o envio mandava a tabela alinhada —
+    a tela prometendo o que o e-mail não cumpre."""
+    assert "<table" not in _bancada["exemploTexto"]
+    assert "ACIDO ACETILSALICILICO 100MG |" in _bancada["exemploTexto"]
+    assert "<table" in _bancada["exemploHtml"]
+
+
+def test_tabela_no_nome_do_anexo_continua_sendo_acusada(_bancada):
+    """⛔ Regressão que a revisão pegou: com `tabela` na lista compartilhada,
+    `relatorio_{tabela}.xlsx` deixou de ser acusado — e ali o marcador nunca
+    resolve (o anexo é um arquivo procurado por nome), então o e-mail sairia
+    SEM anexo com um aviso discreto no log."""
+    assert _bancada["desconhecidosNoAnexo"] == ["tabela"]
+
+
+def test_texto_simples_do_corpo_html_nao_cola_as_celulas():
+    """⛔ Defeito no artefato entregue: `re.sub(r"<[^>]+>", "")` colava o
+    conteúdo — `ProdutoQtdACIDO A3DIPIRONA1`, com o número de uma linha
+    encostando no nome da seguinte. É o que chega a quem lê em modo texto."""
+    import sys as _sys
+    from unittest.mock import MagicMock
+
+    _sys.modules.setdefault("pyodbc", MagicMock())
+    _sys.path.insert(0, str(RAIZ / "api"))
+    from services import email_mime as em
+
+    corpo = "Resultado:<br>" + sq.tabela_html(CASOS["simples"]) + "<p>Abraço.</p>"
+    texto = em.html_para_texto(corpo)
+    assert "Produto | Qtd" in texto
+    assert "ACIDO A | 3" in texto and "DIPIRONA | 1" in texto
+    assert "ACIDO A3" not in texto
+    assert "<" not in texto and "&#160;" not in texto

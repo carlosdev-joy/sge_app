@@ -741,6 +741,25 @@ function tela(params, previa, extra, jobName) {
       vazia: P.tabelaHtml({ columns: [], rows: [], total: 0, truncado: false,
                             havia_mais: false, colunas_ocultas: 0 }),
     },
+    // A tabela em TEXTO (corpo livre sem HTML) — espelho de `tabela_texto`.
+    tabelasTexto: {
+      simples: P.tabelaTexto({ columns: ['Produto', 'Qtd'], rows: [['ACIDO A', '3'], ['DIPIRONA', '1']],
+                               total: 2, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      comVazio: P.tabelaTexto({ columns: ['a', 'b'], rows: [['x', null]],
+                                total: 1, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      truncada: P.tabelaTexto({ columns: ['n'], rows: [['1']],
+                                total: 60, truncado: true, havia_mais: false, colunas_ocultas: 1 }),
+      semLinhas: P.tabelaTexto({ columns: ['a', 'b'], rows: [],
+                                 total: 0, truncado: false, havia_mais: false, colunas_ocultas: 0 }),
+      vazia: P.tabelaTexto({ columns: [], rows: [], total: 0, truncado: false,
+                             havia_mais: false, colunas_ocultas: 0 }),
+    },
+    // O corpo NÃO-HTML (default do nó novo) recebe a tabela em texto, não markup
+    exemploTexto: P.interpolarExemplo('Segue:\n{tabela}', false),
+    exemploHtml: P.interpolarExemplo('Segue:\n{tabela}', true),
+    // `{tabela}` no NOME DO ANEXO é marcador inválido: ali ele nunca resolve
+    desconhecidosNoAnexo: P.marcadoresDesconhecidos('relatorio_{tabela}_{odate}.xlsx',
+                                                    ['pipeline', 'odate', 'data', 'job']),
     dicas: [P.dicaDoMarcador('ODATE'), P.dicaDoMarcador('Pipeline'),
             P.dicaDoMarcador('nao_existe'), P.dicaDoMarcador('pipeline')],
   }
