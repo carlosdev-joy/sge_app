@@ -26,3 +26,15 @@ Validação F1: tsc/Vite OK, ESLint193 antes/depois, pytest5405/50skip/mesmas8fa
 smoke20 combinações claro/escuro OK, revisão adversarial aprovada após corrigir
 mock de /utilitarios/config (precisa raizes e servidores). Capturas em
 /tmp/orq-header-f1-{light,dark}-{1440,768,360,320}.png no ambiente de execução.
+
+## 2026-09-13 — F1 mergeada; F2 implementada
+
+PR408 mergeada com autorização, main085122b. F2 em feat/orq-header-f2:
+triggers40/36px, ARIA/dialog não modal, Escape com retorno de foco, feed com
+botões nativos e foco preservado após confirmação/read-all, popoversmobile,
+perfil ORQ. Contratos de leitura/confirmação/polling/logout intactos.
+
+Spec/evidência: docs/branding/orq-header-f2.md. Revisões adversarial e segurança
+aprovadas. Build OK, ESLint193 antes/depois; pytest5405/50skip/mesmas8falhas.
+F3 changelog segue pendente após autorização de merge F2. Sem novo asset,
+backend, dependência, migration ou mudança no login/RBAC. Produção pendente.

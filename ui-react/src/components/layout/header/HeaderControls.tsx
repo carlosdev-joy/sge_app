@@ -37,15 +37,18 @@ export function HeaderControls() {
     <>
       <div className="flex items-center gap-2 shrink-0">
         <button
+          type="button"
+          aria-label="Abrir busca global"
           onClick={() => setCmdOpen(true)}
-          className="hidden xl:flex items-center gap-1.5 text-white/60 hover:text-white text-[11px] border border-white/20 hover:border-white/40 rounded px-2 py-0.5 transition-colors"
+          className="hidden xl:flex h-9 min-w-9 items-center justify-center gap-1.5 text-white/80 hover:text-white text-[11px] border border-white/20 hover:border-white/40 rounded px-2 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
           title="Busca global (Ctrl+K)"
         >
           <span>⌘K</span>
         </button>
         <button
+          type="button"
           onClick={() => setTheme(toggleTheme())}
-          className="text-white/70 hover:text-white transition-colors p-1 rounded hover:bg-white/10"
+          className="w-10 h-10 md:w-9 md:h-9 flex items-center justify-center text-white/80 hover:text-white transition-colors rounded hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
           title={theme === 'dark' ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
           aria-label="Alternar tema"
         >
