@@ -51,13 +51,15 @@ async def main():
                 dims = await header.evaluate('''e=>({height:e.getBoundingClientRect().height,
                     body:e.firstElementChild.getBoundingClientRect().height,
                     stripe:e.lastElementChild.getBoundingClientRect().height,
-                    bg:getComputedStyle(e).backgroundImage,
+                    bg:getComputedStyle(e).backgroundImage,color:getComputedStyle(e).backgroundColor,
                     controls:[...e.querySelectorAll('button,a')].filter(x=>x.getClientRects().length).map(x=>({label:x.title||x.textContent,x:x.getBoundingClientRect().x,right:x.getBoundingClientRect().right}))})''')
                 assert (dims['height'], dims['body'], dims['stripe']) == (56,52,4), dims
-                assert '135deg' in dims['bg'] and 'rgb(26, 95, 168)' in dims['bg'] and '55%' in dims['bg'], dims
+                assert dims['bg'] == 'none' and dims['color'] == 'rgb(4, 20, 60)', dims
                 assert all(x['x'] >= 0 and x['right'] <= width for x in dims['controls']), (width,dims)
                 assert all(a['right'] <= b['x'] for a,b in zip(dims['controls'],dims['controls'][1:])), (width,dims)
-                assert await header.get_by_role('img',name='ORQ',exact=True).is_visible()
+                logo = header.get_by_role('img',name='ORQ',exact=True)
+                assert await logo.is_visible()
+                assert await logo.evaluate("e=>e.src.endsWith('/images/orq/logo-name.png') && getComputedStyle(e).filter === 'none' && getComputedStyle(e.nextElementSibling).display === 'block'")
                 institution = brand.get_by_role('img',name='Caixa Vida e Previdência')
                 assert await institution.is_visible() == (width >= 768)
                 if width >= 768:

@@ -81,7 +81,7 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
 
         {open && (
           <div id={panelId} role="dialog" aria-label="Perfil do usuário" className="fixed inset-x-2 top-[58px] md:absolute md:inset-x-auto md:right-0 md:top-[calc(100%+6px)] md:w-72 max-h-[calc(100svh-66px)] rounded-xl shadow-2xl border border-white/10 overflow-y-auto z-50"
-            style={{ background: 'linear-gradient(160deg, #1A5FA8 0%, #0D3D6B 100%)' }}>
+            style={{ background: 'rgb(var(--brand-navy))' }}>
 
             {/* Avatar + nome */}
             <div className="px-4 py-4 border-b border-white/10">

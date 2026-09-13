@@ -6,14 +6,14 @@ import { HeaderControls } from './HeaderControls'
 
 // Header fino do shell v2: hambúrguer (mobile) + identidade (marca) + título da
 // página atual (breadcrumb leve, derivado do NAV) + controles globais. A
-// navegação vive na sidebar. Reusa Brand e HeaderControls; superfície gradiente.
+// navegação vive na sidebar. Reusa Brand e HeaderControls; superfície ORQ Navy fixa nos dois temas.
 export function HeaderV2({ onMenuClick }: { onMenuClick?: () => void } = {}) {
   const { pathname } = useLocation()
   const current = NAV.find((n) => pathname === n.to || pathname.startsWith(n.to + '/'))
 
   return (
     <header
-      className="shrink-0 text-white bg-[linear-gradient(135deg,var(--tw-gradient-stops))] from-cvp-blue via-cvp-mid via-[55%] to-cvp-blued"
+      className="shrink-0 text-white bg-[rgb(var(--brand-navy))]"
     >
       <div className="flex items-center gap-1.5 px-2 sm:gap-3 sm:px-4 h-[52px]">
         {onMenuClick && (

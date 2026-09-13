@@ -108,6 +108,8 @@ async def main():
                 for trigger, name in [(bell,'Notificações'),(profile,'Perfil do usuário')]:
                     await trigger.click()
                     dialog=page.get_by_role('dialog',name=name,exact=True)
+                    if name == 'Perfil do usuário':
+                        assert await dialog.evaluate("e=>getComputedStyle(e).backgroundColor === 'rgb(4, 20, 60)' && getComputedStyle(e).backgroundImage === 'none'")
                     box=await dialog.bounding_box()
                     assert box['x']>=0 and box['x']+box['width']<=width and box['y']+box['height']<=page.viewport_size['height'],(width,name,box)
                     await page.screenshot(path=str(OUTPUT / f'orq-header-f2-{theme}-{width}-{name.split()[0]}.png'))

@@ -18,7 +18,7 @@ export function Brand() {
         }}
       />
       <span aria-hidden="true" className="hidden md:block h-6 w-px bg-white/25" />
-      <Logo variant="header" iconSize={28}>
+      <Logo variant="white" iconSize={28}>
         <span className="hidden sm:inline text-[9px] text-white/75 font-mono">v{appVersion}</span>
       </Logo>
     </Link>
