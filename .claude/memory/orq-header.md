@@ -49,3 +49,12 @@ Consulta autenticada e cacheversão preservados. Documento: docs/branding/orq-he
 Build OK, ESLint193 antes/depois, pytest5405/50skip/mesmas8falhas. SmokesF1/F2/F3
 e login-altura aprovados; revisão adversarial aprovada. MergeF3/produção
 pendentes; F1/F2 já mergeadas. Nenhuma fase funcional adicional nesta spec.
+
+## 2026-09-13 — evolução Navy independente
+
+F3 mergeada PR410, main39555e6. SpecNavy recebida após conclusão F1/F2/F3.
+Branch feat/orq-header-navy muda somente fundoHeaderV2 para token--brand-navy.
+Docs: branding/orq-header-navy.md e specrecebida. HistóricoF1/F2/F3 preservado.
+Build/lint/pytest/smokesF1/F2/F3 e revisão aprovados. Navy fixo nos dois temas,
+contraste versão10,30 e controles11,62. Contadorvermelho permanece3,76 (preexistente;
+backlog separado, nenhuma perda causada pelo Navy). Merge/produção pendentes.
