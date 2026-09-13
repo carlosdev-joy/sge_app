@@ -2,6 +2,9 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
+    <!-- Mesmo contrato de lib/theme.ts, antes do bundle/CSS para evitar flash. -->
+    <script>try{document.documentElement.classList.toggle('dark',localStorage.getItem('theme')==='dark')}catch{}</script>
+    <style>html{background:#f8fafc;color-scheme:light}html.dark{background:#0f1117;color-scheme:dark}</style>
     <link rel="icon" type="image/png" href="/images/orq/logo-orbital.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ORQ - Caixa Vida e Previdência</title>

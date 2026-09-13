@@ -48,3 +48,26 @@ html, body {
 }
 .orq-logo-white > .orq-logo-white-letters,
 html.dark .orq-logo-brand > .orq-logo-white-letters { display: block; }
+
+/* Tokens de interação: bordas e foco medidos contra panel nos dois temas. */
+:root {
+  --control-border: 112 130 157;
+  --control-focus: 0 81 220;
+  --action: 0 81 220;
+  --action-strong: 8 51 188;
+  --on-action: 255 255 255;
+  --primary-control: 0 81 220;
+  --primary-control-strong: 8 51 188;
+  --brand-navy: 4 20 60;
+  --brand-copy: 184 205 239;
+  --brand-icon: 56 198 255;
+}
+html.dark {
+  --control-border: 139 158 187;
+  --control-focus: 141 186 255;
+  --action: 141 186 255;
+  --action-strong: 119 173 255;
+}
+/* Header: orbital branco preserva a forma original sobre azul institucional. */
+.orq-logo-header > img:first-child { filter: brightness(0) invert(1); }
+.orq-logo-header > .orq-logo-white-letters { display: block; }

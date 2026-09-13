@@ -60,3 +60,63 @@ export async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> 
   })
   return res.json()
 }
+
+/** O login é público: um 401 aqui é credencial recusada, não sessão expirada.
+ * Não envia token antigo e não passa pelo interceptador das telas autenticadas. */
+export type ErroLogin = ErroApi & { tipo: 'http' | 'transporte' | 'resposta' }
+export interface RespostaLogin { token: string; usuario: import('../store/auth').User }
+export const LOGIN_TIMEOUT_MS = 30_000
+
+export async function apiLogin(usuario: string, senha: string): Promise<RespostaLogin> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), LOGIN_TIMEOUT_MS)
+  try {
+    let res: Response
+    try {
+      res = await fetch(`${BASE}/auth/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'omit', signal: controller.signal,
+        body: JSON.stringify({ usuario: usuario.trim(), senha }),
+      })
+    } catch {
+      throw Object.assign(new Error('Falha de transporte no login'), { tipo: 'transporte' })
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      const detail = body?.detail
+      // Mesmo shape HTTP do cliente global; a UI usa mensagens fixas por status.
+      throw Object.assign(new Error(typeof detail === 'string' ? detail : `${res.status} ${res.statusText}`), {
+        tipo: 'http', status: res.status, detail,
+      })
+    }
+    let body: RespostaLogin
+    try {
+      body = await res.json()
+    } catch (erro) {
+      throw Object.assign(new Error('Resposta de login indisponível'), {
+        tipo: controller.signal.aborted || erro instanceof TypeError ? 'transporte' : 'resposta',
+      })
+    }
+    if (!body || typeof body.token !== 'string' || !body.token || !body.usuario || typeof body.usuario.matricula !== 'string') {
+      throw Object.assign(new Error('Resposta de login inválida'), { tipo: 'resposta' })
+    }
+    return body
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/** Nunca mostra detail do backend, que pode conter dado interno ou distinguir usuários. */
+export function mensagemErroLogin(erro: unknown): string {
+  const e = erro as Partial<ErroLogin> | null
+  if (e?.tipo === 'transporte') return 'Não foi possível conectar ao ORQ. Verifique sua conexão corporativa'
+  switch (e?.status) {
+    case 401: return 'Matrícula ou senha incorreta. Use a mesma senha da sua rede corporativa'
+    case 403: return 'Sua matrícula não tem acesso liberado. Abra um chamado para a Engenharia de Dados'
+    case 502:
+    case 503:
+    case 504: return 'Serviço de autenticação indisponível. Não é a sua senha — tente em alguns minutos'
+    case 422: return 'Preencha matrícula e senha.'
+    default: return 'Não foi possível abrir sua sessão. O problema é do sistema, não da sua senha'
+  }
+}

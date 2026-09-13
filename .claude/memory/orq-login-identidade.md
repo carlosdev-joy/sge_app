@@ -38,3 +38,14 @@ Usuário avalia a prévia visual no DEV; PR e merge seguem autorização especí
 Produção ainda não recebe esta identidade.
 
 Suíte completa: 5398 passed, 8 failed, 50 skipped — mesmas oito falhas do baseline, nenhuma nova. Lint: 195 apontamentos em ambas as versões.
+
+## Especificação final Notion — 2026-09-13
+
+Usuário determinou seguir `3da9f9fc3e22819a8102edfa2efd27af`; fonte capturada e
+relatório em `docs/branding/orq-login-validacao.md`. Visual aprovado, correções técnicas:
+apiLogin isolado, 401 sem reload, erros fixos por causa, toggle senha, validação,
+foco/contraste/tema, mobile compacto e `/versao/publica` mínimo. RBAC preservado.
+Backend exige rebuild da API + restart UI no DEV; nenhuma migration.
+Pytest 5405/8/50 vs 5398/8/50; lint193 vs195; smoke completo e QA aprovados.
+Senha não é trimada. Login não deve voltar a usar apiFetch global nem /versao completo.
+Estado desta correção: preparada para PR e DEV, sem autorização de merge em produção.

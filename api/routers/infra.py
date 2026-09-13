@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -125,6 +126,33 @@ def get_versao():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Login consome somente o número público, nunca o histórico de /versao.
+@router.get("/versao/publica", tags=["config"])
+def get_versao_publica():
+    conn = cur = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT versao FROM dbo.etl_versao_ferramenta")
+        versoes = [row[0] for row in cur.fetchall()
+                   if isinstance(row[0], str) and re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,6}){1,3}", row[0])]
+        # Mesma ordem numérica usada no header (1.10 > 1.9); só números públicos.
+        def chave(v):
+            partes = tuple(int(n) for n in v.split("."))
+            return partes + (0,) * (4 - len(partes))
+        return {"versao": max(versoes, key=chave) if versoes else None}
+    except Exception:
+        # Indisponibilidade não bloqueia login nem revela detalhes da infraestrutura.
+        return {"versao": None}
+    finally:
+        for recurso in (cur, conn):
+            if recurso is not None:
+                try:
+                    recurso.close()
+                except Exception:
+                    pass
 
 
 # ── Versão Register ───────────────────────────────────────────────────────────

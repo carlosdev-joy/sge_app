@@ -6,12 +6,12 @@
   align-items: center;
   justify-content: center;
   padding: 40px 24px;
-  background: radial-gradient(ellipse at 24% 10%, #e7f0ff 0, transparent 55%), #f4f7fc;
+  background: rgb(var(--canvas));
   font-family: 'Inter', system-ui, sans-serif;
 }
 .orq-login-card {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 48fr) minmax(0, 52fr);
   width: 100%;
   max-width: 960px;
   overflow: hidden;
@@ -22,31 +22,30 @@
   position: relative;
   overflow: hidden;
   padding: 48px 46px 142px;
-  color: #fff;
-  background: #04143c;
+  color: white;
+  background: rgb(var(--brand-navy));
 }
 .orq-login-brand::after {
   content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 140px;
-  pointer-events: none;
+  pointer-events: none; opacity: .40;
   background: url('/images/orq/login-wave.png') center bottom / 100% auto no-repeat;
   mask-image: linear-gradient(transparent, #000 25%);
 }
 .orq-login-logo { gap: 14px; }
 .orq-login-description {
   max-width: 330px;
-  margin-top: 18px;
+  margin-top: 24px;
   font-size: 18px;
   line-height: 1.55;
   letter-spacing: -.3px;
 }
 .orq-login-capabilities { display: grid; gap: 22px; margin-top: 36px; }
 .orq-login-capabilities li { display: flex; align-items: flex-start; gap: 17px; }
-.orq-login-capabilities svg { flex-shrink: 0; margin-top: 2px; color: #38c6ff; }
-.orq-login-capabilities li:nth-child(3) svg { color: #00dce9; }
-.orq-login-capabilities li:nth-child(4) svg { color: #88bfff; }
+.orq-login-capabilities svg { flex-shrink: 0; margin-top: 2px; color: rgb(var(--brand-icon)); }
 .orq-login-capabilities h2 { font-size: 13px; font-weight: 600; line-height: 1.5; }
-.orq-login-capabilities p { color: #b8cdef; margin-top: 3px; max-width: 285px; font-size: 12px; line-height: 1.6; }
+.orq-login-capabilities p { color: rgb(var(--brand-copy)); margin-top: 3px; max-width: 285px; font-size: 12px; line-height: 1.6; }
 .orq-login-form-panel {
+  position: relative;
   display: flex;
   align-items: center;
   padding: 56px 46px;
@@ -55,59 +54,75 @@
 .orq-login-form-content { width: 100%; }
 .orq-login-form-heading h1 {
   font-family: 'Montserrat', system-ui, sans-serif;
-  color: #071a48;
+  color: rgb(var(--ink));
   font-size: 27px;
   font-weight: 700;
   letter-spacing: -1px;
   line-height: 1.3;
 }
-.orq-login-form-heading h1 span { color: #0057ff; }
-.orq-login-form-heading p { color: #4c6387; font-size: 13px; line-height: 1.75; margin-top: 12px; }
+.orq-login-form-heading h1 span { color: rgb(var(--action)); }
+.orq-login-form-heading p { color: rgb(var(--dim)); font-size: 13px; line-height: 1.75; margin-top: 12px; }
 .orq-login-form { display: flex; flex-direction: column; gap: 24px; margin-top: 42px; }
 .orq-login-field { display: flex; flex-direction: column; gap: 9px; }
-.orq-login-field label { font-size: 11px; text-transform: uppercase; color: #465f86; font-weight: 500; }
+.orq-login-field label { font-size: 11px; text-transform: uppercase; color: rgb(var(--dim)); font-weight: 500; }
 .orq-login-field input {
   min-height: 46px;
   padding: 11px 14px;
-  border: 1px solid #cad8ef;
+  border: 1px solid rgb(var(--control-border));
   border-radius: 8px;
   font: inherit;
   font-size: 13px;
 }
-.orq-login-field input::placeholder { color: #7185a7; }
-.orq-login-field input:focus-visible { outline: 3px solid #0057ff30; outline-offset: 2px; border-color: #0057ff; }
+.orq-login-field input::placeholder { color: rgb(var(--dim)); }
+.orq-login-field input:focus-visible { outline: 3px solid #0057ff30; outline-offset: 2px; border-color: rgb(var(--action)); }
 .orq-login-submit {
   display: flex; align-items: center; justify-content: center; gap: 10px;
   min-height: 46px; margin-top: 2px; padding: 12px 18px; border-radius: 8px;
-  color: #fff; background: linear-gradient(110deg, #0833bc, #005dff);
+  color: rgb(var(--on-action)); background: linear-gradient(110deg, rgb(var(--primary-control-strong)), rgb(var(--primary-control)));
   font-size: 12px; font-weight: 600; letter-spacing: .4px;
   box-shadow: 0 6px 15px -7px #0057ff80;
 }
 .orq-login-submit:hover:not(:disabled) { filter: brightness(1.1); }
-.orq-login-submit:focus-visible { outline: 3px solid #65b9ff; outline-offset: 4px; }
+.orq-login-submit:focus-visible { outline: 3px solid rgb(var(--control-focus)); outline-offset: 4px; }
 .orq-login-submit:disabled { opacity: .65; cursor: wait; }
-.orq-login-footer { margin-top: 23px; text-align: center; font-size: 10px; line-height: 1.8; color: #60789d; }
-.orq-login-footer p + p { margin-top: 5px; color: #0051dc; }
+.orq-login-footer { margin-top: 23px; text-align: center; font-size: 10px; line-height: 1.8; color: rgb(var(--dim)); }
+.orq-login-footer p + p { margin-top: 5px; color: rgb(var(--action)); }
 .orq-login-footer span { font-weight: 500; }
-html.dark .orq-login { background: radial-gradient(ellipse at 24% 10%, #10244a 0, transparent 55%), #0b1221; }
-html.dark .orq-login-form-heading h1 { color: #f1f5ff; }
-html.dark .orq-login-form-heading h1 span { color: #77adff; }
-html.dark .orq-login-form-heading p,
-html.dark .orq-login-field label,
-html.dark .orq-login-footer { color: #afc0dc; }
-html.dark .orq-login-field input { border-color: #455674; }
-html.dark .orq-login-field input::placeholder { color: #9cafce; }
-html.dark .orq-login-footer p + p { color: #8dbaff; }
+.orq-login-password { position: relative; }
+.orq-login-password input { padding-right: 52px; }
+.orq-login-password-toggle {
+  position: absolute; top: 1px; right: 1px; width: 44px; height: 44px;
+  display: grid; place-items: center; color: rgb(var(--dim)); border-radius: 7px;
+}
+.orq-login-password-toggle:focus-visible,
+.orq-login-theme:focus-visible { outline: 3px solid rgb(var(--control-focus)); outline-offset: 2px; }
+.orq-login-password-toggle:disabled { opacity: .65; }
+.orq-login-theme {
+  position: absolute; right: 20px; top: 18px; width: 40px; height: 40px;
+  display: grid; place-items: center; border: 1px solid rgb(var(--control-border));
+  border-radius: 50%; color: rgb(var(--ink)); background: rgb(var(--panel));
+}
+.orq-login-footer .orq-login-version { color: rgb(var(--dim)); }
+@media (min-width: 768px) and (max-width: 900px) {
+  .orq-login-brand { padding-left: 28px; padding-right: 28px; }
+  .orq-login-form-panel { padding-left: 28px; padding-right: 28px; }
+  .orq-login-logo .orq-logo-image { max-width: 100%; height: auto !important; aspect-ratio: 2.5; }
+  .orq-login-logo { max-width: 100%; }
+}
 @media (max-width: 767px) {
   .orq-login { padding: 20px 14px; align-items: flex-start; }
   .orq-login-card { max-width: 480px; grid-template-columns: 1fr; border-radius: 14px; }
-  .orq-login-brand { padding: 28px 28px 112px; }
-  .orq-login-brand::after { height: 110px; }
-  .orq-login-logo .orq-logo-image { width: 225px !important; height: 90px !important; }
-  .orq-login-description { font-size: 16px; margin-top: 10px; }
-  .orq-login-capabilities { gap: 17px; margin-top: 25px; }
-  .orq-login-capabilities p { font-size: 12px; max-width: none; }
-  .orq-login-form-panel { padding: 38px 28px; }
+  .orq-login-brand { padding: 22px 24px 24px; }
+  .orq-login-brand::after { display: none; }
+  .orq-login-logo .orq-logo-image { width: 190px !important; height: 76px !important; }
+  .orq-login-description { font-size: 14px; margin-top: 8px; line-height: 1.5; }
+  .orq-login-capabilities { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 16px; }
+  .orq-login-capabilities li { align-items: center; gap: 5px; }
+  .orq-login-capabilities svg { width: 15px; height: 15px; margin-top: 0; }
+  .orq-login-capabilities h2 { font-size: 11px; font-weight: 500; }
+  .orq-login-capabilities p { display: none; }
+  .orq-login-form-panel { padding: 48px 24px 28px; }
+  .orq-login-theme { right: 14px; top: 12px; width: 32px; height: 32px; }
   .orq-login-form-heading h1 { font-size: 25px; }
   .orq-login-form { margin-top: 28px; }
 }

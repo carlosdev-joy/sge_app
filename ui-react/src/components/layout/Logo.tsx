@@ -1,9 +1,9 @@
 /** Marca ORQ: arquivos originais fornecidos pelo usuário, com transparência. */
 export const ORQUESTRA_NAME = 'ORQ'
-export const ORQUESTRA_SUBTITLE = 'Plataforma de Orquestração de Dados, Processos e Inteligência.'
+export const ORQUESTRA_SUBTITLE = 'Plataforma de Orquestração de Dados, Processos e Inteligência'
 
 export interface LogoProps {
-  variant?: 'white' | 'brand'
+  variant?: 'white' | 'brand' | 'header'
   iconSize?: number
   showText?: boolean
   showSubtitle?: boolean

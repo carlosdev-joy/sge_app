@@ -1,5 +1,8 @@
 # Identidade ORQ e login — 2026-09-13
 
+> Ajustes consolidados conforme Notion: ver [relatório final](orq-login-validacao.md).
+> O texto e as decisões abaixo registram a primeira prévia; prevalece a especificação final.
+
 Brief fornecido pelo usuário: ORQ → posicionamento → cinco capacidades.
 
 Descrição institucional: **Plataforma de Orquestração de Dados, Processos e Inteligência.**
