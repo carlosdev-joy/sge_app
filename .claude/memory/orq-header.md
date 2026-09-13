@@ -38,3 +38,14 @@ Spec/evidência: docs/branding/orq-header-f2.md. Revisões adversarial e seguran
 aprovadas. Build OK, ESLint193 antes/depois; pytest5405/50skip/mesmas8falhas.
 F3 changelog segue pendente após autorização de merge F2. Sem novo asset,
 backend, dependência, migration ou mudança no login/RBAC. Produção pendente.
+
+## 2026-09-13 — F2 mergeada; F3 implementada
+
+PR409 mergeada com autorização, main8e18e74. F3 em feat/orq-header-f3:
+ChangelogModal usa marca/assinatura compartilhadas, diálogo e overlay existente
+para Tab/Escape/foco. Perfil foca trigger estável antes de desmontar itemversão.
+Consulta autenticada e cacheversão preservados. Documento: docs/branding/orq-header-f3.md.
+
+Build OK, ESLint193 antes/depois, pytest5405/50skip/mesmas8falhas. SmokesF1/F2/F3
+e login-altura aprovados; revisão adversarial aprovada. MergeF3/produção
+pendentes; F1/F2 já mergeadas. Nenhuma fase funcional adicional nesta spec.
