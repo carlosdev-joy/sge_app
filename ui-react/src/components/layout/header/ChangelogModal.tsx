@@ -1,7 +1,9 @@
-import { useEffect } from 'react'
+import { useId, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X, Tag } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
+import { ORQUESTRA_NAME, ORQUESTRA_SUBTITLE } from '../Logo'
+import { useOverlay, trapTabKey } from '../../ui/overlay'
 
 interface VersaoEntry {
   id: number
@@ -18,30 +20,29 @@ function fmtDate(iso: string | null | undefined) {
 }
 
 export function ChangelogModal({ onClose }: { onClose: () => void }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  useOverlay(true, onClose, panelRef)
   const { data, isLoading } = useQuery<{ total: number; data: VersaoEntry[] }>({
     queryKey: ['versao'],
     queryFn: () => apiFetch('/versao'),
     staleTime: 300_000,
   })
 
-  // close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
-
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-      <div className="relative bg-panel border border-edge rounded-2xl shadow-2xl w-full max-w-xl flex flex-col max-h-[80vh]">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 nokey">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+        onKeyDown={e => trapTabKey(e, panelRef.current)}
+        className="relative bg-panel border border-edge rounded-2xl shadow-2xl w-full max-w-xl flex flex-col max-h-[80vh] focus:outline-none">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-edge shrink-0">
-          <div>
-            <h2 className="text-sm font-bold text-ink">Histórico de versões</h2>
-            <p className="text-[11px] text-dim mt-0.5">ORQUESTRA — Gestão de Pipelines</p>
+          <div className="min-w-0">
+            <h2 id={titleId} className="text-sm font-bold text-ink">Histórico de versões</h2>
+            <p className="text-xs font-semibold text-ink mt-1">{ORQUESTRA_NAME}</p>
+            <p className="text-[11px] text-dim mt-0.5">{ORQUESTRA_SUBTITLE}</p>
           </div>
-          <button onClick={onClose} className="text-dim hover:text-ink p-1 rounded hover:bg-edge/50 transition-colors">
+          <button type="button" aria-label="Fechar histórico de versões" onClick={onClose} className="shrink-0 w-10 h-10 flex items-center justify-center text-dim hover:text-ink rounded hover:bg-edge/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-current">
             <X size={16} />
           </button>
         </div>
@@ -92,7 +93,7 @@ export function ChangelogModal({ onClose }: { onClose: () => void }) {
 
         {/* Footer */}
         <div className="px-5 py-3 border-t border-edge shrink-0 flex justify-end">
-          <button onClick={onClose} className="text-xs text-dim hover:text-ink px-3 py-1.5 rounded border border-edge hover:bg-edge/50 transition-colors">
+          <button type="button" onClick={onClose} className="min-h-9 text-xs text-dim hover:text-ink px-3 py-1.5 rounded border border-edge hover:bg-edge/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-current">
             Fechar
           </button>
         </div>

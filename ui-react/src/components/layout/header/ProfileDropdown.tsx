@@ -113,7 +113,13 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
             <div className="px-4 py-2.5 border-t border-white/10 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => { setOpen(false); setShowChangelog(true) }}
+                onClick={() => {
+                  // O item de versão desmonta ao fechar o dropdown. O overlay
+                  // deve devolver foco ao trigger estável quando for fechado.
+                  triggerRef.current?.focus()
+                  setOpen(false)
+                  setShowChangelog(true)
+                }}
                 className="text-[10px] text-white/40 hover:text-white/70 transition-colors underline underline-offset-2"
                 title="Ver histórico de versões"
               >
