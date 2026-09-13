@@ -38,7 +38,7 @@ export function HeaderControls() {
       <div className="flex items-center gap-2 shrink-0">
         <button
           onClick={() => setCmdOpen(true)}
-          className="hidden sm:flex items-center gap-1.5 text-white/60 hover:text-white text-[11px] border border-white/20 hover:border-white/40 rounded px-2 py-0.5 transition-colors"
+          className="hidden xl:flex items-center gap-1.5 text-white/60 hover:text-white text-[11px] border border-white/20 hover:border-white/40 rounded px-2 py-0.5 transition-colors"
           title="Busca global (Ctrl+K)"
         >
           <span>⌘K</span>

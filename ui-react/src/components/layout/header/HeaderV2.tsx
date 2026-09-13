@@ -13,14 +13,14 @@ export function HeaderV2({ onMenuClick }: { onMenuClick?: () => void } = {}) {
 
   return (
     <header
-      className="shrink-0 text-white"
-      style={{ background: 'linear-gradient(135deg, #1A5FA8 0%, #0F4C88 55%, #0D3D6B 100%)' }}
+      className="shrink-0 text-white bg-[linear-gradient(135deg,var(--tw-gradient-stops))] from-cvp-blue via-cvp-mid via-[55%] to-cvp-blued"
     >
-      <div className="flex items-center gap-3 px-4 h-[52px]">
+      <div className="flex items-center gap-1.5 px-2 sm:gap-3 sm:px-4 h-[52px]">
         {onMenuClick && (
           <button
+            type="button"
             onClick={onMenuClick}
-            className="md:hidden -ml-1 text-white/80 hover:text-white p-1 rounded hover:bg-white/10 transition-colors"
+            className="md:hidden shrink-0 flex items-center justify-center w-10 h-10 text-white/80 hover:text-white rounded hover:bg-white/10 transition-colors"
             aria-label="Abrir menu"
           >
             <Menu size={20} />
@@ -28,12 +28,12 @@ export function HeaderV2({ onMenuClick }: { onMenuClick?: () => void } = {}) {
         )}
         <Brand />
         {current && (
-          <div className="hidden sm:flex items-center gap-2 min-w-0 ml-2">
-            <span className="text-white/30">/</span>
+          <div className="hidden lg:flex items-center gap-2 min-w-0 ml-2">
+            <span aria-hidden="true" className="text-white/30">/</span>
             <span className="text-sm font-medium text-white/90 truncate">{current.label}</span>
           </div>
         )}
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
         <HeaderControls />
       </div>
       {/* filete laranja institucional CAIXA */}
