@@ -42,6 +42,7 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Spec Utilitários de arquivos](orquestra-spec-utilitarios-arquivos.md) — 🏁 CONCLUÍDA e ✅ EM PRODUÇÃO (deploy confirmado 2026-09-07); F1–F7 = PRs #356–#363; extensão download/upload em spec própria
 - [Spec Lineage automático via ISX](orquestra-spec-lineage-isx.md) — 🏁 SPEC FECHADA 2026-09-08 (F1–F5 = PRs #369–#374 + #375 `6889e67`); ⏳ deploy conjunto EM ANDAMENTO pelo usuário (roteiro em `docs/release-notes/lineage-isx.md`); gotchas e pendências no tópico
 - [Spec Lineage ISX: jobs fora de Jobs/](orquestra-spec-lineage-isx-pasta-raiz.md) — 📋 RASCUNHO 2026-09-08, aguarda aprovação; ⚠️ `validar_pasta` exige `Jobs` em 3 lugares e o workaround por SQL NÃO funciona
+- [Atualização Utilitários: Ctrl+V de imagens](orquestra-spec-utilitarios-transferencia.md) — 2026-09-13: validada no DEV; deploy do front em produção pendente.
 - [Spec Utilitários: transferência (download/upload)](orquestra-spec-utilitarios-transferencia.md) — 🏁 CONCLUÍDA e ✅ EM PRODUÇÃO 2026-09-07 (F1–F5 = PRs #364–#368); conferências pós-deploy da release note não confirmadas item a item; gotchas no tópico
 - [⚠️ GOTCHA: NVARCHAR conta UTF-16](gotcha-nvarchar-utf16.md) — `len()`/`[:n]` deixam emoji estourar a coluna; auditoria best-effort SOME em silêncio; medir/cortar com `utf16_len`/`cortar_utf16`
 - [⚠️ REGRA: dev testa, produção manda](orquestra-dev-testa-producao-manda.md) — padrões de produção Caixa (deploy offline/6c, degradação, LDAP) valem sempre

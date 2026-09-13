@@ -755,7 +755,11 @@ o conteúdo pode ser **binário**.
 
 1. **Pasta**: como nas outras abas (ou **Navegar…**). Precisa existir.
 2. **Escolher arquivo…**: abre o seletor do seu computador. Ao lado aparece o
-   nome e o tamanho escolhidos; o teto é **50 MB** por envio.
+   nome e o tamanho escolhidos; o teto é **50 MB** por envio. Você também pode
+   colar uma imagem ou print com **Ctrl+V** (**⌘V** no Mac) enquanto esta aba
+   estiver aberta, sem modal e sem envio em andamento. A imagem preenche o
+   arquivo e o nome; confira a pasta e clique em **Enviar**. A extensão da
+   imagem (por exemplo, `png`) precisa estar liberada pelo administrador.
 3. **Nome no servidor**: começa igual ao nome do arquivo escolhido e fica como
    você digitar (maiúsculas e espaços inclusive); só a **última** extensão
    precisa estar na lista, comparada em minúsculas (`RELATORIO.TXT` entra com
