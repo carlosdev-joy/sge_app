@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useId } from 'react'
 import { useAuthStore } from '../../../store/auth'
 import { useAppVersion } from '../../../lib/version'
 import { LogOut, Shield, Mail, Hash, Building2, ChevronDown } from 'lucide-react'
@@ -26,6 +26,8 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen]           = useState(false)
   const [showChangelog, setShowChangelog] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelId = useId()
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -51,10 +53,22 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
 
   return (
     <>
-      <div ref={ref} className="relative">
+      <div ref={ref} className="relative" onKeyDown={e => {
+        if (open && e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          setOpen(false)
+          triggerRef.current?.focus()
+        }
+      }}>
         <button
+          ref={triggerRef}
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls={open ? panelId : undefined}
+          aria-label={`Abrir perfil de ${nomeCompleto}`}
           onClick={() => setOpen(v => !v)}
-          className="flex items-center gap-1.5 rounded-lg px-1 py-0.5 hover:bg-white/10 transition-colors"
+          className="flex items-center justify-center gap-1.5 min-w-10 h-10 md:min-w-9 md:h-9 rounded-lg px-1 hover:bg-white/10 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
           title={nomeCompleto}
           aria-expanded={open}
         >
@@ -66,7 +80,7 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
         </button>
 
         {open && (
-          <div className="absolute right-0 top-[calc(100%+6px)] w-72 rounded-xl shadow-2xl border border-white/10 overflow-hidden z-50"
+          <div id={panelId} role="dialog" aria-label="Perfil do usuário" className="fixed inset-x-2 top-[58px] md:absolute md:inset-x-auto md:right-0 md:top-[calc(100%+6px)] md:w-72 max-h-[calc(100svh-66px)] rounded-xl shadow-2xl border border-white/10 overflow-y-auto z-50"
             style={{ background: 'linear-gradient(160deg, #1A5FA8 0%, #0D3D6B 100%)' }}>
 
             {/* Avatar + nome */}
@@ -98,13 +112,15 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
             {/* Footer: versão clicável + sair */}
             <div className="px-4 py-2.5 border-t border-white/10 flex items-center justify-between">
               <button
+                type="button"
                 onClick={() => { setOpen(false); setShowChangelog(true) }}
                 className="text-[10px] text-white/40 hover:text-white/70 transition-colors underline underline-offset-2"
                 title="Ver histórico de versões"
               >
-                ORQUESTRA v{appVersion}
+                ORQ v{appVersion}
               </button>
               <button
+                type="button"
                 onClick={() => { setOpen(false); onLogout() }}
                 className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors px-2 py-1 rounded hover:bg-white/10"
               >

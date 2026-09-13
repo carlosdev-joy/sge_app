@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useId } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Bell, Megaphone } from 'lucide-react'
@@ -97,6 +97,8 @@ export function NotificationsBell() {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelId = useId()
   const seenNotifRef = useRef<number | null>(null)   // baseline notificações (1ª carga)
   const seenComRef   = useRef<number | null>(null)   // baseline comunicados (1ª carga)
   const bannerVistoRef = useRef<Set<number>>(new Set())
@@ -196,15 +198,29 @@ export function NotificationsBell() {
   function onClickItem(it: FeedItem) {
     if (it.kind === 'comunicado' && !it.lida) confirmar.mutate(it.id)
     if (it.link) { setOpen(false); navigate(it.link) }
+    // A confirmação pode transformar este botão em conteúdo estático.
+    // Mantém o foco no sino, em vez de perdê-lo quando o feed atualizar.
+    else triggerRef.current?.focus()
   }
 
   return (
     <>
-      <div ref={ref} className="relative">
+      <div ref={ref} className="relative" onKeyDown={e => {
+        if (open && e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          setOpen(false)
+          triggerRef.current?.focus()
+        }
+      }}>
         <button
+          ref={triggerRef}
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls={open ? panelId : undefined}
           onClick={toggleOpen}
-          className="relative text-white/70 hover:text-white transition-colors p-1 rounded hover:bg-white/10"
-          title="Notificações" aria-label="Notificações" aria-expanded={open}
+          className="relative w-10 h-10 md:w-9 md:h-9 flex items-center justify-center text-white/80 hover:text-white transition-colors rounded hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white"
+          title="Notificações" aria-label={`Notificações, ${unread} não lidas`} aria-expanded={open}
         >
           <Bell size={16} />
           {unread > 0 && (
@@ -215,11 +231,11 @@ export function NotificationsBell() {
         </button>
 
         {open && (
-          <div className="absolute right-0 top-[calc(100%+6px)] w-80 rounded-xl shadow-2xl border border-edge bg-panel overflow-hidden z-50">
+          <div id={panelId} role="dialog" aria-label="Notificações" className="fixed inset-x-2 top-[58px] md:absolute md:inset-x-auto md:right-0 md:top-[calc(100%+6px)] md:w-80 max-h-[calc(100svh-66px)] rounded-xl shadow-2xl border border-edge bg-panel overflow-y-auto z-50">
             <div className="flex items-center justify-between px-3 py-2 border-b border-edge">
               <span className="text-xs font-semibold text-ink">Notificações</span>
               {(data?.unread ?? 0) > 0 && (
-                <button onClick={() => markRead.mutate()} className="text-[10px] text-blue-400 hover:text-blue-300">
+                <button type="button" onClick={() => { markRead.mutate(); triggerRef.current?.focus() }} className="text-[10px] text-blue-700 dark:text-blue-300 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current">
                   Marcar todas como lidas
                 </button>
               )}
@@ -228,24 +244,27 @@ export function NotificationsBell() {
               {feed.length === 0 && (
                 <div className="px-3 py-8 text-center text-xs text-dim">Nenhuma notificação.</div>
               )}
-              {feed.map(it => (
-                <div
+              {feed.map(it => {
+                const actionable = !!it.link || (it.kind === 'comunicado' && !it.lida)
+                const Item = actionable ? 'button' : 'div'
+                return <Item
                   key={it.key}
-                  onClick={() => onClickItem(it)}
-                  className={`flex gap-2 px-3 py-2 border-b border-edge/40 last:border-0 transition-colors
-                    ${it.lida ? 'opacity-60' : 'bg-blue-500/5'} ${(it.link || it.kind === 'comunicado') ? 'cursor-pointer hover:bg-edge/30' : ''}`}
+                  type={actionable ? 'button' : undefined}
+                  onClick={actionable ? () => onClickItem(it) : undefined}
+                  className={`flex w-full text-left gap-2 px-3 py-2 border-b border-edge/40 last:border-0 transition-colors
+                    ${it.lida ? 'opacity-60' : 'bg-blue-500/5'} ${actionable ? 'cursor-pointer hover:bg-edge/30 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-current text-ink' : ''}`}
                 >
                   <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${NOTIF_DOT[it.tipo] ?? 'bg-blue-500'}`} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-medium text-ink flex items-center gap-1">
+                  <span className="block min-w-0 flex-1">
+                    <span className="text-xs font-medium text-ink flex items-center gap-1">
                       {it.kind === 'comunicado' && <Megaphone size={11} className="text-dim shrink-0" />}
                       <span className="truncate">{it.titulo}</span>
-                    </div>
-                    {it.mensagem && <div className="text-[11px] text-dim mt-0.5 break-words line-clamp-3">{it.mensagem}</div>}
-                    <div className="text-[10px] text-dim/60 mt-0.5">{fmtNotifTime(it.created_at)}</div>
-                  </div>
-                </div>
-              ))}
+                    </span>
+                    {it.mensagem && <span className="text-[11px] text-dim mt-0.5 break-words line-clamp-3">{it.mensagem}</span>}
+                    <span className="block text-[10px] text-dim/60 mt-0.5">{fmtNotifTime(it.created_at)}</span>
+                  </span>
+                </Item>
+              })}
             </div>
           </div>
         )}
