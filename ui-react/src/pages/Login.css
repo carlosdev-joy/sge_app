@@ -111,7 +111,7 @@
 }
 @media (max-width: 767px) {
   .orq-login { padding: 20px 14px; align-items: flex-start; }
-  .orq-login-card { max-width: 480px; grid-template-columns: 1fr; border-radius: 14px; }
+  .orq-login-card { max-width: 480px; grid-template-columns: minmax(0, 1fr); border-radius: 14px; }
   .orq-login-brand { padding: 22px 24px 24px; }
   .orq-login-brand::after { display: none; }
   .orq-login-logo .orq-logo-image { width: 190px !important; height: 76px !important; }
@@ -125,4 +125,30 @@
   .orq-login-theme { right: 14px; top: 12px; width: 32px; height: 32px; }
   .orq-login-form-heading h1 { font-size: 25px; }
   .orq-login-form { margin-top: 28px; }
+}
+
+/* A altura útil também diminui com barras do navegador e zoom em notebooks. */
+@media (min-width: 768px) and (max-height: 850px) {
+  .orq-login { padding-top: 16px; padding-bottom: 16px; }
+  .orq-login-brand { padding-top: 24px; padding-bottom: 40px; }
+  .orq-login-brand::after { height: 40px; }
+  .orq-login-logo .orq-logo-image { width: 200px !important; height: 80px !important; }
+  .orq-login-description { margin-top: 12px; font-size: 16px; }
+  .orq-login-capabilities { gap: 10px; margin-top: 20px; }
+  .orq-login-form-panel { padding-top: 64px; padding-bottom: 28px; }
+  .orq-login-form { margin-top: 24px; gap: 18px; }
+}
+@media (min-width: 768px) and (max-height: 680px) {
+  .orq-login-capabilities p { display: none; }
+  .orq-login-capabilities { gap: 16px; }
+}
+@media (max-width: 767px) and (max-height: 740px) {
+  .orq-login { padding-top: 10px; padding-bottom: 10px; }
+  .orq-login-brand { padding-top: 12px; padding-bottom: 16px; }
+  .orq-login-logo .orq-logo-image { width: 140px !important; height: 56px !important; }
+  .orq-login-description { font-size: 12px; }
+  .orq-login-capabilities { display: none; }
+  .orq-login-form-panel { padding-top: 44px; padding-bottom: 20px; }
+  .orq-login-form-heading p { display: none; }
+  .orq-login-form { margin-top: 16px; gap: 16px; }
 }
