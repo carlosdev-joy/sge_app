@@ -30,3 +30,21 @@ html, body {
 ::-webkit-scrollbar-track { background: rgb(var(--panel)); }
 ::-webkit-scrollbar-thumb { background: rgb(var(--edge)); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #4f8ef7; }
+
+/* Fontes locais para a identidade ORQ: nenhuma requisição externa no login. */
+@font-face {
+  font-family: 'Montserrat'; font-style: normal; font-weight: 100 900;
+  font-display: swap; src: url('/fonts/montserrat.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter'; font-style: normal; font-weight: 100 900;
+  font-display: swap; src: url('/fonts/inter.ttf') format('truetype');
+}
+.orq-logo-image { display: inline-block; position: relative; flex-shrink: 0; }
+.orq-logo-image > img { width: 100%; height: 100%; object-fit: contain; }
+.orq-logo-image > .orq-logo-white-letters {
+  position: absolute; inset: 0; filter: brightness(0) invert(1);
+  clip-path: inset(0 0 0 42%); display: none;
+}
+.orq-logo-white > .orq-logo-white-letters,
+html.dark .orq-logo-brand > .orq-logo-white-letters { display: block; }
