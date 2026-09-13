@@ -16,7 +16,7 @@ export function Brand() {
           if (!img.dataset.fallback) { img.dataset.fallback = '1'; img.src = '/images/logo-cvp.svg' }
         }}
       />
-      <Logo variant="white" iconSize={28}>
+      <Logo variant="header" iconSize={28}>
         <span className="text-[9px] text-white/40 font-mono">v{appVersion}</span>
       </Logo>
     </a>

@@ -18,6 +18,8 @@ Como usar numa sessão nova: leia este índice, abra o arquivo do assunto em que
 o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automatizados`, agent
 `qa-adversarial`).
 
+- [Identidade ORQ e novo login](orq-login-identidade.md) — 2026-09-13: logos originais, cinco capacidades e onda decorativa; prévia no DEV aguardando avaliação visual.
+
 ## Regras gerais, ambiente de DEV e gotchas
 - [Preferência de idioma: português](preferencia-idioma-portugues.md) — sempre responder em pt-BR
 - [Biblioteca de Skills](biblioteca-skills.md) — 11 skills + 2 agents globais em ~/.claude
