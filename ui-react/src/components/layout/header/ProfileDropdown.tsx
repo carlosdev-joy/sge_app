@@ -61,7 +61,7 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
           <span className="w-7 h-7 rounded-full bg-white/20 border border-white/30 flex items-center justify-center text-[11px] font-bold text-white select-none">
             {ini}
           </span>
-          <span className="text-xs text-white/80 hidden sm:block max-w-[96px] truncate">{user?.primeiro_nome ?? user?.matricula}</span>
+          <span className="text-xs text-white/80 hidden md:block max-w-[96px] truncate">{user?.primeiro_nome ?? user?.matricula}</span>
           <ChevronDown size={11} className={`text-white/50 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
 
