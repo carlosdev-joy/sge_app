@@ -192,3 +192,14 @@ prioridade no backlog); nome vindo do PC (`validar_nome` + lexical + realpath);
 nginx atrasa o início do download; Blob de 50 MB no navegador.
 
 Ver também [[orquestra-dev-testa-producao-manda]] e [[gotcha-nvarchar-utf16]].
+
+## Atualização 2026-09-13 — clipboard no upload
+
+- Usuário solicitou e autorizou levar à main o Ctrl+V de imagens na aba Enviar arquivo.
+- Evento `paste` mantém validações e clique explícito em Enviar; texto, modais,
+  permissões e envio em andamento são respeitados; cleanup na saída.
+- Smoke DEV: imagem `/dados/bi/image.png` enviada e visualizada nesta sessão.
+- Regressão em `tests/js/utilitarios_clipboard_harness.cjs`, acionada pelo pytest
+  de envio; a bancada minireact anterior não executa `useEffect`.
+- Revisão adversarial: APROVADO, nenhum defeito confirmado. Manual e release note atualizados.
+- Produção: deploy de `ui-react/dist/` e smokes da release note ainda pendentes.

@@ -257,3 +257,14 @@ def test_nenhuma_permissao_nova():
     # a F4 da transferência não traz migration (a 106 é de outra spec: lineage ISX)
     migrations = (RAIZ / "sql" / "migrations").glob("*.sql")
     assert not [m.name for m in migrations if any(p in m.name.lower() for p in ("transfer", "enviar", "baixar", "upload", "download"))]
+
+
+def test_colar_imagem_respeita_texto_modal_permissao_e_ciclo_do_listener():
+    node = _node()
+    if node is None:
+        pytest.skip("front não instalado nesta máquina")
+    r = subprocess.run(
+        [node, str(RAIZ / "tests/js/utilitarios_clipboard_harness.cjs")],
+        capture_output=True, text=True, cwd=str(RAIZ), timeout=30,
+    )
+    assert r.returncode == 0, f"bancada de clipboard falhou:\n{r.stderr}"

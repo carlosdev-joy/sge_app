@@ -9,7 +9,7 @@
 // formulário desabilitado com a explicação. Os avisos (extensão fora da lista,
 // arquivo acima do teto, pasta fora das raízes) vêm ANTES da API — o servidor
 // continua a autoridade (realpath, lista, teto, auditoria).
-import { useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { Upload, FolderOpen, AlertTriangle } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Input, Select } from '../ui/Input'
@@ -56,6 +56,25 @@ export function FormEnviarArquivo({
   const pronto = envioPronto(diretorio, nome, tamanho, raizes, extensoes, tetoKb, podeGravar) && !enviando
   const servidorAtual = servidores.find(s => s.id === servidor)
   const desabilitado = !podeGravar
+
+  // O listener existe só enquanto esta aba está montada. Colar texto mantém
+  // o comportamento nativo; a imagem segue as mesmas validações do seletor.
+  useEffect(() => {
+    if (desabilitado || enviando) return
+    const colarImagem = (e: ClipboardEvent) => {
+      if (e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return
+      const itens = Array.from(e.clipboardData?.items ?? [])
+      const imagem = itens.find(item => item.kind === 'file' && item.type.startsWith('image/'))?.getAsFile()
+      if (!imagem) return
+      e.preventDefault()
+      setArquivo(imagem)
+      setNome(imagem.name)
+      // Permite escolher novamente o mesmo arquivo local depois de colar.
+      if (seletor.current) seletor.current.value = ''
+    }
+    document.addEventListener('paste', colarImagem)
+    return () => document.removeEventListener('paste', colarImagem)
+  }, [desabilitado, enviando])
 
   // Arquivo escolhido: o nome no servidor começa igual ao local (editável).
   const escolher = (e: ChangeEvent<HTMLInputElement>) => {
@@ -106,8 +125,11 @@ export function FormEnviarArquivo({
             disabled={desabilitado || enviando} data-acao="escolher">
             <FolderOpen size={14} /> Escolher arquivo…
           </Button>
-          <span className="text-[11px] text-dim break-all" data-arquivo-escolhido={arquivo ? arquivo.name : ''}>
+          <span className="text-[11px] text-dim break-all" aria-live="polite" data-arquivo-escolhido={arquivo ? arquivo.name : ''}>
             {arquivo ? `${arquivo.name} · ${formatarTamanho(arquivo.size)}` : 'nenhum arquivo escolhido'}
+          </span>
+          <span className="text-[11px] text-dim">
+            Cole uma imagem com Ctrl+V (⌘V no Mac) nesta aba e clique em Enviar.
           </span>
           <span className="text-[11px] text-dim">
             Até {formatarTamanho(tetoKb * 1024)}{semExtensoes ? '' : `; extensões: ${extensoes.map(x => `.${x}`).join(', ')}`}.

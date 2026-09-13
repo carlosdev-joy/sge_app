@@ -124,3 +124,22 @@ Utilitários (Operação)
 - A lista de extensões é uma só para editar texto e enviar binário; sem cota
   de disco por usuário; `.bak` sem expurgo (backlog anterior).
 - Um servidor só (DataStage).
+
+## Atualização 2026-09-13 — colar imagem no upload
+
+Na aba **Enviar arquivo**, Ctrl+V (⌘V no Mac) seleciona uma imagem do clipboard
+com nome e tamanho, sem upload automático. Texto continua com colagem nativa.
+A captura fica bloqueada sem permissão de edição, durante envio e com modal aberto.
+O seletor de arquivos e as validações de extensão, tamanho e pasta continuam valendo.
+
+Deploy desta atualização: distribuir `ui-react/dist/` recompilada pelo fluxo normal
+do projeto. Sem migration, dependência, wheel, mudança de API ou restart de worker.
+O DEV já serviu o build e a imagem enviada em `/dados/bi/image.png` foi visualizada.
+Produção: pendente de deploy pelo usuário e conferência abaixo.
+
+- Abrir Utilitários → Enviar arquivo e colar um print: conferir nome e tamanho.
+- Informar pasta permitida, enviar e conferir a imagem pelo download.
+- Colar texto no campo de pasta: o texto deve continuar entrando normalmente.
+- Conferir bloqueio de envio para extensão não liberada ou imagem acima do teto.
+- Abrir Navegar ou um modal de envio: colar não deve trocar o arquivo ao fundo.
+- Trocar de aba: a colagem não deve selecionar arquivo na aba que foi fechada.
