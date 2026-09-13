@@ -55,3 +55,13 @@ Frontend dist apenas, sem migration/dependência/backend. DEV para avaliação;
 produção pendente. Conferência manual: comparar header com painel de marca do
 login, alternar tema, redimensionar janela e navegar pelos controles por Tab.
 Merge da PR independente somente com autorização do usuário.
+
+## Ajuste solicitado pelo usuário após avaliação do DEV
+
+O pedido seguinte substitui as restrições anteriores de preservar a variante
+monocromática do header e o gradiente do perfil. Brand agora consome a mesma
+variante white usada no login: orbital colorido e letras brancas, com o asset
+original e dimensões existentes. Dropdown do usuário usa o mesmo token Navy
+sólido do header nos dois temas. Sem alteração nos dados/teclado/logout.
+Smokes verificam ausência de filtro monocromático, máscara branca das letras e
+fundo Navy no perfil. Esta complementação integra a PR411 ainda aberta.

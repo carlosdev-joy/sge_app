@@ -58,3 +58,9 @@ Docs: branding/orq-header-navy.md e specrecebida. HistóricoF1/F2/F3 preservado.
 Build/lint/pytest/smokesF1/F2/F3 e revisão aprovados. Navy fixo nos dois temas,
 contraste versão10,30 e controles11,62. Contadorvermelho permanece3,76 (preexistente;
 backlog separado, nenhuma perda causada pelo Navy). Merge/produção pendentes.
+
+Complemento Navy solicitado pelo usuário: usar mesmo logo do login e fundoNavy
+no dropdown dos dados do usuário. Brand variantewhite (orbitalcolorido+letras
+brancas), Perfil fundo tokennavy. Incluído na PR411 aberta, sem novoPR/merge.
+Build, lintdoscomponentes e smokeslayout/controles aprovados, revisãoadversarial
+aprovada. Substitui restrição anterior de logoheader monocromático.
