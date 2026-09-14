@@ -25,7 +25,8 @@ const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/Jo
                   'lib/maestro.ts', 'components/etapas/MaestroPainel.tsx', 'components/etapas/MaestroChat.tsx',
                   'lib/maestroAdmin.ts', 'lib/emailAdmin.ts', 'components/etapas/fluxoTypes.ts',
                   'components/etapas/previaEmailDados.ts', 'lib/emailAnexo.ts',
-                  'components/etapas/paineis/PainelEmail.tsx']
+                  'components/etapas/paineis/PainelEmail.tsx',
+                  'components/etapas/EmailPlaceholderPicker.tsx', 'lib/emailPlaceholders.ts']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)

@@ -17,7 +17,7 @@ import { NavegadorPastas } from '../../utilitarios/NavegadorPastas'
 import { useNavegadorPastas } from '../../utilitarios/useNavegadorPastas'
 import { Button } from '../../ui/Button'
 import { Input, Select, Textarea } from '../../ui/Input'
-import { PlaceholderPicker } from '../../ui/PlaceholderPicker'
+import { EmailPlaceholderPicker } from '../EmailPlaceholderPicker'
 import type { EmailNodeData } from '../EmailNode'
 import {
   defaultEmailNo, errosDoEmailNo, opcoesDoModeloNo,
@@ -60,6 +60,7 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
   const patch = (p: Partial<EmailNoConfig>) => onPatchEmail(node.id, p)
   const corpoRef = useRef<HTMLTextAreaElement>(null)
   const assuntoRef = useRef<HTMLInputElement>(null)
+  const anexoRef = useRef<HTMLInputElement>(null)
 
   // Destinatários: o campo guarda o TEXTO CRU enquanto se digita, e o nó recebe
   // a lista já separada a cada tecla.
@@ -266,6 +267,7 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
                   onNavegar={navegador.disponivel ? () => navegador.abrir(cfg.anexo?.raiz || null) : undefined}
                 />
                 <Input
+                  ref={anexoRef}
                   label="Nome do arquivo"
                   hint={'O arquivo pode ainda não existir: ele costuma ser gerado pela própria corrida.\nAceita placeholders — ex.: relatorio_{odate}.xlsx'}
                   value={cfg.anexo.nome}
@@ -273,6 +275,8 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
                   placeholder="relatorio_{odate}.xlsx"
                   className="text-xs"
                 />
+                <EmailPlaceholderPicker campo="anexo" targetRef={anexoRef}
+                  value={cfg.anexo.nome} onChange={v => patch({ anexo: { ...cfg.anexo!, nome: v } })} />
                 {desconhecidosNoAnexo.length > 0 && (
                   <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                     {desconhecidosNoAnexo.map(m => `{${m}}`).join(', ')}
@@ -402,6 +406,9 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             className="text-xs"
           />
 
+          <EmailPlaceholderPicker campo="assunto" targetRef={assuntoRef}
+            value={cfg.assunto} onChange={v => patch({ assunto: v })} />
+
           {cfg.modelo_id != null ? (
             <p className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[10px] text-dim">
               O corpo vem do modelo <strong>{modeloEscolhido?.nome ?? `#${cfg.modelo_id}`}</strong>,
@@ -419,9 +426,8 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
               placeholder="A carga {pipeline} terminou em {data} com {linhas} linhas."
               className="text-xs"
             />
-            <PlaceholderPicker
-              label="Inserir:"
-              placeholders={EMAIL_PLACEHOLDERS}
+            <EmailPlaceholderPicker
+              campo="corpo"
               targetRef={corpoRef}
               value={cfg.corpo}
               onChange={v => patch({ corpo: v })}
