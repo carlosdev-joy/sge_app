@@ -1,5 +1,5 @@
 # Spec: Seletores de placeholders e orientação SQL → E-mail — Orquestra
-Data: 2026-09-14 · Status: rascunho
+Data: 2026-09-14 · Status: em execução (F1)
 
 ## 1. Visão
 Permitir inserir os marcadores disponíveis diretamente nos campos de composição do e-mail, tanto nos modelos quanto no nó. Explicar na própria configuração como o resultado do SQL chega ao e-mail, evitando que uma prévia com dados fictícios seja confundida com a execução real.
@@ -37,7 +37,7 @@ Sem tabelas, colunas, migrations ou dependências novas. Os marcadores continuam
 ## 5. Fases
 ### F1 — Inserção nos campos de composição
 - Entregável: listas no assunto/corpo do modelo, assunto/corpo livre do nó e nome do anexo, com catálogo e exemplos compartilhados.
-- No anexo, excluir tabela e qualificadores de tabela. Nos modelos, oferecer qualificador com nome informado e explicação de dependência do fluxo.
+- No anexo, excluir tabela e qualificadores de tabela, além de data/inicio (formatam barras incompatíveis com nome de arquivo); orientar odate. Nos modelos, oferecer qualificador com nome informado e explicação de dependência do fluxo.
 - Aceite: inserir no meio do texto ou substituir seleção funciona; teclado/foco preservados; assunto continua disponível com modelo selecionado; prévia distingue exemplo de dado real; salvar/reabrir preserva texto.
 - Validação: TypeScript `tsc -b`, ESLint comparado com main (zero novos), build/dist atualizados, pytest comparado com main e smoke dos campos nos dois temas. Testar inserção em input/textarea com seleção e compatibilidade do catálogo com runtime.
 - Revisão adversarial multi-agente antes da PR. PR: `feat: adiciona seletores de marcadores na composição de e-mails`.
@@ -69,7 +69,7 @@ g) SQL → Decisão → E-mail: conferir aviso de vizinhança direta; preservar 
 h) Renomear SQL e verificar atualização da lista/aviso sobre token antigo; conferir claro/escuro e teclado.
 
 ## 8. Pendências e decisões em aberto
-- Aprovação desta spec antes da implementação, conforme processo do repositório.
+- Spec aprovada pelo usuário em 2026-09-14. F1 em implementação; F2 após o merge da F1.
 - Identificar pipeline, execução e ambiente do caso de tabela vazia; consultar log SQL, log E-mail e DAG publicada.
 - Se a execução depender de SQL → Decisão → E-mail, avaliar separadamente suporte a ancestrais; a proposta atual documenta a limitação existente.
 

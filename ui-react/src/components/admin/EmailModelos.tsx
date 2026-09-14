@@ -9,7 +9,7 @@
 // lição do catálogo de cards do Teams, onde apagar o template faz o envio cair
 // em silêncio para a mensagem embutida. Aqui se DESATIVA: some da lista de
 // escolha e quem já usa continua enviando.
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pencil, Plus, Star, Trash2 } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
@@ -19,6 +19,7 @@ import { Modal } from '../ui/Modal'
 import { Switch } from '../ui/Switch'
 import { toast } from '../ui/Toast'
 import { PreviaEmail } from '../etapas/PreviaEmail'
+import { EmailPlaceholderPicker } from '../etapas/EmailPlaceholderPicker'
 import {
   errosDoModelo, formDoModelo, mensagemErroEmail, migration112Pendente,
   type EmailModelo, type EmailModeloForm,
@@ -172,6 +173,8 @@ function ModeloModal({ modelo, onFechar, onSalvo }: {
   onFechar: () => void
   onSalvo: () => void
 }) {
+  const assuntoRef = useRef<HTMLInputElement>(null)
+  const corpoRef = useRef<HTMLTextAreaElement>(null)
   const ehEdicao = modelo != null
   const [form, setForm] = useState<EmailModeloForm>(() => formDoModelo(modelo))
   const erros = errosDoModelo(form)
@@ -234,14 +237,18 @@ function ModeloModal({ modelo, onFechar, onSalvo }: {
                  onChange={e => f('descricao', e.target.value)}
                  hint="Aparece abaixo da lista, no painel do nó."
                  placeholder="Use para avisar o fim de uma carga." className="text-xs" />
-          <Input label="Assunto sugerido" value={form.assunto}
+          <Input ref={assuntoRef} label="Assunto sugerido" value={form.assunto}
                  onChange={e => f('assunto', e.target.value)}
                  hint="Sugestão para quem monta o fluxo. O assunto de cada nó continua sendo dele."
                  placeholder="[Orquestra] {pipeline} — {status}" className="text-xs" />
-          <Textarea label="Corpo *" value={form.corpo} rows={14}
+          <EmailPlaceholderPicker campo="assunto" targetRef={assuntoRef}
+            value={form.assunto} onChange={v => f('assunto', v)} />
+          <Textarea ref={corpoRef} label="Corpo *" value={form.corpo} rows={14}
                     onChange={e => f('corpo', e.target.value)}
                     hint="Aceita os mesmos marcadores do nó, trocados no envio."
                     className="font-mono text-[11px]" />
+          <EmailPlaceholderPicker campo="corpo" targetRef={corpoRef}
+            value={form.corpo} onChange={v => f('corpo', v)} />
           <div className="flex flex-wrap items-center gap-4">
             <Switch checked={form.html} onChange={e => f('html', e.target.checked)}
                     label="Corpo em HTML" />
