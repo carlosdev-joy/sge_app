@@ -37,3 +37,11 @@ Usuário reportou logo quebrado no print `/dados/bi/image.png` do container
 `orquestra-dev-sshd-amostra`; copiado para `/tmp/orq-user-email-image.png`.
 Print confirma imagem quebrada, contexto ainda pendente (prévia ou e-mail recebido).
 Não considerar relato resolvido só pelo smoke; aguardando essa informação.
+
+PR #412 mergeada em `9925256`; usuário confirmou logo na prévia.
+Novo relato: Outlook escuro clareia Navy CSS mas preserva PNG do logo (print
+`/dados/bi/image.png` em sshd-amostra). Correção em `fix/email-header-modo-escuro`:
+header inteiro PNG CID, migration 115 protegida pelo hash do corpo 114.
+Detalhes em `docs/correcao-email-header-modo-escuro.md`. Testes 5427/8/50,
+nenhum achado novo de lint; revisões aprovadas. Outlook real ainda deve ser
+conferido pelo usuário após receber uma nova mensagem. Sem envio autorizado.
