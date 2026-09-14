@@ -26,7 +26,8 @@ const ENTRADAS = ['lib/dsParams.ts', 'lib/rerunParams.ts', 'components/etapas/Jo
                   'lib/maestroAdmin.ts', 'lib/emailAdmin.ts', 'components/etapas/fluxoTypes.ts',
                   'components/etapas/previaEmailDados.ts', 'lib/emailAnexo.ts',
                   'components/etapas/paineis/PainelEmail.tsx',
-                  'components/etapas/EmailPlaceholderPicker.tsx', 'lib/emailPlaceholders.ts']
+                  'components/etapas/EmailPlaceholderPicker.tsx', 'lib/emailPlaceholders.ts',
+                  'lib/emailTabelaOrigem.ts']
 
 function resolverRelativo(deDir, especificador) {
   const base = path.resolve(deDir, especificador)
@@ -909,6 +910,42 @@ function tela(params, previa, extra, jobName) {
       antigoComModelo: F.opcoesDoModeloNo({ exigirModelo: true, isNew: false, modeloId: 4 }),
     },
   }
+}
+
+// Origem da tabela: o painel analisa o corpo efetivamente enviado e distingue
+// contexto indisponível de um grafo conhecido sem SQL direto.
+{
+  const assert = require('node:assert/strict')
+  const { PainelEmail } = require(path.join(tmp, 'components/etapas/paineis/PainelEmail.js'))
+  const F = require(path.join(tmp, 'components/etapas/fluxoTypes.js'))
+  const modelo = { id: 4, nome: 'Modelo', corpo: '{tabela:SQL_MODELO}', html: true, padrao: false }
+  function montar(cfg, sqlNames, modelos = [modelo]) {
+    global.__q = {
+      'email-status': { enabled: true, disponivel: true, raizes: [], dominios: [] },
+      'email-modelos': { disponivel: true, exigir_modelo: false, modelos },
+    }
+    return mini.montar(el(PainelEmail, {
+      node: { id: 'EMAIL', type: 'email', data: { name: 'EMAIL', email: { ...F.defaultEmailNo(), ...cfg } } },
+      sqlNames, onRename: () => true, onPatchEmail: () => {}, onDelete: () => {},
+    }))
+  }
+  const avisos = tela => tela.achar(n => n.tag === 'ul' && n.props['aria-label'] === 'Avisos da tabela SQL').map(textoDe).join(' ')
+  const livre = montar({ corpo: '{tabela:SQL_LIVRE}' }, [])
+  assert(avisos(livre).includes('{tabela:SQL_LIVRE}'))
+  const escolhido = montar({ modelo_id: 4, corpo: '{tabela:SQL_LIVRE}' }, [])
+  assert(avisos(escolhido).includes('{tabela:SQL_MODELO}'))
+  assert(!avisos(escolhido).includes('{tabela:SQL_LIVRE}'))
+  assert.equal(avisos(montar({ modelo_id: 4, corpo: '{tabela:SQL_LIVRE}' }, ['SQL_MODELO'])), '')
+  const desconhecido = montar({ corpo: '{tabela}' }, undefined)
+  assert.equal(avisos(desconhecido), '')
+  assert(desconhecido.texto.includes('Não foi possível verificar as ligações'))
+  assert(!desconhecido.texto.includes('Nenhum nó SQL ligado diretamente'))
+  assert(avisos(montar({ corpo: '{tabela}' }, [])).includes('não há SQL ligado diretamente'))
+  assert(avisos(montar({ modelo_id: 4, assunto: '{tabela:SQL_ASSUNTO}' }, [])).includes('{tabela:SQL_ASSUNTO}'))
+  const indisponivel = montar({ modelo_id: 4, corpo: '{tabela:SQL_LIVRE}' }, [], [])
+  assert.equal(avisos(indisponivel), '')
+  assert(indisponivel.texto.includes('marcadores do corpo do modelo ainda não puderam ser verificados'))
+  saida.emailTabelaOrigem = { ok: true }
 }
 
 process.stdout.write(JSON.stringify(saida))

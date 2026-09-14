@@ -1,4 +1,4 @@
-# Seletores de placeholders de e-mail — F1
+# Seletores de placeholders e origem da tabela SQL — F1/F2
 
 Spec: `docs/spec-email-seletor-placeholders.md`.
 
@@ -20,5 +20,18 @@ d) Informar um nome SQL válido no seletor de tabela qualificada; conferir o tok
 e) No nome do anexo, inserir `{odate}`; conferir que tabela, data e inicio não são oferecidos.
 f) Conferir foco, teclado e leitura nos temas claro e escuro.
 
-## Próxima fase
-F2 mostrará os nomes SQL derivados do grafo e avisos contextuais sobre origem ausente/ambígua. F1 permite digitar o qualificador e explica o pré-requisito, mas não valida se o nó existe no fluxo.
+## F2 — Origem da tabela
+O nó agora lista os SQL diretamente anteriores e oferece os marcadores com seus nomes reais. Não percorre Decisão ou outros nós intermediários. Renomear ou religar atualiza a lista, sem reescrever o assunto/corpo; uma opção removida fica desabilitada.
+
+Os avisos consideram o corpo do modelo selecionado. Modelo indisponível é indicado como não verificado, sem analisar o corpo livre escondido. O painel SQL e a seção Tabela do SQL no e-mail explicam configuração, publicação e execução.
+
+### Conferência adicional
+g) SQL → E-mail: conferir nome real e inserir o marcador qualificado.
+h) Dois SQL → E-mail: conferir ambos e aviso para tabela genérica.
+i) SQL → Decisão → E-mail: conferir ausência de SQL direto e preservar condição do ramo.
+j) Renomear SQL: conferir opção nova e aviso sobre marcador antigo; não houve reescrita automática.
+k) Selecionar modelo com qualificador incompatível: conferir aviso do corpo efetivo; simular falha no catálogo e conferir mensagem de verificação indisponível.
+l) Abrir a ajuda no nó SQL e os pré-requisitos no e-mail.
+
+### Limitação anterior identificada na revisão
+O operador de e-mail remove prefixos `log_end_` e `log_start_` dos nomes anteriores. Como SQL é uma task direta, um SQL com esses prefixos pode não ser localizado. F2 avisa quando esse nome é usado; adote um nome SQL sem esses prefixos e republique. Correção do operador fica registrada separadamente; este deploy continua apenas de front.

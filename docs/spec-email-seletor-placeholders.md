@@ -1,5 +1,5 @@
 # Spec: Seletores de placeholders e orientação SQL → E-mail — Orquestra
-Data: 2026-09-14 · Status: em execução (F1)
+Data: 2026-09-14 · Status: em execução (F2)
 
 ## 1. Visão
 Permitir inserir os marcadores disponíveis diretamente nos campos de composição do e-mail, tanto nos modelos quanto no nó. Explicar na própria configuração como o resultado do SQL chega ao e-mail, evitando que uma prévia com dados fictícios seja confundida com a execução real.
@@ -69,7 +69,7 @@ g) SQL → Decisão → E-mail: conferir aviso de vizinhança direta; preservar 
 h) Renomear SQL e verificar atualização da lista/aviso sobre token antigo; conferir claro/escuro e teclado.
 
 ## 8. Pendências e decisões em aberto
-- Spec aprovada pelo usuário em 2026-09-14. F1 em implementação; F2 após o merge da F1.
+- Spec aprovada pelo usuário em 2026-09-14. F1 mergeada na PR #415; F2 em implementação.
 - Identificar pipeline, execução e ambiente do caso de tabela vazia; consultar log SQL, log E-mail e DAG publicada.
 - Se a execução depender de SQL → Decisão → E-mail, avaliar separadamente suporte a ancestrais; a proposta atual documenta a limitação existente.
 

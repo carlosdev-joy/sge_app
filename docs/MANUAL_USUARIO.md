@@ -483,6 +483,18 @@ Os dois aceitam marcadores, trocados na hora do envio:
 Um marcador que você escrever errado **aparece como está** no e-mail, em vez de
 quebrar o envio. É o sinal de que o nome não existe.
 
+#### Inserir marcadores pelos seletores
+
+No cadastro de modelos, o assunto sugerido e o corpo possuem listas de marcadores. No nó de e-mail, elas aparecem no assunto, corpo livre e nome do anexo. Escolha uma opção e clique em **Inserir**: o marcador entra na posição do cursor ou substitui o trecho selecionado. A explicação e o exemplo abaixo da lista ajudam a escolher; os exemplos não são dados da execução.
+
+No nó, os marcadores `tabela:NOME` vêm dos SQL ligados diretamente a ele. Renomear um SQL ou mudar uma ligação atualiza as opções. Textos já escritos não são alterados: confira o aviso e substitua o nome antigo. Se a opção selecionada deixar de existir, ela fica indisponível até escolher outra.
+
+Nos modelos reutilizáveis, o nome SQL pode ser informado manualmente. Ao selecionar o modelo no nó, o painel verifica os marcadores contra o fluxo atual. Se não conseguir carregar o corpo do modelo, informa que ele ainda não pôde ser verificado.
+
+Evite nomes SQL iniciados por `log_end_` ou `log_start_`: o envio atual pode não localizar o resultado desses nós. O painel avisa quando o marcador usa uma dessas origens; renomeie sem esses prefixos e republique.
+
+A seção **Tabela do SQL** lista as origens diretas e mostra os pré-requisitos. Os avisos indicam ausência de SQL, possível ambiguidade de `{tabela}` com várias origens ou qualificador incompatível. Eles não alteram ligações nem condições de envio.
+
 #### `{tabela}` — o resultado de uma consulta dentro do aviso
 
 Ligue um **nó SQL** direto no nó de e-mail e escreva `{tabela}` no corpo: o
@@ -511,7 +523,7 @@ Três coisas que vale saber antes de montar:
 No **assunto**, `{tabela}` vira um resumo (`2 linhas × 2 colunas`) — uma tabela
 não cabe num assunto de e-mail.
 
-⚠️ No **nome do anexo**, `{tabela}` **não vale**. Os outros marcadores valem
+⚠️ No **nome do anexo**, `{tabela}` **não vale**. Para datas, use `{odate}`; `{data}` e `{inicio}` contêm barras e não são oferecidos no seletor. Os demais marcadores compatíveis valem
 (`relatorio_{odate}.xlsx`, `{pipeline}`, `{status}`…), mas o do resultado não: o
 anexo é um arquivo procurado pelo nome no servidor, e um `relatorio_{tabela}.xlsx`
 faz o e-mail sair **sem anexo**, com apenas um aviso no log da etapa.
