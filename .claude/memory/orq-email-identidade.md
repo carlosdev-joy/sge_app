@@ -37,3 +37,19 @@ Usuário reportou logo quebrado no print `/dados/bi/image.png` do container
 `orquestra-dev-sshd-amostra`; copiado para `/tmp/orq-user-email-image.png`.
 Print confirma imagem quebrada, contexto ainda pendente (prévia ou e-mail recebido).
 Não considerar relato resolvido só pelo smoke; aguardando essa informação.
+
+PR #412 mergeada em `9925256`; usuário confirmou logo na prévia.
+Novo relato: Outlook escuro clareia Navy CSS mas preserva PNG do logo (print
+`/dados/bi/image.png` em sshd-amostra). Correção em `fix/email-header-modo-escuro`:
+header inteiro PNG CID, migration 115 protegida pelo hash do corpo 114.
+Detalhes em `docs/correcao-email-header-modo-escuro.md`. Testes 5427/8/50,
+nenhum achado novo de lint; revisões aprovadas. Outlook real ainda deve ser
+conferido pelo usuário após receber uma nova mensagem. Sem envio autorizado.
+
+PR #413 aberta: https://github.com/carlosdev-joy/sge_app/pull/413 (merge pendente).
+DEV no commit a7c0e50: API reconstruída, worker/scheduler reiniciados, nginx
+recarregado. Migration 115 aplicada ao id 1 após ensaio com rollback e
+idempotência; hash UTF16LE 567e40c2cd9dec5250cde0c767be4da82290cac9c890cfeae029eeca06bc9486.
+MIME API/worker OK; HTTP login/health/header 200; prévia da interface HTTPS
+carregou header de 1200 px. Nenhum envio. Produção e validação no Outlook real
+continuam pendentes. Emails já recebidos não são alterados.

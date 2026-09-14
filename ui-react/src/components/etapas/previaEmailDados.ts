@@ -188,8 +188,8 @@ export function montarDocumento(conteudo: string, html: boolean): string {
   // O CID reservado é incorporado pelo MIME no envio. No iframe, aponta
   // somente ao mesmo PNG local; CIDs arbitrários não viram caminhos/URLs.
   if (html) conteudo = conteudo.replace(
-    /(\b[sS][rR][cC]\s*=\s*["'])[cC][iI][dD]:orq-logo@orquestra(["'])/g,
-    '$1/images/orq/email-logo.png$2',
+    /(\b[sS][rR][cC]\s*=\s*["'])[cC][iI][dD]:orq-(logo|header)@orquestra(["'])/g,
+    '$1/images/orq/email-$2.png$3',
   )
   // `a{pointer-events:none}`: sem isso, clicar num link do corpo navega a
   // própria prévia para fora e ela vira uma página de erro, sem botão de volta.

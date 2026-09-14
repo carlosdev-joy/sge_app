@@ -232,3 +232,7 @@ def test_logo_cid_reservado_resolve_so_na_previa_html(documento):
 def test_logo_esquema_case_insensitive_identificador_exato(documento):
     assert 'SRC="/images/orq/email-logo.png"' in documento['logoCaixa']
     assert 'src="cid:ORQ-LOGO@ORQUESTRA"' in documento['logoCaixa']
+
+
+def test_header_cid_reservado_resolve_na_previa(documento):
+    assert 'src="/images/orq/email-header.png"' in documento['headerOrq']

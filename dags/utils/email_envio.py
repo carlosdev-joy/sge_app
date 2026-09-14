@@ -319,6 +319,8 @@ def html_para_texto(corpo: str) -> str:
     texto = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", texto)   # e o que não é conteúdo
     texto = re.sub(r"(?i)</t[dh]\s*>", " | ", texto)              # célula → separador
     texto = re.sub(r"(?i)<br\s*/?>|</(tr|p|div|h[1-6]|li|table)\s*>", "\n", texto)
+    texto = re.sub(r"(?is)<img\b[^>]*?\balt\s*=\s*([\"'])(.*?)\1[^>]*>",
+                   lambda m: m.group(2), texto)
     texto = re.sub(r"<[^>]+>", "", texto)
     texto = texto.replace("&#160;", " ").replace("&nbsp;", " ")
     # `A | B | ` → `A | B`; e no máximo uma linha em branco entre blocos
@@ -365,12 +367,16 @@ def montar_mensagem(remetente: str, destinatarios: list[str], assunto: str, corp
         # Recurso institucional reservado e local: não lê caminhos/URLs do modelo.
         # Related fica dentro da alternativa HTML; o anexo do usuário permanece
         # irmão em multipart/mixed, com texto simples sempre disponível.
-        if re.search(r'(?i:cid):orq-logo@orquestra', corpo):
-            logo = Path(__file__).with_name("assets") / "orq-email-logo.png"
-            msg.get_payload()[-1].add_related(
-                logo.read_bytes(), maintype="image", subtype="png",
-                cid="<orq-logo@orquestra>", disposition="inline", filename="orq-logo.png",
-            )
+        for cid, arquivo in (
+            ("orq-logo@orquestra", "orq-email-logo.png"),
+            ("orq-header@orquestra", "orq-email-header.png"),
+        ):
+            if re.search(r"(?i:cid):" + re.escape(cid), corpo):
+                asset = Path(__file__).with_name("assets") / arquivo
+                msg.get_payload()[-1].add_related(
+                    asset.read_bytes(), maintype="image", subtype="png",
+                    cid=f"<{cid}>", disposition="inline", filename=arquivo,
+                )
     else:
         msg.set_content(corpo, subtype="plain", charset="utf-8")
     if anexo_nome and anexo_bytes is not None:

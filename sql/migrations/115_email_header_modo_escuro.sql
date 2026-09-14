@@ -1,4 +1,19 @@
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;padding:24px 0;font-family:Segoe UI,Helvetica,Arial,sans-serif;">
+-- 115_email_header_modo_escuro.sql — preserva cores do header no Outlook escuro.
+-- Idempotente — seguro para rodar mais de uma vez.
+-- Atualiza somente o corpo ORIGINAL da 114; preserva modelos personalizados.
+-- Requer API/worker com suporte ao CID reservado e asset local antes de enviar.
+SET NOCOUNT ON;
+GO
+IF OBJECT_ID('dbo.etl_email_modelo', 'U') IS NULL
+BEGIN
+    PRINT '[--] catalogo ausente: migration 112 pendente';
+END
+ELSE IF EXISTS (SELECT 1 FROM dbo.etl_email_modelo
+               WHERE nome = N'Aviso de fim de carga'
+                 AND HASHBYTES('SHA2_256', corpo) = 0x9E5D3DB5D8FC847879B1D10A7AA6DF4CD0559975108DFF9419CC702D0FEE5739)
+BEGIN
+    UPDATE dbo.etl_email_modelo
+       SET corpo = N'<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F8FAFC;padding:24px 0;font-family:Segoe UI,Helvetica,Arial,sans-serif;">
 <tr><td align="center">
 <table width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background-color:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;">
 
@@ -68,3 +83,12 @@
 </table>
 </td></tr>
 </table>
+',
+               atualizado_em = GETDATE()
+     WHERE nome = N'Aviso de fim de carga'
+       AND HASHBYTES('SHA2_256', corpo) = 0x9E5D3DB5D8FC847879B1D10A7AA6DF4CD0559975108DFF9419CC702D0FEE5739;
+    PRINT '[OK] header ORQ incorporado para preservar cores no modo escuro';
+END
+ELSE
+    PRINT '[--] corpo personalizado, ausente ou ja atualizado: preservado';
+GO

@@ -791,6 +791,7 @@ function tela(params, previa, extra, jobName) {
   const modelo = '<html><head><meta charset="utf-8"></head>'
     + '<body style="background:#f4f4f4;font-family:Arial"><p>oi</p></body></html>'
   saida.previaDocumento = {
+    headerOrq: V.montarDocumento('<img src="cid:orq-header@orquestra">', true),
     logoOrq: V.montarDocumento('<img src="cid:orq-logo@orquestra"><img src="cid:outro">', true),
     logoCaixa: V.montarDocumento('<img SRC="CID:orq-logo@orquestra"><img src="cid:ORQ-LOGO@ORQUESTRA">', true),
     logoTexto: V.montarDocumento('<img src="cid:orq-logo@orquestra">', false),
