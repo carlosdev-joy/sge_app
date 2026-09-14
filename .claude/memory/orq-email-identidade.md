@@ -29,3 +29,11 @@ nginx recarregado. Migration 114 validada com rollback e idempotência e aplicad
 apenas ao id 1; novo SHA256 UTF16LE 9e5d3db5d8fc847879b1d10a7aa6df4cd0559975108dff9419cc702d0fee5739.
 HTTP login, health e logo 200; bytes do logo publicado conferidos. API MIME OK.
 Suíte final: 5421 aprovados, 8 falhas preexistentes, 50 ignorados.
+
+PR aberta: https://github.com/carlosdev-joy/sge_app/pull/412 — não mergeada.
+Worker confirmou MIME inline offline. Prévia da interface real Admin/E-mail em
+HTTPS, com APIs simuladas, carregou PNG 360 px corretamente.
+Usuário reportou logo quebrado no print `/dados/bi/image.png` do container
+`orquestra-dev-sshd-amostra`; copiado para `/tmp/orq-user-email-image.png`.
+Print confirma imagem quebrada, contexto ainda pendente (prévia ou e-mail recebido).
+Não considerar relato resolvido só pelo smoke; aguardando essa informação.
