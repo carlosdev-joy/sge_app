@@ -82,7 +82,7 @@ export default function Login() {
         <section className="orq-login-form-panel" aria-labelledby="login-title">
           <div className="orq-login-form-content">
             <header className="orq-login-form-heading">
-              <h1 id="login-title">Entrar no <span>ORQ</span></h1>
+              <h1 id="login-title">Entrar no <span>ORQUESTRA</span></h1>
               <p>Use sua matrícula de rede. Sem acesso, fale com a engenharia de dados.</p>
             </header>
 
