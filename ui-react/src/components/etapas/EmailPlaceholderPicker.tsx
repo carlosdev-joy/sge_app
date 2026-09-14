@@ -50,6 +50,9 @@ export function EmailPlaceholderPicker({
           <Select className="min-w-0 w-full" label={`Marcador para ${campo === 'anexo' ? 'nome do anexo' : campo}`} value={selecionado}
             onChange={e => setSelecionado(e.target.value)}>
             {catalogo.map(item => <option key={item.nome} value={item.nome}>{`{${item.nome}} — ${item.descricao}`}</option>)}
+            {!disponivel && !personalizado && selecionado.startsWith('tabela:') && (
+              <option value={selecionado} disabled>{`{${selecionado}} — origem não disponível`}</option>
+            )}
             {tabelaPermitida && nomesSql.map(sql => <option key={sql} value={`tabela:${sql}`}>{`{tabela:${sql}}`}</option>)}
             {tabelaPermitida && allowCustomSqlName && <option value="tabela:informar nome">Tabela de um SQL: informar nome…</option>}
           </Select>

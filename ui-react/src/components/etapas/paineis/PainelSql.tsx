@@ -126,7 +126,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           <div className="flex flex-col gap-1">
             <Textarea
               label="SELECT *"
-              hint={'Somente leitura: comece com SELECT/WITH — sem \';\' nem DML.\nO nó publica 1 valor: a 1ª coluna da 1ª linha do resultado.'}
+              hint={'Somente leitura: comece com SELECT/WITH — sem \';\' nem DML.\nA primeira célula alimenta a Decisão; as colunas e linhas alimentam a tabela do e-mail.'}
               value={cfg.sql ?? ''}
               rows={10}
               onChange={e => patch({ sql: e.target.value })}
@@ -134,6 +134,16 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
               className="font-mono text-xs"
             />
           </div>
+
+          <details className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[11px] text-dim">
+            <summary className="cursor-pointer font-medium text-ink">Usar o resultado no e-mail</summary>
+            <p className="mt-2">Configure a conexão e o banco e escreva um SELECT que retorne as colunas e linhas desejadas.
+              {' '}Na execução, o resultado é disponibilizado automaticamente ao e-mail ligado diretamente a este SQL.</p>
+            <p className="mt-1">No corpo do e-mail ou do modelo escolhido, insira <code>{`{tabela:${node.id}}`}</code>.
+              {' '}Com apenas um SQL anterior, também pode usar {'{tabela}'}. A tabela não atravessa Decisão ou outros nós.</p>
+            <p className="mt-1">Salve, publique e execute o fluxo. Pré-visualizar a consulta não fornece dados ao envio.
+              {' '}Após atualizar o recurso em uma instalação antiga, reinicie o worker e republique o pipeline.</p>
+          </details>
 
           <Select
             label="Conexão MSSQL *"

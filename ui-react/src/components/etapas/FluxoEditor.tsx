@@ -2685,6 +2685,7 @@ function FluxoEditorInner({
               node={selNode}
               pipeline={pipeline}
               nodes={nodes}
+              edges={edges}
               ramos={selRamos}
               jobNames={jobNames}
               sqlNodeNames={sqlNodeNames}

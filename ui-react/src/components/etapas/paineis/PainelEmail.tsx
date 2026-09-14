@@ -27,6 +27,7 @@ import {
 import { PreviaEmail } from '../PreviaEmail'
 import { dicaDoMarcador, marcadoresDesconhecidos } from '../previaEmailDados'
 import { NomeField } from './shared'
+import { avisosTabelaEmail } from '../../../lib/emailTabelaOrigem'
 
 interface EmailStatus {
   enabled: boolean
@@ -48,12 +49,13 @@ interface EmailModelosApi {
 
 export interface PainelEmailProps {
   node: Node
+  sqlNames?: string[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchEmail: (nodeId: string, patch: Partial<EmailNoConfig>) => void
   onDelete: (id: string) => void
 }
 
-export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEmailProps) {
+export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }: PainelEmailProps) {
   const d = node.data as EmailNodeData
   const isNew = !!d.isNew
   const cfg = d.email ?? defaultEmailNo()
@@ -141,12 +143,11 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
   // é um arquivo do servidor, procurado por nome), e um `relatorio_{tabela}.xlsx`
   // faria o envio sair SEM anexo, com um aviso discreto no log. Sem esta
   // separação, a chave nova passaria a ser aceita em silêncio nos três campos.
-  const desconhecidos = marcadoresDesconhecidos(`${cfg.assunto} ${cfg.corpo}`)
-  // ⚠️ O aviso do ANEXO é SEPARADO e mora junto do campo dele: o aviso do
-  // assunto/corpo só é renderizado no ramo "Corpo livre", e o campo do nome do
-  // anexo aparece SEMPRE — com um modelo do catálogo escolhido (o padrão do nó
-  // novo), um `relatorio_{tabela}.xlsx` não receberia aviso nenhum e o e-mail
-  // sairia sem anexo.
+  const textoEmail = `${cfg.assunto} ${cfg.modelo_id != null ? (corpoDoModelo ?? '') : cfg.corpo}`
+  const desconhecidos = marcadoresDesconhecidos(textoEmail)
+  const avisosTabela = sqlNames === undefined ? [] : avisosTabelaEmail(textoEmail, sqlNames)
+  // O anexo tem aviso próprio porque seu catálogo permitido é menor que o
+  // do assunto/corpo. Ele continua visível quando o nó usa um modelo.
   const desconhecidosNoAnexo = marcadoresDesconhecidos(
     cfg.anexo?.nome ?? '', EMAIL_PLACEHOLDERS.filter(p => p !== 'tabela'))
 
@@ -407,6 +408,7 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
           />
 
           <EmailPlaceholderPicker campo="assunto" targetRef={assuntoRef}
+            sqlNames={sqlNames} allowCustomSqlName={false}
             value={cfg.assunto} onChange={v => patch({ assunto: v })} />
 
           {cfg.modelo_id != null ? (
@@ -428,6 +430,7 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             />
             <EmailPlaceholderPicker
               campo="corpo"
+              sqlNames={sqlNames} allowCustomSqlName={false}
               targetRef={corpoRef}
               value={cfg.corpo}
               onChange={v => patch({ corpo: v })}
@@ -444,17 +447,50 @@ export function PainelEmail({ node, onRename, onPatchEmail, onDelete }: PainelEm
             <p className="text-[10px] text-dim/70">
               Com HTML ligado, quem não consegue ver HTML recebe a mesma mensagem sem as marcações.
             </p>
-            {desconhecidos.length > 0 && (
-              <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-                {desconhecidos.length === 1 ? 'Marcador desconhecido' : 'Marcadores desconhecidos'}
-                {' '}no assunto ou no corpo:{' '}
-                {desconhecidos.map(m => {
-                  const dica = dicaDoMarcador(m)
-                  return dica ? `{${m}} (seria ${dica})` : `{${m}}`
-                }).join(', ')} — vai sair assim mesmo no e-mail.
-              </p>
-            )}
+
           </div>
+          )}
+
+          <div className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[11px] text-dim">
+            <p className="font-medium text-ink">Tabela do SQL</p>
+            <p className="mt-1">
+              {sqlNames === undefined
+                ? 'Não foi possível verificar as ligações deste nó.'
+                : sqlNames.length
+                  ? `SQL ligados diretamente a este e-mail: ${sqlNames.join(', ')}.`
+                  : 'Nenhum nó SQL ligado diretamente a este e-mail.'}
+            </p>
+            <p className="mt-1">A tabela vem da execução do SQL. A prévia usa exemplos e não alimenta o envio.
+              {' '}Em SQL → Decisão → E-mail, a tabela não atravessa a Decisão.
+              {' '}Preserve a condição do ramo ao ajustar o fluxo.</p>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-ink">Pré-requisitos e conferência</summary>
+              <p className="mt-1">O SELECT deve retornar colunas e linhas usando a conexão e o banco corretos.
+                {' '}Salve e publique o fluxo após alterar as ligações; depois execute-o.
+                {' '}Se houver vários SQL anteriores, escolha o marcador com o nome do SQL desejado.</p>
+              <p className="mt-1">Se a instalação foi atualizada para oferecer tabelas, é necessário atualizar
+                {' '}as DAGs, reiniciar o worker e republicar os pipelines antigos. Confira os logs do SQL e do e-mail.</p>
+              <p className="mt-1">No corpo, a tabela segue o formato HTML ou texto escolhido; no assunto, aparece um resumo.
+                {' '}O envio mostra até 50 linhas e 15 colunas. {'{linhas}'} não conta as linhas do resultado SQL.</p>
+            </details>
+          </div>
+          {cfg.modelo_id != null && (catalogoSemResposta || modeloForaDaLista) && (
+            <p className="text-[11px] text-dim">Os marcadores do corpo do modelo ainda não puderam ser verificados.</p>
+          )}
+          {avisosTabela.length > 0 && (
+            <ul aria-label="Avisos da tabela SQL" className="rounded-lg border border-edge bg-canvas px-3 py-2 text-[11px] text-ink">
+              {avisosTabela.map(aviso => <li key={aviso}>{aviso}</li>)}
+            </ul>
+          )}
+          {desconhecidos.length > 0 && (
+            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              {desconhecidos.length === 1 ? 'Marcador desconhecido' : 'Marcadores desconhecidos'}
+              {' '}no assunto ou no corpo:{' '}
+              {desconhecidos.map(m => {
+                const dica = dicaDoMarcador(m)
+                return dica ? `{${m}} (seria ${dica})` : `{${m}}`
+              }).join(', ')} — vai sair assim mesmo no e-mail.
+            </p>
           )}
 
           <div className="flex flex-col gap-1">

@@ -26,8 +26,8 @@ export function emailPlaceholderCatalogo(campo: EmailPlaceholderCampo) {
     nome,
     descricao: nome === 'tabela'
       ? campo === 'assunto'
-        ? 'Resumo do resultado do SQL imediatamente anterior. Com vários SQL, informe o nome do nó.'
-        : 'Resultado do SQL imediatamente anterior, em HTML ou texto conforme o corpo. Com vários SQL, informe o nome do nó.'
+        ? 'Resumo do resultado do SQL imediatamente anterior. Com vários SQL, escolha a tabela pelo nome do nó.'
+        : 'Resultado do SQL imediatamente anterior, em HTML ou texto conforme o corpo. Com vários SQL, escolha a tabela pelo nome do nó.'
       : DESCRICOES[nome],
     exemplo: nome === 'tabela'
       ? campo === 'assunto' ? '2 linhas × 2 colunas' : 'Tabela com colunas e linhas do SELECT'

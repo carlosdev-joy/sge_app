@@ -5,7 +5,7 @@
 // colapsar/maximizar/fechar e a alça de redimensionar). Este componente cuida
 // só do formulário por tipo de nó.
 // ─────────────────────────────────────────────────────────────────────────────
-import type { Node } from '@xyflow/react'
+import type { Edge, Node } from '@xyflow/react'
 import { MousePointerClick } from 'lucide-react'
 import type { NodeCondition } from '../DecisaoNode'
 import type { NotifyConfig, SqlConfig, AguardeConfig, EmailNoConfig, MsgGrupo } from '../fluxoTypes'
@@ -16,6 +16,7 @@ import { PainelNotificacao } from './PainelNotificacao'
 import { PainelSql } from './PainelSql'
 import { PainelAguarde } from './PainelAguarde'
 import { PainelEmail } from './PainelEmail'
+import { sqlDiretosDoEmail } from '../../../lib/emailTabelaOrigem'
 
 interface PropriedadesPanelProps extends CasoOps {
   node: Node | null
@@ -23,6 +24,7 @@ interface PropriedadesPanelProps extends CasoOps {
   // DataStage e conferir o nome do job no cadastro.
   pipeline: string
   nodes: Node[]
+  edges: Edge[]
   ramos: Record<string, string[]>
   jobNames: string[]
   sqlNodeNames: string[]
@@ -52,7 +54,7 @@ interface PropriedadesPanelProps extends CasoOps {
 }
 
 export function PropriedadesPanel({
-  node, pipeline, nodes, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, grupos,
+  node, pipeline, nodes, edges, ramos, jobNames, sqlNodeNames, sshConns, mssqlConns, grupos,
   readOnly, onRename, onPatchData, onPatchCondition, onPatchNotify, onPatchSql, onSimular, onDelete,
   onPatchAguarde, onPatchEmail, aguardeEntradas, aguardePontasSoltas, onPrenderPontasSoltas,
   onMaximizar, onHoverRamo,
@@ -110,6 +112,7 @@ export function PropriedadesPanel({
         <PainelEmail
           key={node.id}
           node={node}
+          sqlNames={sqlDiretosDoEmail(node.id, nodes, edges)}
           onRename={onRename}
           onPatchEmail={onPatchEmail}
           onDelete={onDelete}
