@@ -18,6 +18,7 @@ from __future__ import annotations
 import mimetypes
 import posixpath
 import re
+from pathlib import Path
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 
@@ -367,6 +368,15 @@ def montar_mensagem(remetente: str, destinatarios: list[str], assunto: str, corp
         texto = html_para_texto(corpo)
         msg.set_content(texto, subtype="plain", charset="utf-8")
         msg.add_alternative(documento_html(corpo), subtype="html", charset="utf-8")
+        # Recurso institucional reservado e local: não lê caminhos/URLs do modelo.
+        # Related fica dentro da alternativa HTML; o anexo do usuário permanece
+        # irmão em multipart/mixed, com texto simples sempre disponível.
+        if re.search(r'(?i:cid):orq-logo@orquestra', corpo):
+            logo = Path(__file__).with_name("assets") / "orq-email-logo.png"
+            msg.get_payload()[-1].add_related(
+                logo.read_bytes(), maintype="image", subtype="png",
+                cid="<orq-logo@orquestra>", disposition="inline", filename="orq-logo.png",
+            )
     else:
         msg.set_content(corpo, subtype="plain", charset="utf-8")
     if anexo_nome and anexo_bytes is not None:

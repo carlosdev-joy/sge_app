@@ -185,6 +185,12 @@ export function dicaDoMarcador(chave: string): string | null {
  *  justamente sobre o que promete mostrar. É o caso dos modelos institucionais.
  */
 export function montarDocumento(conteudo: string, html: boolean): string {
+  // O CID reservado é incorporado pelo MIME no envio. No iframe, aponta
+  // somente ao mesmo PNG local; CIDs arbitrários não viram caminhos/URLs.
+  if (html) conteudo = conteudo.replace(
+    /(\b[sS][rR][cC]\s*=\s*["'])[cC][iI][dD]:orq-logo@orquestra(["'])/g,
+    '$1/images/orq/email-logo.png$2',
+  )
   // `a{pointer-events:none}`: sem isso, clicar num link do corpo navega a
   // própria prévia para fora e ela vira uma página de erro, sem botão de volta.
   const trava = '<style>a{pointer-events:none;}</style>'

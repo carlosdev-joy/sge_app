@@ -89,3 +89,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Cópia de Dados](orquestra-copia-dados.md) — código em produção, mas ⚠️ pendências de INFRA sem confirmação
 - [Finalização Manual](orquestra-finalizacao-manual.md) — tela /finalizacao (PR #163); deploy.sh ganhou a etapa 6c
 - [Inventário de Consumidores](orquestra-inventario-consumidores.md) — tela /inventario; incidente NUM_CPF_CNPJ
+
+- [Identidade ORQ nos e-mails](orq-email-identidade.md) — modelo Navy, logo inline CID, migration 114 protegida.

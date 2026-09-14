@@ -220,3 +220,15 @@ def test_ancora_isolamento_sobrevive_ao_empacotamento():
         "o sandbox do iframe sumiu no empacotamento")
     for perigoso in ("allow-scripts", "allow-same-origin", "allow-top-navigation"):
         assert perigoso not in bundle, f"`{perigoso}` no bundle publicado"
+
+
+def test_logo_cid_reservado_resolve_so_na_previa_html(documento):
+    assert 'src="/images/orq/email-logo.png"' in documento['logoOrq']
+    assert 'src="cid:outro"' in documento['logoOrq']
+    assert 'cid:orq-logo@orquestra' in documento['logoTexto']
+    assert '/images/orq/email-logo.png' not in documento['logoTexto']
+
+
+def test_logo_esquema_case_insensitive_identificador_exato(documento):
+    assert 'SRC="/images/orq/email-logo.png"' in documento['logoCaixa']
+    assert 'src="cid:ORQ-LOGO@ORQUESTRA"' in documento['logoCaixa']
