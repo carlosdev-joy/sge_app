@@ -91,3 +91,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Inventário de Consumidores](orquestra-inventario-consumidores.md) — tela /inventario; incidente NUM_CPF_CNPJ
 
 - [Identidade ORQ nos e-mails](orq-email-identidade.md) — modelo Navy, logo inline CID, migration 114 protegida.
+
+- [Título do login](orquestra-login-nome.md) — correção pronta na branch `fix/login-nome-orquestra`; aguarda merge e deploy.
