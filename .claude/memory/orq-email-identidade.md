@@ -23,3 +23,9 @@ maiúsculas no esquema CID. Outlook desktop ainda exige validação no cliente r
 Deploy: atualizar API + assets, dags/utils + assets, dist; reiniciar worker/scheduler
 antes de aplicar 114. Conferir estado pós-deploy e registrar PR abaixo.
 Merge desta PR depende de autorização específica do usuário.
+
+DEV atualizado em 2026-09-13: API reconstruída/recriada, worker/scheduler reiniciados,
+nginx recarregado. Migration 114 validada com rollback e idempotência e aplicada
+apenas ao id 1; novo SHA256 UTF16LE 9e5d3db5d8fc847879b1d10a7aa6df4cd0559975108dff9419cc702d0fee5739.
+HTTP login, health e logo 200; bytes do logo publicado conferidos. API MIME OK.
+Suíte final: 5421 aprovados, 8 falhas preexistentes, 50 ignorados.
