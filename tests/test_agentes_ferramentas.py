@@ -207,6 +207,18 @@ def test_redigir_nao_e_quadratico_saida_real_de_dsjob_200k():
     assert time.perf_counter() - t0 < 2.0
 
 
+def test_redigir_nao_e_quadratico_prefixo_alfanumerico_longo_ate_200k():
+    """Pior caso para a checagem de prefixo da 13ª rodada (anda para
+    trás por `_CHAR_MESMO_TOKEN` + varre `linha[:inicio_ident]`): uma
+    ÚNICA linha, toda alfanumérica, do tamanho do teto real do
+    `dsjob`, com a keyword só no final."""
+    import time
+    hostil = ("abc123_" * 28571)[:200000] + "Password=x"
+    t0 = time.perf_counter()
+    af.redigir(hostil)
+    assert time.perf_counter() - t0 < 2.0
+
+
 # Achado real da 6ª rodada da revisão adversarial da F2b: um nome de
 # campo mais VERBOSO que a janela de busca do separador (plausível em
 # nomenclatura de ETL — D-07, o formato real do `dsjob`, segue aberta)
@@ -369,15 +381,23 @@ def test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome():
 
 def test_redigir_limite_conhecido_keyword_como_substring_do_proprio_valor_colado():
     """Limite aceito (documentado, não corrigido): quando o PRÓPRIO
-    valor sensível, sem nenhum separador de palavra antes dele, contém
-    uma das 7 keywords como substring (`"xY9zSecretKeyABC123"` — o
-    valor em si soa como "...Secret..."), o prefixo antes da keyword
-    (aqui "xY9z") ainda vaza, porque a keyword aparenta ser sufixo do
-    MESMO identificador. Cenário de probabilidade baixa (exige que um
-    valor aleatório contenha coincidentemente uma dessas palavras), sem
+    valor sensível, sozinho na linha (nada mais antes dele) e sem
+    nenhum separador de palavra antes da keyword, contém uma das 7
+    keywords como substring (`"xY9zSecretKeyABC123"` — o valor em si
+    soa como "...Secret..."), o prefixo antes da keyword (aqui "xY9z")
+    ainda vaza, porque a keyword aparenta ser sufixo do MESMO
+    identificador e não há mais NADA antes dele na linha para levantar
+    suspeita (13ª rodada: a checagem olha `linha[:inicio_ident]`, que
+    aqui é vazio). Cenário de probabilidade baixa (exige que um valor
+    aleatório contenha coincidentemente uma dessas palavras), sem
     solução sem reabrir o over-masking de `AUTH_TOKEN` isolado — ver
-    `test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome`."""
-    saida = af.redigir("valor gerado: xY9zSecretKeyABC123!!")
+    `test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome`.
+
+    Havendo QUALQUER texto alfanumérico antes na mesma linha (mesmo só
+    uma palavra explicativa, ex. "valor gerado: "), a 13ª rodada fecha
+    esse limite também — ver
+    test_redigir_valor_antes_da_keyword_com_identificador_composto_nao_vaza."""
+    saida = af.redigir("xY9zSecretKeyABC123!!")
     assert "xY9z" in saida  # limite conhecido, não uma garantia de segurança
     assert af._MASCARA in saida
 
@@ -405,6 +425,38 @@ def test_redigir_valor_antes_da_keyword_com_separador_reconhecido_depois_nao_vaz
     seguro."""
     saida = af.redigir(texto)
     assert segredo not in saida
+
+
+# Achado real da 13ª rodada da revisão adversarial da F2b: a correção da
+# 12ª rodada só olhava o caractere IMEDIATAMENTE antes do início do
+# match — provando apenas que a keyword é infixo do IDENTIFICADOR
+# LOCAL, nunca que TODO o prefixo da linha é seguro. Quando a keyword
+# está no MEIO de um identificador mais adiante (`campo_token_...`,
+# `refresh_token_...` — nomes plausíveis de parâmetro/config em ETL) e
+# HÁ um valor real e independente mais cedo na mesma linha, separado
+# por uma fronteira real (espaço, `;`, `,`), esse valor vazava por
+# completo.
+@pytest.mark.parametrize("texto,segredo", [
+    ("SEGREDO_REAL_999 campo_token_relacionado: outro_valor", "SEGREDO_REAL_999"),
+    ("ConnString=sa:Tr0ub4dor&3@server;refresh_token_interval: 30", "Tr0ub4dor&3"),
+    ("Parameter dump: DSN=PRODDB;UID=sa;RAWCRED=Tr0ub4dor&3xyz, "
+     "next_secret_rotation_days: 30", "Tr0ub4dor&3xyz"),
+])
+def test_redigir_valor_antes_da_keyword_com_identificador_composto_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+
+
+def test_redigir_json_com_aspas_antes_do_nome_continua_preservando_o_campo():
+    """Não-regressão do achado da 13ª rodada: a aspas de ABERTURA de um
+    campo JSON (`'"AUTH_TOKEN": ...'`) não pode ser tratada como
+    "fronteira perigosa" — é só sintaxe estrutural, não um valor
+    independente. Uma 1ª tentativa desta correção (exigir TODO o
+    prefixo em `_CHAR_MESMO_TOKEN`) quebrava exatamente este caso,
+    pego pela suíte antes de commitar."""
+    saida = af.redigir('"AUTH_TOKEN": "segredo123"')
+    assert saida.startswith('"AUTH_TOKEN":')
+    assert "segredo123" not in saida
 
 
 # Achado real da 9ª rodada da revisão adversarial da F2b: a correção da

@@ -208,17 +208,41 @@ def _redigir_linha(linha: str) -> str:
     # separador de "password:" é reconhecido, mas "senha_real_aqui"
     # continua exposto se só mascararmos a partir da keyword).
     #
-    # Discriminador ÚNICO para os dois ramos: o caractere IMEDIATAMENTE
-    # ANTES do início do match. Nada antes (`m.start() == 0`) ou
-    # letra/dígito/`_`/`-` (`_CHAR_MESMO_TOKEN`, ex. `DbPassword`,
-    # `AUTH_TOKEN` isolado) — a keyword é sufixo do MESMO identificador,
-    # preservar o prefixo é seguro (nunca é um valor independente).
-    # Qualquer fronteira de PALAVRA (espaço, pontuação, aspas) antes —
-    # não há garantia nenhuma sobre esse prefixo, masca a linha INTEIRA
-    # desde o início, não só a partir da keyword/separador.
-    if m.start() == 0 or linha[m.start() - 1] in _CHAR_MESMO_TOKEN:
-        return linha[:fim] + _MASCARA
-    return _MASCARA
+    # Achado real da 13ª rodada: checar só o caractere IMEDIATAMENTE
+    # antes do match (como a 12ª rodada corrigiu) prova apenas que a
+    # keyword é sufixo/infixo do IDENTIFICADOR LOCAL — nunca que TODO o
+    # prefixo da linha até ali é seguro. Quando a keyword está no MEIO
+    # de um identificador mais adiante (`campo_token_relacionado`,
+    # `refresh_token_interval` — nomes plausíveis de parâmetro/config em
+    # ETL), o caractere adjacente ('_') passava no teste, e a linha
+    # INTEIRA até o corte era preservada — inclusive um valor sensível
+    # completamente diferente, mais cedo na mesma linha, separado por
+    # espaço/vírgula/ponto-e-vírgula REAIS (`"SEGREDO_REAL_999
+    # campo_token_relacionado: ..."` vazava por completo).
+    #
+    # 1ª tentativa desta correção: exigir que TODO caractere do prefixo
+    # (do início da linha até o match) esteja em `_CHAR_MESMO_TOKEN` —
+    # corrigia o vazamento, mas quebrava o formato JSON mais comum
+    # (`'"AUTH_TOKEN": "segredo123"'`): a aspas de ABERTURA do campo,
+    # antes do nome, não está em `_CHAR_MESMO_TOKEN`, então a linha
+    # inteira virava máscara mesmo sem NENHUM valor antes da keyword —
+    # over-masking severo, pego pela suíte antes de commitar.
+    #
+    # Correção final: anda para trás a partir do início do match SÓ por
+    # caracteres de `_CHAR_MESMO_TOKEN`, até achar onde o IDENTIFICADOR
+    # LOCAL de fato começa (`inicio_ident` — `AUTH_` em `"AUTH_TOKEN"`,
+    # `campo_` em `campo_token_relacionado`). Só então checa: sobra
+    # algum caractere alfanumérico/`_`/`-` em `linha[:inicio_ident]`? Se
+    # sim, é outro TOKEN/palavra — um valor independente em potencial —
+    # inseguro, masca a linha inteira. Se não (só pontuação estrutural
+    # neutra: aspas, `{`, espaços, vírgulas, ou início de linha), é
+    # seguro: nada além de sintaxe existe antes do identificador local.
+    i = m.start()
+    while i > 0 and linha[i - 1] in _CHAR_MESMO_TOKEN:
+        i -= 1
+    if any(c in _CHAR_MESMO_TOKEN for c in linha[:i]):
+        return _MASCARA
+    return linha[:fim] + _MASCARA
 
 
 def redigir(texto: str) -> str:
