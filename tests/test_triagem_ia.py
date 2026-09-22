@@ -246,6 +246,28 @@ def test_config_le_o_interruptor_proprio():
     assert config_da_triagem(cfg)["habilitada"] is True
 
 
+def test_config_prefere_chave_nova_do_provedor():
+    """F0 (docs/spec-agentes-datastage.md): a triagem lê ia_* quando presente,
+    mesmo com a caixa_ia_* antiga (ainda espelhada por ia_provedor.espelhar_legado)
+    também na tabela — a nova manda."""
+    cfg = {"chamados_triagem_habilitada": "1",
+           "ia_provider": "caixa_gateway", "caixa_ia_provider": "anthropic",
+           "ia_model": "claude-sonnet-4-6", "caixa_ia_model": "claude-opus-4-8"}
+    conf = config_da_triagem(cfg)
+    assert conf["provider"] == "caixa_gateway"
+    assert conf["modelo"] == "claude-sonnet-4-6"
+
+
+def test_config_cai_para_chave_antiga_sem_a_nova():
+    """Banco de produção antes da migration 116 (só caixa_ia_*): a triagem
+    continua funcionando sem precisar da migration nem do deploy de dags/."""
+    cfg = {"chamados_triagem_habilitada": "1",
+           "caixa_ia_provider": "caixa_gateway", "caixa_ia_base_url": "https://gw.intranet"}
+    conf = config_da_triagem(cfg)
+    assert conf["provider"] == "caixa_gateway"
+    assert conf["base_url"] == "https://gw.intranet"
+
+
 def test_lote_invalido_cai_no_padrao():
     assert config_da_triagem({"chamados_triagem_lote": "abc"})["lote"] == \
         triagem_ia.LOTE_PADRAO

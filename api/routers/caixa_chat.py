@@ -7,8 +7,11 @@ leo-chat → gateway Lovable). System prompts portados de supabase/functions/*.
   GET  /caixa/chat/status                  — {enabled} p/ o front exibir/ocultar
   GET  /caixa/chat/{assistente}/historico  — últimas conversas do usuário
 
-Tudo atrás de tela_caixa_seguro (RBAC F1). Config e provedor em
-services/caixa_ia.py; log em dbo.etl_caixa_chat_log (migration 061).
+Tudo atrás de tela_caixa_seguro (RBAC F1). Provedor compartilhado em
+services/ia_provedor.py (até 21/09/2026, services/caixa_ia.py — ver
+docs/spec-agentes-datastage.md, F0); o interruptor `caixa_ia_enabled` continua
+PRÓPRIO destes assistentes (não migra: é do módulo Caixa, não do provedor
+compartilhado). Log em dbo.etl_caixa_chat_log (migration 061).
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import require_perm
-from services import caixa_ia
+from services import ia_provedor
 
 log = logging.getLogger("orquestra-api")
 
@@ -105,7 +108,7 @@ def _log_conversa(assistente: str, matricula: str, mensagem: str,
 @router.get("/caixa/chat/status", tags=["caixa-seguro"])
 async def chat_status(_user: dict = Depends(_require_caixa)):
     """Flag p/ o front exibir/ocultar os assistentes (não expõe a config)."""
-    cfg = caixa_ia.load_config()
+    cfg = ia_provedor.load_config()
     return {"enabled": bool(cfg["enabled"])}
 
 
@@ -159,15 +162,15 @@ async def chat_enviar(assistente: str, body: dict = Body(default={}),
     if context and len(json.dumps(context, ensure_ascii=False)) > _MAX_CONTEXTO:
         context = {"aviso": "contexto truncado (excedeu o limite)"}
 
-    cfg = caixa_ia.load_config()
+    cfg = ia_provedor.load_config()
     if not cfg["enabled"]:
         raise HTTPException(status_code=503,
-                            detail="Assistentes IA desativados (Admin > Caixa Seguro IA)")
+                            detail="Assistentes IA desativados (Admin > IA)")
 
     system_prompt = _system_prompt(assistente, context)
     inicio = time.monotonic()
     try:
-        resposta, modelo = await caixa_ia.chat(cfg, system_prompt, message)
+        resposta, modelo = await ia_provedor.chat(cfg, system_prompt, message)
     except HTTPException as e:
         _log_conversa(assistente, user["matricula"], message, None, context,
                       cfg.get("model") or None,
@@ -175,7 +178,7 @@ async def chat_enviar(assistente: str, body: dict = Body(default={}),
         if e.status_code == 500:
             # 500 aqui é problema de configuração (ORQUESTRA_CONN_KEY, lib
             # ausente) — assunto de admin; o usuário do chat não vê internals.
-            # O admin vê o detalhe real via caixa_ia_test.
+            # O admin vê o detalhe real via ia_test.
             log.error("caixa_chat: falha interna do provedor/cripto: %s", e.detail)
             raise HTTPException(status_code=503,
                                 detail="Assistentes IA temporariamente indisponíveis "

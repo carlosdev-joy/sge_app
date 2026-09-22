@@ -129,8 +129,8 @@ def test_senha_do_servicenow_e_mascarada():
 
 
 @pytest.mark.parametrize("chave", [
-    "servicenow_senha_enc", "caixa_ia_api_key_enc", "teams_webhook_url",
-    "algum_secret", "db_password", "api_token",
+    "servicenow_senha_enc", "caixa_ia_api_key_enc", "ia_api_key_enc",
+    "teams_webhook_url", "algum_secret", "db_password", "api_token",
 ])
 def test_todo_segredo_conhecido_e_mascarado(chave):
     assert mask_secret(chave, "valor-secreto-9999").startswith("••••")

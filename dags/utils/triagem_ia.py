@@ -19,8 +19,9 @@ Três decisões que moldam este módulo:
 
 ⚠️ Este módulo vive na árvore `dags/` e NÃO importa de `api/`: o worker não
 tem aquela árvore no path. Ele fala com o gateway por conta própria, lendo a
-MESMA config (`caixa_ia_*` em `dbo.etl_app_config`) que o Admin grava — e por
-isso os literais das chaves estão duplicados aqui, como já acontece em
+MESMA config (`ia_*` em `dbo.etl_app_config`, com fallback para as antigas
+`caixa_ia_*` — F0 da spec docs/spec-agentes-datastage.md) que o Admin grava —
+e por isso os literais das chaves estão duplicados aqui, como já acontece em
 `servicenow_sync.py`.
 """
 from __future__ import annotations
@@ -36,16 +37,28 @@ from utils.texto_sql import cortar
 
 carimbar(__file__)
 
-# ── Config (espelha api/services/caixa_ia.py — mesma tabela, outra árvore) ──
-K_PROVIDER = "caixa_ia_provider"
-K_MODEL = "caixa_ia_model"
-K_BASE_URL = "caixa_ia_base_url"
-K_API_KEY = "caixa_ia_api_key_enc"
-K_USA_PROXY = "caixa_ia_usa_proxy"
+# ── Config (espelha api/services/ia_provedor.py — mesma tabela, outra árvore) ──
+# Chave NOVA (ia_*), com fallback para a ANTIGA (caixa_ia_*) via `_pref()` —
+# F0: nenhuma migration é pré-requisito para continuar funcionando.
+K_PROVIDER = "ia_provider"
+K_MODEL = "ia_model"
+K_BASE_URL = "ia_base_url"
+K_API_KEY = "ia_api_key_enc"
+K_USA_PROXY = "ia_usa_proxy"
+_LEGADO = {K_PROVIDER: "caixa_ia_provider", K_MODEL: "caixa_ia_model",
+           K_BASE_URL: "caixa_ia_base_url", K_API_KEY: "caixa_ia_api_key_enc",
+           K_USA_PROXY: "caixa_ia_usa_proxy"}
 # Interruptor PRÓPRIO: `caixa_ia_enabled` governa os assistentes do Caixa
-# Seguro, e amarrar os dois faria desligar o Diego desligar a triagem.
+# Seguro, e amarrar os dois faria desligar o Diego desligar a triagem. Não
+# migra (fica com o módulo Caixa quando ele sair do Orquestra).
 K_HABILITADA = "chamados_triagem_habilitada"
 K_LOTE = "chamados_triagem_lote"
+
+
+def _pref(cfg: dict, nova: str) -> str:
+    """Valor da chave NOVA se preenchido, senão o da ANTIGA equivalente."""
+    valor = (cfg.get(nova) or "").strip()
+    return valor if valor else (cfg.get(_LEGADO[nova]) or "").strip()
 
 LOTE_PADRAO = 20
 TIMEOUT_S = 45
@@ -279,11 +292,11 @@ def config_da_triagem(cfg: dict) -> dict:
         lote = LOTE_PADRAO
     return {
         "habilitada": (cfg.get(K_HABILITADA) or "").strip() == "1",
-        "provider": (cfg.get(K_PROVIDER) or "").strip(),
-        "modelo": (cfg.get(K_MODEL) or "").strip(),
-        "base_url": (cfg.get(K_BASE_URL) or "").strip().rstrip("/"),
-        "api_key_enc": (cfg.get(K_API_KEY) or "").strip(),
-        "usa_proxy": (cfg.get(K_USA_PROXY) or "").strip() == "1",
+        "provider": _pref(cfg, K_PROVIDER),
+        "modelo": _pref(cfg, K_MODEL),
+        "base_url": _pref(cfg, K_BASE_URL).rstrip("/"),
+        "api_key_enc": _pref(cfg, K_API_KEY),
+        "usa_proxy": _pref(cfg, K_USA_PROXY) == "1",
         "lote": max(1, min(lote, 200)),
     }
 

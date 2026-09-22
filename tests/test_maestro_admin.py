@@ -34,7 +34,7 @@ if "pyodbc" not in sys.modules:
 os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 
-from services import caixa_ia, maestro  # noqa: E402
+from services import ia_provedor, maestro  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[1]
 FONTE = RAIZ / "api" / "routers" / "maestro.py"
@@ -301,7 +301,7 @@ def ambiente(monkeypatch):
     cur = _Cur(cenarios=[LINHA], pedidos=[PEDIDO])
     conn = _Conn(cur)
     cfg = {"provider": "anthropic", "model": "", "api_key_enc": "cifrado"}
-    monkeypatch.setattr(caixa_ia, "load_config", lambda c=None: dict(cfg))
+    monkeypatch.setattr(ia_provedor, "load_config", lambda c=None: dict(cfg))
     with patch("routers.maestro.get_db_conn", return_value=conn):
         yield TestClient(app), cur, conn, estado, cfg
     app.dependency_overrides.pop(get_current_user, None)
@@ -324,7 +324,7 @@ def test_config_get_e_set(ambiente):
     cliente, cur, conn, _estado, cfg = ambiente
     d = cliente.get("/maestro/admin/config").json()
     assert d["enabled"] is True and d["ativo"] is True and d["provedor"]["api_key_set"] is True
-    assert d["provedor"]["model"] == caixa_ia.DEFAULT_MODEL["anthropic"]
+    assert d["provedor"]["model"] == ia_provedor.DEFAULT_MODEL["anthropic"]
     assert d == {**d, "total_cenarios": 1, "cenarios_ativos": 1, "pedidos_abertos": 1, "retencao_dias": 180}
     r = cliente.post("/maestro/admin/config", json={"enabled": False})
     assert r.status_code == 200 and r.json() == {"enabled": False} and conn.commits == 1
@@ -333,7 +333,7 @@ def test_config_get_e_set(ambiente):
     cfg["api_key_enc"] = ""
     r = cliente.post("/maestro/admin/config", json={"enabled": True})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "provedor_sem_chave"
-    assert "Caixa Seguro IA" in r.json()["detail"]["errors"][0] and conn.commits == 1
+    assert "Admin › IA" in r.json()["detail"]["errors"][0] and conn.commits == 1
     # desligar sem chave pode
     assert cliente.post("/maestro/admin/config", json={"enabled": False}).status_code == 200
 

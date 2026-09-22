@@ -1,8 +1,25 @@
-"""api/services/caixa_ia.py — provedor LLM dos assistentes do Caixa Seguro.
+"""api/services/ia_provedor.py — provedor de IA compartilhado do Orquestra.
 
-Config em dbo.etl_app_config (chaves caixa_ia_*), gerida em Admin > Caixa
-Seguro IA (actions caixa_ia_get/set/test). A chave de API é cifrada com o
-mesmo Fernet das conexões (services/conn_crypto, ORQUESTRA_CONN_KEY).
+F0 da spec docs/spec-agentes-datastage.md: até 21/09/2026 este módulo se
+chamava `caixa_ia.py` e vivia só sob o módulo Caixa Seguro. A configuração é
+uma só (provedor, modelo, base_url, chave, proxy) e SEMPRE foi compartilhada —
+o Maestro e a triagem de chamados já a liam por aqui —, mas o nome do módulo e
+das chaves sugeria o contrário. O módulo Caixa vai sair do Orquestra para
+outra ferramenta em breve; a camada de IA fica e passa a servir também os
+agentes (docs/spec-agentes-datastage.md) e o que vier depois.
+
+Config em dbo.etl_app_config, chaves `ia_*` (novas) com fallback para as
+`caixa_ia_*` (antigas — nenhuma delas é apagada aqui; ver `_LEGADO` abaixo e a
+migration 117_ia_provedor_config.sql), gerida em Admin > IA (ações
+`ia_get/ia_set/ia_test/ia_verificar`; as `caixa_ia_*` seguem respondendo como
+aliases). A chave de API é cifrada com o mesmo Fernet das conexões
+(services/conn_crypto, ORQUESTRA_CONN_KEY).
+
+Exceção: `caixa_ia_enabled` NÃO migra — é o interruptor PRÓPRIO dos
+assistentes do Caixa Seguro (Diego/Lari/Léo, `routers/caixa_chat.py`), não da
+camada de IA (o Maestro tem `maestro_enabled`; a triagem,
+`chamados_triagem_habilitada`). Continua com esse nome porque é do módulo
+Caixa, e vai com ele quando o módulo sair.
 
 Provedores:
   - anthropic      → SDK oficial `anthropic` (Messages API). Modelo padrão
@@ -12,7 +29,10 @@ Provedores:
   - caixa_gateway  → o gateway de IA interno da Caixa. Mesma rota
                      /chat/completions, mas autentica por `x-api-key` e
                      responde no formato Anthropic (`content[0].text`) — não
-                     cabia em nenhum dos dois acima. Exige base_url.
+                     cabia em nenhum dos dois acima. Exige base_url. O NOME do
+                     provedor não muda: ele nomeia o DESTINO (o gateway da
+                     Caixa), não este módulo — os valores gravados em config
+                     continuam os mesmos.
 
 A POC Lovable usava o gateway da Lovable (OpenAI-compatível) com
 google/gemini-2.5-flash, temperature 0.7 e max_tokens 1000 — o provedor
@@ -28,20 +48,33 @@ from fastapi import HTTPException
 from db import get_db_conn
 from services.conn_crypto import decrypt_password
 
-# Chaves em dbo.etl_app_config
-K_ENABLED  = "caixa_ia_enabled"      # '1' | '0'
-K_PROVIDER = "caixa_ia_provider"     # 'anthropic' | 'openai_compat' | 'caixa_gateway'
-K_MODEL    = "caixa_ia_model"
-K_BASE_URL = "caixa_ia_base_url"     # openai_compat e caixa_gateway
-K_API_KEY  = "caixa_ia_api_key_enc"  # Fernet
+# Chaves NOVAS (neutras) em dbo.etl_app_config — o provedor compartilhado por
+# Maestro, triagem, assistentes do Caixa (por ora) e agentes.
+K_PROVIDER = "ia_provider"     # 'anthropic' | 'openai_compat' | 'caixa_gateway'
+K_MODEL    = "ia_model"
+K_BASE_URL = "ia_base_url"     # openai_compat e caixa_gateway
+K_API_KEY  = "ia_api_key_enc"  # Fernet
 # '1' faz a chamada respeitar HTTPS_PROXY/NO_PROXY do ambiente. O padrão é '0'
 # porque o gateway da Caixa é intranet: com o proxy corporativo no caminho, a
 # chamada volta com erro de conexão — o MESMO sintoma de gateway fora do ar.
-K_USA_PROXY = "caixa_ia_usa_proxy"
+K_USA_PROXY = "ia_usa_proxy"
 # Última verificação de conexão, em JSON curto. Existe para a resposta ficar NA
 # TELA: um toast some, e "isso está conectando?" precisa de resposta que
 # sobreviva ao refresh.
-K_ULTIMA_VERIF = "caixa_ia_ultima_verificacao"
+K_ULTIMA_VERIF = "ia_ultima_verificacao"
+
+# Chaves ANTIGAS (pré-F0). A 117 as copia para as de cima; load_config() lê a
+# nova e cai para a antiga quando a nova está vazia; ia_set (admin.py) grava
+# nas duas durante a transição — ver `espelhar_legado`. Nunca apagadas aqui:
+# a limpeza é uma migration futura, só depois de confirmar dags/+worker.
+_LEGADO = {K_PROVIDER: "caixa_ia_provider", K_MODEL: "caixa_ia_model",
+           K_BASE_URL: "caixa_ia_base_url", K_API_KEY: "caixa_ia_api_key_enc",
+           K_USA_PROXY: "caixa_ia_usa_proxy",
+           K_ULTIMA_VERIF: "caixa_ia_ultima_verificacao"}
+
+# O interruptor dos assistentes do Caixa Seguro — NÃO faz parte do provedor
+# compartilhado (ver o docstring do módulo). Continua com o nome antigo.
+K_ENABLED = "caixa_ia_enabled"
 
 PROVIDERS = ("anthropic", "openai_compat", "caixa_gateway")
 DEFAULT_MODEL = {"anthropic": "claude-opus-4-8", "openai_compat": "gpt-4o-mini",
@@ -55,9 +88,24 @@ MAX_TOKENS = 4096
 TIMEOUT_S = 60
 
 
+def espelhar_legado(valores: dict) -> dict:
+    """`{K_PROVIDER: v, ...}` → o mesmo dict acrescido das chaves ANTIGAS
+    equivalentes, com o mesmo valor. Usado por `ia_set` (admin.py) para que a
+    gravação valha tanto para quem já lê `ia_*` quanto para quem (a triagem no
+    worker, por exemplo, se o deploy de `dags/` atrasar) ainda lê `caixa_ia_*`.
+    `K_ENABLED` não tem par legado — é passado como está, se vier no dict."""
+    espelhado = dict(valores)
+    for nova, antiga in _LEGADO.items():
+        if nova in valores:
+            espelhado[antiga] = valores[nova]
+    return espelhado
+
+
 def load_config(cur=None) -> dict:
-    """Lê a config caixa_ia_* de etl_app_config. Degrada graciosamente
-    (enabled=False) se a tabela não existir ou nada estiver configurado."""
+    """Lê a config de etl_app_config: chave `ia_*` quando preenchida, senão a
+    `caixa_ia_*` equivalente (fallback — nenhuma migration é pré-requisito
+    para continuar funcionando). Degrada graciosamente (enabled=False) se a
+    tabela não existir ou nada estiver configurado."""
     own_conn = cur is None
     conn = None
     cfg = {"enabled": False, "provider": "anthropic", "model": "",
@@ -66,20 +114,26 @@ def load_config(cur=None) -> dict:
     try:
         if own_conn:
             conn = get_db_conn(); cur = conn.cursor()
+        chaves = [K_ENABLED, K_PROVIDER, K_MODEL, K_BASE_URL, K_API_KEY,
+                  K_USA_PROXY, K_ULTIMA_VERIF, *_LEGADO.values()]
+        marcadores = ",".join("?" * len(chaves))
         cur.execute(
             "SELECT config_key, config_value FROM dbo.etl_app_config "
-            "WHERE config_key IN (?,?,?,?,?,?,?)",
-            [K_ENABLED, K_PROVIDER, K_MODEL, K_BASE_URL, K_API_KEY,
-             K_USA_PROXY, K_ULTIMA_VERIF])
+            f"WHERE config_key IN ({marcadores})", chaves)
         rows = dict(cur.fetchall())
+
+        def _pref(nova: str) -> str:
+            valor = (rows.get(nova) or "").strip()
+            return valor if valor else (rows.get(_LEGADO[nova]) or "").strip()
+
         cfg["enabled"] = (rows.get(K_ENABLED) or "").strip() == "1"
-        provider = (rows.get(K_PROVIDER) or "anthropic").strip()
+        provider = (_pref(K_PROVIDER) or "anthropic")
         cfg["provider"] = provider if provider in PROVIDERS else "anthropic"
-        cfg["model"] = (rows.get(K_MODEL) or "").strip()
-        cfg["base_url"] = (rows.get(K_BASE_URL) or "").strip().rstrip("/")
-        cfg["api_key_enc"] = (rows.get(K_API_KEY) or "").strip()
-        cfg["usa_proxy"] = (rows.get(K_USA_PROXY) or "").strip() == "1"
-        cfg["ultima_verificacao"] = (rows.get(K_ULTIMA_VERIF) or "").strip()
+        cfg["model"] = _pref(K_MODEL)
+        cfg["base_url"] = _pref(K_BASE_URL).rstrip("/")
+        cfg["api_key_enc"] = _pref(K_API_KEY)
+        cfg["usa_proxy"] = _pref(K_USA_PROXY) == "1"
+        cfg["ultima_verificacao"] = _pref(K_ULTIMA_VERIF)
     except Exception:
         pass
     finally:
@@ -95,7 +149,7 @@ def _api_key(cfg: dict) -> str:
     if not cfg.get("api_key_enc"):
         raise HTTPException(status_code=503,
                             detail="Assistentes IA sem chave de API configurada "
-                                   "(Admin > Caixa Seguro IA)")
+                                   "(Admin > IA)")
     return decrypt_password(cfg["api_key_enc"])
 
 
@@ -203,7 +257,7 @@ async def _chat_openai_compat(cfg: dict, api_key: str, model: str,
     if not base_url:
         raise HTTPException(status_code=503,
                             detail="Provedor OpenAI-compatível sem base_url configurada "
-                                   "(Admin > Caixa Seguro IA)")
+                                   "(Admin > IA)")
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
             r = await client.post(
@@ -323,7 +377,7 @@ async def _chat_caixa_gateway(cfg: dict, api_key: str, model: str,
     if not base_url:
         raise HTTPException(status_code=503,
                             detail="Gateway da Caixa sem base_url configurada "
-                                   "(Admin > Caixa Seguro IA)")
+                                   "(Admin > IA)")
     try:
         # trust_env=False por padrão: a rota é interna e o proxy corporativo
         # do container derrubaria a chamada. Quem precisar do proxy liga a

@@ -36,7 +36,7 @@ FREEZE_MOTIVO = "Congelamento manual do ambiente"
 # Fragmentos de nome de chave que marcam um valor como segredo em
 # dbo.etl_app_config. No nível do módulo (e não dentro do handler) para poder
 # ser testado: é a única barreira entre um segredo e a listagem de config.
-_PADROES_SEGREDO = ("teams_webhook", "caixa_ia_api_key", "secret",
+_PADROES_SEGREDO = ("teams_webhook", "caixa_ia_api_key", "ia_api_key", "secret",
                     "password", "token", "senha")
 
 
@@ -251,10 +251,14 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f"Usuário {mat} removido." if n else f"Usuário {mat} não encontrado."}
 
-        # ── Assistentes IA do Caixa Seguro (config caixa_ia_* em etl_app_config) ──
-        elif action == "caixa_ia_get":
-            from services import caixa_ia
-            cfg = caixa_ia.load_config(cur)
+        # ── Provedor de IA compartilhado (config ia_* em etl_app_config, Admin ›
+        # IA). Até 21/09/2026 era só dos assistentes do Caixa Seguro (config
+        # caixa_ia_*) — ver docs/spec-agentes-datastage.md, F0. As ações
+        # antigas `caixa_ia_*` continuam respondendo (alias) por uma versão,
+        # para JS de admin em cache. ──
+        elif action in ("ia_get", "caixa_ia_get"):
+            from services import ia_provedor
+            cfg = ia_provedor.load_config(cur)
             cur.close(); conn.close()
             # A última verificação volta junto com a config para a tela nascer
             # já dizendo se a conexão estava de pé — sem exigir um clique só
@@ -270,18 +274,18 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                 "model": cfg["model"], "base_url": cfg["base_url"],
                 "api_key_set": bool(cfg["api_key_enc"]),
                 "usa_proxy": cfg["usa_proxy"],
-                "proxy_ambiente": caixa_ia.proxy_do_ambiente(),
+                "proxy_ambiente": ia_provedor.proxy_do_ambiente(),
                 "ultima_verificacao": ultima,
             }}
 
-        elif action == "caixa_ia_set":
-            from services import caixa_ia
+        elif action in ("ia_set", "caixa_ia_set"):
+            from services import ia_provedor
             from services.conn_crypto import encrypt_password as _enc
             enabled  = "1" if body.get("enabled") else "0"
             provider = (body.get("provider") or "anthropic").strip()
-            if provider not in caixa_ia.PROVIDERS:
+            if provider not in ia_provedor.PROVIDERS:
                 raise HTTPException(status_code=422,
-                                    detail=f"provider deve ser um de {caixa_ia.PROVIDERS}")
+                                    detail=f"provider deve ser um de {ia_provedor.PROVIDERS}")
             model    = (body.get("model") or "").strip()
             if len(model) > 100:
                 raise HTTPException(status_code=422,
@@ -311,14 +315,14 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             usa_proxy = "1" if (provider == "caixa_gateway"
                                 and body.get("usa_proxy")) else "0"
 
-            valores = {caixa_ia.K_ENABLED: enabled, caixa_ia.K_PROVIDER: provider,
-                       caixa_ia.K_MODEL: model, caixa_ia.K_BASE_URL: base_url,
-                       caixa_ia.K_USA_PROXY: usa_proxy,
+            valores = {ia_provedor.K_ENABLED: enabled, ia_provedor.K_PROVIDER: provider,
+                       ia_provedor.K_MODEL: model, ia_provedor.K_BASE_URL: base_url,
+                       ia_provedor.K_USA_PROXY: usa_proxy,
                        # O laudo vale para a configuração que foi verificada.
                        # Mantê-lo depois de trocar provedor ou base_url deixa
                        # um "conectado" verde na tela sobre uma configuração
                        # que ninguém testou — e nada na tela o contradiz.
-                       caixa_ia.K_ULTIMA_VERIF: ""}
+                       ia_provedor.K_ULTIMA_VERIF: ""}
             if isinstance(api_key, str) and api_key.strip():
                 token = _enc(api_key.strip())
                 if len(token) > 1000:  # etl_app_config.config_value é VARCHAR(1000)
@@ -326,20 +330,25 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                                         detail="Chave de API longa demais — o valor "
                                                "cifrado excede os 1000 caracteres de "
                                                "etl_app_config.config_value")
-                valores[caixa_ia.K_API_KEY] = token
+                valores[ia_provedor.K_API_KEY] = token
             elif body.get("clear_api_key"):
-                valores[caixa_ia.K_API_KEY] = ""
-            for k, v in valores.items():
+                valores[ia_provedor.K_API_KEY] = ""
+            # Grava nas chaves NOVAS (ia_*) e espelha nas ANTIGAS (caixa_ia_*)
+            # — F0: enquanto `dags/utils/triagem_ia.py` (worker) não estiver no
+            # deploy que lê ia_*, ele continua lendo as antigas, sempre
+            # atualizadas. `K_ENABLED` (caixa_ia_enabled) não tem par novo —
+            # espelhar_legado() o deixa como está.
+            for k, v in ia_provedor.espelhar_legado(valores).items():
                 cur.execute(
                     "MERGE dbo.etl_app_config AS t "
                     "USING (SELECT ? AS k) AS s ON t.config_key = s.k "
                     "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
                     "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
-                    "  VALUES (s.k, ?, 'Assistentes IA do Caixa Seguro', ?, GETDATE());",
+                    "  VALUES (s.k, ?, 'Provedor de IA compartilhado (Maestro, triagem, Caixa Seguro, agentes)', ?, GETDATE());",
                     [k, v, requested_by, v, requested_by])
             # exige chave configurada para ligar
             if enabled == "1":
-                cfg = caixa_ia.load_config(cur)
+                cfg = ia_provedor.load_config(cur)
                 if not cfg["api_key_enc"]:
                     conn.rollback(); cur.close(); conn.close()
                     raise HTTPException(status_code=422,
@@ -347,14 +356,14 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": "Configuração dos assistentes IA salva."}
 
-        elif action == "caixa_ia_test":
-            from services import caixa_ia
-            cfg = caixa_ia.load_config(cur)
+        elif action in ("ia_test", "caixa_ia_test"):
+            from services import ia_provedor
+            cfg = ia_provedor.load_config(cur)
             cur.close(); conn.close()
             if not cfg["api_key_enc"]:
                 raise HTTPException(status_code=422, detail="Configure a chave de API antes de testar")
             inicio = time.monotonic()
-            resposta, modelo = await caixa_ia.chat(
+            resposta, modelo = await ia_provedor.chat(
                 cfg,
                 "Você é um verificador de conectividade. Responda APENAS a palavra OK.",
                 "Teste de conexão do ORQUESTRA — responda OK.")
@@ -363,15 +372,15 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                     "mensagem": f"Provedor respondeu em {ms} ms (modelo {modelo}).",
                     "detalhes": {"resposta": resposta[:200], "duracao_ms": ms}}
 
-        elif action == "caixa_ia_verificar":
-            # Verificação COM diagnóstico: diferente de caixa_ia_test, não
-            # levanta em falha — devolve 200 com o laudo. Erro HTTP viraria
-            # toast vermelho genérico, e a pergunta aqui não é "deu certo?" e
-            # sim "onde parou?".
-            from services import caixa_ia
-            cfg = caixa_ia.load_config(cur)
+        elif action in ("ia_verificar", "caixa_ia_verificar"):
+            # Verificação COM diagnóstico: diferente de ia_test, não levanta em
+            # falha — devolve 200 com o laudo. Erro HTTP viraria toast
+            # vermelho genérico, e a pergunta aqui não é "deu certo?" e sim
+            # "onde parou?".
+            from services import ia_provedor
+            cfg = ia_provedor.load_config(cur)
             cur.close(); conn.close()
-            diag = await caixa_ia.diagnosticar(cfg)
+            diag = await ia_provedor.diagnosticar(cfg)
             diag["verificado_em"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             diag["verificado_por"] = requested_by
 
@@ -384,19 +393,22 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                       "por": requested_by, "mensagem": (diag["mensagem"] or "")[:300]}
             try:
                 conn2 = get_db_conn(); cur2 = conn2.cursor()
+                laudo_json = json.dumps(resumo, ensure_ascii=False)
+                # O laudo grava só na chave NOVA: é o estado da verificação de
+                # AGORA, contra a config que load_config() resolveu (ia_* ou o
+                # fallback) — não faz sentido carimbar a antiga também.
                 cur2.execute(
                     "MERGE dbo.etl_app_config AS t "
                     "USING (SELECT ? AS k) AS s ON t.config_key = s.k "
                     "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
                     "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
                     "  VALUES (s.k, ?, 'Ultima verificacao de conexao da IA', ?, GETDATE());",
-                    [caixa_ia.K_ULTIMA_VERIF, json.dumps(resumo, ensure_ascii=False),
-                     requested_by, json.dumps(resumo, ensure_ascii=False), requested_by])
+                    [ia_provedor.K_ULTIMA_VERIF, laudo_json, requested_by, laudo_json, requested_by])
                 conn2.commit(); cur2.close(); conn2.close()
             except Exception as e:
                 # Não poder GRAVAR o laudo não invalida o laudo: a tela recebe
                 # o resultado e um aviso de que ele não ficará após o refresh.
-                log.warning("caixa_ia_verificar: laudo não persistido (%s: %s)",
+                log.warning("ia_verificar: laudo não persistido (%s: %s)",
                             type(e).__name__, e)
                 diag["persistido"] = False
             else:

@@ -308,9 +308,15 @@ def etl_servicenow_sync():
             print(aviso)
 
         hook = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID)
+        # 'ia_%' (F0, docs/spec-agentes-datastage.md) além de 'caixa_ia%': o
+        # provedor de IA compartilhado migrou de nome, mas a leitura aqui
+        # precisa enxergar tanto o novo quanto o antigo — config_da_triagem()
+        # prefere o novo e cai para o antigo (não depende da ordem do deploy
+        # entre a API e o worker).
         linhas = hook.get_records(
             "SELECT config_key, config_value FROM dbo.etl_app_config "
-            "WHERE config_key LIKE 'caixa_ia%' OR config_key LIKE 'chamados_triagem%'")
+            "WHERE config_key LIKE 'ia_%' OR config_key LIKE 'caixa_ia%' "
+            "   OR config_key LIKE 'chamados_triagem%'")
         conf = config_da_triagem({k: (v or "").strip() for k, v in (linhas or [])})
 
         if not conf["habilitada"]:
