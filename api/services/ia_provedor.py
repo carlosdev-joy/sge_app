@@ -197,9 +197,22 @@ def transcrever(mensagens: list[dict]) -> str:
     return "\n\n".join(linhas)
 
 
-async def chat_conversa(cfg: dict, system_prompt: str, mensagens) -> tuple[str, str]:
-    """Conversa multi-rodada (o Maestro): `mensagens` = [{role, content}] com o
-    histórico, terminando na mensagem do usuário. Retorna (resposta, modelo)."""
+async def chat_conversa(cfg: dict, system_prompt: str, mensagens,
+                        identidade: str | None = None,
+                        campo_identidade: str | None = None) -> tuple[str, str]:
+    """Conversa multi-rodada (o Maestro, a triagem, os agentes): `mensagens` =
+    [{role, content}] com o histórico, terminando na mensagem do usuário.
+    Retorna (resposta, modelo).
+
+    `identidade`/`campo_identidade` (F1 da spec docs/spec-agentes-datastage.md,
+    os agentes): identificador POR USUÁRIO a mandar ao gateway, e ONDE mandar
+    (`'header:NOME'` ou `'body:CAMPO'` — quem decide o valor de
+    `campo_identidade` é o chamador, lendo `agentes_gateway_campo_usuario` de
+    `etl_app_config`; este módulo não conhece esse nome de config, só recebe
+    o resultado). Vale SÓ para o provedor `caixa_gateway` — os outros dois
+    não têm esse conceito. Sem os dois parâmetros (o padrão, e o que Maestro/
+    triagem/Caixa Seguro continuam usando), o comportamento é EXATAMENTE o de
+    antes da F1."""
     msgs = normalizar_mensagens(mensagens)
     provider = cfg.get("provider") or "anthropic"
     model = cfg.get("model") or DEFAULT_MODEL[provider]
@@ -208,7 +221,8 @@ async def chat_conversa(cfg: dict, system_prompt: str, mensagens) -> tuple[str, 
     if provider == "anthropic":
         return await _chat_anthropic(api_key, model, system_prompt, msgs), model
     if provider == "caixa_gateway":
-        return await _chat_caixa_gateway(cfg, api_key, model, system_prompt, transcrever(msgs)), model
+        return await _chat_caixa_gateway(cfg, api_key, model, system_prompt, transcrever(msgs),
+                                         identidade, campo_identidade), model
     return await _chat_openai_compat(cfg, api_key, model, system_prompt, msgs), model
 
 
@@ -357,27 +371,59 @@ def extrai_texto(payload: dict) -> tuple[str, str]:
     return "", ""
 
 
-def _corpo_gateway(model: str, system_prompt: str, message: str) -> dict:
-    """Monta o corpo do pedido.
+class GatewayRecusou(Exception):
+    """401/403 do gateway QUANDO a chamada levava uma `identidade` por
+    usuário (F1 da spec, os agentes): o código sozinho não diz se é o
+    usuário que não está cadastrado ou a chave do APP que é inválida — quem
+    chama decide isso fazendo uma segunda chamada de controle com a
+    identidade do app (ver `sondar_usuario`). Sem `identidade` (Maestro,
+    triagem, Caixa Seguro), 401/403 continua um `HTTPException` comum, como
+    sempre foi — esta exceção só existe no caminho novo."""
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"Gateway recusou ({status_code})")
+
+
+def _corpo_gateway(model: str, system_prompt: str, message: str,
+                   identidade: str | None = None,
+                   campo_identidade: str | None = None) -> tuple[dict, dict]:
+    """Monta (headers extras, corpo) do pedido.
 
     O system entra como prefixo da própria mensagem, e não em campo separado:
     é o que o painel da estação faz hoje contra este mesmo gateway, e um campo
     `system` que o gateway ignorasse levaria a instrução embora sem erro
     nenhum — falha silenciosa, a pior espécie.
+
+    `identidade`/`campo_identidade`: se os dois vierem preenchidos, o
+    identificador vai no lugar que `campo_identidade` descreve
+    (`'header:NOME'` ou `'body:CAMPO'`); sem os dois (o caso de sempre),
+    nada muda no corpo nem nos headers.
     """
     conteudo = f"{system_prompt}\n\n{message}" if system_prompt else message
-    return {"model": model,
+    corpo = {"model": model,
             "messages": [{"role": "user", "content": conteudo}],
             "max_tokens": MAX_TOKENS}
+    headers_extra: dict[str, str] = {}
+    if identidade and campo_identidade:
+        tipo, _, nome = campo_identidade.partition(":")
+        if tipo == "header" and nome:
+            headers_extra[nome] = identidade
+        elif tipo == "body" and nome:
+            corpo[nome] = identidade
+    return headers_extra, corpo
 
 
 async def _chat_caixa_gateway(cfg: dict, api_key: str, model: str,
-                              system_prompt: str, message: str) -> str:
+                              system_prompt: str, message: str,
+                              identidade: str | None = None,
+                              campo_identidade: str | None = None) -> str:
     base_url = cfg.get("base_url")
     if not base_url:
         raise HTTPException(status_code=503,
                             detail="Gateway da Caixa sem base_url configurada "
                                    "(Admin > IA)")
+    headers_extra, corpo = _corpo_gateway(model, system_prompt, message, identidade, campo_identidade)
     try:
         # trust_env=False por padrão: a rota é interna e o proxy corporativo
         # do container derrubaria a chamada. Quem precisar do proxy liga a
@@ -387,13 +433,18 @@ async def _chat_caixa_gateway(cfg: dict, api_key: str, model: str,
                                      verify=_verificacao_tls()) as client:
             r = await client.post(
                 f"{base_url}/chat/completions",
-                headers={"x-api-key": api_key, "Content-Type": "application/json"},
-                json=_corpo_gateway(model, system_prompt, message),
+                headers={"x-api-key": api_key, "Content-Type": "application/json", **headers_extra},
+                json=corpo,
             )
     except httpx.HTTPError:
         raise HTTPException(status_code=502,
                             detail="Falha de conexão com o gateway de IA da Caixa")
     if r.status_code in (401, 403):
+        if identidade is not None:
+            # Caminho dos agentes: o código sozinho é ambíguo (usuário sem
+            # cadastro × chave do app inválida) — devolve a exceção própria
+            # para quem chama decidir com a chamada de controle.
+            raise GatewayRecusou(r.status_code)
         raise HTTPException(status_code=502,
                             detail=f"Gateway recusou a chave de API ({r.status_code})")
     if r.status_code == 404:
@@ -431,6 +482,62 @@ async def _chat_caixa_gateway(cfg: dict, api_key: str, model: str,
 VERIF_SYSTEM = "Você é um verificador de conectividade. Responda APENAS a palavra OK."
 VERIF_USER = "Teste de conexão do ORQUESTRA — responda OK."
 VERIF_TIMEOUT_S = 20
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Sonda de cadastro por usuário (F1 da spec docs/spec-agentes-datastage.md,
+# os agentes) — diferente de `diagnosticar()`: aquela verifica o PROVEDOR
+# (a chave do app); esta verifica se UM USUÁRIO está cadastrado no gateway.
+# ══════════════════════════════════════════════════════════════════════════
+
+SONDA_OK = "ok"                          # o usuário está cadastrado
+SONDA_SEM_CADASTRO = "sem_cadastro"      # o usuário não está — controle com o app funcionou
+SONDA_CHAVE_APP_INVALIDA = "chave_do_app_invalida"  # nem o controle com o app funcionou
+SONDA_GATEWAY_INDISPONIVEL = "gateway_indisponivel"  # rede/formato/HTTP ≠ 401/403
+SONDA_SEM_CONTRATO = "sem_contrato"      # ninguém configurou onde vai o identificador (D-01)
+SONDA_SEM_MATRICULA = "sem_matricula"    # sessão sem matrícula — nunca chama o gateway
+SONDA_PROVEDOR_INCOMPATIVEL = "provedor_incompativel"  # só caixa_gateway tem identidade por usuário
+SONDA_DESLIGADO = "desligado"            # provedor sem chave/base_url — nem tenta
+
+IDENTIDADE_APP = "cvp-orquestra"  # a identidade que Caixa Seguro/Maestro/triagem já usam
+
+
+async def sondar_usuario(cfg: dict, identidade: str | None, campo_identidade: str | None,
+                         identidade_app: str = IDENTIDADE_APP) -> str:
+    """Uma chamada mínima para saber se `identidade` está cadastrada no
+    gateway. NUNCA levanta — sempre devolve um dos `SONDA_*` acima; quem
+    chama decide o cache (TTLs diferentes por estado — ver D-03 da spec) e o
+    texto que a tela mostra.
+
+    401/403 sozinho não diz QUEM foi recusado — por isso, quando a chamada
+    com `identidade` leva `GatewayRecusou`, uma SEGUNDA chamada, agora com a
+    identidade do APP (a mesma que Caixa Seguro/Maestro/triagem já usam),
+    decide: controle OK ⇒ o usuário não está cadastrado; controle também
+    recusado ⇒ é a chave do app que está errada, não o usuário."""
+    if (cfg.get("provider") or "") != "caixa_gateway":
+        return SONDA_PROVEDOR_INCOMPATIVEL
+    if not cfg.get("api_key_enc") or not cfg.get("base_url"):
+        return SONDA_DESLIGADO
+    if not campo_identidade:
+        return SONDA_SEM_CONTRATO
+    if not identidade:
+        return SONDA_SEM_MATRICULA
+    try:
+        await chat_conversa(cfg, VERIF_SYSTEM, [{"role": "user", "content": VERIF_USER}],
+                            identidade=identidade, campo_identidade=campo_identidade)
+        return SONDA_OK
+    except GatewayRecusou:
+        pass
+    except Exception:  # rede/formato/erro inesperado — nunca derruba a sonda
+        return SONDA_GATEWAY_INDISPONIVEL
+    try:
+        await chat_conversa(cfg, VERIF_SYSTEM, [{"role": "user", "content": VERIF_USER}],
+                            identidade=identidade_app, campo_identidade=campo_identidade)
+        return SONDA_SEM_CADASTRO
+    except GatewayRecusou:
+        return SONDA_CHAVE_APP_INVALIDA
+    except Exception:
+        return SONDA_GATEWAY_INDISPONIVEL
 
 
 def _diag_base(cfg: dict) -> dict:
@@ -547,10 +654,11 @@ async def _verificar_gateway(cfg: dict, diag: dict) -> None:
                                      trust_env=usa_proxy,
                                      verify=_verificacao_tls()) as client:
             _anota_proxy(diag, client, base_url)
+            _, corpo = _corpo_gateway(model, VERIF_SYSTEM, VERIF_USER)
             r = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"x-api-key": api_key, "Content-Type": "application/json"},
-                json=_corpo_gateway(model, VERIF_SYSTEM, VERIF_USER),
+                json=corpo,
             )
     except httpx.ConnectTimeout:
         diag["mensagem"] = ("Tempo esgotado ao abrir a conexão. O host responde "

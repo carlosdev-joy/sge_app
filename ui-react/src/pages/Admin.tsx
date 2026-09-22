@@ -49,10 +49,25 @@ const RBAC_RECURSOS: [string, string][] = [
   ['tela_chamados', 'Chamados'],
   ['tela_caixa_seguro', 'Caixa Seguro'],
   ['caixa_seguro_operacional', 'Caixa Seguro — Operacional'],
+  // Agentes de IA (spec docs/spec-agentes-datastage.md). `tela_agentes` é um
+  // recurso normal (perfil ∪ overrides), como qualquer `tela_*` acima. Os
+  // `agente_*`, ao contrário, são SEMPRE concedidos usuário a usuário —
+  // por isso ficam FORA de RBAC_RECURSOS_PERFIS (não aparecem na matriz de
+  // perfis; só no modal de permissões extras). Ver risco 26 da spec.
+  ['tela_agentes', 'Agentes'],
+  ['agente_datastage', 'Agente — Mapeamento DataStage'],
+  ['agente_curador', 'Agente — Curador dos aprendizados'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],
   ['acao_admin', 'Administração'],
 ]
+
+// Só os recursos que fazem sentido conceder a um PERFIL inteiro — usada na
+// matriz "Perfis e Permissões". `agente_*` nunca aparece aqui: conceder
+// usuário a usuário é a regra, sem exceção — mesmo que alguém marque
+// `agente_datastage` num perfil por engano (pela API, fora desta tela),
+// `require_agente` (services/agentes.py) ignora essa origem para não-admin.
+const RBAC_RECURSOS_PERFIS = RBAC_RECURSOS.filter(([rec]) => !rec.startsWith('agente_'))
 
 const adminPost = <T,>(action: string, extra: Record<string, unknown> = {}) =>
   apiFetch<T>('/admin', { method: 'POST', body: JSON.stringify({ action, ...extra }) })
@@ -813,7 +828,7 @@ function AgendamentoTab() {
 }
 
 // ── Usuários & Perfis ───────────────────────────────────────────
-interface UsuarioRow { matricula: string; perfil: string; primeiro_nome?: string; ultimo_nome?: string; email?: string; ativo: boolean; ultimo_login?: string }
+interface UsuarioRow { matricula: string; perfil: string; primeiro_nome?: string; ultimo_nome?: string; email?: string; ativo: boolean; ultimo_login?: string; identidade_gateway?: string | null }
 interface PerfilRow { perfil_nome: string; descricao?: string; permissoes: string[] }
 interface RoleMapRow { role_airflow: string; perfil_nome: string; ordem_prioridade: number; descricao?: string; ativo: number }
 function UsuariosTab() {
@@ -822,6 +837,10 @@ function UsuariosTab() {
   // permissões extras por usuário (além do perfil)
   const [permUser, setPermUser] = useState<UsuarioRow | null>(null)
   const [permDraft, setPermDraft] = useState<Set<string>>(new Set())
+  // identidade no gateway de IA (spec docs/spec-agentes-datastage.md, D-16):
+  // cadastro que sobrepõe o padrão cvp-<matrícula>. Editada no mesmo modal
+  // de permissões extras, mas salva por uma ação PRÓPRIA (user_identidade_set).
+  const [identidadeDraft, setIdentidadeDraft] = useState('')
   // perfis: estado local de permissões editáveis por perfil
   const [permEdits, setPermEdits] = useState<Record<string, Set<string>>>({})
   const [newPerfil, setNewPerfil] = useState({ nome: '', descricao: '' })
@@ -869,6 +888,11 @@ function UsuariosTab() {
     mutationFn: (p: { matricula: string; permissoes: string[] }) => adminPost('user_perm_set', p),
     onSuccess: (_, v) => { toast.success(`Permissões extras de ${v.matricula} salvas (sessões do usuário renovadas)`); queryClient.invalidateQueries({ queryKey: ['admin-user-perms'] }); setPermUser(null) },
     onError: (e: any) => toast.error(e.message),
+  })
+  const userIdentidadeSet = useMutation({
+    mutationFn: (p: { matricula: string; identidade_gateway: string }) => adminPost('user_identidade_set', p),
+    onSuccess: (_, v) => { toast.success(`Identidade de gateway de ${v.matricula} salva`); queryClient.invalidateQueries({ queryKey: ['admin-usuarios'] }) },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const perfilOpts = perfis?.perfis ?? []
@@ -919,7 +943,7 @@ function UsuariosTab() {
                     <td className="px-4 py-2.5 text-xs">{u.ativo ? '✓' : <span className="text-red-500">✕</span>}</td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1 justify-end">
-                        <button onClick={() => { setPermUser(u); setPermDraft(new Set(userPerms?.permissoes?.[u.matricula] ?? [])) }} className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded" title="Permissões extras"><KeyRound size={13} /></button>
+                        <button onClick={() => { setPermUser(u); setPermDraft(new Set(userPerms?.permissoes?.[u.matricula] ?? [])); setIdentidadeDraft(u.identidade_gateway ?? '') }} className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded" title="Permissões extras"><KeyRound size={13} /></button>
                         <button onClick={() => setUserForm({ matricula: u.matricula, perfil: u.perfil })} className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded" title="Editar"><Edit2 size={13} /></button>
                         <button onClick={() => setDeleteUser(u.matricula)} className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded" title="Remover"><Trash2 size={13} /></button>
                       </div>
@@ -962,7 +986,7 @@ function UsuariosTab() {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                  {RBAC_RECURSOS.map(([rec, lbl]) => (
+                  {RBAC_RECURSOS_PERFIS.map(([rec, lbl]) => (
                     <label key={rec} className="flex items-center gap-1.5 text-xs text-ink cursor-pointer">
                       <input type="checkbox" checked={set.has(rec)} onChange={() => togglePerm(p.perfil_nome, rec, base)} />
                       {lbl}
@@ -1033,6 +1057,21 @@ function UsuariosTab() {
         return (
           <Modal open onClose={() => setPermUser(null)} title={`Permissões extras — ${permUser.matricula}`} size="sm">
             <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5 border-b border-edge pb-4">
+                <label className="text-xs font-semibold text-ink">Identidade no gateway de IA</label>
+                <p className="text-[11px] text-dim">
+                  O identificador enviado ao gateway. Vazio usa o padrão <code>cvp-{permUser.matricula.toLowerCase()}</code>;
+                  preencha só se o gateway conhecer este usuário por outro identificador.
+                </p>
+                <div className="flex items-center gap-2">
+                  <Input value={identidadeDraft} onChange={e => setIdentidadeDraft(e.target.value)}
+                    placeholder={`cvp-${permUser.matricula.toLowerCase()}`} className="flex-1" maxLength={100} />
+                  <Button size="sm" variant="secondary" loading={userIdentidadeSet.isPending}
+                    onClick={() => userIdentidadeSet.mutate({ matricula: permUser.matricula, identidade_gateway: identidadeDraft.trim() })}>
+                    <Save size={11} /> Salvar
+                  </Button>
+                </div>
+              </div>
               <p className="text-xs text-dim">
                 Recursos concedidos <strong>além</strong> do perfil <Badge value={permUser.perfil} />.
                 Os já herdados do perfil aparecem marcados e travados.

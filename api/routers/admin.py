@@ -24,6 +24,7 @@ from routers.airflow import get_airflow_client
 # conexão ainda não migrada): resolução host/porta + allowlist, consulta
 # direta com a credencial do app e fallback RPC pela DAG (BaseHook).
 from routers.copias import _consulta_direta, _introspect_via_dag, _server_da_conexao
+from services import agentes as svc_agentes
 from services import servicenow
 from services.conn_crypto import decrypt_password, encrypt_password
 
@@ -204,13 +205,20 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
 
         # ── Gestão de usuários e perfis (RBAC) ─────────────────────────────
         elif action == "user_list":
+            # identidade_gateway: NVARCHAR/VARCHAR só existe a partir da
+            # migration 117 (spec docs/spec-agentes-datastage.md, F1) —
+            # degrada para None em vez de 500 se ainda não rodou.
+            cur.execute("SELECT COL_LENGTH('dbo.etl_usuario', 'identidade_gateway')")
+            tem_identidade = cur.fetchone()[0] is not None
+            campo_identidade = "u.identidade_gateway" if tem_identidade else "NULL"
             cur.execute(
                 "SELECT u.matricula, u.perfil_nome, u.primeiro_nome, u.ultimo_nome, "
-                "       u.email, u.ativo, u.primeiro_login, u.ultimo_login "
+                f"       u.email, u.ativo, u.primeiro_login, u.ultimo_login, {campo_identidade} "
                 "FROM dbo.etl_usuario u ORDER BY u.matricula")
             data = [{"matricula": r[0], "perfil": r[1], "primeiro_nome": r[2],
                      "ultimo_nome": r[3], "email": r[4], "ativo": bool(r[5]),
-                     "primeiro_login": _fmt_dt(r[6]), "ultimo_login": _fmt_dt(r[7])}
+                     "primeiro_login": _fmt_dt(r[6]), "ultimo_login": _fmt_dt(r[7]),
+                     "identidade_gateway": r[8]}
                     for r in cur.fetchall()]
             cur.close(); conn.close()
             return {"sucesso": True, "usuarios": data}
@@ -238,6 +246,58 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                         [mat, requested_by])
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f"Usuário {mat} → perfil '{perfil}'."}
+
+        # Identidade no gateway de IA (D-16 de docs/spec-agentes-datastage.md):
+        # o CADASTRO que sobrepõe o padrão cvp-<matrícula> (services/agentes.
+        # identidade_gateway). Só admin grava; formato validado aqui (vai em
+        # header: sem espaço/quebra de linha); unicidade conferida na
+        # APLICAÇÃO — SEM índice único filtrado (gotcha QUOTED_IDENTIFIER,
+        # Msg 1934, já pago numa migration anterior).
+        elif action == "user_identidade_set":
+            # A coluna só existe a partir da migration 117 (spec docs/spec-
+            # agentes-datastage.md, F1) — degrada com 503 nomeado em vez de
+            # 500 cru se o deploy aplicou a API/dist antes da migration
+            # (etapa 6c do deploy.sh vem DEPOIS da UI subir), mesmo padrão de
+            # `user_list` (abaixo) e de `MaestroIndisponivel` (services/maestro.py).
+            cur.execute("SELECT COL_LENGTH('dbo.etl_usuario', 'identidade_gateway')")
+            if cur.fetchone()[0] is None:
+                cur.close(); conn.close()
+                raise HTTPException(status_code=503,
+                                    detail="Migration 117 ainda não aplicada — identidade de "
+                                           "gateway indisponível (etapa 6c do deploy)")
+            mat = (body.get("matricula") or "").strip().upper()
+            if not mat:
+                raise HTTPException(status_code=422, detail="matricula obrigatória")
+            cur.execute("SELECT 1 FROM dbo.etl_usuario WHERE matricula = ?", [mat])
+            if not cur.fetchone():
+                raise HTTPException(status_code=422, detail=f"Usuário {mat} não cadastrado")
+            valor_raw = body.get("identidade_gateway")
+            valor = str(valor_raw).strip() if valor_raw is not None else ""
+            if not valor:
+                cur.execute(
+                    "UPDATE dbo.etl_usuario SET identidade_gateway = NULL, "
+                    "       identidade_gateway_por = ?, identidade_gateway_em = GETDATE() "
+                    "WHERE matricula = ?", [requested_by, mat])
+                conn.commit(); cur.close(); conn.close()
+                svc_agentes.invalidar_sonda(mat)
+                return {"sucesso": True, "mensagem": f"Identidade de gateway de {mat} removida "
+                                                      f"(volta a usar o padrão cvp-<matrícula>)."}
+            if not svc_agentes.RE_IDENTIDADE_GATEWAY.match(valor):
+                raise HTTPException(status_code=422,
+                                    detail="identidade_gateway inválida — use só letras, números "
+                                           "e . _ @ -, até 100 caracteres (sem espaço)")
+            cur.execute("SELECT 1 FROM dbo.etl_usuario WHERE identidade_gateway = ? AND matricula <> ?",
+                        [valor, mat])
+            if cur.fetchone():
+                raise HTTPException(status_code=409,
+                                    detail=f"'{valor}' já é a identidade de gateway de outro usuário")
+            cur.execute(
+                "UPDATE dbo.etl_usuario SET identidade_gateway = ?, "
+                "       identidade_gateway_por = ?, identidade_gateway_em = GETDATE() "
+                "WHERE matricula = ?", [valor, requested_by, mat])
+            conn.commit(); cur.close(); conn.close()
+            svc_agentes.invalidar_sonda(mat)
+            return {"sucesso": True, "mensagem": f"Identidade de gateway de {mat} atualizada."}
 
         elif action == "user_delete":
             mat = (body.get("matricula") or "").strip().upper()
@@ -533,10 +593,23 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                 raise HTTPException(status_code=422, detail="matricula obrigatória")
             if not isinstance(permissoes, list):
                 raise HTTPException(status_code=422, detail="permissoes deve ser uma lista")
-            cur.execute("SELECT 1 FROM dbo.etl_usuario WHERE matricula = ?", [mat])
-            if not cur.fetchone():
+            cur.execute("SELECT perfil_nome FROM dbo.etl_usuario WHERE matricula = ?", [mat])
+            row_perfil = cur.fetchone()
+            if not row_perfil:
                 raise HTTPException(status_code=422,
                                     detail=f"Usuário {mat} não cadastrado (adicione-o antes)")
+            # Cada agente é concedido usuário a usuário, mas só a quem o
+            # PERFIL já elegibiliza (services/agentes.CATALOGO) — conceder a
+            # um perfil que require_agente rejeitaria seria dar ao usuário um
+            # checkbox marcado que nunca funciona (risco 26 da spec).
+            perfil_alvo = row_perfil[0]
+            for rec in permissoes:
+                ag = svc_agentes.agente_do_recurso(str(rec).strip())
+                if ag is not None and not svc_agentes.elegivel_por_perfil(ag["id"], perfil_alvo):
+                    raise HTTPException(status_code=422, detail={
+                        "code": "agente_perfil_nao_elegivel",
+                        "message": (f"Perfil '{perfil_alvo}' não pode receber '{rec}' "
+                                    f"(agente '{ag['nome']}' — só {', '.join(ag['perfis_elegiveis'])})")})
             cur.execute("DELETE FROM dbo.etl_usuario_permissao WHERE matricula = ?", [mat])
             recursos = sorted({str(r).strip() for r in permissoes if str(r).strip()})
             for rec in recursos:
