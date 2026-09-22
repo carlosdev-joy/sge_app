@@ -237,6 +237,43 @@ def _redigir_linha(linha: str) -> str:
     # inseguro, masca a linha inteira. Se não (só pontuação estrutural
     # neutra: aspas, `{`, espaços, vírgulas, ou início de linha), é
     # seguro: nada além de sintaxe existe antes do identificador local.
+    #
+    # Achado real da 14ª rodada — LIMITE ESTRUTURAL, não mais um bug
+    # pontual corrigível (por isso documentado aqui, e não "corrigido"
+    # com mais uma condição): a varredura acima não consegue diferenciar
+    # dois casos que têm a MESMA forma sintática — uma sequência ÚNICA e
+    # ININTERRUPTA de caracteres `_CHAR_MESMO_TOKEN` contendo a keyword
+    # em algum ponto interno:
+    #   (a) um valor ALEATÓRIO que por acaso soa como um nome de campo
+    #       (`xY9zSecretKeyABC123` — já era o limite documentado desde
+    #       a 11ª/12ª rodadas);
+    #   (b) um valor REAL colado, SEM NENHUM separador (nem espaço, nem
+    #       pontuação — só `_`/`-`/nada), a um nome de campo DIFERENTE
+    #       que contém a keyword (`Tr0ub4dor3-refresh_token_interval`,
+    #       `Tr0ub4dor3_refresh_token_interval`,
+    #       `Tr0ub4dor3refresh_token_interval`) — o valor `Tr0ub4dor3`
+    #       não contém keyword nenhuma, mas o walk-back não para nele:
+    #       para o algoritmo, é tudo UM identificador só.
+    # Diferenciar (a)/(b) exigiria uma heurística SEMÂNTICA (dicionário
+    # de nomes de campo conhecidos, comprimento típico, entropia,
+    # mistura de maiúsculas/case) — não mais uma decisão sintática sobre
+    # QUE caracteres aparecem. As 13 rodadas anteriores desta função já
+    # mostraram, repetidamente, que toda tentativa de "ser mais esperto"
+    # substituindo um limite aceito por uma heurística nova introduziu
+    # um bug DIFERENTE (rodadas 4→5→6→7, e de novo 11→12→13). Continuar
+    # nessa direção arrisca reabrir over-masking (quebrar `AUTH_TOKEN`/
+    # JSON de novo) sem eliminar a ambiguidade de fato — só trocar QUAL
+    # padrão específico ela afeta.
+    #
+    # Risco aceito, por quê: formatos de log/relatório LEGÍVEIS — o que
+    # inclui todo formato conhecido de `dsjob -report`/`-lparams`/
+    # `-jobinfo`, mesmo com D-07 ainda aberta — colam campo e valor SEM
+    # NENHUM separador extremamente raramente (nem espaço, nem `:`,
+    # nem `=`, nem pontuação nenhuma torna o texto ilegível até para um
+    # humano). O caso (b) documentado aqui generaliza o limite já
+    # aceito (a) — mesma causa raiz, mesma superfície de risco
+    # (indistinguibilidade sintática), tratado com o MESMO nível de
+    # aceitação, não como um novo bug a perseguir.
     i = m.start()
     while i > 0 and linha[i - 1] in _CHAR_MESMO_TOKEN:
         i -= 1

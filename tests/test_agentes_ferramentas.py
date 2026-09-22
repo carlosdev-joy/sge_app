@@ -402,6 +402,30 @@ def test_redigir_limite_conhecido_keyword_como_substring_do_proprio_valor_colado
     assert af._MASCARA in saida
 
 
+# Achado real da 14ª rodada da revisão adversarial da F2b: GENERALIZA o
+# limite acima (não é um bug novo — é a MESMA ambiguidade sintática).
+# A correção da 13ª rodada anda para trás por `_CHAR_MESMO_TOKEN` até
+# achar onde o identificador local começa — mas não sabe diferenciar
+# "um valor aleatório que soa como nome de campo" (limite já aceito)
+# de "um valor REAL colado, sem nenhum separador (`_`/`-`/nada), a um
+# nome de campo DIFERENTE que contém a keyword": pra quem só olha a
+# FORMA dos caracteres, as duas situações são idênticas — uma única
+# sequência ininterrupta de letras/dígitos/`_`/`-` com a keyword em
+# algum ponto interno. Risco aceito (ver comentário em
+# `_redigir_linha`): exige um formato de log ilegível até para humano
+# (campo e valor colados sem NENHUM separador), incompatível com todo
+# formato conhecido de saída de CLI/relatório.
+@pytest.mark.parametrize("texto,segredo", [
+    ("Tr0ub4dor3-refresh_token_interval: 30", "Tr0ub4dor3"),
+    ("Tr0ub4dor3_refresh_token_interval: 30", "Tr0ub4dor3"),
+    ("Tr0ub4dor3refresh_token_interval: 30", "Tr0ub4dor3"),
+])
+def test_redigir_limite_conhecido_valor_colado_sem_fronteira_a_identificador_diferente(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo in saida  # limite conhecido (14ª rodada), não uma garantia de segurança
+    assert af._MASCARA in saida
+
+
 # Achado real da 12ª rodada da revisão adversarial da F2b: a proteção da
 # 11ª rodada ("valor antes da keyword não vaza") só tinha sido aplicada
 # ao ramo SEM separador reconhecido (`corte is None`). O ramo COM
