@@ -8,14 +8,19 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
-  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, LifeBuoy, Wrench,
+  Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, LifeBuoy, Wrench, Bot,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 
 // Domínios da navegação, na ordem de exibição (cabeçalho de seção na sidebar).
 // "Operação" (monitorar, diário) separada de "Construção" (cadastrar, dev).
-export type NavGroup = 'Operação' | 'Construção' | 'Governança & Dados' | 'BI' | 'Caixa Seguro' | 'Administração'
-export const NAV_GROUPS: NavGroup[] = ['Operação', 'Construção', 'Governança & Dados', 'BI', 'Caixa Seguro', 'Administração']
+// "Agentes" fica logo antes de "Administração" (decisão do usuário, B-01 de
+// docs/spec-agentes-datastage.md) — item cadastrado na F1 só para o
+// RBAC_RECURSOS/NAV não ficarem órfãos (tests/test_rbac_recursos_admin.py);
+// a página em si (pages/Agentes.tsx) só nasce na F3, então até lá o item
+// não tem PAGE_ELEMENT em App.tsx e clicar nele cai no catch-all (HomeRedirect).
+export type NavGroup = 'Operação' | 'Construção' | 'Governança & Dados' | 'BI' | 'Caixa Seguro' | 'Agentes' | 'Administração'
+export const NAV_GROUPS: NavGroup[] = ['Operação', 'Construção', 'Governança & Dados', 'BI', 'Caixa Seguro', 'Agentes', 'Administração']
 
 export interface NavItem {
   to: string          // rota React
@@ -55,6 +60,10 @@ export const NAV: NavItem[] = [
   // Seção Caixa Seguro (src/caixa) — telas nativas em rotas próprias no
   // App.tsx (F9 da migração); navegação interna pelo MenuButton.
   { to: '/caixa-seguro',  label: 'Busca & Vendas',     icon: ShieldCheck,     group: 'Caixa Seguro',       perm: 'tela_caixa_seguro' },
+  // Seletor de agentes de IA (spec docs/spec-agentes-datastage.md). Cada
+  // agente é liberado usuário a usuário, pelo admin — a tela em si segue a
+  // regra normal de tela_* (perfil ∪ overrides), sem bypass especial.
+  { to: '/agentes',       label: 'Agentes',            icon: Bot,             group: 'Agentes',            perm: 'tela_agentes' },
   { to: '/admin',         label: 'Admin',              icon: Settings,        group: 'Administração',      perm: 'tela_admin' },
 ]
 
