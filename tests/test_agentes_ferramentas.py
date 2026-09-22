@@ -174,6 +174,39 @@ def test_redigir_snake_case_preserva_o_prefixo_do_nome():
     assert saida.startswith('"AUTH_TOKEN":')  # nome do campo continua legível
 
 
+# Achado real da 5ª rodada da revisão adversarial da F2b: um quantificador
+# SEM limite (`[A-Za-z0-9_-]*`) logo antes de um separador OBRIGATÓRIO
+# (`[:=]` em `_RE_SEGREDO`) é backtracking catastrófico — quando não há
+# `:`/`=` no resto da linha, o motor consome o sufixo até o fim, falha, e
+# recua caractere a caractere: O(tamanho da linha) por TENTATIVA, repetido
+# a cada ocorrência da keyword — O(n²) total. Medido: uma linha de 44 000
+# caracteres levava ~5s; a saída REAL do `dsjob` pode chegar a 200 000
+# caracteres (`run_dsjob`/`ssh_datastage.py` já trunca nesse teto) — o
+# suficiente para travar o event loop de um worker da API por dezenas de
+# segundos, já que `ferramenta_dsjob` chama `redigir()` de forma SÍNCRONA
+# (ao contrário de `run_dsjob`, que roda em thread por este mesmo motivo).
+# Corrigido limitando o sufixo a `{0,40}` (generoso para qualquer nome de
+# parâmetro real) — mesmo padrão de `test_lineage_isx_engine.py::
+# test_cdata_e_mainloop_nao_sao_quadraticos`.
+def test_redigir_nao_e_quadratico_em_linha_longa_sem_separador():
+    import time
+    hostil = "AUTH_TOKEN_" * 20000  # ~220 000 chars, sem ':'/'=' nenhum
+    t0 = time.perf_counter()
+    af.redigir(hostil)
+    assert time.perf_counter() - t0 < 2.0
+
+
+def test_redigir_nao_e_quadratico_saida_real_de_dsjob_200k():
+    """O teto exato que `run_dsjob` já trunca em produção
+    (`ssh_datastage.py`, `out[:200000]`) — mesmo tamanho, pior caso
+    plausível (muitas ocorrências de keyword, sem separador)."""
+    import time
+    hostil = ("token_" * 33334)[:200000]
+    t0 = time.perf_counter()
+    af.redigir(hostil)
+    assert time.perf_counter() - t0 < 2.0
+
+
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
 
 def test_truncar_texto_curto_nao_muda():

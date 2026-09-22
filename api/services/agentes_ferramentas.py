@@ -107,23 +107,38 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # que o exige logo em seguida; testado e corrigido depois de uma 1ª
 # tentativa com `(?:$|[^a-zA-Z])` consumidor que quebrava esse caso).
 #
-# Depois do delimitador de FIM da keyword, um SUFIXO livre
-# (`[A-Za-z0-9_-]*`) é aceito até o separador — cobre nome com sufixo
-# depois da keyword (`API_KEY_PROD: ...`, a keyword é só "API_KEY", o
-# "_PROD" vem depois). Isso NÃO reabre a brecha de "TOKENIZER" (que o
-# `\b` original também evitava, e a comparação direta já testou): o
-# delimitador de FIM já EXIGE que a keyword termine numa fronteira válida
-# antes desse sufixo livre começar — "TOKENIZER" nunca chega a satisfazer
-# esse delimitador (depois de "token" vem "i", uma letra), então a
-# tentativa de casar a partir dali já falha, antes mesmo do sufixo entrar
-# em jogo.
+# Depois do delimitador de FIM da keyword, um SUFIXO até o separador —
+# cobre nome com sufixo depois da keyword (`API_KEY_PROD: ...`, a keyword
+# é só "API_KEY", o "_PROD" vem depois). Isso NÃO reabre a brecha de
+# "TOKENIZER" (que o `\b` original também evitava, e a comparação direta
+# já testou): o delimitador de FIM já EXIGE que a keyword termine numa
+# fronteira válida antes desse sufixo começar — "TOKENIZER" nunca chega a
+# satisfazer esse delimitador (depois de "token" vem "i", uma letra),
+# então a tentativa de casar a partir dali já falha, antes mesmo do
+# sufixo entrar em jogo.
+#
+# O sufixo é LIMITADO (`{0,40}`, nunca `*`) — achado real da 5ª rodada da
+# revisão adversarial da F2b: um quantificador SEM limite, logo antes de
+# um separador OBRIGATÓRIO (`[:=]` em `_RE_SEGREDO`), é uma receita clássica
+# de backtracking catastrófico — quando não há `:`/`=` no resto da linha,
+# o motor consome o sufixo até o fim (greedy), falha no separador, e
+# recua caractere a caractere: O(tamanho da linha) por TENTATIVA, repetido
+# a cada ocorrência da keyword na mesma linha — O(n²) total. Medido:
+# `redigir("AUTH_TOKEN_" * 4000)` (44 000 chars) levava ~5s; uma entrada
+# maior (a saída real do `dsjob`, truncada em 200 000 chars por
+# `run_dsjob`) travaria o event loop do worker da API por dezenas de
+# segundos — `re.sub` não cede controle ao loop, e `ferramenta_dsjob`
+# chama `redigir()` de forma SÍNCRONA (diferente de `run_dsjob`, que já
+# roda em thread por este mesmo motivo). 40 caracteres é generoso o
+# bastante para qualquer nome de parâmetro real, e limita o backtracking
+# a no máximo 40 tentativas por ocorrência — de volta a tempo linear.
 _VALOR = r"[^\n]*"
 _RE_SEGREDO = re.compile(
     r"(?im)((?:^|[^a-zA-Z])[\"']?(?:senha|password|pwd|secret|token|api[_-]?key)"
-    r"(?=$|[^a-zA-Z])[A-Za-z0-9_-]*[\"']?\s*[:=]\s*)"
+    r"(?=$|[^a-zA-Z])[A-Za-z0-9_-]{0,40}[\"']?\s*[:=]\s*)"
     r"(" + _VALOR + r")")
 _RE_ENCRYPTED = re.compile(
-    r"(?im)((?:^|[^a-zA-Z])[\"']?Encrypted(?=$|[^a-zA-Z])[A-Za-z0-9_-]*[\"']?\s*[:=]?\s*)"
+    r"(?im)((?:^|[^a-zA-Z])[\"']?Encrypted(?=$|[^a-zA-Z])[A-Za-z0-9_-]{0,40}[\"']?\s*[:=]?\s*)"
     r"(" + _VALOR + r")")
 _MASCARA = "••••"
 
