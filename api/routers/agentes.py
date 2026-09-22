@@ -1,33 +1,45 @@
 """api/routers/agentes.py — tela Agentes: catálogo, status do gateway por
-usuário e config do admin (F1 da spec docs/spec-agentes-datastage.md).
+usuário, config do admin e a conversa com o agente DataStage (F1+F2 da spec
+docs/spec-agentes-datastage.md).
 
-  GET  /agentes/catalogo        agentes que o usuário logado pode abrir
-  GET  /agentes/status          estado da sonda de cadastro no gateway (cacheado)
-  GET  /agentes/admin/config    config de Agentes (admin)
-  POST /agentes/admin/config    grava config de Agentes (admin)
+  GET  /agentes/catalogo               agentes que o usuário logado pode abrir
+  GET  /agentes/status                 estado da sonda de cadastro no gateway (cacheado)
+  GET  /agentes/admin/config           config de Agentes (admin)
+  POST /agentes/admin/config           grava config de Agentes (admin)
+  POST /agentes/datastage/conversar    uma rodada com o agente DataStage (F2)
 
 `tela_agentes` é checada por `require_perm` puro — como qualquer outra tela
 (perfil ∪ overrides). O que É especial é o acesso a CADA AGENTE
-(`agente_datastage`, `agente_curador`): ver `services/agentes.require_agente`,
-usado pelos endpoints de conversa que chegam na F2 — este arquivo só
-distribui o catálogo, ainda sem `/agentes/{id}/conversar`.
+(`agente_datastage`, `agente_curador`): ver `services/agentes.require_agente`.
+
+A conversa persiste em `etl_agente_conversa`/`etl_agente_mensagem` (migration
+117), mas NÃO segura uma conexão de banco durante a rodada com o modelo — a
+orquestração (`services.agentes.conversar`) abre conexões curtas, uma por
+ferramenta, e só este router mantém uma conexão de cada vez (antes e depois
+da rodada), nunca durante.
 """
 from __future__ import annotations
 
+import json
 import re
+import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from db import get_db_conn
 from deps import get_admin_user, require_perm
 from services import agentes as svc
+from services import agentes_ferramentas as af
 from services import ia_provedor
 
 router = APIRouter()
 
 _require_tela = require_perm("tela_agentes")
+_require_datastage = svc.require_agente(svc.AGENTE_DATASTAGE)
 
 _RE_CAMPO = re.compile(r"^(header|body):.+$")
+_RE_CONVERSA_ID = re.compile(r"^[A-Za-z0-9_-]{8,36}$")
+_MAX_MENSAGEM = 4000  # mesmo teto do Maestro (MAX_MENSAGEM em maestro.py)
 
 
 def _abrir():
@@ -176,3 +188,106 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
         _fechar(conn, cur)
         raise
     return {"sucesso": True, "mensagem": "Configuração de Agentes salva."}
+
+
+@router.post("/agentes/datastage/conversar", tags=["agentes"])
+async def agentes_datastage_conversar(body: dict = Body(default={}),
+                                      user: dict = Depends(_require_datastage)):
+    """Uma rodada com o agente DataStage. `require_agente` já garante:
+    admin passa sempre; não-admin exige perfil `desenvolvedor` e o grant em
+    `permissoes_extra` (nunca o que vier só do perfil)."""
+    mensagem = str(body.get("mensagem") or "").strip()
+    if not mensagem:
+        raise HTTPException(status_code=422, detail={
+            "code": "mensagem_obrigatoria", "message": "mensagem é obrigatória"})
+    if len(mensagem) > _MAX_MENSAGEM:
+        raise HTTPException(status_code=422, detail={
+            "code": "mensagem_longa", "message": f"mensagem excede {_MAX_MENSAGEM} caracteres"})
+    conversa_id = str(body.get("conversa_id") or "").strip()
+    if conversa_id and not _RE_CONVERSA_ID.match(conversa_id):
+        raise HTTPException(status_code=422, detail={
+            "code": "conversa_id_invalido",
+            "message": "conversa_id inválido (8 a 36 caracteres: letras, números, - e _)"})
+    if not conversa_id:
+        conversa_id = str(uuid.uuid4())
+    # A identidade é SEMPRE a da sessão — nunca um valor do corpo. Uma
+    # `matricula` forjada no corpo é simplesmente ignorada (critério 6 da F2).
+    matricula = user["matricula"]
+
+    conn, cur = _abrir()
+    try:
+        agentes_cfg = svc.carregar_config(cur)
+        if agentes_cfg.get("agentes_enabled") != "1" or agentes_cfg.get("agente_datastage_enabled") != "1":
+            raise HTTPException(status_code=503, detail={
+                "code": "agente_desligado", "message": "Agente DataStage desligado"})
+        cur.execute("SELECT projeto, matricula FROM dbo.etl_agente_conversa WHERE conversa_id = ?",
+                    [conversa_id])
+        row = cur.fetchone()
+        if row is not None and row[1] != matricula:
+            # 404, não 403: uma conversa alheia não deve nem confirmar que existe.
+            raise HTTPException(status_code=404, detail={
+                "code": "conversa_nao_encontrada", "message": "conversa não encontrada"})
+        if row is None:
+            cur.execute(
+                "INSERT INTO dbo.etl_agente_conversa (conversa_id, agente, matricula, titulo) "
+                "VALUES (?, ?, ?, ?)",
+                [conversa_id, svc.AGENTE_DATASTAGE, matricula, mensagem[:200]])
+            projeto_atual = None
+            historico: list[dict] = []
+        else:
+            projeto_atual = row[0]
+            cur.execute(
+                "SELECT papel, conteudo FROM dbo.etl_agente_mensagem "
+                "WHERE conversa_id = ? ORDER BY id", [conversa_id])
+            historico = [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
+        provedor_cfg = ia_provedor.load_config(cur)
+        cadastro = None
+        try:
+            cur.execute("SELECT identidade_gateway FROM dbo.etl_usuario WHERE matricula = ?", [matricula])
+            row_id = cur.fetchone()
+            cadastro = row_id[0] if row_id else None
+        except Exception:
+            cadastro = None  # coluna pode não existir ainda (migration 117) — cai no padrão
+        conn.commit()
+    except HTTPException:
+        _fechar(conn, cur)
+        raise
+    else:
+        _fechar(conn, cur)
+
+    identidade = svc.identidade_gateway(matricula, cadastro)
+    campo = agentes_cfg.get("agentes_gateway_campo_usuario") or None
+    try:
+        ssh_max = int(agentes_cfg.get("agentes_ssh_max") or 10)
+    except (TypeError, ValueError):
+        ssh_max = 10
+
+    # Redigida ANTES de entrar no histórico que vai ao modelo e ANTES de
+    # qualquer gravação — um segredo digitado no chat não chega a nenhum dos dois.
+    mensagem_redigida = af.redigir(mensagem)
+    resultado = await svc.conversar(
+        _abrir, mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
+        projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
+        identidade=identidade, campo_identidade=campo, ssh_max=ssh_max)
+
+    texto_redigido = af.redigir(resultado.get("texto") or "")
+    conn, cur = _abrir()
+    try:
+        cur.execute(
+            "INSERT INTO dbo.etl_agente_mensagem (conversa_id, papel, conteudo) VALUES (?, ?, ?)",
+            [conversa_id, "user", mensagem_redigida])
+        cur.execute(
+            "INSERT INTO dbo.etl_agente_mensagem "
+            "(conversa_id, papel, conteudo, status, artefatos_json) VALUES (?, ?, ?, ?, ?)",
+            [conversa_id, "assistant", texto_redigido, resultado.get("status"),
+             json.dumps(resultado.get("artefatos") or [], ensure_ascii=False)])
+        cur.execute(
+            "UPDATE dbo.etl_agente_conversa SET projeto = ?, ultima_msg_em = GETDATE() "
+            "WHERE conversa_id = ?", [resultado.get("projeto"), conversa_id])
+        conn.commit()
+    finally:
+        _fechar(conn, cur)
+
+    return {"conversa_id": conversa_id, "status": resultado.get("status"),
+            "texto": texto_redigido, "projeto": resultado.get("projeto"),
+            "artefatos": resultado.get("artefatos") or []}

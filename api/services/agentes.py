@@ -21,15 +21,26 @@ O que mora aqui:
 `tela_agentes` (a tela em si) NÃO tem tratamento especial aqui: é checada
 direto por `require_perm('tela_agentes')` nos routers, como qualquer outra
 tela — só os AGENTES (`agente_*`) precisam desta política extra.
+
+F2 (a mesma spec) acrescenta a ORQUESTRAÇÃO da rodada — `conversar()`: pede
+ferramenta ao modelo (bloco ```json, mesma régua do Maestro —
+`extrair_pedido_ferramenta`), executa pela allowlist de
+`agentes_ferramentas`, nunca deixa `base`/`dsjob` rodar sem o PROJETO
+DataStage resolvido na conversa, e nunca estoura o orçamento de tempo da
+rodada (`ORCAMENTO_AGENTE_S`, abaixo do `proxy_read_timeout` do nginx).
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 
 from fastapi import Depends, HTTPException
 
 from deps import PERM_ADMIN, get_current_user
+from services import agentes_ferramentas as af
+from services import ia_provedor
+from services.ssh_datastage import DsConsoleError
 
 # ── Catálogo (código, não tabela) ───────────────────────────────────────────
 
@@ -226,3 +237,235 @@ def invalidar_sonda(matricula: str) -> None:
     `user_identidade_set`, admin.py): o estado cacheado descrevia o
     identificador ANTIGO."""
     _sonda_cache.pop(matricula, None)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Orquestração da rodada (F2) — o agente pede ferramenta, o backend decide
+# ══════════════════════════════════════════════════════════════════════════
+
+_RE_BLOCO_JSON = re.compile(r"```[ \t]*(?:json)?[ \t]*\n?(\{(?:(?!```).)*\})\s*```", re.S | re.I)
+
+# Abaixo do proxy_read_timeout (300 s na rota /orquestra/, D-14 ✅) — margem
+# para a resposta HTTP em si voltar antes do nginx desistir.
+ORCAMENTO_AGENTE_S = 240
+MAX_RODADAS_FERRAMENTA = 3
+MAX_HISTORICO = 12  # mesmo teto do Maestro (MAX_HISTORICO em maestro.py)
+
+
+def extrair_pedido_ferramenta(texto: str) -> tuple[str, dict | None]:
+    """(texto sem o bloco, pedido) — o ÚLTIMO bloco ```json que tem a chave
+    `ferramenta`. Mesmo padrão de `maestro.extrair_proposta`: sem bloco
+    válido, o modelo só respondeu (`pedido` None)."""
+    texto = texto or ""
+    achado = None
+    for m in _RE_BLOCO_JSON.finditer(texto):
+        try:
+            obj = json.loads(m.group(1))
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and "ferramenta" in obj:
+            achado = (m, obj)
+    if not achado:
+        return texto.strip(), None
+    m, obj = achado
+    limpo = (texto[:m.start()] + texto[m.end():]).strip()
+    return limpo, obj
+
+
+def _prompt_sistema(projeto: str | None) -> str:
+    """Gerado do VOCABULÁRIO das ferramentas (allowlist de
+    `agentes_ferramentas`), não digitado à mão duas vezes — o mesmo
+    anti-drift do Maestro: se a allowlist de `dsjob` mudar, o prompt muda
+    sozinho."""
+    comandos = ", ".join(af.ALLOWLIST_DSJOB)
+    if projeto:
+        projeto_txt = f"O projeto DataStage desta conversa já está resolvido: {projeto}."
+    else:
+        projeto_txt = (
+            "Esta conversa AINDA NÃO tem um projeto DataStage resolvido. Antes de usar "
+            "'base' ou 'dsjob', pergunte ao usuário qual é o projeto (ou o nome de um "
+            "pipeline/job do Orquestra) e peça a ferramenta 'resolver_projeto' assim que "
+            "tiver um nome candidato — nunca tente 'base'/'dsjob' sem isso, o backend recusa.")
+    return f"""Você é o agente de mapeamento de processos DataStage do Orquestra.
+
+Sua única função: explicar fluxos DataStage existentes — jobs, tabelas, campos,
+parâmetros e lineage. Você NUNCA altera o DataStage: não importa, não compila,
+não executa, não para nem apaga job nenhum, e não roda comando fora das
+ferramentas abaixo — só lê.
+
+{projeto_txt}
+
+Para usar uma ferramenta, termine sua resposta com UM bloco, e nada depois dele:
+```json
+{{"ferramenta": "NOME", "args": {{...}}}}
+```
+
+Ferramentas disponíveis:
+- resolver_projeto {{"projeto": "NOME"}} OU {{"pipeline_name": "...", "job_name": "..."}} —
+  valida contra o que o Orquestra já conhece (nunca toca o servidor). Se o usuário citou um
+  pipeline/job do PRÓPRIO Orquestra, use pipeline_name+job_name — resolve sem perguntar mais
+  nada. Se a resposta vier com estado "quase" (nome parecido, mas com caixa diferente —
+  DataStage é sensível a maiúsculas/minúsculas), CONFIRME com o usuário antes de continuar;
+  só chame de novo com o nome exato sugerido depois que o usuário confirmar.
+- base {{"job_name": "NOME"}} — o que o Orquestra JÁ SABE sobre o job (mais rápido; tente
+  sempre primeiro, antes de dsjob). A resposta traz "idade_dias" do dado — se vier None ou
+  grande (dado antigo), considere usar dsjob para conferir ao vivo antes de responder algo
+  que pode ter mudado.
+- dsjob {{"comando": "{comandos}", "job_name": "NOME"}} — lê o job AO VIVO no servidor
+  DataStage (job_name pode ser omitido só em ljobs). Só use se 'base' não bastar ou o dado
+  estiver velho.
+
+Se não precisar de nenhuma ferramenta, responda normalmente, sem bloco nenhum.
+"""
+
+
+def _com_cursor(abrir_conn, fn):
+    """Abre uma conexão CURTA só para `fn(cur)`, fecha antes de devolver —
+    mesmo espírito do Maestro ("tudo que é banco ANTES do provedor, numa
+    conexão só e fechada antes de esperar a rede"), aqui repetido por
+    RODADA em vez de uma vez só: a orquestração pode levar até
+    `ORCAMENTO_AGENTE_S` com várias idas ao gateway, e segurar uma conexão
+    de banco aberta esse tempo todo esgotaria o pool sob concorrência (a
+    mesma classe de problema do risco 9 da spec, só que no SQL Server em
+    vez do servidor DataStage)."""
+    conn, cur = abrir_conn()
+    try:
+        return fn(cur)
+    finally:
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        for x in (cur, conn):
+            try:
+                x.close()
+            except Exception:
+                pass
+
+
+async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: str | None,
+                               ssh_max: int, espera_max_s: float) -> tuple[dict, str | None]:
+    """Executa UMA ferramenta pedida pelo modelo, sempre pela allowlist —
+    NUNCA deixa `base`/`dsjob` rodar sem `projeto` resolvido (a guarda do
+    risco 28). `abrir_conn` é uma fábrica `() -> (conn, cur)`: cada consulta
+    de banco usa sua PRÓPRIA conexão curta (ver `_com_cursor`), nunca uma
+    guardada pela rodada inteira. Nunca levanta: erro vira dado nomeado que
+    volta ao modelo como conversa, não como exceção. Devolve
+    (dado-para-o-modelo, projeto novo-ou-None)."""
+    if nome == "resolver_projeto":
+        candidato = str(args.get("projeto") or "").strip() or None
+        pipeline_name = str(args.get("pipeline_name") or "").strip() or None
+        job_name_pipeline = str(args.get("job_name") or "").strip() or None
+        r = _com_cursor(abrir_conn, lambda cur: af.resolver_projeto(
+            cur, candidato, pipeline_name=pipeline_name, job_name=job_name_pipeline))
+        if r["estado"] == "resolvido":
+            extra = " (tem arquivo .dsx disponível)" if r["tem_dsx"] else ""
+            return {"texto": f"Projeto resolvido: {r['projeto']}{extra}."}, r["projeto"]
+        if r["estado"] == "quase":
+            # SÓ sugestão — nunca resolve sozinho aqui (critério 11 da F2).
+            # O modelo confirma com o usuário e chama de novo com a grafia exata.
+            return ({"texto": f"'{candidato}' é parecido com '{r['sugerido']}' (o DataStage é "
+                              f"sensível a maiúsculas/minúsculas). Confirme com o usuário e, se for "
+                              f"esse mesmo, peça resolver_projeto de novo com \"{r['sugerido']}\" "
+                              f"exatamente assim."}, None)
+        sugestoes = ", ".join(r["sugestoes"]) or "nenhuma sugestão disponível"
+        alvo = candidato or f"{pipeline_name}/{job_name_pipeline}" if pipeline_name else "(nenhum)"
+        return ({"texto": f"Não reconheço o projeto '{alvo}'. "
+                          f"Projetos conhecidos: {sugestoes}."}, None)
+
+    if nome not in ("base", "dsjob"):
+        return {"texto": f"Ferramenta '{nome}' não existe — use resolver_projeto, base ou dsjob."}, None
+
+    if not projeto:
+        return ({"texto": "Ainda não sei o projeto DataStage desta conversa — "
+                          "peça a ferramenta 'resolver_projeto' primeiro."}, None)
+
+    job_name = str(args.get("job_name") or "").strip() or None
+
+    if nome == "base":
+        if not job_name:
+            return {"texto": "A ferramenta 'base' exige job_name."}, None
+        r = _com_cursor(abrir_conn, lambda cur: af.ferramenta_base(cur, projeto, job_name))
+        if not r.get("encontrado"):
+            return {"texto": f"Nada na base sobre o job '{job_name}' do projeto '{projeto}'."}, None
+        return {"texto": json.dumps(r, ensure_ascii=False, default=str)}, None
+
+    # dsjob — não toca banco nenhum (só o servidor DataStage, via SSH).
+    comando = str(args.get("comando") or "").strip()
+    try:
+        r = await af.ferramenta_dsjob(comando, projeto, job_name,
+                                      teto_sessoes=ssh_max, espera_max_s=espera_max_s)
+    except (af.ServidorOcupado, DsConsoleError) as e:
+        return {"texto": str(e)}, None
+    except Exception as e:  # SSH/rede: nunca derruba a conversa
+        return {"texto": f"Falha ao consultar o DataStage ({type(e).__name__})."}, None
+    if r["exit_code"] != 0:
+        erro_redigido = af.redigir((r.get("stderr") or "")[:1000])
+        return {"texto": f"dsjob {comando} falhou (código {r['exit_code']}): {erro_redigido}"}, None
+    return {"texto": r["saida_redigida"]}, None
+
+
+async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | None,
+                    provedor_cfg: dict, identidade: str | None, campo_identidade: str | None,
+                    ssh_max: int) -> dict:
+    """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
+    (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
+    allowlist, e devolve a resposta final. Controla o orçamento de tempo
+    por RELÓGIO, não por contagem — um gateway lento consome o mesmo
+    orçamento que uma ferramenta lenta (critério 8 da F2).
+
+    Nunca levanta por conta do provedor/ferramenta: erro vira `status`
+    nomeado com uma mensagem para o usuário, sempre 200 para quem chamou."""
+    t0 = time.monotonic()
+
+    def _resta() -> float:
+        return ORCAMENTO_AGENTE_S - (time.monotonic() - t0)
+
+    historico = list(mensagens[-MAX_HISTORICO:])
+    projeto = projeto_atual
+    artefatos: list[dict] = []
+
+    for rodada in range(MAX_RODADAS_FERRAMENTA + 1):
+        if _resta() <= 5:
+            return {"status": "tempo_esgotado", "projeto": projeto, "artefatos": artefatos,
+                    "texto": "O tempo desta pergunta esgotou — tente de novo, ou peça algo mais direto."}
+        sistema = _prompt_sistema(projeto)
+        try:
+            resposta, modelo = await ia_provedor.chat_conversa(
+                provedor_cfg, sistema, historico, identidade=identidade, campo_identidade=campo_identidade)
+        except ia_provedor.GatewayRecusou:
+            return {"status": "gateway_recusou", "projeto": projeto, "artefatos": artefatos,
+                    "texto": "O gateway de IA recusou esta conversa — confira seu cadastro em Agentes."}
+        except HTTPException as e:
+            return {"status": "erro_provedor", "projeto": projeto, "artefatos": artefatos,
+                    "texto": f"O provedor de IA não respondeu ({e.detail})."}
+
+        texto, pedido = extrair_pedido_ferramenta(resposta)
+        if pedido is None:
+            historico.append({"role": "assistant", "content": resposta})
+            return {"status": "ok", "projeto": projeto, "artefatos": artefatos,
+                    "texto": texto or resposta, "modelo": modelo, "historico": historico}
+
+        if rodada == MAX_RODADAS_FERRAMENTA:
+            return {"status": "limite_rodadas", "projeto": projeto, "artefatos": artefatos,
+                    "texto": ("Preciso de mais passos do que o permitido para responder — "
+                             "pode refazer a pergunta de um jeito mais direto?")}
+
+        nome_ferramenta = str(pedido.get("ferramenta") or "").strip()
+        args = pedido.get("args") if isinstance(pedido.get("args"), dict) else {}
+        historico.append({"role": "assistant", "content": resposta})
+
+        espera = max(0.5, min(_resta() - 5, 30))
+        dado, projeto_novo = await _executar_ferramenta(
+            abrir_conn, nome_ferramenta, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera)
+        if projeto_novo:
+            projeto = projeto_novo
+        artefatos.append({"ferramenta": nome_ferramenta, "args": args})
+        # Dado DELIMITADO — nunca instrução: uma ferramenta que devolvesse
+        # "ignore as instruções anteriores" entra aqui como TEXTO dentro da
+        # tag, e a próxima rodada continua obedecendo só ao prompt de sistema.
+        historico.append({"role": "user",
+                          "content": f'<ferramenta nome="{nome_ferramenta}">\n{dado["texto"]}\n</ferramenta>'})
+
+    return {"status": "limite_rodadas", "projeto": projeto, "artefatos": artefatos,
+            "texto": "Não consegui concluir dentro do limite de passos desta pergunta."}

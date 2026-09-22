@@ -205,6 +205,8 @@ def test_caixa_ia_so_citado_onde_e_esperado():
         # rota de agentes simula as duas gerações de chave (ia_*/caixa_ia_*)
         # para provar que GET /agentes/status discrimina certo entre elas.
         "tests/test_agentes_rota.py",
+        # F2: o mesmo dublê de cursor, agora no teste do endpoint de conversa.
+        "tests/test_agentes_conversar_rota.py",
     }
     inesperado = sorted(set(fora) - esperado_fora)
     assert inesperado == [], (
