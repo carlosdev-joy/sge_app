@@ -472,7 +472,17 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
     r = await af.ferramenta_dsjob(comando, projeto, job_name,
                                   teto_sessoes=ssh_max, espera_max_s=espera_max_s)
     if r["exit_code"] != 0:
-        erro_redigido = af.redigir((r.get("stderr") or "")[:1000])
+        # Achado real da 15ª rodada da revisão adversarial da F2b: a ordem
+        # importa — truncar ANTES de redigir pode cortar fora a keyword
+        # que faria `redigir()` reconhecer a linha como sensível (a
+        # proteção das rodadas 11-14 depende de achar a keyword em
+        # QUALQUER lugar da linha; se ela está depois do corte, nunca é
+        # vista). Um segredo bem no início do stderr, com a menção a
+        # "password"/"token"/etc só depois da posição 1000, passava sem
+        # máscara nenhuma. Todos os OUTROS call sites desta função já
+        # redigem antes de truncar (linhas 467, 593, 610, 638) — só este
+        # tinha a ordem invertida.
+        erro_redigido = af.redigir(r.get("stderr") or "")[:1000]
         return {"texto": f"dsjob {comando} falhou (código {r['exit_code']}): {erro_redigido}"}, None
     return {"texto": r["saida_redigida"]}, None
 
@@ -741,7 +751,16 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         if projeto_novo:
             projeto = projeto_novo
-        artefatos.append({"ferramenta": nome_ferramenta, "args": args})
+        # Achado real da 15ª rodada da revisão adversarial da F2b: `args`
+        # nunca passava por redação, mesmo sendo gravado em
+        # `artefatos_json` e devolvido na resposta da API. O modelo não
+        # tem motivo normal para colocar segredo num ARGUMENTO de
+        # ferramenta (job_name/comando/termo de busca) — mas se algo já
+        # vazou por outro canal, o modelo poderia ecoá-lo aqui (ex.: um
+        # termo de busca em `dsx_consulta`). Amplificador, não fonte
+        # independente — mas a mesma defesa em profundidade do resto do
+        # pipeline vale aqui também.
+        artefatos.append({"ferramenta": nome_ferramenta, "args": af.redigir_estrutura(args)})
         # Dado DELIMITADO — nunca instrução: uma ferramenta que devolvesse
         # "ignore as instruções anteriores" entra aqui como TEXTO dentro da
         # tag, e a próxima rodada continua obedecendo só ao prompt de sistema.
