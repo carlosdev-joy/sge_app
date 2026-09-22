@@ -125,7 +125,21 @@ def redigir(texto: str) -> str:
 _CHAVES_TIPO_PARAMETRO = ("type", "Type", "extendedType", "typeCode")
 _CHAVES_NOME_PARAMETRO = ("name", "Name")
 _CHAVES_VALOR_PARAMETRO = ("default", "defaultValue", "default_value", "value", "Value", "valor")
-_RE_NOME_PARAMETRO_SENSIVEL = re.compile(r"(?i)\b(senha|password|pwd|secret|token|api[_-]?key)\b")
+# `\b` NÃO é delimitador de palavra suficiente aqui: `_` é caractere de
+# PALAVRA em regex (`\w` inclui `_`), então `\btoken\b` não casa "TOKEN"
+# dentro de "AUTH_TOKEN" — e SNAKE_CASE é o padrão dominante de nome de
+# parâmetro em ETL/DataStage (`AUTH_TOKEN`, `API_KEY_PROD`, `DB_PASSWORD`,
+# `MY_API_KEY`...). Achado real da 3ª rodada da revisão adversarial da
+# F2b: a checagem por `name` nunca disparava para esse padrão — só o
+# caminho por `type == "Encrypted"` funcionava, e um parâmetro de token/
+# API key tipado como `String` (comum — nem todo parâmetro de credencial
+# é tipado `Encrypted` no DataStage) vazava o valor sem máscara nenhuma.
+# Corrigido trocando `\b` por `(?:^|[^a-z])`/`(?:$|[^a-z])` — com `(?i)`,
+# `[^a-z]` também exclui A-Z, então SOBRA exatamente "não é letra": `_`,
+# dígito, espaço, início/fim de string — delimitador de verdade para
+# nome de variável, sem depender da convenção de `\w`.
+_RE_NOME_PARAMETRO_SENSIVEL = re.compile(
+    r"(?i)(?:^|[^a-z])(?:senha|password|pwd|secret|token|api[_-]?key)(?:$|[^a-z])")
 
 
 def _parece_parametro_sensivel(d: dict) -> bool:

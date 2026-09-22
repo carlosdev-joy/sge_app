@@ -339,6 +339,40 @@ def test_ferramenta_base_desserializa_parameters_e_flow_json():
     assert "AbCdEf==" not in texto
 
 
+# Achado real da 3ª rodada da revisão adversarial da F2b: `\b` NÃO é
+# delimitador de palavra suficiente para nome de variável — `_` é
+# caractere de PALAVRA em regex (`\w` inclui `_`), então `\btoken\b` não
+# casava "TOKEN" dentro de "AUTH_TOKEN". SNAKE_CASE é o padrão dominante
+# de nome de parâmetro em ETL (`AUTH_TOKEN`, `API_KEY_PROD`,
+# `DB_PASSWORD`...) — um parâmetro de token/API key tipado `String` (não
+# `Encrypted`) vazava o `default` sem máscara nenhuma, porque só o
+# CAMINHO por `type == "Encrypted"` funcionava de verdade.
+@pytest.mark.parametrize("nome", ["AUTH_TOKEN", "API_KEY_PROD", "MY_API_KEY", "DB_PASSWORD", "DB-PASSWORD"])
+def test_parece_parametro_sensivel_reconhece_nome_snake_case(nome):
+    assert af._parece_parametro_sensivel({"name": nome, "type": "String", "default": "x"}) is True
+
+
+@pytest.mark.parametrize("nome", ["PIPELINE_NAME", "JOB_TYPE", "ds_project", "STAGE_NAME"])
+def test_parece_parametro_sensivel_nao_gera_falso_positivo(nome):
+    assert af._parece_parametro_sensivel({"name": nome, "type": "String", "default": "x"}) is False
+
+
+def test_ferramenta_base_token_snake_case_tipado_string_nao_vaza():
+    """Reprodução ponta a ponta do achado: parâmetro de token, tipado
+    `String` (não `Encrypted` — plausível, nem todo parâmetro de
+    credencial é tipado Encrypted no DataStage), com nome SNAKE_CASE."""
+    import json
+    parametros = [{"name": "AUTH_TOKEN", "type": "String",
+                  "default": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.SECRETPAYLOAD",
+                  "description": "token usado na chamada REST"}]
+    linha = ("PIPE_API", "JobChamaApi", "\\Jobs\\Cat", "PARALLEL", "2026-09-01T10:00:00",
+             "descricao", json.dumps(parametros, ensure_ascii=False), "[]", "ok", None, "2026-09-10 10:00:00")
+    r = af.ferramenta_base(_CurBase(linha=linha, stages=1), "BI_CVP", "JobChamaApi")
+    texto = json.dumps(af.redigir_estrutura(r), ensure_ascii=False, default=str)
+    assert "SECRETPAYLOAD" not in texto
+    assert "AUTH_TOKEN" in texto  # nome do parâmetro continua visível
+
+
 def test_ferramenta_base_traz_idade_ja_calculada():
     """Critério 3 da F2: a resposta já informa a idade — o modelo não
     precisa calcular a partir de uma data crua."""
