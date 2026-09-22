@@ -85,6 +85,50 @@ def test_isx_info_do_job_nao_datastage_e_none():
     assert af.isx_info_do_job(cur, "PIPE_VIDA", "JobX") is None
 
 
+# Achado real da revisão adversarial da F2b: `redigir()` (que mascara até o
+# fim da LINHA) aplicado ao JSON compacto (`json.dumps` sem `indent`, uma
+# única linha lógica) do `isx_extrair`/`dsx_consulta` apagava a resposta
+# INTEIRA sempre que qualquer parte dela tivesse uma keyword sensível — o
+# lineage útil (stages, SQL, tabelas) sumia atrás da máscara, não só o
+# segredo. `redigir_estrutura()` aplica `redigir()` por STRING FOLHA, nunca
+# ao JSON inteiro, isolando o dano a cada campo.
+def test_redigir_estrutura_preserva_o_dado_util_ao_redor_do_campo_sensivel():
+    payload = {
+        "gravado": False, "job_name": "JobX", "ds_project": "BI_CVP",
+        "parameters": [
+            {"name": "DB_PASSWORD", "type": "Encrypted", "default": "***", "description": "senha de conexao"},
+            {"name": "OUTRO_PARAM", "type": "string", "default": "valor_normal", "description": ""},
+        ],
+        "flow": {"stages": [{"stage_name": "OracleConnector_1", "database_name": "PRODDB",
+                             "sql_expression": "SELECT * FROM CLIENTES"}]},
+        "last_modified": "2026-09-01T10:00:00",
+    }
+    import json
+    texto = json.dumps(af.redigir_estrutura(payload), ensure_ascii=False, default=str)
+    # o dado de LINEAGE (o que a ferramenta existe para trazer) sobrevive
+    assert "SELECT * FROM CLIENTES" in texto
+    assert "OracleConnector_1" in texto
+    assert "PRODDB" in texto
+    assert "OUTRO_PARAM" in texto and "valor_normal" in texto  # campo NÃO sensível intocado
+
+
+def test_redigir_estrutura_ainda_mascara_segredo_em_texto_livre():
+    payload = {"job_description": "Uses FTP account ftpuser, password: Summer2026!",
+              "outro_campo": "sem nada de sensivel aqui"}
+    import json
+    texto = json.dumps(af.redigir_estrutura(payload), ensure_ascii=False, default=str)
+    assert "Summer2026!" not in texto
+    assert "sem nada de sensivel aqui" in texto  # campo IRMÃO não é afetado
+
+
+def test_redigir_estrutura_recursiva_em_listas_aninhadas():
+    payload = {"stages": [{"a": "ok1"}, {"b": "token: abc123XYZ", "c": "ok2"}]}
+    import json
+    texto = json.dumps(af.redigir_estrutura(payload), ensure_ascii=False, default=str)
+    assert "abc123XYZ" not in texto
+    assert "ok1" in texto and "ok2" in texto
+
+
 # ═══════════ 2. mensagem_erro_lineage ════════════════════════════════════════
 
 class _ISXErrorFake(Exception):

@@ -250,6 +250,38 @@ async def test_saida_de_ferramenta_com_injecao_nao_muda_controle(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_base_com_segredo_em_texto_livre_nao_apaga_o_resto_do_payload(monkeypatch):
+    """Achado real da revisão adversarial da F2b: `redigir()` sobre o JSON
+    INTEIRO serializado (uma linha só, sem indent) apagava a resposta
+    INTEIRA sempre que qualquer campo tivesse uma keyword sensível —
+    inclusive dado útil sem relação nenhuma com o segredo. Corrigido com
+    `redigir_estrutura()` (redige por STRING FOLHA, não o JSON inteiro de
+    uma vez). Importante: o campo útil precisa vir DEPOIS do segredo na
+    ORDEM de serialização do dict (como `stages` vem depois de
+    `job_description` no payload real de `ferramenta_base`) — só assim o
+    teste realmente expõe o over-masking; um campo que vem ANTES sobrevive
+    mesmo com o bug antigo (ver nota da revisão sobre esse mesmo cuidado)."""
+    monkeypatch.setattr(af, "resolver_projeto",
+                        lambda cur, nome=None, **kw: {"estado": "resolvido", "projeto": "BI_CVP",
+                                                      "tem_dsx": False, "sugerido": None, "sugestoes": []})
+    monkeypatch.setattr(af, "ferramenta_base", lambda cur, p, j: {
+        "encontrado": True, "job_name": j,
+        "job_description": "Uses FTP account ftpuser, password: Summer2026!",
+        "stages": 42})
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "resolver_projeto", "args": {"projeto": "BI_CVP"}}\n```',
+        '```json\n{"ferramenta": "base", "args": {"job_name": "JobX"}}\n```',
+        "ok",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "job X"}],
+                        projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    mensagem_ferramenta = provedor.chamadas[2]["historico"][-1]["content"]
+    assert "Summer2026!" not in mensagem_ferramenta  # segredo mascarado
+    assert '"stages": 42' in mensagem_ferramenta  # dado útil DEPOIS do segredo SOBREVIVE
+
+
+@pytest.mark.asyncio
 async def test_ferramenta_desconhecida_nao_quebra_a_rodada(monkeypatch):
     provedor = _Provedor([
         '```json\n{"ferramenta": "apagar_tudo", "args": {}}\n```',

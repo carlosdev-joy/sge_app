@@ -199,6 +199,43 @@ async def test_isx_extrair_fora_de_pipeline_nao_grava(monkeypatch):
 # ═══════════ 5. isx_extrair — allowlist e limite de 2 por pergunta ══════════
 
 @pytest.mark.asyncio
+async def test_isx_extrair_sem_orcamento_suficiente_nao_toca_o_executor(monkeypatch):
+    """Achado real da revisão adversarial da F2b: o timeout EXTERNO do
+    orçamento da rodada podia disparar ANTES do timeout INTERNO do
+    executor ISX (`ISX_TETO_EXTRAIR_S=60`, fixo) — e como o `asyncio.shield`
+    que protege a extração de ser cancelada no meio TAMBÉM a protegia desse
+    timeout externo, ela seguia rodando no `ThreadPoolExecutor`
+    COMPARTILHADO com o botão real da Governança, segurando um worker por
+    até 60s à toa. Corrigido recusando ANTES de submeter ao executor,
+    quando não sobra orçamento para a extração terminar dentro do seu
+    próprio teto — provado aqui com um dublê que EXPLODE se chamado."""
+    def _explode(*a, **k):
+        raise AssertionError("isx_no_executor não deveria ter sido chamado sem orçamento suficiente")
+    monkeypatch.setattr(af, "isx_no_executor", _explode)
+    monkeypatch.setattr(af, "isx_info_do_job", lambda cur, pipeline, job: {
+        "ds_project": "BI_CVP", "job_type": "datastage", "pipeline_name": pipeline, "job_name": job})
+    monkeypatch.setattr(af.lineage_isx, "config", lambda: "CFG-FAKE")
+    monkeypatch.setattr(af.lineage_isx, "cabecalho", lambda cur, p, j: None)
+    monkeypatch.setattr(af.lineage_isx, "conta_linhas", lambda cur, p, j: 0)
+    monkeypatch.setattr(af.lineage_isx, "mapa_tipos", lambda cur: {})
+    # Orçamento pequeno o bastante para passar da checagem "entre rodadas"
+    # (>5s) mas menor que ISX_TETO_EXTRAIR_S(60) + MARGEM_ISX_S(5).
+    monkeypatch.setattr(svc, "ORCAMENTO_AGENTE_S", 10.0)
+
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "isx_extrair", "args": {"pipeline_name": "PIPE_VIDA", "job_name": "JobX"}}\n```',
+        "sem tempo mesmo",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "extrai rápido"}],
+                            projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None,
+                            ssh_max=10, acao_editar=True, matricula="DEV1")
+    assert r["status"] == "ok"  # não levantou AssertionError — o executor nunca foi tocado
+    mensagem_ferramenta = provedor.chamadas[1]["historico"][-1]["content"]
+    assert "tempo" in mensagem_ferramenta.lower()
+
+
+@pytest.mark.asyncio
 async def test_isx_extrair_sem_job_name_e_recusado(monkeypatch):
     provedor = _Provedor([
         '```json\n{"ferramenta": "isx_extrair", "args": {"pipeline_name": "PIPE_VIDA"}}\n```',
@@ -256,6 +293,41 @@ async def test_isx_extrair_limite_de_2_extracoes_por_pergunta(monkeypatch):
 
 
 # ═══════════ dsx_consulta — critérios 7, 9, 11 ═══════════════════════════════
+
+# ═══════════ isx_extrair — truncagem ═════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_isx_extrair_trunca_payload_grande(monkeypatch):
+    """Achado real da revisão adversarial da F2b: `isx_extrair` era a única
+    das 4 ferramentas cuja resposta nunca era truncada — um job com muitos
+    stages/colunas (`montar()` devolve uma linha por stage) entrava sem
+    limite no histórico enviado ao gateway em toda rodada seguinte."""
+    monkeypatch.setattr(af, "isx_info_do_job", lambda cur, pipeline, job: {
+        "ds_project": "BI_CVP", "job_type": "datastage", "pipeline_name": pipeline, "job_name": job})
+    monkeypatch.setattr(af.lineage_isx, "config", lambda: "CFG-FAKE")
+    monkeypatch.setattr(af.lineage_isx, "cabecalho", lambda cur, p, j: None)
+    monkeypatch.setattr(af.lineage_isx, "conta_linhas", lambda cur, p, j: 0)
+    monkeypatch.setattr(af.lineage_isx, "mapa_tipos", lambda cur: {})
+    monkeypatch.setattr(af, "isx_no_executor", _executor_fake)
+    monkeypatch.setattr(af.lineage_isx, "extrair", lambda cfg, projeto, job, cab, tem_linhas, forcar, mapa: (
+        {"folder_path": "\\Jobs"}, {"stages": []}, False))
+    monkeypatch.setattr(af.lineage_isx, "gravar", lambda *a, **k: 100)
+    stages_grandes = [{"stage_name": f"Stage{i}", "sql": "x" * 200} for i in range(200)]
+    monkeypatch.setattr(af.lineage_isx, "montar", lambda cur, p, j: {
+        "pipeline_name": p, "job_name": j, "status": "ok", "stages": stages_grandes})
+
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "isx_extrair", "args": {"pipeline_name": "PIPE_VIDA", "job_name": "JobX"}}\n```',
+        "extraído",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "extrai o job grande"}],
+                        projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None,
+                        ssh_max=10, acao_editar=True, matricula="DEV1")
+    mensagem_ferramenta = provedor.chamadas[1]["historico"][-1]["content"]
+    assert "truncada" in mensagem_ferramenta
+    assert len(mensagem_ferramenta) < 10000  # bem menor que o payload de ~40 KB gerado
+
 
 @pytest.mark.asyncio
 async def test_dsx_consulta_sem_projeto_com_dsx_e_recusada(monkeypatch):

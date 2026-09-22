@@ -111,6 +111,31 @@ def redigir(texto: str) -> str:
     return saida
 
 
+def redigir_estrutura(valor):
+    """Aplica `redigir()` a cada STRING FOLHA de um dict/list, recursivamente
+    — NUNCA ao JSON serializado inteiro de uma vez. `redigir()` mascara até
+    o fim da LINHA que contém a keyword sensível (decisão de design das
+    rodadas anteriores da F2, pensada para a saída MULTI-LINHA do `dsjob`);
+    um `json.dumps(..., default=str)` compacto (sem `indent`, como
+    `isx_extrair`/`base`/`dsx_consulta` produzem) é UMA linha lógica só —
+    mascarar o texto serializado inteiro apagava a resposta INTEIRA sempre
+    que qualquer parte dela (ex.: `job_description` em prosa mencionando
+    "senha", ou o VALOR de um campo `type` sendo literalmente "Encrypted")
+    continha a keyword — over-masking severo, destruindo o lineage útil
+    (achado real da revisão adversarial da F2b). Aplicar por STRING isola
+    o dano a cada campo individualmente, sem perder segurança (a defesa
+    multi-linha original de `redigir()` continua valendo DENTRO de uma
+    string que, por si só, tenha várias linhas — ex.: um `job_description`
+    grande, ou o stdout redigido de um `dsjob`)."""
+    if isinstance(valor, dict):
+        return {k: redigir_estrutura(v) for k, v in valor.items()}
+    if isinstance(valor, list):
+        return [redigir_estrutura(v) for v in valor]
+    if isinstance(valor, str):
+        return redigir(valor)
+    return valor
+
+
 # ── Truncagem ────────────────────────────────────────────────────────────────
 #
 # `run_dsjob` já trunca o stdout em 200 000 caracteres (o teto do Console) —

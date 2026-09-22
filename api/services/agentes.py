@@ -376,7 +376,7 @@ def _com_conexao(abrir_conn, fn):
 
 async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: str | None,
                                ssh_max: int, espera_max_s: float, acao_editar: bool,
-                               matricula: str | None, extracoes_isx: int) -> tuple[dict, str | None]:
+                               matricula: str | None, extracoes_isx: int, resta_s: float) -> tuple[dict, str | None]:
     """Executa UMA ferramenta pedida pelo modelo, sempre pela allowlist —
     NUNCA deixa `base`/`dsjob`/`dsx_consulta`/`isx_extrair` rodar sem
     `projeto` resolvido (a guarda do risco 28). `abrir_conn` é uma fábrica
@@ -387,12 +387,14 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
     de `resolver_projeto`/`base` virava exceção não tratada antes (achado
     real da revisão adversarial da F2: propagava como 500 cru e perdia a
     mensagem do usuário, que nunca chegava a ser persistida). Erro vira
-    dado nomeado que volta ao modelo como conversa. Devolve
-    (dado-para-o-modelo, projeto novo-ou-None)."""
+    dado nomeado que volta ao modelo como conversa. `resta_s` é o orçamento
+    restante da RODADA (usado por `isx_extrair` para recusar ANTES de
+    submeter ao executor compartilhado, se não sobrar tempo suficiente —
+    ver `_isx_extrair`). Devolve (dado-para-o-modelo, projeto novo-ou-None)."""
     try:
         return await _executar_ferramenta_interna(
             abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s,
-            acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx)
+            acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx, resta_s=resta_s)
     except (af.ServidorOcupado, DsConsoleError) as e:
         return {"texto": str(e)}, None
     except Exception as e:  # banco/SSH/rede: nunca derruba a rodada
@@ -401,7 +403,8 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
 
 async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, projeto: str | None,
                                        ssh_max: int, espera_max_s: float, acao_editar: bool,
-                                       matricula: str | None, extracoes_isx: int) -> tuple[dict, str | None]:
+                                       matricula: str | None, extracoes_isx: int,
+                                       resta_s: float) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
     if nome == "resolver_projeto":
@@ -427,7 +430,7 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
 
     if nome == "isx_extrair":
         return await _isx_extrair(abrir_conn, args, projeto=projeto, acao_editar=acao_editar,
-                                  matricula=matricula, extracoes_isx=extracoes_isx)
+                                  matricula=matricula, extracoes_isx=extracoes_isx, resta_s=resta_s)
 
     if nome == "dsx_consulta":
         return await _dsx_consulta(abrir_conn, args, projeto=projeto)
@@ -448,11 +451,14 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
         r = _com_cursor(abrir_conn, lambda cur: af.ferramenta_base(cur, projeto, job_name))
         if not r.get("encontrado"):
             return {"texto": f"Nada na base sobre o job '{job_name}' do projeto '{projeto}'."}, None
-        # redigir() SEMPRE — job_description/erro são texto livre e não passam
-        # por nenhuma sanitização na extração ISX (achado real da revisão
-        # adversarial da F2: um segredo colado numa descrição de job ia cru
-        # para o modelo, violando o critério 4 — "segredo nunca chega ao modelo").
-        texto = af.redigir(json.dumps(r, ensure_ascii=False, default=str))
+        # redigir_estrutura() SEMPRE — job_description/erro são texto livre e
+        # não passam por nenhuma sanitização na extração ISX (achado real da
+        # revisão adversarial da F2: um segredo colado numa descrição de job
+        # ia cru para o modelo, violando o critério 4 — "segredo nunca chega
+        # ao modelo"). Redige STRING A STRING (não o JSON inteiro serializado
+        # de uma vez): achado real da revisão adversarial da F2b — um
+        # `job_description` mencionando "senha" apagava o resto do payload.
+        texto = af._truncar(json.dumps(af.redigir_estrutura(r), ensure_ascii=False, default=str))
         return {"texto": texto}, None
 
     # dsjob — não toca banco nenhum (só o servidor DataStage, via SSH).
@@ -468,8 +474,22 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
 LINK_GOVERNANCA = "a tela de Governança de Lineage (Lineage › ISX)"
 
 
+# Margem acima do teto interno do executor ISX (spec F2b, achado real da
+# revisão adversarial): sem isso, o timeout EXTERNO do orçamento da rodada
+# podia disparar ANTES do INTERNO (`ISX_TETO_EXTRAIR_S=60`, fixo — nunca
+# encolhe com o orçamento restante), e o `asyncio.shield` que protege a
+# extração de ser cancelada no meio (para não vazar o `sp_getapplock`)
+# também a protege de ser INTERROMPIDA por esse timeout externo — ela
+# seguia rodando no `ThreadPoolExecutor(max_workers=2)` COMPARTILHADO com
+# o botão real da Governança, segurando um worker por até 60s mesmo depois
+# da resposta HTTP já ter voltado como "tempo esgotado", podendo atrasar
+# um usuário de verdade da Governança. Corrigido na origem: NUNCA submete
+# ao executor sem orçamento para terminar dentro do próprio teto.
+MARGEM_ISX_S = 5
+
+
 async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_editar: bool,
-                       matricula: str | None, extracoes_isx: int) -> tuple[dict, str | None]:
+                       matricula: str | None, extracoes_isx: int, resta_s: float) -> tuple[dict, str | None]:
     """`isx_extrair` (F2b): export via `istool` + parse + gravação, com a
     MESMA régua do botão `POST /lineage/isx/extrair` — mesmas funções,
     mesmo executor. Duas portas de entrada:
@@ -486,6 +506,12 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
     if extracoes_isx > af.MAX_EXTRACOES_ISX:  # `conversar()` já contou esta tentativa antes de chamar
         return ({"texto": f"Já fiz {af.MAX_EXTRACOES_ISX} extrações ISX nesta pergunta — é o limite "
                           "da rodada. Pode perguntar de novo com um pedido mais direto."}, None)
+    if resta_s < af.ISX_TETO_EXTRAIR_S + MARGEM_ISX_S:
+        # Recusa ANTES de submeter ao executor compartilhado — nunca inicia
+        # um trabalho que não teria tempo de terminar dentro do próprio
+        # teto (ver comentário de MARGEM_ISX_S acima).
+        return ({"texto": "Não sobra tempo suficiente nesta pergunta para uma extração ISX "
+                          "(pode levar até um minuto) — tente de novo numa pergunta nova."}, None)
 
     pipeline_name = str(args.get("pipeline_name") or "").strip() or None
     job_name_isx = str(args.get("job_name") or "").strip() or None
@@ -537,7 +563,11 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
                   "ds_project": projeto_isx, "cache_hit": cache_hit}
         if resultado:
             payload.update({k: v for k, v in resultado.items() if k != "caminho_istool"})
-        texto = af.redigir(json.dumps(payload, ensure_ascii=False, default=str))
+        # redigir_estrutura() — nunca o JSON inteiro de uma vez (achado real
+        # da revisão adversarial da F2b: uma keyword sensível em QUALQUER
+        # parte do JSON compacto apagava a resposta INTEIRA, inclusive o
+        # lineage útil — stages/SQL/tabelas — que não tinha nada a ver).
+        texto = af._truncar(json.dumps(af.redigir_estrutura(payload), ensure_ascii=False, default=str))
         return {"texto": texto}, None
 
     usuario_registro = f"{matricula or '?'} ({af.ORIGEM_AGENTE})"
@@ -554,7 +584,7 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
     if resposta is None:
         return {"texto": "Extração concluída, mas não encontrei o cabeçalho gravado — tente de novo."}, None
     resposta["cache_hit"] = cache_hit
-    texto = af.redigir(json.dumps(resposta, ensure_ascii=False, default=str))
+    texto = af._truncar(json.dumps(af.redigir_estrutura(resposta), ensure_ascii=False, default=str))
     projeto_novo = projeto_isx if not projeto else None
     return {"texto": texto}, projeto_novo
 
@@ -582,7 +612,7 @@ async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None) -> tuple
     except (asyncio.TimeoutError, TimeoutError):
         return ({"texto": "A consulta ao DSX não terminou a tempo — tente uma busca mais "
                           "específica (ex.: informe a pasta)."}, None)
-    texto = af.redigir(af._truncar(json.dumps(resultado, ensure_ascii=False, default=str)))
+    texto = af._truncar(json.dumps(af.redigir_estrutura(resultado), ensure_ascii=False, default=str))
     return {"texto": texto}, None
 
 
@@ -682,7 +712,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             dado, projeto_novo = await asyncio.wait_for(
                 _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
                                      ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
-                                     matricula=matricula, extracoes_isx=extracoes_isx),
+                                     matricula=matricula, extracoes_isx=extracoes_isx, resta_s=resta),
                 timeout=max(1.0, resta - 2))
         except (asyncio.TimeoutError, TimeoutError):
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
