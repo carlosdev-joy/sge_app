@@ -90,12 +90,40 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # MESMA linha (nunca um segredo de um campo diferente escapa). É
 # exatamente o design pré-F2 desta função, restaurado com o motivo
 # documentado desta vez.
+#
+# O delimitador ao redor da keyword NÃO é `\b` — achado real da 4ª rodada
+# da revisão adversarial da F2b, aplicando à `redigir()` original o mesmo
+# problema já corrigido em `_RE_NOME_PARAMETRO_SENSIVEL`: `_` é caractere
+# de PALAVRA em regex (`\w` inclui `_`), então `\btoken\b`/`\bpassword\b`
+# nunca casam dentro de um nome SNAKE_CASE (`"AUTH_TOKEN": "..."`,
+# `DB_PASSWORD=...`) — e essa é exatamente a saída AO VIVO do `dsjob`
+# (`ferramenta_dsjob` redige o stdout com esta função antes de ir ao
+# modelo). Corrigido com `(?:^|[^a-zA-Z])` ANTES da keyword (consumidor —
+# fica dentro do grupo capturado, então o caractere reconhecido permanece
+# no texto final tal como estava: `"AUTH_TOKEN": ••••`, não
+# `AUTH"TOKEN": ••••`) e `(?=$|[^a-zA-Z])` DEPOIS (LOOKAHEAD — não pode
+# consumir: um separador `:`/`=` colado direto na keyword, como em
+# `DB_PASSWORD=...`, precisa continuar disponível para a parte da regex
+# que o exige logo em seguida; testado e corrigido depois de uma 1ª
+# tentativa com `(?:$|[^a-zA-Z])` consumidor que quebrava esse caso).
+#
+# Depois do delimitador de FIM da keyword, um SUFIXO livre
+# (`[A-Za-z0-9_-]*`) é aceito até o separador — cobre nome com sufixo
+# depois da keyword (`API_KEY_PROD: ...`, a keyword é só "API_KEY", o
+# "_PROD" vem depois). Isso NÃO reabre a brecha de "TOKENIZER" (que o
+# `\b` original também evitava, e a comparação direta já testou): o
+# delimitador de FIM já EXIGE que a keyword termine numa fronteira válida
+# antes desse sufixo livre começar — "TOKENIZER" nunca chega a satisfazer
+# esse delimitador (depois de "token" vem "i", uma letra), então a
+# tentativa de casar a partir dali já falha, antes mesmo do sufixo entrar
+# em jogo.
 _VALOR = r"[^\n]*"
 _RE_SEGREDO = re.compile(
-    r"(?im)([\"']?\b(?:senha|password|pwd|secret|token|api[_-]?key)\b[\"']?\s*[:=]\s*)"
+    r"(?im)((?:^|[^a-zA-Z])[\"']?(?:senha|password|pwd|secret|token|api[_-]?key)"
+    r"(?=$|[^a-zA-Z])[A-Za-z0-9_-]*[\"']?\s*[:=]\s*)"
     r"(" + _VALOR + r")")
 _RE_ENCRYPTED = re.compile(
-    r"(?im)([\"']?\bEncrypted\b[\"']?\s*[:=]?\s*)"
+    r"(?im)((?:^|[^a-zA-Z])[\"']?Encrypted(?=$|[^a-zA-Z])[A-Za-z0-9_-]*[\"']?\s*[:=]?\s*)"
     r"(" + _VALOR + r")")
 _MASCARA = "••••"
 

@@ -149,6 +149,31 @@ def test_redigir_no_valor_encrypted_do_datastage_com_chave_no_meio():
     assert "AbCdEf" not in saida
 
 
+# Achado real da 4ª rodada da revisão adversarial da F2b: o MESMO problema
+# de `\b` corrigido em `_RE_NOME_PARAMETRO_SENSIVEL` (achado da 3ª rodada)
+# também afetava `_RE_SEGREDO`/`_RE_ENCRYPTED` — as regexes ORIGINAIS de
+# `redigir()`, já em produção desde a F2 (PR #421). `_` é caractere de
+# PALAVRA em regex, então `\btoken\b`/`\bpassword\b` nunca casavam num
+# nome de campo SNAKE_CASE em TEXTO LIVRE — exatamente o formato da saída
+# ao vivo do `dsjob` (`ferramenta_dsjob` redige o stdout com `redigir()`
+# antes de ir ao modelo, `-lparams`/`-report` do D-07 ainda não confirmado
+# quanto ao formato exato, mas `"AUTH_TOKEN": "..."` é plausível).
+@pytest.mark.parametrize("texto,escondido", [
+    ('"AUTH_TOKEN": "eyJhbGciOiJIUzI1NiJ9.PAYLOADSECRETO123"', "PAYLOADSECRETO123"),
+    ("DB_PASSWORD=supersenha123", "supersenha123"),
+    ("API_KEY_PROD: sk-ant-xxxxx", "sk-ant-xxxxx"),
+])
+def test_redigir_nome_de_campo_snake_case_em_texto_livre(texto, escondido):
+    assert escondido not in af.redigir(texto)
+
+
+def test_redigir_snake_case_preserva_o_prefixo_do_nome():
+    """O delimitador reconhecido (o `_` antes da keyword) fica DENTRO do
+    grupo capturado — não distorce a estrutura ao redor da máscara."""
+    saida = af.redigir('"AUTH_TOKEN": "segredo123"')
+    assert saida.startswith('"AUTH_TOKEN":')  # nome do campo continua legível
+
+
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
 
 def test_truncar_texto_curto_nao_muda():
