@@ -595,6 +595,7 @@ m) **Não-regressão:** Caixa Seguro (assistentes) e a triagem de chamados conti
 - *Registrar:* por comando: `exit_code`, bytes, duração, 5 a 10 linhas **redigidas**; a linha (mascarada) do parâmetro Encrypted; a mensagem dos dois erros.
 - *Padrão se não der:* parser conservador, saída truncada, e tudo que parecer valor de parâmetro é redigido.
 - *Impacto:* parser e truncagem da F2, regras de `redigir()`, semente da F6, F2.4.
+- *Limitação conhecida de `redigir()` (F2, revisão adversarial 4ª rodada):* a função mascara da keyword sensível (`senha`/`password`/`Encrypted`/etc.) até o **fim da mesma linha** — nunca vaza um campo diferente, mas se o `dsjob` real formatar um parâmetro `Encrypted` "bonito", com a keyword e o valor em **linhas separadas** (ex. `Parameter: DB_PASS\nType: Encrypted\nValue: {iisenc}...\n`), a linha do valor de verdade não tem a keyword e pode escapar sem máscara. **Validar isso especificamente** ao registrar as 5-10 linhas redigidas do D-07: se o `dsjob` de verdade formatar assim, `redigir()` precisa aprender a olhar a PRÓXIMA linha (ou N linhas) depois de uma keyword sozinha numa linha, não só a mesma linha.
 - **Resultado:** _(preencher)_
 
 **D-08 — Como saber que um job mudou** · Bloqueia: **F2 / F5**

@@ -123,10 +123,21 @@ def test_redigir_valor_com_aspa_escapada_nao_vaza_o_resto(texto, escondido):
 # procurando a PRÓXIMA aspa — que podia ser a abertura de um CAMPO SEGUINTE
 # inteiro. O segundo segredo saía sem nenhuma máscara (pior que o defeito
 # original, que só vazava o resto do MESMO valor).
+#
+# A 4ª rodada da revisão adversarial notou que um caso ingênuo (keyword do
+# 2º campo entre aspas, ex. `"password": "anothersecret"`) não expõe o bug
+# de verdade — a aspa de FECHAMENTO da keyword ainda sobra no texto restante
+# e o próprio regex (que aceita a keyword com ou sem aspas ao redor) acaba
+# reencontrando-a numa iteração seguinte do mesmo `.sub()`, mascarando por
+# "sorte". O caso que realmente expõe o bug é a keyword do 2º campo SEM
+# aspas ao redor (formato `chave: "valor"`, comum em relatório de texto) —
+# aí ela é engolida por completo dentro do "roubo", sem chance de recaptura,
+# e o segredo sobra em claro. Confirmado contra o regex do commit anterior
+# (1730de6): `REALSECRETHERE` vazava por completo com esse texto.
 def test_redigir_barra_antes_da_aspa_real_nao_vaza_o_campo_seguinte():
-    texto = r'{"Encrypted": "C:\Temp\", "password": "anothersecret"}'
+    texto = r'{"token": "C:\Temp\", secret: "REALSECRETHERE"}'
     saida = af.redigir(texto)
-    assert "anothersecret" not in saida
+    assert "REALSECRETHERE" not in saida
 
 
 # O valor real de um parâmetro `Encrypted` do DataStage tem a forma
