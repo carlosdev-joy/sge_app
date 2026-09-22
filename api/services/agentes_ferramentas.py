@@ -36,9 +36,22 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # Conservador de propósito (D-07 ainda não fechada — não sabemos o formato
 # exato): mascara qualquer coisa que PAREÇA um valor de campo sensível, e o
 # nome do parâmetro/campo continua visível (é o que o operador precisa ler).
+#
+# O nome do campo (e o separador) pode vir entre aspas — formato JSON, como
+# `-report`/`-lparams` às vezes devolvem (`"password": "abc123"`). Sem os
+# `["\']?` ao redor do nome/separador, a aspas que fecha o NOME quebrava o
+# casamento logo antes do `:` e a linha inteira passava incólume (achado real
+# da revisão adversarial da F2: miss silencioso em `{"password":"abc123"}`).
+# O VALOR também pode vir entre aspas — capturado como grupo próprio
+# (`"..."`/`'...'`/sem aspas) em vez de um `\S+` genérico, que antes casava
+# só a pontuação logo após o nome (ex.: a aspas de abertura do valor) e
+# deixava o segredo de verdade visível atrás da máscara.
 _RE_SEGREDO = re.compile(
-    r"(?im)^(.*\b(?:senha|password|pwd|secret|token|api[_-]?key)\b\s*[:=]\s*)(\S.*)$")
-_RE_ENCRYPTED = re.compile(r"(?im)(\bEncrypted\b\s*[:=]?\s*)(\S+)")
+    r"(?im)([\"']?\b(?:senha|password|pwd|secret|token|api[_-]?key)\b[\"']?\s*[:=]\s*)"
+    r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s,}\]]+)")
+_RE_ENCRYPTED = re.compile(
+    r"(?im)([\"']?\bEncrypted\b[\"']?\s*[:=]?\s*)"
+    r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s,}\]]+)")
 _MASCARA = "••••"
 
 

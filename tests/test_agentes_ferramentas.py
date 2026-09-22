@@ -79,6 +79,29 @@ def test_redigir_multiplas_linhas():
     assert "job: X" in saida and "status: ok" in saida
 
 
+# Achado real da revisão adversarial da F2: o nome do campo entre aspas
+# (formato JSON, como `-report`/`-lparams` às vezes devolvem) quebrava o
+# casamento ANTES do separador — miss silencioso — e o valor entre aspas
+# só tinha a pontuação mascarada (a aspas de abertura), deixando o segredo
+# de verdade 100% visível atrás de uma máscara enganosa.
+@pytest.mark.parametrize("texto,escondido", [
+    ('{"password":"abc123"}', "abc123"),
+    ('{"password": "abc 123 com espaço"}', "abc 123 com espaço"),
+    ("{'token': 'xyz-999'}", "xyz-999"),
+])
+def test_redigir_campo_entre_aspas_json_esconde_o_valor(texto, escondido):
+    saida = af.redigir(texto)
+    assert escondido not in saida
+
+
+def test_redigir_encrypted_com_aspas_mascara_o_valor_de_verdade():
+    """Antes, `Encrypted": "` só mascarava a aspas de abertura do valor — o
+    valor real (`{iisenc}AbCdEf==`) sobrevivia intacto depois da máscara."""
+    saida = af.redigir('  "Encrypted": "{iisenc}AbCdEf=="')
+    assert "AbCdEf" not in saida
+    assert af._MASCARA in saida
+
+
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
 
 def test_truncar_texto_curto_nao_muda():

@@ -102,6 +102,7 @@ class _Conn:
     def __init__(self, cur):
         self._cur = cur
         self.commits = 0
+        self.closes = 0
 
     def cursor(self):
         return self._cur
@@ -110,7 +111,25 @@ class _Conn:
         self.commits += 1
 
     def close(self):
-        pass
+        self.closes += 1
+
+
+class _CurQueExplode(_Cur):
+    """Simula uma exceção do DRIVER (deadlock, timeout de rede) — não é
+    HTTPException. Achado real da revisão adversarial da F2: só esse tipo
+    escapava do `except HTTPException: ... else: ...` sem fechar a conexão.
+    Só explode na leitura da conversa — a config precisa carregar normal
+    (senão `carregar_config` absorve a exceção e o fluxo nem chega lá:
+    ela tem seu próprio `try/except: pass`, é degradação esperada, não o
+    vazamento que este teste prova)."""
+
+    def __init__(self):
+        super().__init__(config_agentes={"agentes_enabled": "1", "agente_datastage_enabled": "1"})
+
+    def execute(self, sql, params=None):
+        if "select projeto, matricula from dbo.etl_agente_conversa" in sql.lower():
+            raise RuntimeError("falha de driver simulada")
+        return super().execute(sql, params)
 
 
 @pytest.fixture
@@ -247,3 +266,18 @@ def test_matricula_forjada_no_corpo_e_ignorada(ambiente, monkeypatch):
     assert r.status_code == 200
     assert recebido["identidade"] == f"cvp-{estado['matricula'].lower()}"
     assert "forjada" not in recebido["identidade"].lower()
+
+
+# ═══════════ 5. achado da revisão adversarial da F2 — vazamento de conexão ══
+
+def test_excecao_generica_do_driver_ainda_fecha_a_conexao(ambiente):
+    """Antes, só `except HTTPException` fechava a conexão explicitamente (e
+    `else` cobria o caminho feliz) — uma exceção de driver (RuntimeError,
+    deadlock, timeout) não batia em nenhum dos dois e vazava conn/cur. Agora
+    um `finally` cobre todos os casos."""
+    cliente, _cur, _estado = ambiente
+    conn = _Conn(_CurQueExplode())
+    with patch("routers.agentes.get_db_conn", return_value=conn):
+        with pytest.raises(RuntimeError):
+            cliente.post("/agentes/datastage/conversar", json={"mensagem": "oi"})
+    assert conn.closes >= 1

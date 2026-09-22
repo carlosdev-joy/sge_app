@@ -250,9 +250,14 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
             cadastro = None  # coluna pode não existir ainda (migration 117) — cai no padrão
         conn.commit()
     except HTTPException:
-        _fechar(conn, cur)
         raise
-    else:
+    finally:
+        # finally, não só except HTTPException/else: uma exceção do DRIVER
+        # (deadlock, timeout, conexão caindo — não é HTTPException) não caía
+        # em nenhum dos dois ramos antes e vazava a conexão (achado real da
+        # revisão adversarial da F2). Confirmado com reprodução isolada:
+        # try/except/else nunca roda o `except` de um tipo que não bate nem
+        # o `else` quando uma exceção se propaga.
         _fechar(conn, cur)
 
     identidade = svc.identidade_gateway(matricula, cadastro)

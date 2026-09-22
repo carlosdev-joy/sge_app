@@ -29,8 +29,10 @@ dublês.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -288,3 +290,91 @@ async def test_erro_do_provedor_vira_status_nomeado(monkeypatch):
     r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "oi"}],
                             projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
     assert r["status"] == "erro_provedor"
+
+
+# ═══════════ 6. achados da revisão adversarial da F2 ════════════════════════
+#
+# Os 5 achados confirmados: (1) 'base' não redigia antes de ir ao modelo —
+# critério 4 da F2 violado; (3) exceção de banco em resolver_projeto/base
+# propagava crua; (5) orçamento só era checado ENTRE rodadas, não durante uma
+# operação individual. (Os achados 2 e 4 — regex de redigir() e vazamento de
+# conexão no router — têm teste em test_agentes_ferramentas.py e
+# test_agentes_conversar_rota.py, respectivamente.)
+
+@pytest.mark.asyncio
+async def test_ferramenta_base_e_redigida_antes_de_ir_ao_modelo(monkeypatch):
+    """Critério 4 da F2 ('segredo nunca chega ao modelo'): job_description é
+    texto livre, não sanitizado na extração ISX — um segredo colado ali ia
+    cru para o histórico antes desta correção."""
+    monkeypatch.setattr(af, "resolver_projeto",
+                        lambda cur, nome=None, **kw: {"estado": "resolvido", "projeto": "BI_CVP",
+                                                      "tem_dsx": False, "sugerido": None, "sugestoes": []})
+    monkeypatch.setattr(af, "ferramenta_base", lambda cur, p, j: {
+        "encontrado": True, "job_name": j,
+        "job_description": "Uses FTP account ftpuser, password: Summer2026!"})
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "resolver_projeto", "args": {"projeto": "BI_CVP"}}\n```',
+        '```json\n{"ferramenta": "base", "args": {"job_name": "JobFTP"}}\n```',
+        "ok",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "job FTP"}],
+                        projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    mensagem_ferramenta = provedor.chamadas[2]["historico"][-1]
+    assert "Summer2026!" not in mensagem_ferramenta["content"]
+
+
+@pytest.mark.asyncio
+async def test_falha_de_banco_em_resolver_projeto_nao_derruba_a_rodada(monkeypatch):
+    def _explode(cur, nome=None, **kw):
+        raise TimeoutError("deadlock simulado")
+    monkeypatch.setattr(af, "resolver_projeto", _explode)
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "resolver_projeto", "args": {"projeto": "BI_CVP"}}\n```',
+        "ok, tive um problema mas sigo a conversa",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "oi"}],
+                            projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    assert r["status"] == "ok"  # não propagou — o modelo só viu uma mensagem de erro
+
+
+@pytest.mark.asyncio
+async def test_falha_de_banco_em_base_nao_derruba_a_rodada(monkeypatch):
+    monkeypatch.setattr(af, "resolver_projeto",
+                        lambda cur, nome=None, **kw: {"estado": "resolvido", "projeto": "BI_CVP",
+                                                      "tem_dsx": False, "sugerido": None, "sugestoes": []})
+
+    def _explode(cur, p, j):
+        raise TimeoutError("conexão caiu no meio da consulta")
+    monkeypatch.setattr(af, "ferramenta_base", _explode)
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "resolver_projeto", "args": {"projeto": "BI_CVP"}}\n```',
+        '```json\n{"ferramenta": "base", "args": {"job_name": "JobX"}}\n```',
+        "ok",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "oi"}],
+                            projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    assert r["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_orcamento_por_operacao_corta_uma_chamada_lenta_de_verdade(monkeypatch):
+    """Não basta checar o orçamento ENTRE rodadas: uma ÚNICA chamada ao
+    gateway que trava (rede degradada, gateway lento) tem que ser cortada
+    pelo próprio orçamento restante, não deixada rodar até seu timeout
+    interno (TIMEOUT_S=60s em ia_provedor). Usa tempo REAL (não o relógio
+    mockado) — por isso o teste gasta alguns segundos de propósito."""
+    monkeypatch.setattr(svc, "ORCAMENTO_AGENTE_S", 5.5)
+
+    async def _trava(cfg, sistema, historico, identidade=None, campo_identidade=None, ssh_max=10):
+        await asyncio.sleep(30)  # bem mais que o orçamento — nunca deveria voltar
+        return "nunca deveria chegar aqui", "modelo"
+    monkeypatch.setattr(ia_provedor, "chat_conversa", _trava)
+    t0 = time.monotonic()
+    r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "oi"}],
+                            projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    dt = time.monotonic() - t0
+    assert r["status"] == "tempo_esgotado"
+    assert dt < 10  # cortado bem antes dos 30s do dublê e dos 60s do TIMEOUT_S real

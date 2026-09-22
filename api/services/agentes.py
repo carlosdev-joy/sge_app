@@ -31,6 +31,7 @@ rodada (`ORCAMENTO_AGENTE_S`, abaixo do `proxy_read_timeout` do nginx).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -349,9 +350,26 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
     NUNCA deixa `base`/`dsjob` rodar sem `projeto` resolvido (a guarda do
     risco 28). `abrir_conn` é uma fábrica `() -> (conn, cur)`: cada consulta
     de banco usa sua PRÓPRIA conexão curta (ver `_com_cursor`), nunca uma
-    guardada pela rodada inteira. Nunca levanta: erro vira dado nomeado que
-    volta ao modelo como conversa, não como exceção. Devolve
-    (dado-para-o-modelo, projeto novo-ou-None)."""
+    guardada pela rodada inteira. Nunca levanta de verdade: TODO o corpo (não
+    só o ramo `dsjob`) está sob um try/except amplo — uma falha de banco
+    (deadlock, timeout, conexão caindo) dentro de `resolver_projeto`/`base`
+    virava exceção não tratada antes (achado real da revisão adversarial da
+    F2: propagava como 500 cru e perdia a mensagem do usuário, que nunca
+    chegava a ser persistida). Erro vira dado nomeado que volta ao modelo
+    como conversa. Devolve (dado-para-o-modelo, projeto novo-ou-None)."""
+    try:
+        return await _executar_ferramenta_interna(
+            abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s)
+    except (af.ServidorOcupado, DsConsoleError) as e:
+        return {"texto": str(e)}, None
+    except Exception as e:  # banco/SSH/rede: nunca derruba a rodada
+        return {"texto": f"Falha ao executar a ferramenta '{nome}' ({type(e).__name__}) — tente de novo."}, None
+
+
+async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, projeto: str | None,
+                                       ssh_max: int, espera_max_s: float) -> tuple[dict, str | None]:
+    """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
+    (`_executar_ferramenta`) é quem garante que nunca escapa."""
     if nome == "resolver_projeto":
         candidato = str(args.get("projeto") or "").strip() or None
         pipeline_name = str(args.get("pipeline_name") or "").strip() or None
@@ -388,17 +406,17 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
         r = _com_cursor(abrir_conn, lambda cur: af.ferramenta_base(cur, projeto, job_name))
         if not r.get("encontrado"):
             return {"texto": f"Nada na base sobre o job '{job_name}' do projeto '{projeto}'."}, None
-        return {"texto": json.dumps(r, ensure_ascii=False, default=str)}, None
+        # redigir() SEMPRE — job_description/erro são texto livre e não passam
+        # por nenhuma sanitização na extração ISX (achado real da revisão
+        # adversarial da F2: um segredo colado numa descrição de job ia cru
+        # para o modelo, violando o critério 4 — "segredo nunca chega ao modelo").
+        texto = af.redigir(json.dumps(r, ensure_ascii=False, default=str))
+        return {"texto": texto}, None
 
     # dsjob — não toca banco nenhum (só o servidor DataStage, via SSH).
     comando = str(args.get("comando") or "").strip()
-    try:
-        r = await af.ferramenta_dsjob(comando, projeto, job_name,
-                                      teto_sessoes=ssh_max, espera_max_s=espera_max_s)
-    except (af.ServidorOcupado, DsConsoleError) as e:
-        return {"texto": str(e)}, None
-    except Exception as e:  # SSH/rede: nunca derruba a conversa
-        return {"texto": f"Falha ao consultar o DataStage ({type(e).__name__})."}, None
+    r = await af.ferramenta_dsjob(comando, projeto, job_name,
+                                  teto_sessoes=ssh_max, espera_max_s=espera_max_s)
     if r["exit_code"] != 0:
         erro_redigido = af.redigir((r.get("stderr") or "")[:1000])
         return {"texto": f"dsjob {comando} falhou (código {r['exit_code']}): {erro_redigido}"}, None
@@ -425,14 +443,29 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     projeto = projeto_atual
     artefatos: list[dict] = []
 
+    texto_esgotado = {"status": "tempo_esgotado", "projeto": None, "artefatos": None,
+                      "texto": "O tempo desta pergunta esgotou — tente de novo, ou peça algo mais direto."}
+
     for rodada in range(MAX_RODADAS_FERRAMENTA + 1):
-        if _resta() <= 5:
-            return {"status": "tempo_esgotado", "projeto": projeto, "artefatos": artefatos,
-                    "texto": "O tempo desta pergunta esgotou — tente de novo, ou peça algo mais direto."}
+        resta = _resta()
+        if resta <= 5:
+            return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         sistema = _prompt_sistema(projeto)
+        # O orçamento também vale por OPERAÇÃO, não só entre rodadas — sem
+        # isto, uma única chamada ao gateway podia levar até TIMEOUT_S (60s)
+        # mesmo com o orçamento quase esgotado, e a soma gateway+ferramenta de
+        # várias rodadas podia estourar os 240s sem nenhuma checagem no meio
+        # (achado real da revisão adversarial da F2, risco de 504 do nginx —
+        # critério 8 da F2). `wait_for` usa o relógio real do loop, não afeta
+        # os testes que mockam `time.monotonic` (a checagem "entre rodadas"
+        # acima continua sendo quem decide nesses testes).
         try:
-            resposta, modelo = await ia_provedor.chat_conversa(
-                provedor_cfg, sistema, historico, identidade=identidade, campo_identidade=campo_identidade)
+            resposta, modelo = await asyncio.wait_for(
+                ia_provedor.chat_conversa(provedor_cfg, sistema, historico,
+                                          identidade=identidade, campo_identidade=campo_identidade),
+                timeout=max(1.0, resta - 2))
+        except (asyncio.TimeoutError, TimeoutError):
+            return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         except ia_provedor.GatewayRecusou:
             return {"status": "gateway_recusou", "projeto": projeto, "artefatos": artefatos,
                     "texto": "O gateway de IA recusou esta conversa — confira seu cadastro em Agentes."}
@@ -455,9 +488,17 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         args = pedido.get("args") if isinstance(pedido.get("args"), dict) else {}
         historico.append({"role": "assistant", "content": resposta})
 
-        espera = max(0.5, min(_resta() - 5, 30))
-        dado, projeto_novo = await _executar_ferramenta(
-            abrir_conn, nome_ferramenta, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera)
+        resta = _resta()
+        if resta <= 5:
+            return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
+        espera = max(0.5, min(resta - 5, 30))
+        try:
+            dado, projeto_novo = await asyncio.wait_for(
+                _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
+                                     ssh_max=ssh_max, espera_max_s=espera),
+                timeout=max(1.0, resta - 2))
+        except (asyncio.TimeoutError, TimeoutError):
+            return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         if projeto_novo:
             projeto = projeto_novo
         artefatos.append({"ferramenta": nome_ferramenta, "args": args})
