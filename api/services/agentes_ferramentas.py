@@ -179,10 +179,6 @@ def _corte_apos_keyword(linha: str, fim_keyword: int) -> int | None:
     return None
 
 
-_CHAR_MESMO_TOKEN = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
-
-
 def _redigir_linha(linha: str) -> str:
     m = _RE_KEYWORD.search(linha)
     if m is None:
@@ -195,90 +191,40 @@ def _redigir_linha(linha: str) -> str:
     # desenvolvimento desta correção antes de commitar).
     corte = _corte_apos_keyword(linha, m.end())
     fim = corte if corte is not None else m.end()
-    # Achado real da 11ª rodada, e achado NOVO da 12ª: mascarar só a
-    # partir de `fim` deixa vazar por completo um valor sensível que
-    # apareça ANTES da keyword na mesma linha (texto livre:
-    # anotação/descrição de job, mensagem de log). A 11ª rodada corrigiu
-    # isso apenas para o ramo SEM separador reconhecido (`corte is
-    # None`) — a 12ª rodada mostrou que o ramo COM separador reconhecido
-    # (`corte is not None`) tem exatamente o MESMO buraco: achar um
-    # `:`/`=` depois da keyword só prova que HÁ algum campo:valor dali
-    # em diante, nunca que o texto ANTES do match é seguro (ex.:
-    # `"...senha_real_aqui, campo relacionado: password: outro"` — o
-    # separador de "password:" é reconhecido, mas "senha_real_aqui"
-    # continua exposto se só mascararmos a partir da keyword).
+    # ── Calibragem de 2026-09-22 (decisão do usuário, com medida) ──
     #
-    # Achado real da 13ª rodada: checar só o caractere IMEDIATAMENTE
-    # antes do match (como a 12ª rodada corrigiu) prova apenas que a
-    # keyword é sufixo/infixo do IDENTIFICADOR LOCAL — nunca que TODO o
-    # prefixo da linha até ali é seguro. Quando a keyword está no MEIO
-    # de um identificador mais adiante (`campo_token_relacionado`,
-    # `refresh_token_interval` — nomes plausíveis de parâmetro/config em
-    # ETL), o caractere adjacente ('_') passava no teste, e a linha
-    # INTEIRA até o corte era preservada — inclusive um valor sensível
-    # completamente diferente, mais cedo na mesma linha, separado por
-    # espaço/vírgula/ponto-e-vírgula REAIS (`"SEGREDO_REAL_999
-    # campo_token_relacionado: ..."` vazava por completo).
+    # As rodadas 11-14 da revisão adversarial acrescentaram aqui uma
+    # camada que mascarava a LINHA INTEIRA (não só do `fim` em diante)
+    # sempre que houvesse qualquer texto alfanumérico ANTES da keyword —
+    # para cobrir um valor sensível que aparecesse antes dela em texto
+    # livre (`"... 'admin123' usado como password de fallback"`).
     #
-    # 1ª tentativa desta correção: exigir que TODO caractere do prefixo
-    # (do início da linha até o match) esteja em `_CHAR_MESMO_TOKEN` —
-    # corrigia o vazamento, mas quebrava o formato JSON mais comum
-    # (`'"AUTH_TOKEN": "segredo123"'`): a aspas de ABERTURA do campo,
-    # antes do nome, não está em `_CHAR_MESMO_TOKEN`, então a linha
-    # inteira virava máscara mesmo sem NENHUM valor antes da keyword —
-    # over-masking severo, pego pela suíte antes de commitar.
+    # Medimos o custo disso numa saída PLAUSÍVEL de `dsjob -report`
+    # (11 linhas): 3 linhas apagadas por inteiro, sendo 2 delas FALSOS
+    # POSITIVOS — e uma dessas era a linha de LINK, ou seja, o lineage,
+    # que é o produto do agente. O gatilho foi um nome de stage banal em
+    # ETL (`TokenizerTransform`, tokenização de dados — nada a ver com
+    # token de autenticação). 33% do conteúdo perdido para proteger um
+    # cenário de prosa livre que D-07 (formato real do `dsjob`, ainda
+    # ABERTA) nunca confirmou existir.
     #
-    # Correção final: anda para trás a partir do início do match SÓ por
-    # caracteres de `_CHAR_MESMO_TOKEN`, até achar onde o IDENTIFICADOR
-    # LOCAL de fato começa (`inicio_ident` — `AUTH_` em `"AUTH_TOKEN"`,
-    # `campo_` em `campo_token_relacionado`). Só então checa: sobra
-    # algum caractere alfanumérico/`_`/`-` em `linha[:inicio_ident]`? Se
-    # sim, é outro TOKEN/palavra — um valor independente em potencial —
-    # inseguro, masca a linha inteira. Se não (só pontuação estrutural
-    # neutra: aspas, `{`, espaços, vírgulas, ou início de linha), é
-    # seguro: nada além de sintaxe existe antes do identificador local.
+    # Proporcionalidade: `redigir()` é a QUARTA camada deste caminho, não
+    # a primeira. Antes dela: (1) a allowlist de 5 comandos read-only
+    # (`ALLOWLIST_DSJOB`) exclui `logsum`/`logdetail`, os únicos que
+    # trariam conteúdo de log; (2) `dsjob -lparams` devolve NOMES de
+    # parâmetro, não valores (`dags/utils/ds_params.py`); (3) o parse do
+    # ISX/DSX já troca o valor por `"***"` na ORIGEM quando nome ou tipo
+    # batem em segredo (`dags/utils/isx_engine.py`); (4) a camada
+    # ESTRUTURAL (`_parece_parametro_sensivel`) mascara o campo de valor
+    # pelo nome/tipo do parâmetro, sem depender de regex textual.
     #
-    # Achado real da 14ª rodada — LIMITE ESTRUTURAL, não mais um bug
-    # pontual corrigível (por isso documentado aqui, e não "corrigido"
-    # com mais uma condição): a varredura acima não consegue diferenciar
-    # dois casos que têm a MESMA forma sintática — uma sequência ÚNICA e
-    # ININTERRUPTA de caracteres `_CHAR_MESMO_TOKEN` contendo a keyword
-    # em algum ponto interno:
-    #   (a) um valor ALEATÓRIO que por acaso soa como um nome de campo
-    #       (`xY9zSecretKeyABC123` — já era o limite documentado desde
-    #       a 11ª/12ª rodadas);
-    #   (b) um valor REAL colado, SEM NENHUM separador (nem espaço, nem
-    #       pontuação — só `_`/`-`/nada), a um nome de campo DIFERENTE
-    #       que contém a keyword (`Tr0ub4dor3-refresh_token_interval`,
-    #       `Tr0ub4dor3_refresh_token_interval`,
-    #       `Tr0ub4dor3refresh_token_interval`) — o valor `Tr0ub4dor3`
-    #       não contém keyword nenhuma, mas o walk-back não para nele:
-    #       para o algoritmo, é tudo UM identificador só.
-    # Diferenciar (a)/(b) exigiria uma heurística SEMÂNTICA (dicionário
-    # de nomes de campo conhecidos, comprimento típico, entropia,
-    # mistura de maiúsculas/case) — não mais uma decisão sintática sobre
-    # QUE caracteres aparecem. As 13 rodadas anteriores desta função já
-    # mostraram, repetidamente, que toda tentativa de "ser mais esperto"
-    # substituindo um limite aceito por uma heurística nova introduziu
-    # um bug DIFERENTE (rodadas 4→5→6→7, e de novo 11→12→13). Continuar
-    # nessa direção arrisca reabrir over-masking (quebrar `AUTH_TOKEN`/
-    # JSON de novo) sem eliminar a ambiguidade de fato — só trocar QUAL
-    # padrão específico ela afeta.
-    #
-    # Risco aceito, por quê: formatos de log/relatório LEGÍVEIS — o que
-    # inclui todo formato conhecido de `dsjob -report`/`-lparams`/
-    # `-jobinfo`, mesmo com D-07 ainda aberta — colam campo e valor SEM
-    # NENHUM separador extremamente raramente (nem espaço, nem `:`,
-    # nem `=`, nem pontuação nenhuma torna o texto ilegível até para um
-    # humano). O caso (b) documentado aqui generaliza o limite já
-    # aceito (a) — mesma causa raiz, mesma superfície de risco
-    # (indistinguibilidade sintática), tratado com o MESMO nível de
-    # aceitação, não como um novo bug a perseguir.
-    i = m.start()
-    while i > 0 and linha[i - 1] in _CHAR_MESMO_TOKEN:
-        i -= 1
-    if any(c in _CHAR_MESMO_TOKEN for c in linha[:i]):
-        return _MASCARA
+    # Decisão: manter o mascaramento CIRÚRGICO (do valor em diante,
+    # preservando o nome do campo — o que o operador precisa ler) e
+    # aceitar, como limite documentado, que um valor sensível colocado
+    # ANTES da keyword na MESMA linha de texto livre não é mascarado.
+    # É o mesmo tipo de limite já aceito nas rodadas 11-14 para valor
+    # colado sem fronteira — trocamos um risco improvável por um dano
+    # medido e certo, e revertemos a troca.
     return linha[:fim] + _MASCARA
 
 

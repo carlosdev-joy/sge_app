@@ -306,17 +306,19 @@ async def test_base_com_segredo_em_texto_livre_nao_apaga_o_resto_do_payload(monk
 async def test_dsjob_erro_redige_o_stderr_antes_de_truncar(monkeypatch):
     """Achado real da 15ª rodada da revisão adversarial da F2b: o corte de
     1000 chars do `stderr` de um `dsjob` que falhou rodava ANTES de
-    `redigir()` — se o segredo estivesse no início do stderr e a keyword
-    que dispara a proteção (11ª-14ª rodadas: precisa achar a keyword em
-    algum lugar da linha) só aparecesse DEPOIS da posição 1000, o corte
-    removia a keyword antes de `redigir()` sequer rodar, e o segredo saía
-    inteiro para o histórico do modelo."""
+    `redigir()` — um segredo além da posição 1000 nunca era sequer
+    examinado pela redação. A ordem correta é redigir o texto COMPLETO e
+    só então truncar o resultado (já seguro). O teste prende a ORDEM (o
+    que `redigir` recebeu), não a agressividade da máscara — assim
+    continua válido independente da calibragem de `redigir()`."""
     monkeypatch.setattr(af, "resolver_projeto",
                         lambda cur, nome=None, **kw: {"estado": "resolvido", "projeto": "BI_CVP",
                                                       "tem_dsx": False, "sugerido": None, "sugestoes": []})
     monkeypatch.setattr(af, "ferramenta_base", lambda cur, p, j: {"encontrado": False})
-    segredo = "xK9mQz7VwR2pL4tBSegredoReal"
-    stderr = segredo + ("A" * 1000) + " password: valor_qualquer"
+    stderr = ("A" * 1200) + "\npassword: SegredoAlemDoCorte999"
+    visto = []
+    original = af.redigir
+    monkeypatch.setattr(af, "redigir", lambda t: visto.append(t) or original(t))
 
     async def _dsjob_falhou(comando, ds_project, job_name, *, teto_sessoes, espera_max_s):
         return {"exit_code": 1, "stderr": stderr, "stdout": "", "saida_redigida": ""}
@@ -330,8 +332,10 @@ async def test_dsjob_erro_redige_o_stderr_antes_de_truncar(monkeypatch):
     monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
     await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "job X"}],
                         projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    # `redigir` recebeu o stderr INTEIRO (1200+ chars), não a fatia de 1000
+    assert any(t == stderr for t in visto), "redigir() não viu o stderr completo — truncou antes"
     mensagem_ferramenta = provedor.chamadas[2]["historico"][-1]["content"]
-    assert segredo not in mensagem_ferramenta
+    assert "SegredoAlemDoCorte999" not in mensagem_ferramenta
 
 
 @pytest.mark.asyncio

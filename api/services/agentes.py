@@ -402,7 +402,10 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
             acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx,
             resta_agora=resta_agora)
     except (af.ServidorOcupado, DsConsoleError) as e:
-        return {"texto": str(e)}, None
+        # `redigir()` porque `DsConsoleError` ecoa o argumento bruto que o
+        # MODELO escolheu (ex.: "Comando 'X' não é permitido") — follow-up
+        # de baixo risco apontado pela 16ª rodada da revisão adversarial.
+        return {"texto": af.redigir(str(e))}, None
     except Exception as e:  # banco/SSH/rede: nunca derruba a rodada
         return {"texto": f"Falha ao executar a ferramenta '{nome}' ({type(e).__name__}) — tente de novo."}, None
 
@@ -641,7 +644,9 @@ async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None) -> tuple
     try:
         resultado = await af.ferramenta_dsx_consulta(nome_valido, operacao, args)
     except ValueError as e:
-        return {"texto": str(e)}, None
+        # Mesmo motivo do `DsConsoleError` acima: a mensagem ecoa a
+        # `operacao` bruta escolhida pelo modelo.
+        return {"texto": af.redigir(str(e))}, None
     except (asyncio.TimeoutError, TimeoutError):
         return ({"texto": "A consulta ao DSX não terminou a tempo — tente uma busca mais "
                           "específica (ex.: informe a pasta)."}, None)

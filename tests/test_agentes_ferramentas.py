@@ -346,26 +346,38 @@ def test_redigir_separador_fora_de_dois_pontos_e_igual_nao_vaza(texto, segredo):
     assert af._MASCARA in saida
 
 
-# Achado real da 11ª rodada da revisão adversarial da F2b: quando não há
-# separador reconhecível depois da keyword, o fallback de todas as
-# rodadas anteriores mascarava só a partir de `m.end()` — deixando
-# vazar por completo um valor sensível que aparecesse ANTES da keyword
-# na mesma linha (texto livre plausível: anotação/descrição de job,
-# mensagem de log). `_redigir_linha` agora distingue pelo caractere
-# imediatamente antes do início do match: se é letra/dígito/`_`/`-`
-# (mesmo IDENTIFICADOR que a keyword, ex. `AUTH_TOKEN`), preserva o
-# prefixo (não é um valor independente); qualquer fronteira de palavra
-# (espaço, pontuação, início de linha) não tem essa garantia, e masca a
-# linha inteira.
-@pytest.mark.parametrize("texto,segredo", [
+# ── LIMITE DOCUMENTADO: valor ANTES da keyword na mesma linha ──────────
+#
+# As rodadas 11-14 da revisão adversarial cobriram este caso mascarando
+# a LINHA INTEIRA sempre que houvesse texto alfanumérico antes da
+# keyword. Medimos o custo numa saída plausível de `dsjob -report`: 33%
+# do conteúdo apagado, 2 de 3 linhas mascaradas eram FALSOS POSITIVOS, e
+# uma delas era a linha de LINK (o lineage — o produto do agente),
+# disparada por um nome de stage banal em ETL (`TokenizerTransform`).
+#
+# Calibragem de 2026-09-22 (decisão do usuário): revertida essa camada.
+# `redigir()` volta a mascarar CIRURGICAMENTE — do valor em diante,
+# preservando o nome do campo. O preço é este limite: um valor sensível
+# escrito ANTES da keyword, em texto livre, fica visível. Aceito porque
+# (a) `redigir()` é a 4ª camada deste caminho (allowlist de comandos,
+# `-lparams` sem valores, mascaramento na origem do ISX e a camada
+# estrutural vêm antes), e (b) D-07 — o formato real do `dsjob` — segue
+# ABERTA: nunca houve amostra confirmando que esse texto livre exista.
+# Ver o comentário de calibragem em `_redigir_linha`.
+@pytest.mark.parametrize("texto,visivel", [
     ("Annotation: valor legado 'admin123hardcoded' usado como password de fallback",
      "admin123hardcoded"),
     ("SEGREDO123 Password", "SEGREDO123"),
     ("valor: abc123, campo relacionado: password", "abc123"),
+    ("SEGREDO_REAL_999 e depois token: campo_qualquer", "SEGREDO_REAL_999"),
+    ("SEGREDO_REAL_999 campo_token_relacionado: outro_valor", "SEGREDO_REAL_999"),
+    ("ConnString=sa:Tr0ub4dor&3@server;refresh_token_interval: 30", "Tr0ub4dor&3"),
 ])
-def test_redigir_valor_antes_da_keyword_sem_separador_nao_vaza(texto, segredo):
+def test_redigir_limite_conhecido_valor_antes_da_keyword(texto, visivel):
+    """Limite aceito, não garantia de segurança — ver bloco acima."""
     saida = af.redigir(texto)
-    assert segredo not in saida
+    assert visivel in saida
+    assert af._MASCARA in saida  # o que vem DEPOIS da keyword continua coberto
 
 
 def test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome():
@@ -424,51 +436,6 @@ def test_redigir_limite_conhecido_valor_colado_sem_fronteira_a_identificador_dif
     saida = af.redigir(texto)
     assert segredo in saida  # limite conhecido (14ª rodada), não uma garantia de segurança
     assert af._MASCARA in saida
-
-
-# Achado real da 12ª rodada da revisão adversarial da F2b: a proteção da
-# 11ª rodada ("valor antes da keyword não vaza") só tinha sido aplicada
-# ao ramo SEM separador reconhecido (`corte is None`). O ramo COM
-# separador reconhecido tinha o MESMO buraco: achar um `:`/`=` depois
-# da keyword só prova que há ALGUM campo:valor dali em diante — nunca
-# que o texto ANTES do match é seguro. Bastava um 2º campo qualquer
-# mais adiante na mesma linha (com separador reconhecível) para reabrir
-# o vazamento que a 11ª rodada tinha fechado no outro ramo. Corrigido
-# unificando o discriminador "fronteira de palavra antes do match" para
-# os dois ramos (`fim = corte if corte is not None else m.end()`).
-@pytest.mark.parametrize("texto,segredo", [
-    ("Warning: hardcoded connection string sa:P@ssW0rd123!@server used; "
-     "recommend using token: env_var instead", "P@ssW0rd123"),
-    ("valor: abc123, campo relacionado: password: outro_valor", "abc123"),
-    ("SEGREDO_REAL_999 e depois token: campo_qualquer", "SEGREDO_REAL_999"),
-])
-def test_redigir_valor_antes_da_keyword_com_separador_reconhecido_depois_nao_vaza(texto, segredo):
-    """Variante do achado da 11ª rodada: aqui HÁ um separador `:`/`=`
-    reconhecível depois da 1ª keyword (associado a um campo diferente,
-    mais adiante) — o que não deveria bastar para considerar o prefixo
-    seguro."""
-    saida = af.redigir(texto)
-    assert segredo not in saida
-
-
-# Achado real da 13ª rodada da revisão adversarial da F2b: a correção da
-# 12ª rodada só olhava o caractere IMEDIATAMENTE antes do início do
-# match — provando apenas que a keyword é infixo do IDENTIFICADOR
-# LOCAL, nunca que TODO o prefixo da linha é seguro. Quando a keyword
-# está no MEIO de um identificador mais adiante (`campo_token_...`,
-# `refresh_token_...` — nomes plausíveis de parâmetro/config em ETL) e
-# HÁ um valor real e independente mais cedo na mesma linha, separado
-# por uma fronteira real (espaço, `;`, `,`), esse valor vazava por
-# completo.
-@pytest.mark.parametrize("texto,segredo", [
-    ("SEGREDO_REAL_999 campo_token_relacionado: outro_valor", "SEGREDO_REAL_999"),
-    ("ConnString=sa:Tr0ub4dor&3@server;refresh_token_interval: 30", "Tr0ub4dor&3"),
-    ("Parameter dump: DSN=PRODDB;UID=sa;RAWCRED=Tr0ub4dor&3xyz, "
-     "next_secret_rotation_days: 30", "Tr0ub4dor&3xyz"),
-])
-def test_redigir_valor_antes_da_keyword_com_identificador_composto_nao_vaza(texto, segredo):
-    saida = af.redigir(texto)
-    assert segredo not in saida
 
 
 def test_redigir_json_com_aspas_antes_do_nome_continua_preservando_o_campo():
