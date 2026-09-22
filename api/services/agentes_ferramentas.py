@@ -88,9 +88,30 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # da linha a partir dali, qualquer segredo SEGUINTE na mesma linha já
 # fica coberto — não existe mais a possibilidade de "pular" um segredo
 # anterior para tratar um posterior, que era a causa da 7ª rodada.
+#
+# Achado real da 8ª rodada: a versão original desta regex (herdada,
+# sem mudança, de `_RE_SEGREDO`/`_RE_KEYWORD_SOLTA` das rodadas
+# anteriores) exigia delimitador não-letra tanto ANTES quanto DEPOIS da
+# keyword. O delimitador de DEPOIS é o que evita falso positivo em
+# "TOKENIZER" (depois de "token" vem "i", uma letra — não casa). Mas o
+# delimitador de ANTES tem um efeito colateral grave: um nome em
+# camelCase/PascalCase, onde a keyword vem colada a outra palavra sem
+# `_`/`-`/espaço (`DbPassword`, `authToken`, `accessToken`,
+# `clientSecret` — nomes plausíveis de parâmetro DataStage, o mesmo
+# domínio que `dags/utils/isx_engine.py` já trata com regex SEM
+# boundary nenhum), nunca satisfaz esse delimitador — `_RE_KEYWORD` não
+# casa em lugar NENHUM da linha, e o segredo sai por completo, sem
+# máscara. Esse era o único ponto de defesa no caminho do stdout cru do
+# `dsjob` via SSH (`ferramenta_dsjob`) — vazamento real, não hipotético.
+# Removido o delimitador de ANTES: o de DEPOIS sozinho já basta para
+# barrar "TOKENIZER" (e qualquer outra keyword seguida de letra), e o
+# preço de aceitar a keyword colada a um prefixo (`DbPassword`,
+# `unencrypted`) é, na pior hipótese, mascarar um pouco mais do que o
+# necessário (over-masking) — nunca vazar, que é o trade-off já aceito
+# no resto do design desta função.
 _JANELA_NOME_S = 40  # generoso para qualquer nome de parâmetro real
 _RE_KEYWORD = re.compile(
-    r"(?i)(?:^|[^a-zA-Z])(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)(?=$|[^a-zA-Z])",
+    r"(?i)(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)(?=$|[^a-zA-Z])",
     re.M)
 _CHAR_NOME = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-\"' ")
 _MASCARA = "••••"

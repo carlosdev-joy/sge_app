@@ -249,6 +249,51 @@ def test_redigir_mascara_preexistente_no_texto_nao_esconde_segredo_real():
     assert "leak3_real" not in saida
 
 
+# Achado real da 8ª rodada da revisão adversarial da F2b: `_RE_KEYWORD`
+# exigia delimitador não-letra tanto ANTES quanto DEPOIS da keyword. Um
+# nome em camelCase/PascalCase (keyword colada a outra palavra, sem
+# `_`/`-`/espaço — plausível em parâmetro DataStage, ex. `DbPassword`, o
+# mesmo nome usado como fixture realista em
+# tests/test_lineage_isx_engine.py) nunca satisfazia o delimitador de
+# ANTES: a regra não casava em lugar nenhum da linha, e o segredo saía
+# por COMPLETO, sem máscara nenhuma — inclusive no caminho do stdout cru
+# do `dsjob` via SSH, onde `redigir()` é a ÚNICA barreira antes do
+# modelo. Corrigido removendo o delimitador de ANTES (o de DEPOIS
+# sozinho já barra "TOKENIZER" e afins).
+@pytest.mark.parametrize("texto,segredo", [
+    ("DbPassword=senhaReal123!", "senhaReal123"),
+    ("authToken: mysecretvalue123", "mysecretvalue123"),
+    ('{"accessToken": "eyJSECRETPAYLOAD123"}', "eyJSECRETPAYLOAD123"),
+    ('{"clientSecret": "abcdef123456"}', "abcdef123456"),
+])
+def test_redigir_nome_camel_case_colado_a_prefixo_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+    assert af._MASCARA in saida
+
+
+def test_redigir_camel_case_preserva_o_nome_do_campo():
+    assert af.redigir("DbPassword=senhaReal123!") == "DbPassword=••••"
+
+
+def test_redigir_camel_case_e_o_primeiro_segredo_da_linha_nao_vaza():
+    """A keyword em camelCase precisa ser achada mesmo quando é a
+    PRIMEIRA ocorrência da linha (não só quando um 2º segredo já
+    "salvaria" a máscara) — reprodução exata do achado da 8ª rodada."""
+    texto = '{"authToken": "REALSECRET1_LEAK", "API_KEY": "REALSECRET2"}'
+    saida = af.redigir(texto)
+    assert "REALSECRET1_LEAK" not in saida
+    assert "REALSECRET2" not in saida
+
+
+def test_redigir_tokenizer_continua_sem_falso_positivo():
+    """A remoção do delimitador de ANTES não reabre a brecha de
+    "TOKENIZER" — o delimitador de DEPOIS (letra logo após a keyword)
+    ainda impede o casamento."""
+    texto = "O TOKENIZER processa o texto normalmente."
+    assert af.redigir(texto) == texto
+
+
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
 
 def test_truncar_texto_curto_nao_muda():
