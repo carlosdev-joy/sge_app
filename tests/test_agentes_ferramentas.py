@@ -313,6 +313,32 @@ def test_ferramenta_base_nao_encontrado():
     assert r == {"encontrado": False}
 
 
+# Achado real da 2ª rodada da revisão adversarial da F2b: `parameters_json`/
+# `flow_json` são gravados como um `json.dumps(...)` COMPACTO (uma linha só)
+# por `lineage_isx._js()` — se `ferramenta_base` devolvesse essas colunas
+# CRUAS (como string), `redigir_estrutura()` (que só desce em dict/list)
+# trataria o blob inteiro como UMA folha só, reproduzindo o over-masking
+# "até o fim da linha" exatamente onde moram os parâmetros `Encrypted`.
+# `ferramenta_base` agora DESSERIALIZA essas colunas antes de devolver.
+def test_ferramenta_base_desserializa_parameters_e_flow_json():
+    import json
+    parametros = [
+        {"name": "DB_PASSWORD", "type": "Encrypted", "default": "{iisenc}AbCdEf==", "description": "senha"},
+        {"name": "DB_HOST", "type": "string", "default": "oracle-prod01.empresa.local", "description": "host"},
+    ]
+    linha = ("PIPE_VENDAS", "JobCarga", "\\Jobs\\Cat", "PARALLEL", "2026-09-01T10:00:00",
+             "descricao", json.dumps(parametros, ensure_ascii=False), "[]", "ok", None, "2026-09-10 10:00:00")
+    r = af.ferramenta_base(_CurBase(linha=linha, stages=1), "BI_CVP", "JobCarga")
+    # já veio desserializado — não é mais uma string JSON crua
+    assert isinstance(r["parameters_json"], list)
+    assert r["parameters_json"][1]["name"] == "DB_HOST"
+
+    # e, combinado com redigir_estrutura(), o dado útil sobrevive ao lado do segredo
+    texto = json.dumps(af.redigir_estrutura(r), ensure_ascii=False, default=str)
+    assert "DB_HOST" in texto and "oracle-prod01.empresa.local" in texto
+    assert "AbCdEf==" not in texto
+
+
 def test_ferramenta_base_traz_idade_ja_calculada():
     """Critério 3 da F2: a resposta já informa a idade — o modelo não
     precisa calcular a partir de uma data crua."""

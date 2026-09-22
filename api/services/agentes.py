@@ -376,7 +376,8 @@ def _com_conexao(abrir_conn, fn):
 
 async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: str | None,
                                ssh_max: int, espera_max_s: float, acao_editar: bool,
-                               matricula: str | None, extracoes_isx: int, resta_s: float) -> tuple[dict, str | None]:
+                               matricula: str | None, extracoes_isx: int,
+                               resta_agora) -> tuple[dict, str | None]:
     """Executa UMA ferramenta pedida pelo modelo, sempre pela allowlist —
     NUNCA deixa `base`/`dsjob`/`dsx_consulta`/`isx_extrair` rodar sem
     `projeto` resolvido (a guarda do risco 28). `abrir_conn` é uma fábrica
@@ -387,14 +388,19 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
     de `resolver_projeto`/`base` virava exceção não tratada antes (achado
     real da revisão adversarial da F2: propagava como 500 cru e perdia a
     mensagem do usuário, que nunca chegava a ser persistida). Erro vira
-    dado nomeado que volta ao modelo como conversa. `resta_s` é o orçamento
-    restante da RODADA (usado por `isx_extrair` para recusar ANTES de
-    submeter ao executor compartilhado, se não sobrar tempo suficiente —
-    ver `_isx_extrair`). Devolve (dado-para-o-modelo, projeto novo-ou-None)."""
+    dado nomeado que volta ao modelo como conversa. `resta_agora` é a
+    FUNÇÃO `_resta()` de `conversar()` (não um valor capturado uma vez) —
+    `isx_extrair` a chama de novo IMEDIATAMENTE ANTES de submeter ao
+    executor compartilhado, depois das consultas de banco (achado real da
+    revisão adversarial da F2b: um valor `float` estático capturado antes
+    dessas consultas não descontava o tempo delas, deixando pouca margem
+    real até o teto de 60s do executor — ver `_isx_extrair`). Devolve
+    (dado-para-o-modelo, projeto novo-ou-None)."""
     try:
         return await _executar_ferramenta_interna(
             abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s,
-            acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx, resta_s=resta_s)
+            acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx,
+            resta_agora=resta_agora)
     except (af.ServidorOcupado, DsConsoleError) as e:
         return {"texto": str(e)}, None
     except Exception as e:  # banco/SSH/rede: nunca derruba a rodada
@@ -404,7 +410,7 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
 async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, projeto: str | None,
                                        ssh_max: int, espera_max_s: float, acao_editar: bool,
                                        matricula: str | None, extracoes_isx: int,
-                                       resta_s: float) -> tuple[dict, str | None]:
+                                       resta_agora) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
     if nome == "resolver_projeto":
@@ -430,7 +436,7 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
 
     if nome == "isx_extrair":
         return await _isx_extrair(abrir_conn, args, projeto=projeto, acao_editar=acao_editar,
-                                  matricula=matricula, extracoes_isx=extracoes_isx, resta_s=resta_s)
+                                  matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=resta_agora)
 
     if nome == "dsx_consulta":
         return await _dsx_consulta(abrir_conn, args, projeto=projeto)
@@ -488,8 +494,13 @@ LINK_GOVERNANCA = "a tela de Governança de Lineage (Lineage › ISX)"
 MARGEM_ISX_S = 5
 
 
+def _sem_tempo_para_isx() -> dict:
+    return {"texto": "Não sobra tempo suficiente nesta pergunta para uma extração ISX "
+                     "(pode levar até um minuto) — tente de novo numa pergunta nova."}
+
+
 async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_editar: bool,
-                       matricula: str | None, extracoes_isx: int, resta_s: float) -> tuple[dict, str | None]:
+                       matricula: str | None, extracoes_isx: int, resta_agora) -> tuple[dict, str | None]:
     """`isx_extrair` (F2b): export via `istool` + parse + gravação, com a
     MESMA régua do botão `POST /lineage/isx/extrair` — mesmas funções,
     mesmo executor. Duas portas de entrada:
@@ -506,12 +517,17 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
     if extracoes_isx > af.MAX_EXTRACOES_ISX:  # `conversar()` já contou esta tentativa antes de chamar
         return ({"texto": f"Já fiz {af.MAX_EXTRACOES_ISX} extrações ISX nesta pergunta — é o limite "
                           "da rodada. Pode perguntar de novo com um pedido mais direto."}, None)
-    if resta_s < af.ISX_TETO_EXTRAIR_S + MARGEM_ISX_S:
-        # Recusa ANTES de submeter ao executor compartilhado — nunca inicia
-        # um trabalho que não teria tempo de terminar dentro do próprio
-        # teto (ver comentário de MARGEM_ISX_S acima).
-        return ({"texto": "Não sobra tempo suficiente nesta pergunta para uma extração ISX "
-                          "(pode levar até um minuto) — tente de novo numa pergunta nova."}, None)
+    if resta_agora() < af.ISX_TETO_EXTRAIR_S + MARGEM_ISX_S:
+        # Rejeição RÁPIDA (evita o trabalho de banco abaixo se já não há
+        # esperança nenhuma) — mas NÃO é a checagem que garante segurança
+        # sozinha: o tempo passa entre aqui e a submissão ao executor
+        # (consultas de banco abaixo), por isso `resta_agora()` é chamada
+        # DE NOVO, em tempo real, logo antes de `isx_no_executor` (achado
+        # real da revisão adversarial da F2b: um valor `float` capturado
+        # uma vez só, no início, não descontava esse tempo — a margem de
+        # 5s podia não sobrar de verdade depois de 2 conexões pyodbc e 4
+        # queries).
+        return _sem_tempo_para_isx(), None
 
     pipeline_name = str(args.get("pipeline_name") or "").strip() or None
     job_name_isx = str(args.get("job_name") or "").strip() or None
@@ -547,6 +563,13 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
             af.lineage_isx.mapa_tipos(cur)))
     else:
         cab, tem_linhas, mapa = None, False, {}
+
+    # 2ª checagem, EM TEMPO REAL, imediatamente antes de submeter ao
+    # executor compartilhado — depois de `config()`/`cabecalho`/
+    # `conta_linhas`/`mapa_tipos` (até 2 conexões pyodbc curtas + 4
+    # queries), que já consumiram parte do orçamento desde a 1ª checagem.
+    if resta_agora() < af.ISX_TETO_EXTRAIR_S + MARGEM_ISX_S:
+        return _sem_tempo_para_isx(), None
 
     t0 = time.monotonic()
     try:
@@ -712,7 +735,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             dado, projeto_novo = await asyncio.wait_for(
                 _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
                                      ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
-                                     matricula=matricula, extracoes_isx=extracoes_isx, resta_s=resta),
+                                     matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=_resta),
                 timeout=max(1.0, resta - 2))
         except (asyncio.TimeoutError, TimeoutError):
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}

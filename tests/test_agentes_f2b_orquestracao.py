@@ -236,6 +236,55 @@ async def test_isx_extrair_sem_orcamento_suficiente_nao_toca_o_executor(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_isx_extrair_2a_checagem_de_orcamento_considera_tempo_do_banco(monkeypatch):
+    """Achado real da 2ª rodada da revisão adversarial da F2b: uma checagem
+    de orçamento feita só UMA VEZ, no início (com um valor `float`
+    capturado antes das consultas de banco), não descontava o tempo delas
+    — a margem de MARGEM_ISX_S podia não sobrar de verdade na hora real de
+    submeter ao executor. Prova: o relógio avança DURANTE `cabecalho()`
+    (simulando latência real de banco) o bastante para que só a 2ª
+    checagem (em tempo real, feita DEPOIS das consultas) pegue a falta de
+    orçamento — a 1ª (feita antes) deixaria passar."""
+    relogio = [0.0]
+    monkeypatch.setattr(svc.time, "monotonic", lambda: relogio[0])
+    monkeypatch.setattr(svc, "ORCAMENTO_AGENTE_S", 70.0)  # passa a 1ª checagem (>=65), por pouco
+
+    monkeypatch.setattr(af, "isx_info_do_job", lambda cur, pipeline, job: {
+        "ds_project": "BI_CVP", "job_type": "datastage", "pipeline_name": pipeline, "job_name": job})
+    monkeypatch.setattr(af.lineage_isx, "config", lambda: "CFG-FAKE")
+
+    def _cabecalho_lento(cur, p, j):
+        relogio[0] += 10.0  # simula latência real de consulta ao banco
+        return None
+    monkeypatch.setattr(af.lineage_isx, "cabecalho", _cabecalho_lento)
+    monkeypatch.setattr(af.lineage_isx, "conta_linhas", lambda cur, p, j: 0)
+    monkeypatch.setattr(af.lineage_isx, "mapa_tipos", lambda cur: {})
+
+    # Um dublê que LEVANTA seria capturado em silêncio pelo try/except já
+    # existente ao redor de `isx_no_executor` (viraria só uma mensagem de
+    # erro, com status "ok" de qualquer forma) — não provaria nada. Um
+    # CONTADOR é a prova real de que a chamada nunca aconteceu.
+    chamadas = []
+    async def _conta(*a, **k):
+        chamadas.append(1)
+        return ({}, {}, False)
+    monkeypatch.setattr(af, "isx_no_executor", _conta)
+
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "isx_extrair", "args": {"pipeline_name": "PIPE_VIDA", "job_name": "JobX"}}\n```',
+        "sem tempo mesmo",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "extrai rápido"}],
+                            projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None,
+                            ssh_max=10, acao_editar=True, matricula="DEV1")
+    assert r["status"] == "ok"
+    assert chamadas == []  # a 2ª checagem recusou ANTES de submeter ao executor
+    mensagem_ferramenta = provedor.chamadas[1]["historico"][-1]["content"]
+    assert "tempo" in mensagem_ferramenta.lower()
+
+
+@pytest.mark.asyncio
 async def test_isx_extrair_sem_job_name_e_recusado(monkeypatch):
     provedor = _Provedor([
         '```json\n{"ferramenta": "isx_extrair", "args": {"pipeline_name": "PIPE_VIDA"}}\n```',

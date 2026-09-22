@@ -111,6 +111,33 @@ def redigir(texto: str) -> str:
     return saida
 
 
+# Formato real de um PARÂMETRO de job DataStage (`dags/utils/isx_engine.py`,
+# `has_ParameterDef`): `{"name": ..., "type": ..., "default": ..., "description": ...}`.
+# Quando esse dict já chega DESSERIALIZADO (dict Python, não string JSON —
+# ex.: depois da correção de `ferramenta_base` para o achado 1), a keyword
+# sensível mora numa CHAVE IRMÃ (`type` == "Encrypted", ou `name` contendo
+# "senha"/"password"), NUNCA dentro da MESMA STRING que o valor real
+# (`default`) — `redigir()`, textual e por string isolada, não enxerga essa
+# relação estrutural entre campos. Achado real da 2ª rodada da revisão
+# adversarial da F2b: `redigir_estrutura()` "por string" sozinha deixava o
+# `default`/`value` de um parâmetro Encrypted intocado, porque a string do
+# VALOR em si não contém nenhuma keyword.
+_CHAVES_TIPO_PARAMETRO = ("type", "Type", "extendedType", "typeCode")
+_CHAVES_NOME_PARAMETRO = ("name", "Name")
+_CHAVES_VALOR_PARAMETRO = ("default", "defaultValue", "default_value", "value", "Value", "valor")
+_RE_NOME_PARAMETRO_SENSIVEL = re.compile(r"(?i)\b(senha|password|pwd|secret|token|api[_-]?key)\b")
+
+
+def _parece_parametro_sensivel(d: dict) -> bool:
+    for chave in _CHAVES_TIPO_PARAMETRO:
+        if str(d.get(chave) or "").strip().lower() == "encrypted":
+            return True
+    for chave in _CHAVES_NOME_PARAMETRO:
+        if _RE_NOME_PARAMETRO_SENSIVEL.search(str(d.get(chave) or "")):
+            return True
+    return False
+
+
 def redigir_estrutura(valor):
     """Aplica `redigir()` a cada STRING FOLHA de um dict/list, recursivamente
     — NUNCA ao JSON serializado inteiro de uma vez. `redigir()` mascara até
@@ -126,9 +153,21 @@ def redigir_estrutura(valor):
     o dano a cada campo individualmente, sem perder segurança (a defesa
     multi-linha original de `redigir()` continua valendo DENTRO de uma
     string que, por si só, tenha várias linhas — ex.: um `job_description`
-    grande, ou o stdout redigido de um `dsjob`)."""
+    grande, ou o stdout redigido de um `dsjob`).
+
+    Camada ESTRUTURAL adicional (2ª rodada): quando um dict parece um
+    PARÂMETRO sensível (`_parece_parametro_sensivel`), o(s) campo(s) de
+    VALOR (`default`/`value`/...) são mascarados diretamente — cobre o
+    caso em que a keyword está numa chave irmã, não na mesma string."""
     if isinstance(valor, dict):
-        return {k: redigir_estrutura(v) for k, v in valor.items()}
+        sensivel = _parece_parametro_sensivel(valor)
+        saida = {}
+        for k, v in valor.items():
+            if sensivel and k in _CHAVES_VALOR_PARAMETRO and isinstance(v, str) and v:
+                saida[k] = _MASCARA
+            else:
+                saida[k] = redigir_estrutura(v)
+        return saida
     if isinstance(valor, list):
         return [redigir_estrutura(v) for v in valor]
     if isinstance(valor, str):
@@ -358,6 +397,20 @@ def _idade_dias(data_iso: str | None) -> int | None:
     return max(0, (_dt.datetime.now() - quando).days)
 
 
+def _json_ou(v, padrao):
+    """`json.loads` tolerante — texto vazio/`None`/inválido devolve `padrao`,
+    nunca levanta. Mesma função de `services.lineage_isx._json_ou`, copiada
+    aqui para não acoplar `agentes_ferramentas` ao módulo inteiro por uma
+    função de 5 linhas."""
+    if not v:
+        return padrao
+    try:
+        import json as _json
+        return _json.loads(v)
+    except (TypeError, ValueError):
+        return padrao
+
+
 def ferramenta_base(cur, ds_project: str, job_name: str) -> dict:
     """Lê `etl_ds_job_isx`/`etl_job_lineage` (isx_auto) para (projeto, job).
     Sem FK direta por projeto — busca por `ds_project` + `job_name`, que é
@@ -365,7 +418,18 @@ def ferramenta_base(cur, ds_project: str, job_name: str) -> dict:
 
     Inclui `idade_dias` do `ds_last_modified` — a RESPOSTA já traz a idade
     computada (critério 3 da F2: "a resposta informa a idade do dado"), sem
-    depender do modelo calcular a partir de uma data crua."""
+    depender do modelo calcular a partir de uma data crua.
+
+    `parameters_json`/`flow_json` são DESSERIALIZADOS aqui (nunca devolvidos
+    como string JSON crua) — achado real da revisão adversarial da F2b:
+    essas colunas guardam um `json.dumps(...)` COMPACTO (uma linha só,
+    gravado por `lineage_isx._js()`); `redigir_estrutura()`, rio abaixo,
+    só desce em dict/list — uma STRING contendo um blob JSON inteiro era
+    tratada como UMA folha só, e `redigir()` sobre ela reproduzia o
+    over-masking "até o fim da linha" exatamente onde moram os parâmetros
+    `Encrypted`. Desserializar aqui iguala o formato ao que
+    `lineage_isx.montar()` já devolve (dict/list em memória), que
+    `redigir_estrutura()` já trata corretamente campo a campo."""
     cur.execute(
         "SELECT pipeline_name, job_name, ds_folder_path, ds_job_type, ds_last_modified, "
         "       job_description, parameters_json, flow_json, status, erro, extracted_at "
@@ -382,7 +446,8 @@ def ferramenta_base(cur, ds_project: str, job_name: str) -> dict:
         "encontrado": True, "origem": "isx", "pipeline_name": row[0], "job_name": row[1],
         "ds_folder_path": row[2], "job_type": row[3], "ds_last_modified": row[4],
         "idade_dias": _idade_dias(row[4]),
-        "job_description": row[5], "parameters_json": row[6], "flow_json": row[7],
+        "job_description": row[5],
+        "parameters_json": _json_ou(row[6], []), "flow_json": _json_ou(row[7], []),
         "status": row[8], "erro": row[9], "extracted_at": str(row[10]) if row[10] else None,
         "stages": int(n_stages[0]) if n_stages else 0,
     }
