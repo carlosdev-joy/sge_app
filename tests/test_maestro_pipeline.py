@@ -33,7 +33,7 @@ if "pyodbc" not in sys.modules:
 os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 
-from services import caixa_ia, maestro  # noqa: E402
+from services import ia_provedor, maestro  # noqa: E402
 
 REF = date(2026, 3, 15)
 DECL_PIPE = {"nivel": "pipeline", "jobs": [
@@ -241,8 +241,8 @@ def ambiente(monkeypatch):
     async def _fake(cfg, system, mensagens):
         chamadas.append(system)
         return ("Entendi.\n```json\n" + json.dumps(_proposta("dat_inicio")) + "\n```", "m")
-    monkeypatch.setattr(caixa_ia, "load_config", lambda c=None: {"provider": "anthropic", "api_key_enc": "x", "model": ""})
-    monkeypatch.setattr(caixa_ia, "chat_conversa", _fake)
+    monkeypatch.setattr(ia_provedor, "load_config", lambda c=None: {"provider": "anthropic", "api_key_enc": "x", "model": ""})
+    monkeypatch.setattr(ia_provedor, "chat_conversa", _fake)
     monkeypatch.setattr(lineage_isx, "cabecalho", lambda c, p, j: {
         "parameters_json": json.dumps([{"name": "dat_inicio", "type": "Date"}]), "status": "ok", "extracted_at": None} if j == "JobA" else None)
     with patch("routers.maestro.get_db_conn", return_value=_Conn(cur)):

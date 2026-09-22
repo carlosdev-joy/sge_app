@@ -17,7 +17,7 @@ export interface ConversaHistorico {
 }
 
 // Visibilidade dos assistentes decidida pelo backend
-// (Admin > Caixa Seguro IA → GET /caixa/chat/status). Enquanto a resposta
+// (Admin > IA → GET /caixa/chat/status). Enquanto a resposta
 // não chega — ou em erro — os assistentes ficam ocultos.
 export function useAssistentesIA(): boolean {
   const { data } = useQuery<{ enabled: boolean }>({

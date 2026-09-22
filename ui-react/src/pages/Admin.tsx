@@ -3674,7 +3674,7 @@ function SondaServiceNowTab() {
           <p className="text-[11px] text-dim">
             Classifica cada chamado em <strong>pode iniciar</strong> ou{' '}
             <strong>retornar ao solicitante</strong>, com as lacunas e as perguntas
-            a devolver. Usa o provedor configurado em <em>Caixa Seguro IA</em>.
+            a devolver. Usa o provedor configurado em <em>IA</em>.
             {' '}Desligada, a fila continua sendo classificada por regra de texto —
             e a tela marca esses vereditos como automáticos, para ninguém confundir
             com análise de IA.
@@ -3854,7 +3854,7 @@ const ADMIN_GROUPS = [
     { id: 'comunicados', label: 'Comunicados' },
     { id: 'notificacoes', label: 'Notificações' },
     { id: 'powerbi', label: 'Power BI — Acessos' },
-    { id: 'caixa-ia', label: 'Caixa Seguro IA' },
+    { id: 'ia', label: 'IA' },
     { id: 'maestro', label: 'Maestro' },
     { id: 'email', label: 'E-mail' },
   ] },
@@ -3863,22 +3863,24 @@ const ADMIN_GROUPS = [
   ] },
 ]
 
-// ── Caixa Seguro IA (assistentes Diego/Lari/Léo) ─────────────────
-interface CaixaIAVerificacao {
+// ── IA (provedor compartilhado: Maestro, triagem, assistentes do Caixa
+// Seguro — Diego/Lari/Léo — e agentes; até 21/09/2026 esta aba só falava do
+// Caixa. Ver docs/spec-agentes-datastage.md, F0.) ────────────────
+interface IAVerificacao {
   quando?: string; ok?: boolean; etapa?: string; provedor?: string
   modelo?: string; latencia_ms?: number | null; por?: string; mensagem?: string
 }
-interface CaixaIADiagnostico {
+interface IADiagnostico {
   ok: boolean; etapa: string; mensagem: string; provedor: string; modelo: string
   endpoint: string; proxy_ambiente: string; usa_proxy: boolean; formato: string
   proxy_em_uso: string | null; proxy_motivo: string | null
   resposta: string; http_status: number | null; latencia_ms: number | null
   verificado_em?: string; verificado_por?: string; persistido?: boolean
 }
-interface CaixaIAConfig {
+interface IAConfig {
   enabled: boolean; provider: string; model: string; base_url: string
   api_key_set: boolean; usa_proxy: boolean; proxy_ambiente: string
-  ultima_verificacao: CaixaIAVerificacao | null
+  ultima_verificacao: IAVerificacao | null
 }
 
 // Cada etapa nomeia QUEM resolve. "Falhou" sozinho manda o operador procurar
@@ -3895,7 +3897,7 @@ const ETAPA_IA: Record<string, string> = {
 
 // Painel do resultado. Fica na tela, com data e hora: um toast some, e a
 // pergunta "isso está conectando?" precisa de resposta que sobreviva ao F5.
-function DiagnosticoIA({ d }: { d: CaixaIADiagnostico }) {
+function DiagnosticoIA({ d }: { d: IADiagnostico }) {
   const linhas: Array<[string, string]> = [
     ['Provedor', d.provedor],
     ['Modelo', d.modelo || '—'],
@@ -3944,30 +3946,30 @@ function DiagnosticoIA({ d }: { d: CaixaIADiagnostico }) {
     </div>
   )
 }
-function CaixaIATab() {
-  const { data, isLoading, isError, error } = useQuery<{ config: CaixaIAConfig }>({ queryKey: ['admin-caixa-ia'], queryFn: () => adminPost('caixa_ia_get') })
+function IATab() {
+  const { data, isLoading, isError, error } = useQuery<{ config: IAConfig }>({ queryKey: ['admin-ia'], queryFn: () => adminPost('ia_get') })
   if (isLoading) return <PageSpinner />
   if (isError || !data) return (
     <p className="text-sm text-red-600 dark:text-red-400">
-      Falha ao carregar a configuração dos assistentes: {error?.message}
+      Falha ao carregar a configuração de IA: {error?.message}
     </p>
   )
-  return <CaixaIAForm cfg={data.config} />
+  return <IAForm cfg={data.config} />
 }
 
 // Componente separado para o form nascer já inicializado da config carregada
 // (edições do usuário sobrevivem ao refetch; só api_key é limpa após salvar).
-function CaixaIAForm({ cfg }: { cfg: CaixaIAConfig }) {
+function IAForm({ cfg }: { cfg: IAConfig }) {
   const [form, setForm] = useState(() => ({ enabled: cfg.enabled, provider: cfg.provider, model: cfg.model, base_url: cfg.base_url, usa_proxy: cfg.usa_proxy, api_key: '' }))
-  const [diag, setDiag] = useState<CaixaIADiagnostico | null>(null)
+  const [diag, setDiag] = useState<IADiagnostico | null>(null)
 
   const salvar = useMutation({
     mutationFn: (f: typeof form) =>
-      adminPost('caixa_ia_set', { enabled: f.enabled, provider: f.provider, model: f.model, base_url: f.base_url, usa_proxy: f.usa_proxy, ...(f.api_key.trim() ? { api_key: f.api_key.trim() } : {}) }),
+      adminPost('ia_set', { enabled: f.enabled, provider: f.provider, model: f.model, base_url: f.base_url, usa_proxy: f.usa_proxy, ...(f.api_key.trim() ? { api_key: f.api_key.trim() } : {}) }),
     onSuccess: () => {
       toast.success('Configuração salva')
-      queryClient.invalidateQueries({ queryKey: ['admin-caixa-ia'] })
-      // visibilidade dos assistentes na sessão atual (src/caixa/lib/config.ts)
+      queryClient.invalidateQueries({ queryKey: ['admin-ia'] })
+      // visibilidade dos assistentes do Caixa na sessão atual (src/caixa/lib/config.ts)
       queryClient.invalidateQueries({ queryKey: ['caixa-ia-status'] })
       setForm(f => ({ ...f, api_key: '' }))
       // O laudo descreve a configuração que foi verificada. Depois de salvar
@@ -3980,10 +3982,10 @@ function CaixaIAForm({ cfg }: { cfg: CaixaIAConfig }) {
   // Verificar NÃO usa toast como resultado: o laudo fica na tela. O toast
   // sobraria só para o caso de a própria requisição não chegar ao servidor.
   const verificar = useMutation({
-    mutationFn: () => adminPost<{ diagnostico: CaixaIADiagnostico }>('caixa_ia_verificar'),
+    mutationFn: () => adminPost<{ diagnostico: IADiagnostico }>('ia_verificar'),
     onSuccess: r => {
       setDiag(r.diagnostico)
-      queryClient.invalidateQueries({ queryKey: ['admin-caixa-ia'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-ia'] })
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -3996,8 +3998,9 @@ function CaixaIAForm({ cfg }: { cfg: CaixaIAConfig }) {
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
       <InfoBanner>
-        Assistentes IA da seção Caixa Seguro (Diego, Lari e Léo). Desativados, eles não aparecem
-        para os usuários. Para ativar é obrigatório configurar a chave de API do provedor —
+        Provedor de IA compartilhado (Maestro, triagem de chamados, assistentes do Caixa Seguro —
+        Diego, Lari e Léo — e agentes). Para o Caixa Seguro, desativados aqui, os assistentes não
+        aparecem para os usuários. Para ativar é obrigatório configurar a chave de API do provedor —
         a chave é armazenada cifrada (mesmo mecanismo das Conexões de Dados) e nunca é reexibida.
       </InfoBanner>
 
@@ -4132,7 +4135,7 @@ export default function Admin() {
         {tab === 'projetos' && <ProjetosTab />}
         {tab === 'sla' && <SlaReportTab />}
         {tab === 'powerbi' && <PowerBIAccessGuideTab />}
-        {tab === 'caixa-ia' && <CaixaIATab />}
+        {tab === 'ia' && <IATab />}
         {tab === 'maestro' && <MaestroTab />}
         {tab === 'email' && <EmailTab />}
       </div>

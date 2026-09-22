@@ -33,7 +33,7 @@ if "pyodbc" not in sys.modules:
 os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
 
-from services import caixa_ia, maestro  # noqa: E402
+from services import ia_provedor, maestro  # noqa: E402
 
 RECEITA = ('{"params":[{"param_name":"<DATA_INICIAL>","param_type":"Date","param_source":"data_referencia",'
            '"param_offset_meses":-1,"param_ancora":"inicio_mes","param_offset_dias":0,"param_formato":"%Y-%m-%d"},'
@@ -123,7 +123,7 @@ class _Conn:
 
 
 class _Provedor:
-    """Dublê de caixa_ia.chat_conversa: guarda o que recebeu e devolve o texto."""
+    """Dublê de ia_provedor.chat_conversa: guarda o que recebeu e devolve o texto."""
 
     def __init__(self, texto=RESPOSTA_MENSAL, erro=None):
         self.texto, self.erro, self.chamadas = texto, erro, []
@@ -149,10 +149,10 @@ def ambiente(monkeypatch):
     cur = _Cur()
     conn = _Conn(cur)
     provedor = _Provedor()
-    monkeypatch.setattr(caixa_ia, "load_config", lambda c=None: {
+    monkeypatch.setattr(ia_provedor, "load_config", lambda c=None: {
         "enabled": False, "provider": "anthropic", "model": "claude-x", "base_url": "",
         "api_key_enc": "cifrado", "usa_proxy": False, "ultima_verificacao": ""})
-    monkeypatch.setattr(caixa_ia, "chat_conversa", provedor)
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
     monkeypatch.setattr(lineage_isx, "cabecalho", lambda c, p, j: {
         "parameters_json": json.dumps([{"name": "pDataIni", "type": "Date"}, {"name": "pDataFim", "type": "Date"},
                                        {"name": "pSenha", "type": "Encrypted"}]),
@@ -193,7 +193,7 @@ def test_status_desligado_ou_sem_chave_ou_sem_110(ambiente, monkeypatch):
     cur.enabled = "0"
     assert cliente.get("/maestro/status").json() == {"enabled": False, "sugestoes": []}
     cur.enabled = "1"
-    monkeypatch.setattr(caixa_ia, "load_config", lambda c=None: {"api_key_enc": "", "provider": "anthropic"})
+    monkeypatch.setattr(ia_provedor, "load_config", lambda c=None: {"api_key_enc": "", "provider": "anthropic"})
     assert cliente.get("/maestro/status").json() == {"enabled": False, "sugestoes": []}
 
 
@@ -214,9 +214,9 @@ def test_conversar_desligado_e_503_sem_provedor_nem_registro(ambiente):
 def test_conversar_ligado_sem_chave_diz_qual_admin_falta(ambiente, monkeypatch):
     """Interruptor ligado × provedor sem chave são donos diferentes."""
     cliente, cur, _conn, provedor, _estado = ambiente
-    monkeypatch.setattr(caixa_ia, "load_config", lambda c=None: {"api_key_enc": "", "provider": "anthropic"})
+    monkeypatch.setattr(ia_provedor, "load_config", lambda c=None: {"api_key_enc": "", "provider": "anthropic"})
     r = cliente.post("/maestro/conversar", json=_corpo())
-    assert r.status_code == 503 and "Caixa Seguro IA" in r.json()["detail"]
+    assert r.status_code == 503 and "Admin › IA" in r.json()["detail"]
     assert "desligado" not in r.json()["detail"]
     assert provedor.chamadas == [] and cur.inseridos == []
 

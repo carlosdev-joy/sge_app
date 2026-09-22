@@ -7,9 +7,11 @@
   GET  /maestro/historico   últimas conversas do usuário
 
 Tudo atrás de `tela_jobs` — a permissão de Etapas e Fluxos (nav.ts): o Maestro
-não grava parâmetro nenhum, só orienta. Provedor de IA: services/caixa_ia
-(config caixa_ia_* de Admin › Caixa Seguro IA); interruptor próprio
-`maestro_enabled` (migration 110). Regras e validação: services/maestro.
+não grava parâmetro nenhum, só orienta. Provedor de IA: services/ia_provedor
+(config ia_* de Admin › IA; até 21/09/2026 era services/caixa_ia, com a
+mesma config sob o nome caixa_ia_* — ver docs/spec-agentes-datastage.md, F0);
+interruptor próprio `maestro_enabled` (migration 110). Regras e validação:
+services/maestro.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from db import get_db_conn
 from deps import get_admin_user, require_perm
-from services import caixa_ia, maestro
+from services import ia_provedor, maestro
 from services import job_params as jp
 
 log = logging.getLogger("orquestra-api")
@@ -33,7 +35,7 @@ router = APIRouter()
 _require_jobs = require_perm("tela_jobs")
 _CONVERSA_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,36}$")
 _INDISPONIVEL = ("Maestro temporariamente indisponível — contate o administrador "
-                 "(Admin › Caixa Seguro IA › Verificar mostra a causa)")
+                 "(Admin › IA › Verificar mostra a causa)")
 
 
 def _abrir():
@@ -56,9 +58,9 @@ def _fechar(conn, cur, commit: bool = False) -> None:
 def _estado(cur) -> tuple[bool, bool, dict]:
     """(interruptor, tem_chave, cfg). A tela só mostra o avatar com os dois:
     interruptor ligado sem provedor seria um 503 permanente — e as duas causas
-    têm donos diferentes (Admin › Maestro × Admin › Caixa Seguro IA), por isso
+    têm donos diferentes (Admin › Maestro × Admin › IA), por isso
     o conversar as distingue em vez de dizer só 'desligado'."""
-    cfg = caixa_ia.load_config(cur)
+    cfg = ia_provedor.load_config(cur)
     return maestro.enabled(cur), bool(cfg.get("api_key_enc")), cfg
 
 
@@ -169,7 +171,7 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
         if not tem_chave:
             raise HTTPException(status_code=503,
                                 detail="Maestro ligado, mas sem provedor de IA configurado "
-                                       "(Admin › Caixa Seguro IA: chave de API)")
+                                       "(Admin › IA: chave de API)")
         try:
             catalogo = maestro.carregar_catalogo(cur)
         except maestro.MaestroIndisponivel as e:
@@ -191,7 +193,7 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
     # 2) O provedor.
     inicio = time.monotonic()
     try:
-        texto, modelo = await caixa_ia.chat_conversa(cfg, system, mensagens)
+        texto, modelo = await ia_provedor.chat_conversa(cfg, system, mensagens)
     except HTTPException as e:
         duracao = int((time.monotonic() - inicio) * 1000)
         _registrar_silencioso(conversa_id=conversa_id, matricula=user["matricula"], pipeline=pipeline,
@@ -277,7 +279,7 @@ def maestro_admin_config(_user: dict = Depends(get_admin_user)):
             raise _503(e)
         return {"enabled": interruptor, "ativo": interruptor and tem_chave,
                 "provedor": {"provider": cfg.get("provider") or "anthropic",
-                             "model": cfg.get("model") or caixa_ia.DEFAULT_MODEL.get(cfg.get("provider") or "anthropic", ""),
+                             "model": cfg.get("model") or ia_provedor.DEFAULT_MODEL.get(cfg.get("provider") or "anthropic", ""),
                              "api_key_set": tem_chave},
                 "retencao_dias": maestro.RETENCAO_CONVERSAS_DIAS, **numeros}
     finally:
@@ -286,7 +288,7 @@ def maestro_admin_config(_user: dict = Depends(get_admin_user)):
 
 @router.post("/maestro/admin/config", tags=["maestro-admin"])
 def maestro_admin_config_set(body: dict = Body(default={}), user: dict = Depends(get_admin_user)):
-    """Liga/desliga. Ligar exige o provedor com chave (Admin › Caixa Seguro IA):
+    """Liga/desliga. Ligar exige o provedor com chave (Admin › IA):
     ligado sem provedor seria um avatar que nunca aparece e um 503 permanente."""
     ligado = bool(body.get("enabled"))
     conn, cur = _abrir()
@@ -295,7 +297,7 @@ def maestro_admin_config_set(body: dict = Body(default={}), user: dict = Depends
         if ligado and not tem_chave:
             raise HTTPException(status_code=422, detail={
                 "code": "provedor_sem_chave",
-                "errors": ["Configure o provedor de IA com a chave de API em Admin › Caixa Seguro IA antes de ligar o Maestro"]})
+                "errors": ["Configure o provedor de IA com a chave de API em Admin › IA antes de ligar o Maestro"]})
         maestro.gravar_enabled(cur, ligado, user["matricula"])
         _fechar(conn, cur, commit=True)
         return {"enabled": ligado}
