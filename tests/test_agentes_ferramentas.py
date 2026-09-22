@@ -382,6 +382,31 @@ def test_redigir_limite_conhecido_keyword_como_substring_do_proprio_valor_colado
     assert af._MASCARA in saida
 
 
+# Achado real da 12ª rodada da revisão adversarial da F2b: a proteção da
+# 11ª rodada ("valor antes da keyword não vaza") só tinha sido aplicada
+# ao ramo SEM separador reconhecido (`corte is None`). O ramo COM
+# separador reconhecido tinha o MESMO buraco: achar um `:`/`=` depois
+# da keyword só prova que há ALGUM campo:valor dali em diante — nunca
+# que o texto ANTES do match é seguro. Bastava um 2º campo qualquer
+# mais adiante na mesma linha (com separador reconhecível) para reabrir
+# o vazamento que a 11ª rodada tinha fechado no outro ramo. Corrigido
+# unificando o discriminador "fronteira de palavra antes do match" para
+# os dois ramos (`fim = corte if corte is not None else m.end()`).
+@pytest.mark.parametrize("texto,segredo", [
+    ("Warning: hardcoded connection string sa:P@ssW0rd123!@server used; "
+     "recommend using token: env_var instead", "P@ssW0rd123"),
+    ("valor: abc123, campo relacionado: password: outro_valor", "abc123"),
+    ("SEGREDO_REAL_999 e depois token: campo_qualquer", "SEGREDO_REAL_999"),
+])
+def test_redigir_valor_antes_da_keyword_com_separador_reconhecido_depois_nao_vaza(texto, segredo):
+    """Variante do achado da 11ª rodada: aqui HÁ um separador `:`/`=`
+    reconhecível depois da 1ª keyword (associado a um campo diferente,
+    mais adiante) — o que não deveria bastar para considerar o prefixo
+    seguro."""
+    saida = af.redigir(texto)
+    assert segredo not in saida
+
+
 # Achado real da 9ª rodada da revisão adversarial da F2b: a correção da
 # 8ª rodada (remover o delimitador de ANTES) só resolveu a keyword como
 # SUFIXO de um nome colado (`DbPassword`). Como PREFIXO/miolo — com mais
