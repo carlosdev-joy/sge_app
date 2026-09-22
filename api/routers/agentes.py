@@ -27,7 +27,7 @@ import uuid
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from db import get_db_conn
-from deps import get_admin_user, require_perm
+from deps import PERM_EDITAR, get_admin_user, require_perm
 from services import agentes as svc
 from services import agentes_ferramentas as af
 from services import ia_provedor
@@ -270,10 +270,14 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
     # Redigida ANTES de entrar no histórico que vai ao modelo e ANTES de
     # qualquer gravação — um segredo digitado no chat não chega a nenhum dos dois.
     mensagem_redigida = af.redigir(mensagem)
+    # `acao_editar` é SEMPRE da sessão (F2b, isx_extrair) — nunca do corpo,
+    # mesma régua da identidade (critério 6 da F2, estendido).
+    acao_editar = PERM_EDITAR in user.get("permissoes", [])
     resultado = await svc.conversar(
         _abrir, mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
         projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
-        identidade=identidade, campo_identidade=campo, ssh_max=ssh_max)
+        identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
+        acao_editar=acao_editar, matricula=matricula)
 
     texto_redigido = af.redigir(resultado.get("texto") or "")
     conn, cur = _abrir()

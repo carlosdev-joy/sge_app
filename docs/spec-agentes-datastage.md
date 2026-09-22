@@ -1,5 +1,5 @@
 # Spec: Agentes de IA (tela `/agentes`) — agente de mapeamento DataStage — Orquestra
-Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 9 de 20 dúvidas ✅ (D-06, D-10 a D-17), D-09 ⚠️; a F1 aguarda D-01, D-02 e D-03; a F2b aguarda D-19 e D-20**
+Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 11 de 20 dúvidas ✅/⚠️ (D-06, D-10 a D-17, D-20 ✅, D-19 ⚠️ parcial); F1 e F2 IMPLEMENTADAS e MERGEADAS (22/09); F2b em andamento**
 
 > Origem: entrevista de descoberta de 2026-09-21 (skill `entrevista-projeto`), Entendimento do Projeto
 > **confirmado pelo usuário**. Esta spec é autossuficiente: quem a lê (inclusive um agente rodando no
@@ -7,6 +7,9 @@ Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 9 
 > dúvida e como fechar cada dúvida. **A implementação só começa depois que o usuário aprovar a spec.**
 >
 > **Validação de produção de 2026-09-21:** D-06 e D-10 a D-15 fechadas por validação; **D-16 e D-17 fechadas por decisão do usuário**; D-09 ⚠️; abertas: D-01 a D-05, D-07, D-08 e D-18 a D-20. Ver §8.1 e §9.
+>
+> **Validação de produção de 2026-09-22:** **D-20 fechada** (`desenvolvedor` tem `acao_editar`); **D-19 ⚠️ parcial** (DSX ativo em produção, 92 registros `dsx_auto` — detalhe fino ainda aberto, padrão
+> conservador aplicado). F0, F1 e F2 implementadas e mergeadas na main.
 
 ## 1. Visão
 
@@ -311,6 +314,18 @@ multi-agente antes da PR** (`qa-adversarial`; `security-review` nas F1, F2, F5 e
 - **Validação:** padrão. **PR:** `feat(agentes): ferramentas de leitura e orquestração do agente DataStage (F2)`.
 
 ### F2b — Extração ISX e consulta a DSX pelo agente, com a mesma régua do botão da Governança
+- **🏁 IMPLEMENTADA 22/09/2026** (branch `feat/agentes-f2b`): `isx_extrair` e `dsx_consulta` em
+  `api/services/agentes_ferramentas.py`, reaproveitando 100% de `services.lineage_isx`
+  (`localizar/extrair/gravar/cabecalho/conta_linhas/mapa_tipos/config/montar`) e o MESMO executor
+  dedicado do router (`routers.lineage_isx._EXECUTOR_ISX`, importado direto — nenhum pool novo,
+  confirmado por identidade de objeto em teste) para `isx_extrair`; `dsx_consulta` usa o `DSXEngine`
+  existente (mesmo padrão de `api/routers/lineage.py`). `isx_extrair` tem duas portas: `pipeline_name`+
+  `job_name` (job em pipeline, GRAVA como o botão, rastreado com `extracted_by = "MATRÍCULA
+  (agente:datastage)"`) ou só `job_name` (projeto já resolvido, fora de pipeline — extrai e responde,
+  NÃO grava, a persistência em `etl_agente_fato` fica para a F5). Limite de 2 extrações ISX por
+  pergunta. 36 testes novos (`test_agentes_f2b_ferramentas.py` + `test_agentes_f2b_orquestracao.py`),
+  cobrindo os 11 critérios de aceite; suíte completa sem regressão (baseline de 8 falhas
+  pré-existentes inalterado).
 - **Decisão do usuário (B-02, 21/09):** o agente pode disparar ISX e DSX e o que for necessário para trazer detalhes dos jobs e, no final, gravar no banco para melhorar a lineage.
   Lida assim: **ferramentas de exportação/leitura que não alteram o DataStage**, numa **allowlist em código** — não uma lista aberta. Quanto ao **DSX**, o usuário informou que os arquivos **já existem
   nas pastas do Airflow para consulta**: o agente os **consulta** (somente leitura); não exporta DSX do servidor.
@@ -708,7 +723,12 @@ m) **Não-regressão:** Caixa Seguro (assistentes) e a triagem de chamados conti
 - *Registrar:* lista `projeto → tamanho → data`; quem atualiza e quando; se a API vê a pasta; cobertura dos projetos; se há segredo no DSX (sim/não e a forma); tempos.
 - *Padrão se não der:* `dsx_consulta` com nome e data do arquivo em toda resposta, `redigir()` sobre o conteúdo e teto de tempo no executor; o DSX fica **atrás** da base/`isx_auto` na preferência.
 - *Impacto:* F2b, §3 (ferramentas), riscos 24 e 27.
-- **Resultado:** _(preencher)_
+- **Resultado:** ⚠️ **PARCIAL (22/09/2026, usuário rodou em produção):** `SELECT extraction_method, COUNT(*) FROM dbo.etl_job_lineage GROUP BY extraction_method;` devolveu `NULL: 27`, `dsx_auto: 92`,
+  `isx_auto: 8`, `manual: 220` — confirma que a extração **DSX está ativa e é a maior fonte automática de lineage em produção** (92 registros, bem mais que `isx_auto`). **Não** confirmado: `ls -la` da
+  pasta real (projeto→tamanho→data), se há segredo no conteúdo de um `.dsx` real, se o nome de cada arquivo bate com `project_name`, tempo do `DSXEngine` num arquivo grande. **Decisão:** aplicar
+  direto o *padrão se não der* já descrito acima (nome+data do arquivo sempre na resposta, `redigir()` sobre TUDO que `dsx_consulta` devolver, DSX sempre atrás de base/`isx_auto`) — é o comportamento
+  conservador que seria implementado de qualquer forma, e os 92 registros confirmam que a ferramenta tem uso real. Segue **aberta só para o detalhe fino** (validar quando houver acesso de shell ao
+  container de produção).
 
 **D-20 — `acao_editar` do perfil `desenvolvedor` em produção** · Bloqueia: **F2b**
 - *Dúvida:* a extração ISX (`POST /lineage/isx/extrair`) exige `acao_editar`, e o agente só extrai para quem a tem. No seed da migration 019 o `desenvolvedor` a tem, mas o Admin edita as permissões dos perfis:
@@ -717,7 +737,9 @@ m) **Não-regressão:** Caixa Seguro (assistentes) e a triagem de chamados conti
 - *Registrar:* quais perfis têm `acao_editar` hoje.
 - *Padrão se não der:* assume que o `desenvolvedor` a tem; quem não a tiver recebe o link da Governança em vez da extração.
 - *Impacto:* F2b (critério 1), smoke d2.
-- **Resultado:** _(preencher)_
+- **Resultado:** ✅ **22/09/2026 (usuário rodou em produção):** `SELECT perfil_nome FROM dbo.etl_perfil_permissao WHERE recurso = 'acao_editar';` devolveu `admin`, `desenvolvedor` — confirma que o
+  `desenvolvedor` TEM `acao_editar` em produção hoje (nenhum override individual verificado, mas o seed da 019 está intacto no perfil). **D-20 fechada** — a extração ISX pelo agente (crítério 1) pode
+  seguir sem o fallback "link da Governança".
 
 ### 8.2 Decisões que dependem do usuário (com padrão assumido)
 

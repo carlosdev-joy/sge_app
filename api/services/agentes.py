@@ -273,26 +273,29 @@ def extrair_pedido_ferramenta(texto: str) -> tuple[str, dict | None]:
     return limpo, obj
 
 
-def _prompt_sistema(projeto: str | None) -> str:
+def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False) -> str:
     """Gerado do VOCABULÁRIO das ferramentas (allowlist de
     `agentes_ferramentas`), não digitado à mão duas vezes — o mesmo
     anti-drift do Maestro: se a allowlist de `dsjob` mudar, o prompt muda
     sozinho."""
     comandos = ", ".join(af.ALLOWLIST_DSJOB)
     if projeto:
-        projeto_txt = f"O projeto DataStage desta conversa já está resolvido: {projeto}."
+        extra_dsx = " (tem arquivo .dsx disponível — dsx_consulta pode ser usada)" if projeto_tem_dsx else ""
+        projeto_txt = f"O projeto DataStage desta conversa já está resolvido: {projeto}{extra_dsx}."
     else:
         projeto_txt = (
             "Esta conversa AINDA NÃO tem um projeto DataStage resolvido. Antes de usar "
-            "'base' ou 'dsjob', pergunte ao usuário qual é o projeto (ou o nome de um "
-            "pipeline/job do Orquestra) e peça a ferramenta 'resolver_projeto' assim que "
-            "tiver um nome candidato — nunca tente 'base'/'dsjob' sem isso, o backend recusa.")
+            "'base', 'dsjob', 'dsx_consulta' ou 'isx_extrair' (via projeto já resolvido), "
+            "pergunte ao usuário qual é o projeto (ou o nome de um pipeline/job do Orquestra) "
+            "e peça a ferramenta 'resolver_projeto' assim que tiver um nome candidato — nunca "
+            "tente essas ferramentas sem isso, o backend recusa.")
     return f"""Você é o agente de mapeamento de processos DataStage do Orquestra.
 
 Sua única função: explicar fluxos DataStage existentes — jobs, tabelas, campos,
 parâmetros e lineage. Você NUNCA altera o DataStage: não importa, não compila,
 não executa, não para nem apaga job nenhum, e não roda comando fora das
-ferramentas abaixo — só lê.
+ferramentas abaixo — só lê (isx_extrair exporta e grava a LINHAGEM no banco do
+Orquestra, mas nunca altera nada no servidor DataStage em si).
 
 {projeto_txt}
 
@@ -301,20 +304,31 @@ Para usar uma ferramenta, termine sua resposta com UM bloco, e nada depois dele:
 {{"ferramenta": "NOME", "args": {{...}}}}
 ```
 
-Ferramentas disponíveis:
-- resolver_projeto {{"projeto": "NOME"}} OU {{"pipeline_name": "...", "job_name": "..."}} —
-  valida contra o que o Orquestra já conhece (nunca toca o servidor). Se o usuário citou um
-  pipeline/job do PRÓPRIO Orquestra, use pipeline_name+job_name — resolve sem perguntar mais
-  nada. Se a resposta vier com estado "quase" (nome parecido, mas com caixa diferente —
-  DataStage é sensível a maiúsculas/minúsculas), CONFIRME com o usuário antes de continuar;
-  só chame de novo com o nome exato sugerido depois que o usuário confirmar.
-- base {{"job_name": "NOME"}} — o que o Orquestra JÁ SABE sobre o job (mais rápido; tente
-  sempre primeiro, antes de dsjob). A resposta traz "idade_dias" do dado — se vier None ou
-  grande (dado antigo), considere usar dsjob para conferir ao vivo antes de responder algo
-  que pode ter mudado.
-- dsjob {{"comando": "{comandos}", "job_name": "NOME"}} — lê o job AO VIVO no servidor
-  DataStage (job_name pode ser omitido só em ljobs). Só use se 'base' não bastar ou o dado
-  estiver velho.
+Ordem de custo — tente NESSA ORDEM antes de ir para a próxima:
+1. resolver_projeto {{"projeto": "NOME"}} OU {{"pipeline_name": "...", "job_name": "..."}} —
+   valida contra o que o Orquestra já conhece (nunca toca o servidor). Se o usuário citou um
+   pipeline/job do PRÓPRIO Orquestra, use pipeline_name+job_name — resolve sem perguntar mais
+   nada. Se a resposta vier com estado "quase" (nome parecido, mas com caixa diferente —
+   DataStage é sensível a maiúsculas/minúsculas), CONFIRME com o usuário antes de continuar;
+   só chame de novo com o nome exato sugerido depois que o usuário confirmar.
+2. base {{"job_name": "NOME"}} — o que o Orquestra JÁ SABE sobre o job (mais rápido; tente
+   sempre primeiro). A resposta traz "idade_dias" do dado — se vier None ou grande (dado
+   antigo), considere as ferramentas abaixo para conferir ao vivo antes de responder algo que
+   pode ter mudado.
+3. dsx_consulta {{"operacao": "listar_jobs"|"listar_pastas"|"buscar_campo"|"extrair", ...}} —
+   só quando o projeto TEM arquivo .dsx (senão a ferramenta é recusada). Lê um arquivo local
+   já existente — é um RETRATO (a resposta traz a data do arquivo), nunca ao vivo. Args por
+   operação: listar_jobs/listar_pastas não precisam de mais nada; buscar_campo precisa de
+   "termo" (e aceita "exato", "tipos", "excluir", "pasta"); extrair precisa de "job_name".
+4. dsjob {{"comando": "{comandos}", "job_name": "NOME"}} — lê o job AO VIVO no servidor
+   DataStage (job_name pode ser omitido só em ljobs). Só use se 'base'/'dsx_consulta' não
+   bastarem ou o dado estiver velho.
+5. isx_extrair {{"pipeline_name": "...", "job_name": "NOME"}} OU {{"job_name": "NOME"}} — export
+   via istool + parse, a JVM mais cara no servidor. Use por ÚLTIMO, só quando precisar do
+   detalhamento completo (stages, colunas, SQL) e as ferramentas acima não bastarem. Com
+   pipeline_name+job_name, GRAVA a lineage no banco do Orquestra (como o botão da tela de
+   Lineage); só com job_name (projeto já resolvido), extrai e responde sem gravar. No máximo
+   2 chamadas desta ferramenta por pergunta.
 
 Se não precisar de nenhuma ferramenta, responda normalmente, sem bloco nenhum.
 """
@@ -344,22 +358,41 @@ def _com_cursor(abrir_conn, fn):
                 pass
 
 
+def _com_conexao(abrir_conn, fn):
+    """Como `_com_cursor`, mas `fn(conn, cur)` — para operações que
+    controlam a própria transação (commit/rollback explícitos), como
+    `lineage_isx.gravar()`. NÃO commita automaticamente no fim (`fn` já é
+    responsável por isso); só garante que a conexão curta fecha."""
+    conn, cur = abrir_conn()
+    try:
+        return fn(conn, cur)
+    finally:
+        for x in (cur, conn):
+            try:
+                x.close()
+            except Exception:
+                pass
+
+
 async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: str | None,
-                               ssh_max: int, espera_max_s: float) -> tuple[dict, str | None]:
+                               ssh_max: int, espera_max_s: float, acao_editar: bool,
+                               matricula: str | None, extracoes_isx: int) -> tuple[dict, str | None]:
     """Executa UMA ferramenta pedida pelo modelo, sempre pela allowlist —
-    NUNCA deixa `base`/`dsjob` rodar sem `projeto` resolvido (a guarda do
-    risco 28). `abrir_conn` é uma fábrica `() -> (conn, cur)`: cada consulta
-    de banco usa sua PRÓPRIA conexão curta (ver `_com_cursor`), nunca uma
-    guardada pela rodada inteira. Nunca levanta de verdade: TODO o corpo (não
-    só o ramo `dsjob`) está sob um try/except amplo — uma falha de banco
-    (deadlock, timeout, conexão caindo) dentro de `resolver_projeto`/`base`
-    virava exceção não tratada antes (achado real da revisão adversarial da
-    F2: propagava como 500 cru e perdia a mensagem do usuário, que nunca
-    chegava a ser persistida). Erro vira dado nomeado que volta ao modelo
-    como conversa. Devolve (dado-para-o-modelo, projeto novo-ou-None)."""
+    NUNCA deixa `base`/`dsjob`/`dsx_consulta`/`isx_extrair` rodar sem
+    `projeto` resolvido (a guarda do risco 28). `abrir_conn` é uma fábrica
+    `() -> (conn, cur)`: cada consulta de banco usa sua PRÓPRIA conexão
+    curta (ver `_com_cursor`/`_com_conexao`), nunca uma guardada pela rodada
+    inteira. Nunca levanta de verdade: TODO o corpo está sob um try/except
+    amplo — uma falha de banco (deadlock, timeout, conexão caindo) dentro
+    de `resolver_projeto`/`base` virava exceção não tratada antes (achado
+    real da revisão adversarial da F2: propagava como 500 cru e perdia a
+    mensagem do usuário, que nunca chegava a ser persistida). Erro vira
+    dado nomeado que volta ao modelo como conversa. Devolve
+    (dado-para-o-modelo, projeto novo-ou-None)."""
     try:
         return await _executar_ferramenta_interna(
-            abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s)
+            abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s,
+            acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx)
     except (af.ServidorOcupado, DsConsoleError) as e:
         return {"texto": str(e)}, None
     except Exception as e:  # banco/SSH/rede: nunca derruba a rodada
@@ -367,7 +400,8 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
 
 
 async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, projeto: str | None,
-                                       ssh_max: int, espera_max_s: float) -> tuple[dict, str | None]:
+                                       ssh_max: int, espera_max_s: float, acao_editar: bool,
+                                       matricula: str | None, extracoes_isx: int) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
     if nome == "resolver_projeto":
@@ -391,8 +425,16 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
         return ({"texto": f"Não reconheço o projeto '{alvo}'. "
                           f"Projetos conhecidos: {sugestoes}."}, None)
 
+    if nome == "isx_extrair":
+        return await _isx_extrair(abrir_conn, args, projeto=projeto, acao_editar=acao_editar,
+                                  matricula=matricula, extracoes_isx=extracoes_isx)
+
+    if nome == "dsx_consulta":
+        return await _dsx_consulta(abrir_conn, args, projeto=projeto)
+
     if nome not in ("base", "dsjob"):
-        return {"texto": f"Ferramenta '{nome}' não existe — use resolver_projeto, base ou dsjob."}, None
+        return ({"texto": f"Ferramenta '{nome}' não existe — use resolver_projeto, base, dsjob, "
+                          "dsx_consulta ou isx_extrair."}, None)
 
     if not projeto:
         return ({"texto": "Ainda não sei o projeto DataStage desta conversa — "
@@ -423,6 +465,127 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
     return {"texto": r["saida_redigida"]}, None
 
 
+LINK_GOVERNANCA = "a tela de Governança de Lineage (Lineage › ISX)"
+
+
+async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_editar: bool,
+                       matricula: str | None, extracoes_isx: int) -> tuple[dict, str | None]:
+    """`isx_extrair` (F2b): export via `istool` + parse + gravação, com a
+    MESMA régua do botão `POST /lineage/isx/extrair` — mesmas funções,
+    mesmo executor. Duas portas de entrada:
+      • `pipeline_name` + `job_name` — job MAPEADO num pipeline do
+        Orquestra: resolve o projeto sozinho (`isx_info_do_job`, igual
+        `resolver_projeto` via pipeline) e GRAVA em `etl_job_lineage`/
+        `etl_ds_job_isx`, exatamente como o botão da Governança.
+      • só `job_name` — usa o projeto JÁ RESOLVIDO da conversa; extrai e
+        RESPONDE, mas NÃO grava (a persistência desse caso em
+        `etl_agente_fato` é da F5 — spec F2b, item 4)."""
+    if not acao_editar:
+        return ({"texto": f"Você não tem a permissão 'acao_editar' para extrair ISX pelo agente — "
+                          f"use {LINK_GOVERNANCA} para extrair este job."}, None)
+    if extracoes_isx > af.MAX_EXTRACOES_ISX:  # `conversar()` já contou esta tentativa antes de chamar
+        return ({"texto": f"Já fiz {af.MAX_EXTRACOES_ISX} extrações ISX nesta pergunta — é o limite "
+                          "da rodada. Pode perguntar de novo com um pedido mais direto."}, None)
+
+    pipeline_name = str(args.get("pipeline_name") or "").strip() or None
+    job_name_isx = str(args.get("job_name") or "").strip() or None
+    if not job_name_isx:
+        return {"texto": "A ferramenta 'isx_extrair' exige job_name."}, None
+    forcar = bool(args.get("force"))
+
+    if pipeline_name:
+        info = _com_cursor(abrir_conn, lambda cur: af.isx_info_do_job(cur, pipeline_name, job_name_isx))
+        if info is None:
+            return ({"texto": f"O job '{job_name_isx}' não está mapeado no pipeline '{pipeline_name}' "
+                              "(ou o pipeline não tem projeto DataStage, ou o nó não é um job "
+                              "DataStage) — o lineage ISX só existe para jobs de um pipeline do "
+                              "Orquestra."}, None)
+        pipeline_canon, job_canon = info["pipeline_name"], info["job_name"]
+        projeto_isx = info["ds_project"]
+        em_pipeline = True
+    else:
+        if not projeto:
+            return ({"texto": "Ainda não sei o projeto DataStage desta conversa — peça "
+                              "'resolver_projeto' primeiro, ou informe pipeline_name+job_name."}, None)
+        pipeline_canon, job_canon, projeto_isx, em_pipeline = None, job_name_isx, projeto, False
+
+    try:
+        cfg = af.lineage_isx.config()
+    except Exception as e:  # noqa: BLE001 — ISXError(503)/HTTPException do serviço
+        return {"texto": af.mensagem_erro_lineage(e)}, None
+
+    if em_pipeline:
+        cab, tem_linhas, mapa = _com_cursor(abrir_conn, lambda cur: (
+            af.lineage_isx.cabecalho(cur, pipeline_canon, job_canon),
+            af.lineage_isx.conta_linhas(cur, pipeline_canon, job_canon) > 0,
+            af.lineage_isx.mapa_tipos(cur)))
+    else:
+        cab, tem_linhas, mapa = None, False, {}
+
+    t0 = time.monotonic()
+    try:
+        meta, resultado, cache_hit = await af.isx_no_executor(
+            af.lineage_isx.extrair, cfg, projeto_isx, job_canon, cab, tem_linhas, forcar, mapa,
+            teto=af.ISX_TETO_EXTRAIR_S)
+    except Exception as e:  # noqa: BLE001 — ISXError/HTTPException(504) do executor
+        return {"texto": af.mensagem_erro_lineage(e)}, None
+
+    if not em_pipeline:
+        # Fora de pipeline: extrai e responde, NÃO grava — a persistência em
+        # etl_agente_fato fica para a F5 (spec F2b, item 4).
+        payload = {"gravado": False, "pipeline_name": None, "job_name": job_canon,
+                  "ds_project": projeto_isx, "cache_hit": cache_hit}
+        if resultado:
+            payload.update({k: v for k, v in resultado.items() if k != "caminho_istool"})
+        texto = af.redigir(json.dumps(payload, ensure_ascii=False, default=str))
+        return {"texto": texto}, None
+
+    usuario_registro = f"{matricula or '?'} ({af.ORIGEM_AGENTE})"
+    if not cache_hit:
+        try:
+            _com_conexao(abrir_conn, lambda conn, cur: af.lineage_isx.gravar(
+                conn, cur, pipeline=pipeline_canon, job=job_canon, projeto=projeto_isx, meta=meta,
+                resultado=resultado, usuario=usuario_registro,
+                duracao_ms=int((time.monotonic() - t0) * 1000)))
+        except Exception as e:  # noqa: BLE001 — ISXError(409, outra extração em andamento) etc.
+            return {"texto": af.mensagem_erro_lineage(e)}, None
+
+    resposta = _com_cursor(abrir_conn, lambda cur: af.lineage_isx.montar(cur, pipeline_canon, job_canon))
+    if resposta is None:
+        return {"texto": "Extração concluída, mas não encontrei o cabeçalho gravado — tente de novo."}, None
+    resposta["cache_hit"] = cache_hit
+    texto = af.redigir(json.dumps(resposta, ensure_ascii=False, default=str))
+    projeto_novo = projeto_isx if not projeto else None
+    return {"texto": texto}, projeto_novo
+
+
+async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None) -> tuple[dict, str | None]:
+    """`dsx_consulta` (F2b): só leitura dos `.dsx` já existentes — nunca
+    toca o servidor DataStage. Recusa sem projeto resolvido e sem `.dsx`
+    disponível (critério 11 da F2b: a hierarquia do DSX é pulada quando o
+    projeto não tem arquivo)."""
+    if not projeto:
+        return ({"texto": "Ainda não sei o projeto DataStage desta conversa — "
+                          "peça 'resolver_projeto' primeiro."}, None)
+    nome_valido = af.nome_dsx_valido(projeto)
+    if nome_valido is None:
+        return {"texto": "Nome de projeto inválido para consulta DSX."}, None
+    if not af.projeto_tem_dsx(nome_valido):
+        return ({"texto": f"O projeto '{nome_valido}' não tem arquivo .dsx disponível — "
+                          "use base/dsjob em vez de dsx_consulta."}, None)
+
+    operacao = str(args.get("operacao") or "").strip()
+    try:
+        resultado = await af.ferramenta_dsx_consulta(nome_valido, operacao, args)
+    except ValueError as e:
+        return {"texto": str(e)}, None
+    except (asyncio.TimeoutError, TimeoutError):
+        return ({"texto": "A consulta ao DSX não terminou a tempo — tente uma busca mais "
+                          "específica (ex.: informe a pasta)."}, None)
+    texto = af.redigir(af._truncar(json.dumps(resultado, ensure_ascii=False, default=str)))
+    return {"texto": texto}, None
+
+
 # A proteção contra cancelar a sessão SSH real no meio (achado da revisão
 # adversarial da F2) mora DENTRO de `agentes_ferramentas.ferramenta_dsjob`
 # (via `asyncio.shield`, só na fase "vaga obtida → trabalho → libera") —
@@ -438,12 +601,17 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
 
 async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | None,
                     provedor_cfg: dict, identidade: str | None, campo_identidade: str | None,
-                    ssh_max: int) -> dict:
+                    ssh_max: int, acao_editar: bool = False, matricula: str | None = None) -> dict:
     """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
     (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
     allowlist, e devolve a resposta final. Controla o orçamento de tempo
     por RELÓGIO, não por contagem — um gateway lento consome o mesmo
     orçamento que uma ferramenta lenta (critério 8 da F2).
+
+    `acao_editar`/`matricula` (F2b): `acao_editar` é a permissão do USUÁRIO
+    da sessão (nunca do corpo da requisição) — sem ela, `isx_extrair`
+    recusa e devolve o link da Governança. `matricula` vai no `extracted_by`
+    da gravação, com o sufixo `agente:datastage` (rastreabilidade).
 
     Nunca levanta por conta do provedor/ferramenta: erro vira `status`
     nomeado com uma mensagem para o usuário, sempre 200 para quem chamou."""
@@ -455,6 +623,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     historico = list(mensagens[-MAX_HISTORICO:])
     projeto = projeto_atual
     artefatos: list[dict] = []
+    extracoes_isx = 0  # no máx. MAX_EXTRACOES_ISX por pergunta (spec F2b, item 5)
 
     texto_esgotado = {"status": "tempo_esgotado", "projeto": None, "artefatos": None,
                       "texto": "O tempo desta pergunta esgotou — tente de novo, ou peça algo mais direto."}
@@ -463,7 +632,9 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         resta = _resta()
         if resta <= 5:
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
-        sistema = _prompt_sistema(projeto)
+        # `projeto_tem_dsx` é só leitura de arquivo local (sem banco) — barato
+        # o bastante para recalcular a cada rodada em vez de guardar estado.
+        sistema = _prompt_sistema(projeto, af.projeto_tem_dsx(projeto) if projeto else False)
         # O orçamento também vale por OPERAÇÃO, não só entre rodadas — sem
         # isto, uma única chamada ao gateway podia levar até TIMEOUT_S (60s)
         # mesmo com o orçamento quase esgotado, e a soma gateway+ferramenta de
@@ -500,6 +671,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         nome_ferramenta = str(pedido.get("ferramenta") or "").strip()
         args = pedido.get("args") if isinstance(pedido.get("args"), dict) else {}
         historico.append({"role": "assistant", "content": resposta})
+        if nome_ferramenta == "isx_extrair":
+            extracoes_isx += 1  # conta a TENTATIVA (mesmo que recusada/falhe) — trava o loop
 
         resta = _resta()
         if resta <= 5:
@@ -508,7 +681,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         try:
             dado, projeto_novo = await asyncio.wait_for(
                 _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
-                                     ssh_max=ssh_max, espera_max_s=espera),
+                                     ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
+                                     matricula=matricula, extracoes_isx=extracoes_isx),
                 timeout=max(1.0, resta - 2))
         except (asyncio.TimeoutError, TimeoutError):
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}

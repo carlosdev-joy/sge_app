@@ -1,30 +1,50 @@
 """api/services/agentes_ferramentas.py — as ferramentas do agente DataStage e
-a allowlist que as guarda (F2 da spec docs/spec-agentes-datastage.md).
+a allowlist que as guarda (F2 + F2b da spec docs/spec-agentes-datastage.md).
 
-Três ferramentas, e só três (ferramenta nova entra por PR, nunca por
+Cinco ferramentas, e só cinco (ferramenta nova entra por PR, nunca por
 aprendizado do modelo):
 
   • `resolver_projeto` — decide o PROJETO DataStage da conversa (§3,
     "resolução do projeto"). Não toca o servidor: valida contra a BASE
     (`etl_pipeline`/`etl_ds_job_isx`) e a lista de arquivos `.dsx`
-    (`DSX_BASE_DIR`, só os NOMES — ler o conteúdo é a F2b). Sem projeto
-    resolvido, `base` e `dsjob` se recusam a rodar — é a guarda central
-    contra "consultas às cegas" (risco 28 da spec).
+    (`DSX_BASE_DIR`, só os NOMES — ler o conteúdo é `dsx_consulta`). Sem
+    projeto resolvido, `base`/`dsjob`/`dsx_consulta`/`isx_extrair` se
+    recusam a rodar — é a guarda central contra "consultas às cegas"
+    (risco 28 da spec).
   • `base` — o que o Orquestra já sabe do job (`etl_ds_job_isx` +
     `etl_job_lineage` `isx_auto`; `etl_agente_fato` só a partir da F5).
-    Sempre tentada ANTES de `dsjob` — é o "base primeiro".
+    Sempre tentada ANTES de `dsjob`/`dsx_consulta` — é o "base primeiro".
   • `dsjob` — leitura ao vivo no servidor DataStage, só os 5 subcomandos
     read-only que não expõem valor de dado (`ljobs`, `lstages`, `lparams`,
     `jobinfo`, `report`; **nunca** `logsum`/`logdetail`), atrás de um
     semáforo de sessões SSH (`agentes_ssh_max`) e sempre `redigir()`ada
     antes de qualquer gravação ou de ir ao modelo.
+  • `dsx_consulta` (F2b) — **somente leitura** dos `.dsx` que já existem em
+    `DSX_BASE_DIR` (nunca toca o servidor DataStage), pelo `DSXEngine`
+    existente — as MESMAS funções que `api/routers/lineage.py` já usa.
+    Toda resposta traz nome+data do arquivo (é um retrato); `redigir()`
+    sempre; roda num executor com teto (um `.dsx` grande não pode travar
+    a rodada).
+  • `isx_extrair` (F2b) — export via `istool` + parse + gravação, com a
+    MESMA régua do botão `POST /lineage/isx/extrair` da Governança: as
+    MESMAS funções (`lineage_isx.localizar/extrair/gravar`) e o MESMO
+    executor dedicado (`routers.lineage_isx._EXECUTOR_ISX`, 2 por
+    processo) — nenhum pool novo. Exige `acao_editar` do usuário (o mesmo
+    do botão); sem ela, devolve o link da Governança em vez de extrair.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
+from datetime import datetime
 
+from fastapi import HTTPException
+
+from routers.lineage_isx import _EXECUTOR_ISX as ISX_EXECUTOR  # noqa: F401 — reexportado (testes)
+from routers.lineage_isx import _no_executor as isx_no_executor
+from routers.lineage_isx import _TETO_EXTRAIR_S as ISX_TETO_EXTRAIR_S
 from services import lineage_isx
 from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 
@@ -174,19 +194,45 @@ def _projetos_da_base(cur) -> list[str]:
     return sorted(vistos)
 
 
+def _dsx_engine_cls():
+    """Importa o `DSXEngine` do pacote das DAGs — mesmo padrão de
+    `api/routers/lineage.py::_import_dsx_engine` (o container da API monta
+    `dags/`, e o `orquestra-api` monta `DSX_BASE_DIR` `:ro`)."""
+    import sys
+    dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+    if dags_folder not in sys.path:
+        sys.path.insert(0, dags_folder)
+    from utils.dsx_engine import DSXEngine  # type: ignore
+    return DSXEngine
+
+
 def _projetos_com_dsx() -> list[str]:
     """Nomes de projeto com arquivo `.dsx` em `DSX_BASE_DIR` — só a LISTA
-    (`listar_dsx`); ler o conteúdo de um `.dsx` é ferramenta da F2b."""
+    (`listar_dsx`); ler o conteúdo de um `.dsx` é a ferramenta `dsx_consulta`."""
     try:
-        import os
-        import sys
-        dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
-        if dags_folder not in sys.path:
-            sys.path.insert(0, dags_folder)
-        from utils.dsx_engine import DSXEngine  # type: ignore
-        return list(DSXEngine().listar_dsx())
+        return list(_dsx_engine_cls()().listar_dsx())
     except Exception:
         return []
+
+
+def projeto_tem_dsx(nome: str) -> bool:
+    """Se `nome` (já resolvido) tem arquivo `.dsx` — usado por `dsx_consulta`
+    para recusar sem tocar o disco de novo além da listagem (critério 11 da
+    F2b: só roda com projeto **com** `.dsx`)."""
+    dsx = _projetos_com_dsx()
+    return nome in dsx or _casa_ignorando_caixa(nome, dsx) is not None
+
+
+def nome_dsx_valido(nome: str) -> str | None:
+    """Réplica de `api/routers/lineage.py::_safe_project_name`, sem
+    `HTTPException` — devolve `None` (não levanta) quando o nome está vazio
+    ou tem sinal de path traversal (critério 7 da F2b)."""
+    n = (nome or "").strip()
+    if n.lower().endswith(".dsx"):
+        n = n[:-4]
+    if not n or "/" in n or "\\" in n or ".." in n:
+        return None
+    return n
 
 
 def _casa_exato(nome: str, candidatos: list[str]) -> str | None:
@@ -368,4 +414,100 @@ async def ferramenta_dsjob(comando: str, ds_project: str, job_name: str | None,
         raise
     resultado["saida_redigida"] = _truncar(redigir(resultado.get("stdout") or ""))
     resultado["espera_ms"] = int((time.monotonic() - t0) * 1000) - resultado.get("duration_ms", 0)
+    return resultado
+
+
+# ── isx_extrair (F2b: export via istool + parse + gravação, mesma régua) ────
+#
+# Reaproveita 100% de `services.lineage_isx` (localizar/extrair/gravar/
+# cabecalho/conta_linhas/mapa_tipos/config/montar) e o MESMO executor
+# dedicado do router (`ISX_EXECUTOR`/`isx_no_executor`/`ISX_TETO_EXTRAIR_S`,
+# importados de `routers.lineage_isx` acima) — "nenhum segundo pool"
+# (spec F2b, item 1). Nunca reimplementa o export/parse/gravação.
+
+_DS_JOB_TYPES = ("datastage", "")  # mesmo conjunto de routers/lineage_isx.py::_DS_JOB_TYPES
+ORIGEM_AGENTE = "agente:datastage"  # sufixo em extracted_by — rastreia extrações feitas pelo agente
+MAX_EXTRACOES_ISX = 2  # no máx. 2 extrações ISX por pergunta (spec F2b, item 5)
+
+
+def isx_info_do_job(cur, pipeline_name: str, job_name: str) -> dict | None:
+    """Mesma checagem de `routers.lineage_isx._info_do_job`, sem levantar
+    `HTTPException` — devolve `None` quando o job não está mapeado no
+    pipeline, o pipeline não tem projeto DataStage, ou o nó não é um job
+    DataStage. Devolve os nomes na GRAFIA DO BANCO (case-insensitive na
+    colação, mas o DataStage distingue caixa)."""
+    info = lineage_isx.job_do_pipeline(cur, pipeline_name, job_name)
+    if info is None or not info["ds_project"]:
+        return None
+    if str(info.get("job_type") or "").strip().lower() not in _DS_JOB_TYPES:
+        return None
+    return info
+
+
+def mensagem_erro_lineage(e: Exception) -> str:
+    """Traduz uma falha do `lineage_isx` (`ISXError`, `HTTPException`,
+    genérica) numa mensagem nomeada para o chat — nunca vaza detalhe
+    interno (`.interno`/traceback ficam só no log, como o router já faz
+    em `_http()`)."""
+    if isinstance(e, HTTPException):
+        detalhe = e.detail
+        return detalhe if isinstance(detalhe, str) else str(detalhe)
+    status = getattr(e, "status", None)
+    detail = getattr(e, "detail", None)
+    if status is not None and detail is not None:
+        return str(detail)
+    return f"Falha inesperada na extração ISX ({type(e).__name__}) — tente de novo."
+
+
+# ── dsx_consulta (F2b: só leitura dos .dsx já existentes) ───────────────────
+
+DSX_TETO_S = 20  # parse de um .dsx grande num executor com prazo (critério 10 da F2b)
+DSX_OPERACOES = ("listar_jobs", "listar_pastas", "buscar_campo", "extrair")
+
+
+def _dsx_data_arquivo(diretorio_base: str, projeto: str) -> str | None:
+    """Data de modificação do `.dsx` — toda resposta de `dsx_consulta` traz
+    nome+data do arquivo (é um RETRATO, não o estado agora — critério 8)."""
+    try:
+        mtime = os.path.getmtime(os.path.join(diretorio_base, f"{projeto}.dsx"))
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return None
+
+
+async def ferramenta_dsx_consulta(projeto: str, operacao: str, args: dict) -> dict:
+    """Só leitura dos `.dsx` já existentes em `DSX_BASE_DIR` — NUNCA toca o
+    servidor DataStage (critério 7 da F2b: sem SSH, sem `dsjob`, sem criar
+    nem alterar arquivo). `projeto` já validado contra path traversal e
+    contra "tem .dsx" por quem chama (`nome_dsx_valido`/`projeto_tem_dsx`).
+
+    Roda num executor com teto — um `.dsx` grande não pode travar a rodada
+    (critério 10). Como é só LEITURA de arquivo local (sem semáforo, sem
+    sessão remota a proteger), `asyncio.wait_for` simples é seguro aqui:
+    diferente do `dsjob`, não há recurso compartilhado que "vazaria" se a
+    espera for abandonada — a thread órfã só termina de ler um arquivo."""
+    if operacao not in DSX_OPERACOES:
+        raise ValueError(f"Operação '{operacao}' não existe em dsx_consulta — "
+                         f"use uma de: {', '.join(DSX_OPERACOES)}.")
+    DSXEngine = _dsx_engine_cls()
+    motor = DSXEngine()
+
+    def _rodar():
+        if operacao == "listar_jobs":
+            return motor.listar_jobs(projeto)
+        if operacao == "listar_pastas":
+            return motor.listar_pastas(projeto)
+        if operacao == "buscar_campo":
+            termo = str(args.get("termo") or "").strip()
+            tipos = args.get("tipos") if isinstance(args.get("tipos"), list) else None
+            return motor.buscar_campo(
+                projeto, termo, exato=bool(args.get("exato")), tipos=tipos,
+                excluir=bool(args.get("excluir")), pasta=str(args.get("pasta") or ""))
+        job_name = str(args.get("job_name") or "").strip()
+        return motor.extrair(projeto, job_name)
+
+    resultado = await asyncio.wait_for(asyncio.to_thread(_rodar), timeout=DSX_TETO_S)
+    resultado = dict(resultado or {})
+    resultado["dsx_arquivo"] = f"{projeto}.dsx"
+    resultado["dsx_data"] = _dsx_data_arquivo(motor.diretorio_base, projeto)
     return resultado
