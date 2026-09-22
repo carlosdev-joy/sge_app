@@ -1,30 +1,50 @@
 """api/services/agentes_ferramentas.py — as ferramentas do agente DataStage e
-a allowlist que as guarda (F2 da spec docs/spec-agentes-datastage.md).
+a allowlist que as guarda (F2 + F2b da spec docs/spec-agentes-datastage.md).
 
-Três ferramentas, e só três (ferramenta nova entra por PR, nunca por
+Cinco ferramentas, e só cinco (ferramenta nova entra por PR, nunca por
 aprendizado do modelo):
 
   • `resolver_projeto` — decide o PROJETO DataStage da conversa (§3,
     "resolução do projeto"). Não toca o servidor: valida contra a BASE
     (`etl_pipeline`/`etl_ds_job_isx`) e a lista de arquivos `.dsx`
-    (`DSX_BASE_DIR`, só os NOMES — ler o conteúdo é a F2b). Sem projeto
-    resolvido, `base` e `dsjob` se recusam a rodar — é a guarda central
-    contra "consultas às cegas" (risco 28 da spec).
+    (`DSX_BASE_DIR`, só os NOMES — ler o conteúdo é `dsx_consulta`). Sem
+    projeto resolvido, `base`/`dsjob`/`dsx_consulta`/`isx_extrair` se
+    recusam a rodar — é a guarda central contra "consultas às cegas"
+    (risco 28 da spec).
   • `base` — o que o Orquestra já sabe do job (`etl_ds_job_isx` +
     `etl_job_lineage` `isx_auto`; `etl_agente_fato` só a partir da F5).
-    Sempre tentada ANTES de `dsjob` — é o "base primeiro".
+    Sempre tentada ANTES de `dsjob`/`dsx_consulta` — é o "base primeiro".
   • `dsjob` — leitura ao vivo no servidor DataStage, só os 5 subcomandos
     read-only que não expõem valor de dado (`ljobs`, `lstages`, `lparams`,
     `jobinfo`, `report`; **nunca** `logsum`/`logdetail`), atrás de um
     semáforo de sessões SSH (`agentes_ssh_max`) e sempre `redigir()`ada
     antes de qualquer gravação ou de ir ao modelo.
+  • `dsx_consulta` (F2b) — **somente leitura** dos `.dsx` que já existem em
+    `DSX_BASE_DIR` (nunca toca o servidor DataStage), pelo `DSXEngine`
+    existente — as MESMAS funções que `api/routers/lineage.py` já usa.
+    Toda resposta traz nome+data do arquivo (é um retrato); `redigir()`
+    sempre; roda num executor com teto (um `.dsx` grande não pode travar
+    a rodada).
+  • `isx_extrair` (F2b) — export via `istool` + parse + gravação, com a
+    MESMA régua do botão `POST /lineage/isx/extrair` da Governança: as
+    MESMAS funções (`lineage_isx.localizar/extrair/gravar`) e o MESMO
+    executor dedicado (`routers.lineage_isx._EXECUTOR_ISX`, 2 por
+    processo) — nenhum pool novo. Exige `acao_editar` do usuário (o mesmo
+    do botão); sem ela, devolve o link da Governança em vez de extrair.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
+from datetime import datetime
 
+from fastapi import HTTPException
+
+from routers.lineage_isx import _EXECUTOR_ISX as ISX_EXECUTOR  # noqa: F401 — reexportado (testes)
+from routers.lineage_isx import _no_executor as isx_no_executor
+from routers.lineage_isx import _TETO_EXTRAIR_S as ISX_TETO_EXTRAIR_S
 from services import lineage_isx
 from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 
@@ -37,58 +57,263 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # exato): mascara qualquer coisa que PAREÇA um valor de campo sensível, e o
 # nome do parâmetro/campo continua visível (é o que o operador precisa ler).
 #
-# O nome do campo (e o separador) pode vir entre aspas — formato JSON, como
-# `-report`/`-lparams` às vezes devolvem (`"password": "abc123"`). Sem os
-# `["\']?` ao redor do nome/separador, a aspas que fecha o NOME quebrava o
-# casamento logo antes do `:` e a linha inteira passava incólume (achado real
-# da revisão adversarial da F2: miss silencioso em `{"password":"abc123"}`).
-# O VALOR também pode vir entre aspas — capturado como grupo próprio
-# (`"..."`/`'...'`/sem aspas) em vez de um `\S+` genérico, que antes casava
-# só a pontuação logo após o nome (ex.: a aspas de abertura do valor) e
-# deixava o segredo de verdade visível atrás da máscara.
+# HISTÓRICO (7 rodadas de revisão adversarial da F2, depois F2b — deixado
+# registrado porque cada tentativa "mais esperta" baseada numa ÚNICA regex
+# complexa (`.sub()` com quantificador variável + requisito condicional)
+# se provou frágil de um jeito NOVO a cada rodada: miss por aspas ao redor
+# do nome; vazamento do resto do MESMO valor por aspa escapada; vazamento
+# de um CAMPO SEGUINTE inteiro por barra-antes-de-aspa-real; corte no meio
+# de um valor `{iisenc}...` por causa de `}` tratado como delimitador;
+# `\b` não reconhecendo `_` como fronteira de SNAKE_CASE; um sufixo SEM
+# limite virando ReDoS quadrático; um sufixo COM limite virando falha
+# total de match (vazamento) para nome mais longo que o limite; e por
+# fim, uma "rede de segurança" testando `_MASCARA in linha` (a linha
+# INTEIRA) como proxy de "já tratada" — que erra quando a MESMA linha tem
+# DOIS segredos (um tratado, um não) ou quando o texto original já
+# continha "••••" por acaso, pulando a linha e vazando por completo.
 #
-# O valor NÃO tenta reconhecer onde "termina" (nem por aspas, nem por
-# delimitador estrutural tipo `,`/`}`/`]`) — mascara tudo da posição atual
-# até o FIM DA LINHA, sempre. Duas tentativas mais "espertas" já se
-# provaram erradas nesta mesma função:
-#   1ª tentativa (régua de escape estilo JSON, `\\.` antes de `[^"\\\n]`):
-#      um texto ARBITRÁRIO (a saída crua do `dsjob`, formato não confirmado
-#      — D-07) pode ter uma barra invertida comum bem antes de uma aspa
-#      REAL de fechamento (ex.: path Windows `"C:\Temp\"`), indistinguível
-#      de uma aspa escapada — o regex tratava a aspa real como escapada e
-#      seguia procurando a PRÓXIMA aspa, que podia abrir o valor de um
-#      CAMPO SEGUINTE inteiro — esse segundo segredo saía sem máscara
-#      nenhuma (achado real da 3ª rodada da revisão adversarial da F2).
-#   2ª tentativa (parar em `,`/`}`/`]`/quebra de linha, sem olhar aspas):
-#      o valor real de um parâmetro `Encrypted` do DataStage tem a FORMA
-#      `{iisenc}<base64>` — a chave `}` faz parte do CONTEÚDO, não é um
-#      delimitador de nada. Parar nela cortava o valor no meio e deixava o
-#      resto (o segredo de verdade) exposto sem máscara.
-# "Até o fim da linha" nunca tem essa ambiguidade: não existe combinação de
-# aspas/chaves/vírgulas dentro do valor que engane onde ele "termina" — o
-# preço é mascarar informação não sensível que porventura esteja DEPOIS, na
-# MESMA linha (nunca um segredo de um campo diferente escapa). É
-# exatamente o design pré-F2 desta função, restaurado com o motivo
-# documentado desta vez.
-_VALOR = r"[^\n]*"
-_RE_SEGREDO = re.compile(
-    r"(?im)([\"']?\b(?:senha|password|pwd|secret|token|api[_-]?key)\b[\"']?\s*[:=]\s*)"
-    r"(" + _VALOR + r")")
-_RE_ENCRYPTED = re.compile(
-    r"(?im)([\"']?\bEncrypted\b[\"']?\s*[:=]?\s*)"
-    r"(" + _VALOR + r")")
+# A causa raiz comum: tentar resolver "onde o valor termina" e "o nome
+# cabe no padrão" na MESMA regex, com um separador CONDICIONAL disputando
+# posição com um quantificador. O desenho abaixo (7ª rodada) separa as
+# duas decisões: (1) achar a PRIMEIRA ocorrência de QUALQUER keyword na
+# linha — sempre O(1) por keyword, sem quantificador variável nenhum,
+# então NUNCA pode ter backtracking catastrófico nem falhar por tamanho
+# de nome; (2) por PYTHON PURO (não regex), numa janela CURTA e fixa
+# logo depois da keyword, procurar um separador `:`/`=` — se achar,
+# masca a partir dali (boa granularidade, nome completo visível); se não
+# achar dentro da janela, masca a partir da PRÓPRIA keyword (nunca falha
+# por completo — o preço é perder a visibilidade do nome quando ele é
+# mais verboso que a janela, nunca vazar o valor). Processa só a
+# PRIMEIRA ocorrência de cada linha porque, como sempre masca até o FIM
+# da linha a partir dali, qualquer segredo SEGUINTE na mesma linha já
+# fica coberto — não existe mais a possibilidade de "pular" um segredo
+# anterior para tratar um posterior, que era a causa da 7ª rodada.
+#
+# Achado real da 8ª rodada: a versão original desta regex (herdada,
+# sem mudança, de `_RE_SEGREDO`/`_RE_KEYWORD_SOLTA` das rodadas
+# anteriores) exigia delimitador não-letra tanto ANTES quanto DEPOIS da
+# keyword. O delimitador de DEPOIS é o que evita falso positivo em
+# "TOKENIZER" (depois de "token" vem "i", uma letra — não casa). Mas o
+# delimitador de ANTES tem um efeito colateral grave: um nome em
+# camelCase/PascalCase, onde a keyword vem colada a outra palavra sem
+# `_`/`-`/espaço (`DbPassword`, `authToken`, `accessToken`,
+# `clientSecret` — nomes plausíveis de parâmetro DataStage, o mesmo
+# domínio que `dags/utils/isx_engine.py` já trata com regex SEM
+# boundary nenhum), nunca satisfaz esse delimitador — `_RE_KEYWORD` não
+# casa em lugar NENHUM da linha, e o segredo sai por completo, sem
+# máscara. Esse era o único ponto de defesa no caminho do stdout cru do
+# `dsjob` via SSH (`ferramenta_dsjob`) — vazamento real, não hipotético.
+# Removido o delimitador de ANTES (commit anterior desta mesma rodada de
+# achados).
+#
+# Achado real da 9ª rodada: remover só o delimitador de ANTES resolveu
+# metade do problema (keyword como SUFIXO de um nome colado —
+# `DbPassword`). A outra metade — keyword como PREFIXO/miolo de um nome
+# colado, com mais letras ENTRE ela e o separador (`PasswordHash=`,
+# `SecretKey=`, `TokenValue=`, `encryptedValue":`) — continuava vazando
+# por completo: o delimitador de DEPOIS (`(?=$|[^a-zA-Z])`) também
+# falhava aqui, pelo mesmo motivo. 1ª tentativa desta correção: remover
+# TAMBÉM o delimitador de DEPOIS, mas guardar `_redigir_linha` com "se a
+# linha não tem `:`/`=` em lugar nenhum, devolve intacta sem procurar
+# keyword" — preservava "TOKENIZER processa..." ileso.
+#
+# Achado real da 10ª rodada: essa guarda tem a MESMA forma de bug de
+# TODAS as rodadas anteriores — assumir um formato fixo (aqui, que o
+# separador só pode ser `:`/`=`) quando D-07 (o formato real do
+# `dsjob`) segue ABERTA. Qualquer separador fora desse alfabeto (tab,
+# `|`, `->`, espaços múltiplos — todos plausíveis em saída tabular de
+# CLI) fazia a linha passar **intacta**, mesmo com uma keyword real
+# colada a um segredo logo depois: `"Password\tSEGREDO123"` saía sem
+# máscara nenhuma, porque a guarda nunca deixava `_RE_KEYWORD.search()`
+# rodar.
+#
+# Correção final: removida a guarda de linha inteira. `_redigir_linha`
+# tenta a keyword SEMPRE (`search()`, sem lookahead algum antes/depois
+# — primeira ocorrência da linha, nunca uma posterior: cortar a partir
+# de uma ocorrência posterior deixaria `linha[:corte]` preservar um
+# segredo associado à ocorrência anterior, o mesmo bug da 7ª rodada,
+# pego durante o desenvolvimento desta mesma correção). Achando
+# separador `:`/`=` na janela curta, masca a partir dali (boa
+# granularidade). Não achando — janela sem separador reconhecido, seja
+# porque não há um, seja porque é um separador fora do alfabeto
+# conhecido, seja porque pontuação no meio bloqueou a varredura —
+# masca a partir da PRÓPRIA keyword até o fim da linha: cobre qualquer
+# separador, conhecido ou não, sem precisar enumerá-los. É a mesma
+# garantia "nunca falha por completo" de sempre, agora sem depender de
+# reconhecer o separador para sequer TENTAR mascarar.
+# Preço aceito (o mesmo trade-off de sempre, nunca vazamento): qualquer
+# menção às keywords em texto livre — mesmo "TOKENIZER processa o texto
+# normalmente." SEM separador nenhum na linha — agora é mascarada a
+# partir do ponto de match. Não há mais como diferenciar sintaticamente
+# "é uma palavra comum que contém a keyword" de "é um campo sensível
+# com separador desconhecido" sem arriscar reabrir uma nova classe de
+# vazamento a cada tentativa — as 10 rodadas desta função confirmam
+# isso na prática. Dado o histórico, a escolha é sempre a mais
+# conservadora: masca.
+_JANELA_NOME_S = 40  # generoso para qualquer nome de parâmetro real
+_RE_KEYWORD = re.compile(
+    r"(?i)(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)", re.M)
+_CHAR_NOME = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-\"' ")
 _MASCARA = "••••"
+
+
+def _corte_apos_keyword(linha: str, fim_keyword: int) -> int | None:
+    """A partir do fim da keyword, procura um separador `:`/`=` numa
+    janela CURTA e FIXA (`_JANELA_NOME_S` chars, checagem char a char em
+    Python — nunca regex, nunca backtracking). Achando, devolve a
+    posição logo depois dele (e de espaços/tabs seguintes). Não achando
+    dentro da janela, devolve `None` — cabe a quem chama decidir o
+    fallback (ver `_redigir_linha`)."""
+    limite = min(len(linha), fim_keyword + _JANELA_NOME_S)
+    i = fim_keyword
+    while i < limite:
+        ch = linha[i]
+        if ch in ":=":
+            i += 1
+            while i < len(linha) and linha[i] in " \t":
+                i += 1
+            return i
+        if ch not in _CHAR_NOME:
+            break
+        i += 1
+    return None
+
+
+def _redigir_linha(linha: str) -> str:
+    m = _RE_KEYWORD.search(linha)
+    if m is None:
+        return linha  # nenhuma keyword na linha: nada a mascarar
+    # SEMPRE a PRIMEIRA ocorrência da linha, nunca uma posterior — pular
+    # para uma 2ª ocorrência (por a 1ª não ter achado separador na
+    # própria janela) e cortar a partir dela deixaria `linha[:corte]`
+    # preservar tudo o que veio ANTES, inclusive um segredo real
+    # associado à 1ª ocorrência (mesmo bug da 7ª rodada, pego durante o
+    # desenvolvimento desta correção antes de commitar).
+    corte = _corte_apos_keyword(linha, m.end())
+    fim = corte if corte is not None else m.end()
+    # ── Calibragem de 2026-09-22 (decisão do usuário, com medida) ──
+    #
+    # As rodadas 11-14 da revisão adversarial acrescentaram aqui uma
+    # camada que mascarava a LINHA INTEIRA (não só do `fim` em diante)
+    # sempre que houvesse qualquer texto alfanumérico ANTES da keyword —
+    # para cobrir um valor sensível que aparecesse antes dela em texto
+    # livre (`"... 'admin123' usado como password de fallback"`).
+    #
+    # Medimos o custo disso numa saída PLAUSÍVEL de `dsjob -report`
+    # (11 linhas): 3 linhas apagadas por inteiro, sendo 2 delas FALSOS
+    # POSITIVOS — e uma dessas era a linha de LINK, ou seja, o lineage,
+    # que é o produto do agente. O gatilho foi um nome de stage banal em
+    # ETL (`TokenizerTransform`, tokenização de dados — nada a ver com
+    # token de autenticação). 33% do conteúdo perdido para proteger um
+    # cenário de prosa livre que D-07 (formato real do `dsjob`, ainda
+    # ABERTA) nunca confirmou existir.
+    #
+    # Proporcionalidade: `redigir()` é a QUARTA camada deste caminho, não
+    # a primeira. Antes dela: (1) a allowlist de 5 comandos read-only
+    # (`ALLOWLIST_DSJOB`) exclui `logsum`/`logdetail`, os únicos que
+    # trariam conteúdo de log; (2) `dsjob -lparams` devolve NOMES de
+    # parâmetro, não valores (`dags/utils/ds_params.py`); (3) o parse do
+    # ISX/DSX já troca o valor por `"***"` na ORIGEM quando nome ou tipo
+    # batem em segredo (`dags/utils/isx_engine.py`); (4) a camada
+    # ESTRUTURAL (`_parece_parametro_sensivel`) mascara o campo de valor
+    # pelo nome/tipo do parâmetro, sem depender de regex textual.
+    #
+    # Decisão: manter o mascaramento CIRÚRGICO (do valor em diante,
+    # preservando o nome do campo — o que o operador precisa ler) e
+    # aceitar, como limite documentado, que um valor sensível colocado
+    # ANTES da keyword na MESMA linha de texto livre não é mascarado.
+    # É o mesmo tipo de limite já aceito nas rodadas 11-14 para valor
+    # colado sem fronteira — trocamos um risco improvável por um dano
+    # medido e certo, e revertemos a troca.
+    return linha[:fim] + _MASCARA
 
 
 def redigir(texto: str) -> str:
     """Mascara o VALOR de qualquer linha que pareça um campo sensível — o
-    NOME do campo/parâmetro fica visível. Nunca levanta: texto vazio/None
-    volta como veio."""
+    NOME do campo/parâmetro fica visível quando cabe numa janela curta
+    depois da keyword; sempre mascarado (nunca vaza), mesmo quando não
+    cabe. Nunca levanta: texto vazio/None volta como veio."""
     if not texto:
         return texto or ""
-    saida = _RE_SEGREDO.sub(lambda m: m.group(1) + _MASCARA, texto)
-    saida = _RE_ENCRYPTED.sub(lambda m: m.group(1) + _MASCARA, saida)
-    return saida
+    return "\n".join(_redigir_linha(linha) for linha in texto.split("\n"))
+
+
+# Formato real de um PARÂMETRO de job DataStage (`dags/utils/isx_engine.py`,
+# `has_ParameterDef`): `{"name": ..., "type": ..., "default": ..., "description": ...}`.
+# Quando esse dict já chega DESSERIALIZADO (dict Python, não string JSON —
+# ex.: depois da correção de `ferramenta_base` para o achado 1), a keyword
+# sensível mora numa CHAVE IRMÃ (`type` == "Encrypted", ou `name` contendo
+# "senha"/"password"), NUNCA dentro da MESMA STRING que o valor real
+# (`default`) — `redigir()`, textual e por string isolada, não enxerga essa
+# relação estrutural entre campos. Achado real da 2ª rodada da revisão
+# adversarial da F2b: `redigir_estrutura()` "por string" sozinha deixava o
+# `default`/`value` de um parâmetro Encrypted intocado, porque a string do
+# VALOR em si não contém nenhuma keyword.
+_CHAVES_TIPO_PARAMETRO = ("type", "Type", "extendedType", "typeCode")
+_CHAVES_NOME_PARAMETRO = ("name", "Name")
+_CHAVES_VALOR_PARAMETRO = ("default", "defaultValue", "default_value", "value", "Value", "valor")
+# `\b` NÃO é delimitador de palavra suficiente aqui: `_` é caractere de
+# PALAVRA em regex (`\w` inclui `_`), então `\btoken\b` não casa "TOKEN"
+# dentro de "AUTH_TOKEN" — e SNAKE_CASE é o padrão dominante de nome de
+# parâmetro em ETL/DataStage (`AUTH_TOKEN`, `API_KEY_PROD`, `DB_PASSWORD`,
+# `MY_API_KEY`...). Achado real da 3ª rodada da revisão adversarial da
+# F2b: a checagem por `name` nunca disparava para esse padrão — só o
+# caminho por `type == "Encrypted"` funcionava, e um parâmetro de token/
+# API key tipado como `String` (comum — nem todo parâmetro de credencial
+# é tipado `Encrypted` no DataStage) vazava o valor sem máscara nenhuma.
+# Corrigido trocando `\b` por `(?:^|[^a-z])`/`(?:$|[^a-z])` — com `(?i)`,
+# `[^a-z]` também exclui A-Z, então SOBRA exatamente "não é letra": `_`,
+# dígito, espaço, início/fim de string — delimitador de verdade para
+# nome de variável, sem depender da convenção de `\w`.
+_RE_NOME_PARAMETRO_SENSIVEL = re.compile(
+    r"(?i)(?:^|[^a-z])(?:senha|password|pwd|secret|token|api[_-]?key)(?:$|[^a-z])")
+
+
+def _parece_parametro_sensivel(d: dict) -> bool:
+    for chave in _CHAVES_TIPO_PARAMETRO:
+        if str(d.get(chave) or "").strip().lower() == "encrypted":
+            return True
+    for chave in _CHAVES_NOME_PARAMETRO:
+        if _RE_NOME_PARAMETRO_SENSIVEL.search(str(d.get(chave) or "")):
+            return True
+    return False
+
+
+def redigir_estrutura(valor):
+    """Aplica `redigir()` a cada STRING FOLHA de um dict/list, recursivamente
+    — NUNCA ao JSON serializado inteiro de uma vez. `redigir()` mascara até
+    o fim da LINHA que contém a keyword sensível (decisão de design das
+    rodadas anteriores da F2, pensada para a saída MULTI-LINHA do `dsjob`);
+    um `json.dumps(..., default=str)` compacto (sem `indent`, como
+    `isx_extrair`/`base`/`dsx_consulta` produzem) é UMA linha lógica só —
+    mascarar o texto serializado inteiro apagava a resposta INTEIRA sempre
+    que qualquer parte dela (ex.: `job_description` em prosa mencionando
+    "senha", ou o VALOR de um campo `type` sendo literalmente "Encrypted")
+    continha a keyword — over-masking severo, destruindo o lineage útil
+    (achado real da revisão adversarial da F2b). Aplicar por STRING isola
+    o dano a cada campo individualmente, sem perder segurança (a defesa
+    multi-linha original de `redigir()` continua valendo DENTRO de uma
+    string que, por si só, tenha várias linhas — ex.: um `job_description`
+    grande, ou o stdout redigido de um `dsjob`).
+
+    Camada ESTRUTURAL adicional (2ª rodada): quando um dict parece um
+    PARÂMETRO sensível (`_parece_parametro_sensivel`), o(s) campo(s) de
+    VALOR (`default`/`value`/...) são mascarados diretamente — cobre o
+    caso em que a keyword está numa chave irmã, não na mesma string."""
+    if isinstance(valor, dict):
+        sensivel = _parece_parametro_sensivel(valor)
+        saida = {}
+        for k, v in valor.items():
+            if sensivel and k in _CHAVES_VALOR_PARAMETRO and isinstance(v, str) and v:
+                saida[k] = _MASCARA
+            else:
+                saida[k] = redigir_estrutura(v)
+        return saida
+    if isinstance(valor, list):
+        return [redigir_estrutura(v) for v in valor]
+    if isinstance(valor, str):
+        return redigir(valor)
+    return valor
 
 
 # ── Truncagem ────────────────────────────────────────────────────────────────
@@ -174,19 +399,45 @@ def _projetos_da_base(cur) -> list[str]:
     return sorted(vistos)
 
 
+def _dsx_engine_cls():
+    """Importa o `DSXEngine` do pacote das DAGs — mesmo padrão de
+    `api/routers/lineage.py::_import_dsx_engine` (o container da API monta
+    `dags/`, e o `orquestra-api` monta `DSX_BASE_DIR` `:ro`)."""
+    import sys
+    dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
+    if dags_folder not in sys.path:
+        sys.path.insert(0, dags_folder)
+    from utils.dsx_engine import DSXEngine  # type: ignore
+    return DSXEngine
+
+
 def _projetos_com_dsx() -> list[str]:
     """Nomes de projeto com arquivo `.dsx` em `DSX_BASE_DIR` — só a LISTA
-    (`listar_dsx`); ler o conteúdo de um `.dsx` é ferramenta da F2b."""
+    (`listar_dsx`); ler o conteúdo de um `.dsx` é a ferramenta `dsx_consulta`."""
     try:
-        import os
-        import sys
-        dags_folder = os.environ.get("DAGS_FOLDER", "/opt/airflow/dags")
-        if dags_folder not in sys.path:
-            sys.path.insert(0, dags_folder)
-        from utils.dsx_engine import DSXEngine  # type: ignore
-        return list(DSXEngine().listar_dsx())
+        return list(_dsx_engine_cls()().listar_dsx())
     except Exception:
         return []
+
+
+def projeto_tem_dsx(nome: str) -> bool:
+    """Se `nome` (já resolvido) tem arquivo `.dsx` — usado por `dsx_consulta`
+    para recusar sem tocar o disco de novo além da listagem (critério 11 da
+    F2b: só roda com projeto **com** `.dsx`)."""
+    dsx = _projetos_com_dsx()
+    return nome in dsx or _casa_ignorando_caixa(nome, dsx) is not None
+
+
+def nome_dsx_valido(nome: str) -> str | None:
+    """Réplica de `api/routers/lineage.py::_safe_project_name`, sem
+    `HTTPException` — devolve `None` (não levanta) quando o nome está vazio
+    ou tem sinal de path traversal (critério 7 da F2b)."""
+    n = (nome or "").strip()
+    if n.lower().endswith(".dsx"):
+        n = n[:-4]
+    if not n or "/" in n or "\\" in n or ".." in n:
+        return None
+    return n
 
 
 def _casa_exato(nome: str, candidatos: list[str]) -> str | None:
@@ -287,6 +538,20 @@ def _idade_dias(data_iso: str | None) -> int | None:
     return max(0, (_dt.datetime.now() - quando).days)
 
 
+def _json_ou(v, padrao):
+    """`json.loads` tolerante — texto vazio/`None`/inválido devolve `padrao`,
+    nunca levanta. Mesma função de `services.lineage_isx._json_ou`, copiada
+    aqui para não acoplar `agentes_ferramentas` ao módulo inteiro por uma
+    função de 5 linhas."""
+    if not v:
+        return padrao
+    try:
+        import json as _json
+        return _json.loads(v)
+    except (TypeError, ValueError):
+        return padrao
+
+
 def ferramenta_base(cur, ds_project: str, job_name: str) -> dict:
     """Lê `etl_ds_job_isx`/`etl_job_lineage` (isx_auto) para (projeto, job).
     Sem FK direta por projeto — busca por `ds_project` + `job_name`, que é
@@ -294,7 +559,18 @@ def ferramenta_base(cur, ds_project: str, job_name: str) -> dict:
 
     Inclui `idade_dias` do `ds_last_modified` — a RESPOSTA já traz a idade
     computada (critério 3 da F2: "a resposta informa a idade do dado"), sem
-    depender do modelo calcular a partir de uma data crua."""
+    depender do modelo calcular a partir de uma data crua.
+
+    `parameters_json`/`flow_json` são DESSERIALIZADOS aqui (nunca devolvidos
+    como string JSON crua) — achado real da revisão adversarial da F2b:
+    essas colunas guardam um `json.dumps(...)` COMPACTO (uma linha só,
+    gravado por `lineage_isx._js()`); `redigir_estrutura()`, rio abaixo,
+    só desce em dict/list — uma STRING contendo um blob JSON inteiro era
+    tratada como UMA folha só, e `redigir()` sobre ela reproduzia o
+    over-masking "até o fim da linha" exatamente onde moram os parâmetros
+    `Encrypted`. Desserializar aqui iguala o formato ao que
+    `lineage_isx.montar()` já devolve (dict/list em memória), que
+    `redigir_estrutura()` já trata corretamente campo a campo."""
     cur.execute(
         "SELECT pipeline_name, job_name, ds_folder_path, ds_job_type, ds_last_modified, "
         "       job_description, parameters_json, flow_json, status, erro, extracted_at "
@@ -311,7 +587,8 @@ def ferramenta_base(cur, ds_project: str, job_name: str) -> dict:
         "encontrado": True, "origem": "isx", "pipeline_name": row[0], "job_name": row[1],
         "ds_folder_path": row[2], "job_type": row[3], "ds_last_modified": row[4],
         "idade_dias": _idade_dias(row[4]),
-        "job_description": row[5], "parameters_json": row[6], "flow_json": row[7],
+        "job_description": row[5],
+        "parameters_json": _json_ou(row[6], []), "flow_json": _json_ou(row[7], []),
         "status": row[8], "erro": row[9], "extracted_at": str(row[10]) if row[10] else None,
         "stages": int(n_stages[0]) if n_stages else 0,
     }
@@ -368,4 +645,100 @@ async def ferramenta_dsjob(comando: str, ds_project: str, job_name: str | None,
         raise
     resultado["saida_redigida"] = _truncar(redigir(resultado.get("stdout") or ""))
     resultado["espera_ms"] = int((time.monotonic() - t0) * 1000) - resultado.get("duration_ms", 0)
+    return resultado
+
+
+# ── isx_extrair (F2b: export via istool + parse + gravação, mesma régua) ────
+#
+# Reaproveita 100% de `services.lineage_isx` (localizar/extrair/gravar/
+# cabecalho/conta_linhas/mapa_tipos/config/montar) e o MESMO executor
+# dedicado do router (`ISX_EXECUTOR`/`isx_no_executor`/`ISX_TETO_EXTRAIR_S`,
+# importados de `routers.lineage_isx` acima) — "nenhum segundo pool"
+# (spec F2b, item 1). Nunca reimplementa o export/parse/gravação.
+
+_DS_JOB_TYPES = ("datastage", "")  # mesmo conjunto de routers/lineage_isx.py::_DS_JOB_TYPES
+ORIGEM_AGENTE = "agente:datastage"  # sufixo em extracted_by — rastreia extrações feitas pelo agente
+MAX_EXTRACOES_ISX = 2  # no máx. 2 extrações ISX por pergunta (spec F2b, item 5)
+
+
+def isx_info_do_job(cur, pipeline_name: str, job_name: str) -> dict | None:
+    """Mesma checagem de `routers.lineage_isx._info_do_job`, sem levantar
+    `HTTPException` — devolve `None` quando o job não está mapeado no
+    pipeline, o pipeline não tem projeto DataStage, ou o nó não é um job
+    DataStage. Devolve os nomes na GRAFIA DO BANCO (case-insensitive na
+    colação, mas o DataStage distingue caixa)."""
+    info = lineage_isx.job_do_pipeline(cur, pipeline_name, job_name)
+    if info is None or not info["ds_project"]:
+        return None
+    if str(info.get("job_type") or "").strip().lower() not in _DS_JOB_TYPES:
+        return None
+    return info
+
+
+def mensagem_erro_lineage(e: Exception) -> str:
+    """Traduz uma falha do `lineage_isx` (`ISXError`, `HTTPException`,
+    genérica) numa mensagem nomeada para o chat — nunca vaza detalhe
+    interno (`.interno`/traceback ficam só no log, como o router já faz
+    em `_http()`)."""
+    if isinstance(e, HTTPException):
+        detalhe = e.detail
+        return detalhe if isinstance(detalhe, str) else str(detalhe)
+    status = getattr(e, "status", None)
+    detail = getattr(e, "detail", None)
+    if status is not None and detail is not None:
+        return str(detail)
+    return f"Falha inesperada na extração ISX ({type(e).__name__}) — tente de novo."
+
+
+# ── dsx_consulta (F2b: só leitura dos .dsx já existentes) ───────────────────
+
+DSX_TETO_S = 20  # parse de um .dsx grande num executor com prazo (critério 10 da F2b)
+DSX_OPERACOES = ("listar_jobs", "listar_pastas", "buscar_campo", "extrair")
+
+
+def _dsx_data_arquivo(diretorio_base: str, projeto: str) -> str | None:
+    """Data de modificação do `.dsx` — toda resposta de `dsx_consulta` traz
+    nome+data do arquivo (é um RETRATO, não o estado agora — critério 8)."""
+    try:
+        mtime = os.path.getmtime(os.path.join(diretorio_base, f"{projeto}.dsx"))
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return None
+
+
+async def ferramenta_dsx_consulta(projeto: str, operacao: str, args: dict) -> dict:
+    """Só leitura dos `.dsx` já existentes em `DSX_BASE_DIR` — NUNCA toca o
+    servidor DataStage (critério 7 da F2b: sem SSH, sem `dsjob`, sem criar
+    nem alterar arquivo). `projeto` já validado contra path traversal e
+    contra "tem .dsx" por quem chama (`nome_dsx_valido`/`projeto_tem_dsx`).
+
+    Roda num executor com teto — um `.dsx` grande não pode travar a rodada
+    (critério 10). Como é só LEITURA de arquivo local (sem semáforo, sem
+    sessão remota a proteger), `asyncio.wait_for` simples é seguro aqui:
+    diferente do `dsjob`, não há recurso compartilhado que "vazaria" se a
+    espera for abandonada — a thread órfã só termina de ler um arquivo."""
+    if operacao not in DSX_OPERACOES:
+        raise ValueError(f"Operação '{operacao}' não existe em dsx_consulta — "
+                         f"use uma de: {', '.join(DSX_OPERACOES)}.")
+    DSXEngine = _dsx_engine_cls()
+    motor = DSXEngine()
+
+    def _rodar():
+        if operacao == "listar_jobs":
+            return motor.listar_jobs(projeto)
+        if operacao == "listar_pastas":
+            return motor.listar_pastas(projeto)
+        if operacao == "buscar_campo":
+            termo = str(args.get("termo") or "").strip()
+            tipos = args.get("tipos") if isinstance(args.get("tipos"), list) else None
+            return motor.buscar_campo(
+                projeto, termo, exato=bool(args.get("exato")), tipos=tipos,
+                excluir=bool(args.get("excluir")), pasta=str(args.get("pasta") or ""))
+        job_name = str(args.get("job_name") or "").strip()
+        return motor.extrair(projeto, job_name)
+
+    resultado = await asyncio.wait_for(asyncio.to_thread(_rodar), timeout=DSX_TETO_S)
+    resultado = dict(resultado or {})
+    resultado["dsx_arquivo"] = f"{projeto}.dsx"
+    resultado["dsx_data"] = _dsx_data_arquivo(motor.diretorio_base, projeto)
     return resultado

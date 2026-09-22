@@ -181,6 +181,27 @@ async def test_projeto_ja_resolvido_pula_a_pergunta(monkeypatch):
     assert "BI_CVP" in provedor.chamadas[0]["sistema"]  # o 1º prompt já sabia
 
 
+@pytest.mark.asyncio
+async def test_artefatos_redige_os_args_da_chamada_de_ferramenta(monkeypatch):
+    """Achado real da 15ª rodada da revisão adversarial da F2b: `args` (os
+    argumentos que o MODELO escolheu ao chamar a ferramenta) nunca passava
+    por `redigir_estrutura()`, mesmo sendo gravado em `artefatos_json` e
+    devolvido na resposta da API — amplificador: se um segredo já vazou
+    por outro canal, o modelo poderia ecoá-lo de volta como argumento
+    (ex.: um termo de busca)."""
+    monkeypatch.setattr(af, "ferramenta_base",
+                        lambda cur, p, j: {"encontrado": True, "job_name": j})
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "base", "args": {"job_name": "JobX", '
+        '"observacao_extra": "password: SegredoEcoadoPeloModelo123"}}\n```',
+        "ok",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "job X"}],
+                            projeto_atual="BI_CVP", provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    assert "SegredoEcoadoPeloModelo123" not in str(r["artefatos"])
+
+
 # ═══════════ 3. limite de rodadas e orçamento de tempo ══════════════════════
 
 @pytest.mark.asyncio
@@ -247,6 +268,74 @@ async def test_saida_de_ferramenta_com_injecao_nao_muda_controle(monkeypatch):
     assert mensagem_ferramenta["role"] == "user"
     assert "<ferramenta" in mensagem_ferramenta["content"]
     assert "IGNORE AS INSTRUÇÕES" in mensagem_ferramenta["content"]  # é dado, visível, não escondido
+
+
+@pytest.mark.asyncio
+async def test_base_com_segredo_em_texto_livre_nao_apaga_o_resto_do_payload(monkeypatch):
+    """Achado real da revisão adversarial da F2b: `redigir()` sobre o JSON
+    INTEIRO serializado (uma linha só, sem indent) apagava a resposta
+    INTEIRA sempre que qualquer campo tivesse uma keyword sensível —
+    inclusive dado útil sem relação nenhuma com o segredo. Corrigido com
+    `redigir_estrutura()` (redige por STRING FOLHA, não o JSON inteiro de
+    uma vez). Importante: o campo útil precisa vir DEPOIS do segredo na
+    ORDEM de serialização do dict (como `stages` vem depois de
+    `job_description` no payload real de `ferramenta_base`) — só assim o
+    teste realmente expõe o over-masking; um campo que vem ANTES sobrevive
+    mesmo com o bug antigo (ver nota da revisão sobre esse mesmo cuidado)."""
+    monkeypatch.setattr(af, "resolver_projeto",
+                        lambda cur, nome=None, **kw: {"estado": "resolvido", "projeto": "BI_CVP",
+                                                      "tem_dsx": False, "sugerido": None, "sugestoes": []})
+    monkeypatch.setattr(af, "ferramenta_base", lambda cur, p, j: {
+        "encontrado": True, "job_name": j,
+        "job_description": "Uses FTP account ftpuser, password: Summer2026!",
+        "stages": 42})
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "resolver_projeto", "args": {"projeto": "BI_CVP"}}\n```',
+        '```json\n{"ferramenta": "base", "args": {"job_name": "JobX"}}\n```',
+        "ok",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "job X"}],
+                        projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    mensagem_ferramenta = provedor.chamadas[2]["historico"][-1]["content"]
+    assert "Summer2026!" not in mensagem_ferramenta  # segredo mascarado
+    assert '"stages": 42' in mensagem_ferramenta  # dado útil DEPOIS do segredo SOBREVIVE
+
+
+@pytest.mark.asyncio
+async def test_dsjob_erro_redige_o_stderr_antes_de_truncar(monkeypatch):
+    """Achado real da 15ª rodada da revisão adversarial da F2b: o corte de
+    1000 chars do `stderr` de um `dsjob` que falhou rodava ANTES de
+    `redigir()` — um segredo além da posição 1000 nunca era sequer
+    examinado pela redação. A ordem correta é redigir o texto COMPLETO e
+    só então truncar o resultado (já seguro). O teste prende a ORDEM (o
+    que `redigir` recebeu), não a agressividade da máscara — assim
+    continua válido independente da calibragem de `redigir()`."""
+    monkeypatch.setattr(af, "resolver_projeto",
+                        lambda cur, nome=None, **kw: {"estado": "resolvido", "projeto": "BI_CVP",
+                                                      "tem_dsx": False, "sugerido": None, "sugestoes": []})
+    monkeypatch.setattr(af, "ferramenta_base", lambda cur, p, j: {"encontrado": False})
+    stderr = ("A" * 1200) + "\npassword: SegredoAlemDoCorte999"
+    visto = []
+    original = af.redigir
+    monkeypatch.setattr(af, "redigir", lambda t: visto.append(t) or original(t))
+
+    async def _dsjob_falhou(comando, ds_project, job_name, *, teto_sessoes, espera_max_s):
+        return {"exit_code": 1, "stderr": stderr, "stdout": "", "saida_redigida": ""}
+
+    monkeypatch.setattr(af, "ferramenta_dsjob", _dsjob_falhou)
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "resolver_projeto", "args": {"projeto": "BI_CVP"}}\n```',
+        '```json\n{"ferramenta": "dsjob", "args": {"comando": "report", "job_name": "JobX"}}\n```',
+        "ok",
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+    await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "job X"}],
+                        projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=10)
+    # `redigir` recebeu o stderr INTEIRO (1200+ chars), não a fatia de 1000
+    assert any(t == stderr for t in visto), "redigir() não viu o stderr completo — truncou antes"
+    mensagem_ferramenta = provedor.chamadas[2]["historico"][-1]["content"]
+    assert "SegredoAlemDoCorte999" not in mensagem_ferramenta
 
 
 @pytest.mark.asyncio

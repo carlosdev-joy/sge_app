@@ -149,6 +149,366 @@ def test_redigir_no_valor_encrypted_do_datastage_com_chave_no_meio():
     assert "AbCdEf" not in saida
 
 
+# Achado real da 4ª rodada da revisão adversarial da F2b: o MESMO problema
+# de `\b` corrigido em `_RE_NOME_PARAMETRO_SENSIVEL` (achado da 3ª rodada)
+# também afetava `_RE_SEGREDO`/`_RE_ENCRYPTED` — as regexes ORIGINAIS de
+# `redigir()`, já em produção desde a F2 (PR #421). `_` é caractere de
+# PALAVRA em regex, então `\btoken\b`/`\bpassword\b` nunca casavam num
+# nome de campo SNAKE_CASE em TEXTO LIVRE — exatamente o formato da saída
+# ao vivo do `dsjob` (`ferramenta_dsjob` redige o stdout com `redigir()`
+# antes de ir ao modelo, `-lparams`/`-report` do D-07 ainda não confirmado
+# quanto ao formato exato, mas `"AUTH_TOKEN": "..."` é plausível).
+@pytest.mark.parametrize("texto,escondido", [
+    ('"AUTH_TOKEN": "eyJhbGciOiJIUzI1NiJ9.PAYLOADSECRETO123"', "PAYLOADSECRETO123"),
+    ("DB_PASSWORD=supersenha123", "supersenha123"),
+    ("API_KEY_PROD: sk-ant-xxxxx", "sk-ant-xxxxx"),
+])
+def test_redigir_nome_de_campo_snake_case_em_texto_livre(texto, escondido):
+    assert escondido not in af.redigir(texto)
+
+
+def test_redigir_snake_case_preserva_o_prefixo_do_nome():
+    """O delimitador reconhecido (o `_` antes da keyword) fica DENTRO do
+    grupo capturado — não distorce a estrutura ao redor da máscara."""
+    saida = af.redigir('"AUTH_TOKEN": "segredo123"')
+    assert saida.startswith('"AUTH_TOKEN":')  # nome do campo continua legível
+
+
+# Achado real da 5ª rodada da revisão adversarial da F2b: um quantificador
+# SEM limite (`[A-Za-z0-9_-]*`) logo antes de um separador OBRIGATÓRIO
+# (`[:=]` em `_RE_SEGREDO`) é backtracking catastrófico — quando não há
+# `:`/`=` no resto da linha, o motor consome o sufixo até o fim, falha, e
+# recua caractere a caractere: O(tamanho da linha) por TENTATIVA, repetido
+# a cada ocorrência da keyword — O(n²) total. Medido: uma linha de 44 000
+# caracteres levava ~5s; a saída REAL do `dsjob` pode chegar a 200 000
+# caracteres (`run_dsjob`/`ssh_datastage.py` já trunca nesse teto) — o
+# suficiente para travar o event loop de um worker da API por dezenas de
+# segundos, já que `ferramenta_dsjob` chama `redigir()` de forma SÍNCRONA
+# (ao contrário de `run_dsjob`, que roda em thread por este mesmo motivo).
+# Corrigido limitando o sufixo a `{0,40}` (generoso para qualquer nome de
+# parâmetro real) — mesmo padrão de `test_lineage_isx_engine.py::
+# test_cdata_e_mainloop_nao_sao_quadraticos`.
+def test_redigir_nao_e_quadratico_em_linha_longa_sem_separador():
+    import time
+    hostil = "AUTH_TOKEN_" * 20000  # ~220 000 chars, sem ':'/'=' nenhum
+    t0 = time.perf_counter()
+    af.redigir(hostil)
+    assert time.perf_counter() - t0 < 2.0
+
+
+def test_redigir_nao_e_quadratico_saida_real_de_dsjob_200k():
+    """O teto exato que `run_dsjob` já trunca em produção
+    (`ssh_datastage.py`, `out[:200000]`) — mesmo tamanho, pior caso
+    plausível (muitas ocorrências de keyword, sem separador)."""
+    import time
+    hostil = ("token_" * 33334)[:200000]
+    t0 = time.perf_counter()
+    af.redigir(hostil)
+    assert time.perf_counter() - t0 < 2.0
+
+
+def test_redigir_nao_e_quadratico_prefixo_alfanumerico_longo_ate_200k():
+    """Pior caso para a checagem de prefixo da 13ª rodada (anda para
+    trás por `_CHAR_MESMO_TOKEN` + varre `linha[:inicio_ident]`): uma
+    ÚNICA linha, toda alfanumérica, do tamanho do teto real do
+    `dsjob`, com a keyword só no final."""
+    import time
+    hostil = ("abc123_" * 28571)[:200000] + "Password=x"
+    t0 = time.perf_counter()
+    af.redigir(hostil)
+    assert time.perf_counter() - t0 < 2.0
+
+
+# Achado real da 6ª rodada da revisão adversarial da F2b: um nome de
+# campo mais VERBOSO que a janela de busca do separador (plausível em
+# nomenclatura de ETL — D-07, o formato real do `dsjob`, segue aberta)
+# não pode fazer a redação FALHAR POR COMPLETO — o design da 7ª rodada
+# (`_redigir_linha`/`_corte_apos_keyword`) sempre masca a partir da
+# keyword quando não acha separador na janela, nunca deixa de mascarar.
+def test_redigir_nome_de_campo_mais_longo_que_a_janela_nao_vaza():
+    texto = "API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION: xyz123segredo"
+    saida = af.redigir(texto)
+    assert "xyz123segredo" not in saida
+    assert af._MASCARA in saida
+
+
+def test_redigir_nome_curto_preserva_formatacao():
+    texto = "senha: abc123"
+    assert af.redigir(texto) == "senha: ••••"
+
+
+# Achado real da 7ª rodada da revisão adversarial da F2b: a "rede de
+# segurança" da 6ª rodada testava `_MASCARA in linha` (a LINHA INTEIRA)
+# como proxy de "já tratada" — errado quando a MESMA linha tem DOIS
+# campos sensíveis (um de nome curto, tratado; outro de nome longo, não)
+# ou quando o texto original já continha "••••" por acaso: a linha
+# inteira era pulada, vazando por completo. O design da 7ª rodada não
+# tem mais essa heurística — processa sempre a PRIMEIRA ocorrência da
+# linha e masca a partir dali até o fim (cobrindo qualquer segredo
+# seguinte na mesma linha, tratado ou não pela regra "bonita").
+def test_redigir_dois_segredos_na_mesma_linha_nenhum_vaza():
+    texto = ('{"API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION": '
+            '"leak1_segredo_real", "token": "leak2"}')
+    saida = af.redigir(texto)
+    assert "leak1_segredo_real" not in saida
+    assert "leak2" not in saida
+
+
+def test_redigir_mascara_preexistente_no_texto_nao_esconde_segredo_real():
+    texto = ('log_marker: "••••" (progress) — '
+            "API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION=leak3_real")
+    saida = af.redigir(texto)
+    assert "leak3_real" not in saida
+
+
+# Achado real da 8ª rodada da revisão adversarial da F2b: `_RE_KEYWORD`
+# exigia delimitador não-letra tanto ANTES quanto DEPOIS da keyword. Um
+# nome em camelCase/PascalCase (keyword colada a outra palavra, sem
+# `_`/`-`/espaço — plausível em parâmetro DataStage, ex. `DbPassword`, o
+# mesmo nome usado como fixture realista em
+# tests/test_lineage_isx_engine.py) nunca satisfazia o delimitador de
+# ANTES: a regra não casava em lugar nenhum da linha, e o segredo saía
+# por COMPLETO, sem máscara nenhuma — inclusive no caminho do stdout cru
+# do `dsjob` via SSH, onde `redigir()` é a ÚNICA barreira antes do
+# modelo. Corrigido removendo o delimitador de ANTES (o de DEPOIS
+# sozinho já barra "TOKENIZER" e afins).
+@pytest.mark.parametrize("texto,segredo", [
+    ("DbPassword=senhaReal123!", "senhaReal123"),
+    ("authToken: mysecretvalue123", "mysecretvalue123"),
+    ('{"accessToken": "eyJSECRETPAYLOAD123"}', "eyJSECRETPAYLOAD123"),
+    ('{"clientSecret": "abcdef123456"}', "abcdef123456"),
+])
+def test_redigir_nome_camel_case_colado_a_prefixo_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+    assert af._MASCARA in saida
+
+
+def test_redigir_camel_case_preserva_o_nome_do_campo():
+    assert af.redigir("DbPassword=senhaReal123!") == "DbPassword=••••"
+
+
+def test_redigir_camel_case_e_o_primeiro_segredo_da_linha_nao_vaza():
+    """A keyword em camelCase precisa ser achada mesmo quando é a
+    PRIMEIRA ocorrência da linha (não só quando um 2º segredo já
+    "salvaria" a máscara) — reprodução exata do achado da 8ª rodada."""
+    texto = '{"authToken": "REALSECRET1_LEAK", "API_KEY": "REALSECRET2"}'
+    saida = af.redigir(texto)
+    assert "REALSECRET1_LEAK" not in saida
+    assert "REALSECRET2" not in saida
+
+
+# Achado real da 10ª rodada: uma guarda global "linha sem `:`/`=` fica
+# intacta" (9ª rodada) parecia resolver o over-masking de "TOKENIZER" —
+# mas também deixava vazar por completo qualquer segredo cujo separador
+# real não fosse `:`/`=` (tab, `|`, `->`, espaços múltiplos — o formato
+# exato do `dsjob` segue sem confirmação, D-07 aberta). Removida: agora
+# QUALQUER ocorrência de keyword é mascarada, mesmo sem separador
+# reconhecível — inclusive "TOKENIZER" puro. Preço aceito (nunca vazar
+# > over-masking, o mesmo trade-off de sempre).
+def test_redigir_tokenizer_agora_e_mascarado_por_seguranca():
+    texto = "O TOKENIZER processa o texto normalmente."
+    saida = af.redigir(texto)
+    assert saida != texto
+    assert af._MASCARA in saida
+
+
+def test_redigir_linha_sem_separador_e_sem_keyword_fica_intacta():
+    assert af.redigir("nada de especial por aqui") == "nada de especial por aqui"
+
+
+def test_redigir_senhas_plural_sem_separador_e_mascarado_por_seguranca():
+    """"senhas" (plural) aparece na frase, sem `:`/`=` na linha — antes
+    da 10ª rodada isso ficava intacto (guarda global); removida a
+    guarda, o preço é mascarar também este caso, para nunca depender de
+    reconhecer o separador exato do segredo real."""
+    texto = "Existem 3 senhas cadastradas no sistema"
+    saida = af.redigir(texto)
+    assert saida != texto
+    assert af._MASCARA in saida
+
+
+# Achados reais da 10ª rodada: um segredo real cujo separador não é
+# `:`/`=` (tab, pipe, seta, espaços múltiplos — todos plausíveis num
+# relatório tabular de CLI, e D-07 segue sem confirmar o formato real
+# do `dsjob`) vazava por completo com a guarda global da 9ª rodada, já
+# que ela nunca deixava `_RE_KEYWORD.search()` rodar.
+@pytest.mark.parametrize("texto,segredo", [
+    ("Password\tSEGREDOTAB789", "SEGREDOTAB789"),
+    ("Password|SEGREDOPIPE000", "SEGREDOPIPE000"),
+    ("Password -> SEGREDOARROW111", "SEGREDOARROW111"),
+    ("Password    SEGREDOESPACO222", "SEGREDOESPACO222"),
+    ("EncryptedField\tSEGREDOTABREPORT", "SEGREDOTABREPORT"),
+])
+def test_redigir_separador_fora_de_dois_pontos_e_igual_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+    assert af._MASCARA in saida
+
+
+# ── LIMITE DOCUMENTADO: valor ANTES da keyword na mesma linha ──────────
+#
+# As rodadas 11-14 da revisão adversarial cobriram este caso mascarando
+# a LINHA INTEIRA sempre que houvesse texto alfanumérico antes da
+# keyword. Medimos o custo numa saída plausível de `dsjob -report`: 33%
+# do conteúdo apagado, 2 de 3 linhas mascaradas eram FALSOS POSITIVOS, e
+# uma delas era a linha de LINK (o lineage — o produto do agente),
+# disparada por um nome de stage banal em ETL (`TokenizerTransform`).
+#
+# Calibragem de 2026-09-22 (decisão do usuário): revertida essa camada.
+# `redigir()` volta a mascarar CIRURGICAMENTE — do valor em diante,
+# preservando o nome do campo. O preço é este limite: um valor sensível
+# escrito ANTES da keyword, em texto livre, fica visível. Aceito porque
+# (a) `redigir()` é a 4ª camada deste caminho (allowlist de comandos,
+# `-lparams` sem valores, mascaramento na origem do ISX e a camada
+# estrutural vêm antes), e (b) D-07 — o formato real do `dsjob` — segue
+# ABERTA: nunca houve amostra confirmando que esse texto livre exista.
+# Ver o comentário de calibragem em `_redigir_linha`.
+@pytest.mark.parametrize("texto,visivel", [
+    ("Annotation: valor legado 'admin123hardcoded' usado como password de fallback",
+     "admin123hardcoded"),
+    ("SEGREDO123 Password", "SEGREDO123"),
+    ("valor: abc123, campo relacionado: password", "abc123"),
+    ("SEGREDO_REAL_999 e depois token: campo_qualquer", "SEGREDO_REAL_999"),
+    ("SEGREDO_REAL_999 campo_token_relacionado: outro_valor", "SEGREDO_REAL_999"),
+    ("ConnString=sa:Tr0ub4dor&3@server;refresh_token_interval: 30", "Tr0ub4dor&3"),
+])
+def test_redigir_limite_conhecido_valor_antes_da_keyword(texto, visivel):
+    """Limite aceito, não garantia de segurança — ver bloco acima."""
+    saida = af.redigir(texto)
+    assert visivel in saida
+    assert af._MASCARA in saida  # o que vem DEPOIS da keyword continua coberto
+
+
+def test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome():
+    """`redigir_estrutura()` aplica `redigir()` a cada string FOLHA de um
+    dict — incluindo o `name` de um parâmetro (`"AUTH_TOKEN"`, sem
+    nenhum separador, porque é só o identificador isolado). Como "TOKEN"
+    é sufixo do MESMO nome (precedido de `_`, não de um espaço/pontuação
+    que indicaria um token independente), o nome inteiro continua
+    visível — é o requisito original da função ("o nome do parâmetro
+    continua visível")."""
+    assert "AUTH_TOKEN" in af.redigir("AUTH_TOKEN")
+
+
+def test_redigir_limite_conhecido_keyword_como_substring_do_proprio_valor_colado():
+    """Limite aceito (documentado, não corrigido): quando o PRÓPRIO
+    valor sensível, sozinho na linha (nada mais antes dele) e sem
+    nenhum separador de palavra antes da keyword, contém uma das 7
+    keywords como substring (`"xY9zSecretKeyABC123"` — o valor em si
+    soa como "...Secret..."), o prefixo antes da keyword (aqui "xY9z")
+    ainda vaza, porque a keyword aparenta ser sufixo do MESMO
+    identificador e não há mais NADA antes dele na linha para levantar
+    suspeita (13ª rodada: a checagem olha `linha[:inicio_ident]`, que
+    aqui é vazio). Cenário de probabilidade baixa (exige que um valor
+    aleatório contenha coincidentemente uma dessas palavras), sem
+    solução sem reabrir o over-masking de `AUTH_TOKEN` isolado — ver
+    `test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome`.
+
+    Havendo QUALQUER texto alfanumérico antes na mesma linha (mesmo só
+    uma palavra explicativa, ex. "valor gerado: "), a 13ª rodada fecha
+    esse limite também — ver
+    test_redigir_valor_antes_da_keyword_com_identificador_composto_nao_vaza."""
+    saida = af.redigir("xY9zSecretKeyABC123!!")
+    assert "xY9z" in saida  # limite conhecido, não uma garantia de segurança
+    assert af._MASCARA in saida
+
+
+# Achado real da 14ª rodada da revisão adversarial da F2b: GENERALIZA o
+# limite acima (não é um bug novo — é a MESMA ambiguidade sintática).
+# A correção da 13ª rodada anda para trás por `_CHAR_MESMO_TOKEN` até
+# achar onde o identificador local começa — mas não sabe diferenciar
+# "um valor aleatório que soa como nome de campo" (limite já aceito)
+# de "um valor REAL colado, sem nenhum separador (`_`/`-`/nada), a um
+# nome de campo DIFERENTE que contém a keyword": pra quem só olha a
+# FORMA dos caracteres, as duas situações são idênticas — uma única
+# sequência ininterrupta de letras/dígitos/`_`/`-` com a keyword em
+# algum ponto interno. Risco aceito (ver comentário em
+# `_redigir_linha`): exige um formato de log ilegível até para humano
+# (campo e valor colados sem NENHUM separador), incompatível com todo
+# formato conhecido de saída de CLI/relatório.
+@pytest.mark.parametrize("texto,segredo", [
+    ("Tr0ub4dor3-refresh_token_interval: 30", "Tr0ub4dor3"),
+    ("Tr0ub4dor3_refresh_token_interval: 30", "Tr0ub4dor3"),
+    ("Tr0ub4dor3refresh_token_interval: 30", "Tr0ub4dor3"),
+])
+def test_redigir_limite_conhecido_valor_colado_sem_fronteira_a_identificador_diferente(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo in saida  # limite conhecido (14ª rodada), não uma garantia de segurança
+    assert af._MASCARA in saida
+
+
+def test_redigir_json_com_aspas_antes_do_nome_continua_preservando_o_campo():
+    """Não-regressão do achado da 13ª rodada: a aspas de ABERTURA de um
+    campo JSON (`'"AUTH_TOKEN": ...'`) não pode ser tratada como
+    "fronteira perigosa" — é só sintaxe estrutural, não um valor
+    independente. Uma 1ª tentativa desta correção (exigir TODO o
+    prefixo em `_CHAR_MESMO_TOKEN`) quebrava exatamente este caso,
+    pego pela suíte antes de commitar."""
+    saida = af.redigir('"AUTH_TOKEN": "segredo123"')
+    assert saida.startswith('"AUTH_TOKEN":')
+    assert "segredo123" not in saida
+
+
+# Achado real da 9ª rodada da revisão adversarial da F2b: a correção da
+# 8ª rodada (remover o delimitador de ANTES) só resolveu a keyword como
+# SUFIXO de um nome colado (`DbPassword`). Como PREFIXO/miolo — com mais
+# letras ENTRE a keyword e o separador (`PasswordHash=`, `SecretKey=`,
+# `TokenValue=`, `encryptedValue":`) — o delimitador de DEPOIS
+# (`(?=$|[^a-zA-Z])`) ainda bloqueava, e o segredo saía por completo,
+# sem máscara nenhuma. Corrigido removendo TAMBÉM o delimitador de
+# DEPOIS, com uma guarda global (linha sem `:`/`=` nenhum não é tocada)
+# para não reabrir o over-masking de "TOKENIZER" em texto sem separador.
+@pytest.mark.parametrize("texto,segredo", [
+    ("SecretKey=abcXYZ789realvalue", "abcXYZ789realvalue"),
+    ("TokenValue=eyJhbGciREALVALUE9x", "eyJhbGciREALVALUE9x"),
+    ("PasswordHash=deadbeef1234", "deadbeef1234"),
+    ("DbPasswordHash=deadbeef1234", "deadbeef1234"),
+    ("myDbPasswordValue=abcXYZ789real", "abcXYZ789real"),
+    ("PwdHash=abcXYZ789", "abcXYZ789"),
+    ("ApiKeyValue=sk-ant-realvalue", "sk-ant-realvalue"),
+    ("EncryptedField=abcXYZ789", "abcXYZ789"),
+    ("DBPASSWORDHASH=abcXYZ789", "abcXYZ789"),
+    ("senhaAlternativa=abcXYZ789", "abcXYZ789"),
+])
+def test_redigir_keyword_como_prefixo_de_nome_colado_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+    assert af._MASCARA in saida
+
+
+def test_redigir_keyword_como_prefixo_preserva_o_nome_quando_cabe_na_janela():
+    assert af.redigir("SecretKey=abcXYZ789realvalue") == "SecretKey=••••"
+
+
+def test_redigir_json_com_keyword_como_prefixo_no_nome_do_campo_nao_vaza():
+    texto = '{"encryptedValue": "{iisenc}AbCdEfXyzQwerty99=="}'
+    saida = af.redigir(texto)
+    assert "AbCdEfXyzQwerty99" not in saida
+
+
+def test_redigir_relatorio_dsjob_com_keyword_como_prefixo_nao_vaza():
+    """Formato de relatório plausível (`Campo: Valor` em colunas, D-07
+    segue aberta) com a keyword colada a um sufixo antes do separador."""
+    texto = "Parameter: EncryptedField  Value: 9f8e7d6c5b4a3210realvalue"
+    saida = af.redigir(texto)
+    assert "9f8e7d6c5b4a3210realvalue" not in saida
+
+
+def test_redigir_dois_segredos_um_deles_com_nome_verboso_nenhum_vaza():
+    """Reprodução exata de um bug introduzido DURANTE a correção desta
+    9ª rodada (pego antes do commit): ao tentar pular para uma 2ª
+    ocorrência de keyword quando a 1ª não achava separador na própria
+    janela, o corte descartava o segredo associado à 1ª ocorrência —
+    `linha[:corte]` preserva tudo antes dele. `_redigir_linha` sempre
+    usa a PRIMEIRA ocorrência da linha, nunca pula para uma posterior."""
+    texto = ('{"API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION": '
+            '"leak1_segredo_real", "token": "leak2"}')
+    saida = af.redigir(texto)
+    assert "leak1_segredo_real" not in saida
+    assert "leak2" not in saida
+
+
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
 
 def test_truncar_texto_curto_nao_muda():
@@ -311,6 +671,66 @@ def test_ferramenta_base_nao_encontrado():
     cur = _CurBase(linha=None)
     r = af.ferramenta_base(cur, "BI_CVP", "JobFantasma")
     assert r == {"encontrado": False}
+
+
+# Achado real da 2ª rodada da revisão adversarial da F2b: `parameters_json`/
+# `flow_json` são gravados como um `json.dumps(...)` COMPACTO (uma linha só)
+# por `lineage_isx._js()` — se `ferramenta_base` devolvesse essas colunas
+# CRUAS (como string), `redigir_estrutura()` (que só desce em dict/list)
+# trataria o blob inteiro como UMA folha só, reproduzindo o over-masking
+# "até o fim da linha" exatamente onde moram os parâmetros `Encrypted`.
+# `ferramenta_base` agora DESSERIALIZA essas colunas antes de devolver.
+def test_ferramenta_base_desserializa_parameters_e_flow_json():
+    import json
+    parametros = [
+        {"name": "DB_PASSWORD", "type": "Encrypted", "default": "{iisenc}AbCdEf==", "description": "senha"},
+        {"name": "DB_HOST", "type": "string", "default": "oracle-prod01.empresa.local", "description": "host"},
+    ]
+    linha = ("PIPE_VENDAS", "JobCarga", "\\Jobs\\Cat", "PARALLEL", "2026-09-01T10:00:00",
+             "descricao", json.dumps(parametros, ensure_ascii=False), "[]", "ok", None, "2026-09-10 10:00:00")
+    r = af.ferramenta_base(_CurBase(linha=linha, stages=1), "BI_CVP", "JobCarga")
+    # já veio desserializado — não é mais uma string JSON crua
+    assert isinstance(r["parameters_json"], list)
+    assert r["parameters_json"][1]["name"] == "DB_HOST"
+
+    # e, combinado com redigir_estrutura(), o dado útil sobrevive ao lado do segredo
+    texto = json.dumps(af.redigir_estrutura(r), ensure_ascii=False, default=str)
+    assert "DB_HOST" in texto and "oracle-prod01.empresa.local" in texto
+    assert "AbCdEf==" not in texto
+
+
+# Achado real da 3ª rodada da revisão adversarial da F2b: `\b` NÃO é
+# delimitador de palavra suficiente para nome de variável — `_` é
+# caractere de PALAVRA em regex (`\w` inclui `_`), então `\btoken\b` não
+# casava "TOKEN" dentro de "AUTH_TOKEN". SNAKE_CASE é o padrão dominante
+# de nome de parâmetro em ETL (`AUTH_TOKEN`, `API_KEY_PROD`,
+# `DB_PASSWORD`...) — um parâmetro de token/API key tipado `String` (não
+# `Encrypted`) vazava o `default` sem máscara nenhuma, porque só o
+# CAMINHO por `type == "Encrypted"` funcionava de verdade.
+@pytest.mark.parametrize("nome", ["AUTH_TOKEN", "API_KEY_PROD", "MY_API_KEY", "DB_PASSWORD", "DB-PASSWORD"])
+def test_parece_parametro_sensivel_reconhece_nome_snake_case(nome):
+    assert af._parece_parametro_sensivel({"name": nome, "type": "String", "default": "x"}) is True
+
+
+@pytest.mark.parametrize("nome", ["PIPELINE_NAME", "JOB_TYPE", "ds_project", "STAGE_NAME"])
+def test_parece_parametro_sensivel_nao_gera_falso_positivo(nome):
+    assert af._parece_parametro_sensivel({"name": nome, "type": "String", "default": "x"}) is False
+
+
+def test_ferramenta_base_token_snake_case_tipado_string_nao_vaza():
+    """Reprodução ponta a ponta do achado: parâmetro de token, tipado
+    `String` (não `Encrypted` — plausível, nem todo parâmetro de
+    credencial é tipado Encrypted no DataStage), com nome SNAKE_CASE."""
+    import json
+    parametros = [{"name": "AUTH_TOKEN", "type": "String",
+                  "default": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.SECRETPAYLOAD",
+                  "description": "token usado na chamada REST"}]
+    linha = ("PIPE_API", "JobChamaApi", "\\Jobs\\Cat", "PARALLEL", "2026-09-01T10:00:00",
+             "descricao", json.dumps(parametros, ensure_ascii=False), "[]", "ok", None, "2026-09-10 10:00:00")
+    r = af.ferramenta_base(_CurBase(linha=linha, stages=1), "BI_CVP", "JobChamaApi")
+    texto = json.dumps(af.redigir_estrutura(r), ensure_ascii=False, default=str)
+    assert "SECRETPAYLOAD" not in texto
+    assert "AUTH_TOKEN" in texto  # nome do parâmetro continua visível
 
 
 def test_ferramenta_base_traz_idade_ja_calculada():
