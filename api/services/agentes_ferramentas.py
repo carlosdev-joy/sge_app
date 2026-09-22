@@ -103,28 +103,60 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # casa em lugar NENHUM da linha, e o segredo sai por completo, sem
 # máscara. Esse era o único ponto de defesa no caminho do stdout cru do
 # `dsjob` via SSH (`ferramenta_dsjob`) — vazamento real, não hipotético.
-# Removido o delimitador de ANTES: o de DEPOIS sozinho já basta para
-# barrar "TOKENIZER" (e qualquer outra keyword seguida de letra), e o
-# preço de aceitar a keyword colada a um prefixo (`DbPassword`,
-# `unencrypted`) é, na pior hipótese, mascarar um pouco mais do que o
-# necessário (over-masking) — nunca vazar, que é o trade-off já aceito
-# no resto do design desta função.
+# Removido o delimitador de ANTES (commit anterior desta mesma rodada de
+# achados).
+#
+# Achado real da 9ª rodada: remover só o delimitador de ANTES resolveu
+# metade do problema (keyword como SUFIXO de um nome colado —
+# `DbPassword`). A outra metade — keyword como PREFIXO/miolo de um nome
+# colado, com mais letras ENTRE ela e o separador (`PasswordHash=`,
+# `SecretKey=`, `TokenValue=`, `encryptedValue":`) — continuava vazando
+# por completo: o delimitador de DEPOIS (`(?=$|[^a-zA-Z])`) também
+# falhava aqui, pelo mesmo motivo. Removê-lo TAMBÉM reabriria o
+# over-masking de "TOKENIZER" em qualquer linha (mascararia até o fim
+# mesmo sem nenhum separador na linha inteira — não há "campo:valor"
+# nenhum ali).
+#
+# Correção: em vez de decidir "é keyword de verdade?" só pela FORMA da
+# palavra (letra antes/depois), decide pela mesma evidência que já
+# importa no resto do design — existe um SEPARADOR alcançável. Dois
+# passos, ambos O(n), sem lookahead algum na regex da keyword:
+#   1. Guarda de linha inteira: se a linha não tem NENHUM `:`/`=` em
+#      lugar nenhum, não há estrutura "campo:valor" possível — devolve
+#      a linha intacta sem sequer procurar keyword (é o que preserva
+#      "TOKENIZER processa o texto normalmente." sem separador nenhum).
+#   2. Havendo separador em algum lugar, percorre TODAS as ocorrências
+#      de keyword da linha (`finditer`, sem lookahead — pode estar
+#      colada em qualquer posição). Para a PRIMEIRA que tiver separador
+#      dentro da janela curta (`_corte_apos_keyword`), masca a partir
+#      dali — essa é a keyword "de verdade" (achado real: "PasswordHash="
+#      só tem separador alcançável a partir de "Password", não de
+#      "TOKENIZER" solto no meio de outra frase da mesma linha).
+#      Nenhuma ocorrência alcançando separador na própria janela, mas a
+#      linha TENDO separador em algum lugar mais distante (nome verboso
+#      >40 chars, ou pontuação no meio bloqueando a varredura) — mesma
+#      garantia de sempre: masca a partir da PRIMEIRA ocorrência de
+#      qualquer forma, nunca falha por completo.
+# Preço aceito (o mesmo trade-off de sempre, nunca vazamento): uma
+# palavra tipo "Pwdless"/"passwordless" numa linha que TAMBÉM tenha
+# outro separador mais adiante agora é mascarada por inteiro a partir
+# dali — over-masking que o design anterior evitava, mas ao custo do
+# vazamento real corrigido aqui. Sem separador NENHUM na linha, texto
+# livre como "TOKENIZER"/"senhas cadastradas" continua imune.
 _JANELA_NOME_S = 40  # generoso para qualquer nome de parâmetro real
 _RE_KEYWORD = re.compile(
-    r"(?i)(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)(?=$|[^a-zA-Z])",
-    re.M)
+    r"(?i)(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)", re.M)
 _CHAR_NOME = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-\"' ")
 _MASCARA = "••••"
 
 
-def _corte_apos_keyword(linha: str, fim_keyword: int) -> int:
+def _corte_apos_keyword(linha: str, fim_keyword: int) -> int | None:
     """A partir do fim da keyword, procura um separador `:`/`=` numa
     janela CURTA e FIXA (`_JANELA_NOME_S` chars, checagem char a char em
     Python — nunca regex, nunca backtracking). Achando, devolve a
     posição logo depois dele (e de espaços/tabs seguintes). Não achando
-    dentro da janela (nome mais verboso, ou não é claramente um "nome de
-    campo"), devolve `fim_keyword` — masca a partir da própria keyword,
-    nunca deixa de mascarar."""
+    dentro da janela, devolve `None` — cabe a quem chama decidir o
+    fallback (ver `_redigir_linha`)."""
     limite = min(len(linha), fim_keyword + _JANELA_NOME_S)
     i = fim_keyword
     while i < limite:
@@ -137,14 +169,25 @@ def _corte_apos_keyword(linha: str, fim_keyword: int) -> int:
         if ch not in _CHAR_NOME:
             break
         i += 1
-    return fim_keyword
+    return None
 
 
 def _redigir_linha(linha: str) -> str:
+    if ":" not in linha and "=" not in linha:
+        return linha  # sem separador algum: não há "campo:valor" a mascarar
     m = _RE_KEYWORD.search(linha)
     if m is None:
-        return linha
+        return linha  # nenhuma keyword na linha
+    # SEMPRE a PRIMEIRA ocorrência da linha, nunca uma posterior — achado
+    # real desta mesma rodada: pular para uma 2ª ocorrência (por a 1ª não
+    # ter achado separador na própria janela) e cortar a partir dela
+    # deixa `linha[:corte]` preservar tudo o que veio ANTES, inclusive um
+    # segredo real associado à 1ª ocorrência. Corta sempre a partir da
+    # 1ª: no separador dela, se alcançável na janela; senão, a partir da
+    # própria keyword (fallback de sempre) — nunca falha por completo.
     corte = _corte_apos_keyword(linha, m.end())
+    if corte is None:
+        corte = m.end()
     return linha[:corte] + _MASCARA
 
 

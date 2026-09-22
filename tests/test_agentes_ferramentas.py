@@ -287,11 +287,83 @@ def test_redigir_camel_case_e_o_primeiro_segredo_da_linha_nao_vaza():
 
 
 def test_redigir_tokenizer_continua_sem_falso_positivo():
-    """A remoção do delimitador de ANTES não reabre a brecha de
-    "TOKENIZER" — o delimitador de DEPOIS (letra logo após a keyword)
-    ainda impede o casamento."""
+    """Sem NENHUM separador (`:`/`=`) na linha, não há estrutura
+    "campo:valor" possível — a guarda global de `_redigir_linha` (9ª
+    rodada) devolve a linha intacta antes mesmo de procurar keyword,
+    então "TOKENIZER" (ou qualquer keyword solta em texto livre sem
+    separador) nunca é tocado."""
     texto = "O TOKENIZER processa o texto normalmente."
     assert af.redigir(texto) == texto
+
+
+def test_redigir_linha_sem_separador_e_sem_keyword_fica_intacta():
+    assert af.redigir("nada de especial por aqui") == "nada de especial por aqui"
+
+
+def test_redigir_keyword_sem_separador_na_linha_mas_com_pontuacao_fica_intacta():
+    """"senhas" (plural) aparece na frase, mas não há `:`/`=` na linha
+    inteira — a guarda global evita over-masking de texto livre comum."""
+    texto = "Existem 3 senhas cadastradas no sistema"
+    assert af.redigir(texto) == texto
+
+
+# Achado real da 9ª rodada da revisão adversarial da F2b: a correção da
+# 8ª rodada (remover o delimitador de ANTES) só resolveu a keyword como
+# SUFIXO de um nome colado (`DbPassword`). Como PREFIXO/miolo — com mais
+# letras ENTRE a keyword e o separador (`PasswordHash=`, `SecretKey=`,
+# `TokenValue=`, `encryptedValue":`) — o delimitador de DEPOIS
+# (`(?=$|[^a-zA-Z])`) ainda bloqueava, e o segredo saía por completo,
+# sem máscara nenhuma. Corrigido removendo TAMBÉM o delimitador de
+# DEPOIS, com uma guarda global (linha sem `:`/`=` nenhum não é tocada)
+# para não reabrir o over-masking de "TOKENIZER" em texto sem separador.
+@pytest.mark.parametrize("texto,segredo", [
+    ("SecretKey=abcXYZ789realvalue", "abcXYZ789realvalue"),
+    ("TokenValue=eyJhbGciREALVALUE9x", "eyJhbGciREALVALUE9x"),
+    ("PasswordHash=deadbeef1234", "deadbeef1234"),
+    ("DbPasswordHash=deadbeef1234", "deadbeef1234"),
+    ("myDbPasswordValue=abcXYZ789real", "abcXYZ789real"),
+    ("PwdHash=abcXYZ789", "abcXYZ789"),
+    ("ApiKeyValue=sk-ant-realvalue", "sk-ant-realvalue"),
+    ("EncryptedField=abcXYZ789", "abcXYZ789"),
+    ("DBPASSWORDHASH=abcXYZ789", "abcXYZ789"),
+    ("senhaAlternativa=abcXYZ789", "abcXYZ789"),
+])
+def test_redigir_keyword_como_prefixo_de_nome_colado_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+    assert af._MASCARA in saida
+
+
+def test_redigir_keyword_como_prefixo_preserva_o_nome_quando_cabe_na_janela():
+    assert af.redigir("SecretKey=abcXYZ789realvalue") == "SecretKey=••••"
+
+
+def test_redigir_json_com_keyword_como_prefixo_no_nome_do_campo_nao_vaza():
+    texto = '{"encryptedValue": "{iisenc}AbCdEfXyzQwerty99=="}'
+    saida = af.redigir(texto)
+    assert "AbCdEfXyzQwerty99" not in saida
+
+
+def test_redigir_relatorio_dsjob_com_keyword_como_prefixo_nao_vaza():
+    """Formato de relatório plausível (`Campo: Valor` em colunas, D-07
+    segue aberta) com a keyword colada a um sufixo antes do separador."""
+    texto = "Parameter: EncryptedField  Value: 9f8e7d6c5b4a3210realvalue"
+    saida = af.redigir(texto)
+    assert "9f8e7d6c5b4a3210realvalue" not in saida
+
+
+def test_redigir_dois_segredos_um_deles_com_nome_verboso_nenhum_vaza():
+    """Reprodução exata de um bug introduzido DURANTE a correção desta
+    9ª rodada (pego antes do commit): ao tentar pular para uma 2ª
+    ocorrência de keyword quando a 1ª não achava separador na própria
+    janela, o corte descartava o segredo associado à 1ª ocorrência —
+    `linha[:corte]` preserva tudo antes dele. `_redigir_linha` sempre
+    usa a PRIMEIRA ocorrência da linha, nunca pula para uma posterior."""
+    texto = ('{"API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION": '
+            '"leak1_segredo_real", "token": "leak2"}')
+    saida = af.redigir(texto)
+    assert "leak1_segredo_real" not in saida
+    assert "leak2" not in saida
 
 
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
