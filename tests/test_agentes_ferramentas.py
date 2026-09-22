@@ -334,6 +334,54 @@ def test_redigir_separador_fora_de_dois_pontos_e_igual_nao_vaza(texto, segredo):
     assert af._MASCARA in saida
 
 
+# Achado real da 11ª rodada da revisão adversarial da F2b: quando não há
+# separador reconhecível depois da keyword, o fallback de todas as
+# rodadas anteriores mascarava só a partir de `m.end()` — deixando
+# vazar por completo um valor sensível que aparecesse ANTES da keyword
+# na mesma linha (texto livre plausível: anotação/descrição de job,
+# mensagem de log). `_redigir_linha` agora distingue pelo caractere
+# imediatamente antes do início do match: se é letra/dígito/`_`/`-`
+# (mesmo IDENTIFICADOR que a keyword, ex. `AUTH_TOKEN`), preserva o
+# prefixo (não é um valor independente); qualquer fronteira de palavra
+# (espaço, pontuação, início de linha) não tem essa garantia, e masca a
+# linha inteira.
+@pytest.mark.parametrize("texto,segredo", [
+    ("Annotation: valor legado 'admin123hardcoded' usado como password de fallback",
+     "admin123hardcoded"),
+    ("SEGREDO123 Password", "SEGREDO123"),
+    ("valor: abc123, campo relacionado: password", "abc123"),
+])
+def test_redigir_valor_antes_da_keyword_sem_separador_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+
+
+def test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome():
+    """`redigir_estrutura()` aplica `redigir()` a cada string FOLHA de um
+    dict — incluindo o `name` de um parâmetro (`"AUTH_TOKEN"`, sem
+    nenhum separador, porque é só o identificador isolado). Como "TOKEN"
+    é sufixo do MESMO nome (precedido de `_`, não de um espaço/pontuação
+    que indicaria um token independente), o nome inteiro continua
+    visível — é o requisito original da função ("o nome do parâmetro
+    continua visível")."""
+    assert "AUTH_TOKEN" in af.redigir("AUTH_TOKEN")
+
+
+def test_redigir_limite_conhecido_keyword_como_substring_do_proprio_valor_colado():
+    """Limite aceito (documentado, não corrigido): quando o PRÓPRIO
+    valor sensível, sem nenhum separador de palavra antes dele, contém
+    uma das 7 keywords como substring (`"xY9zSecretKeyABC123"` — o
+    valor em si soa como "...Secret..."), o prefixo antes da keyword
+    (aqui "xY9z") ainda vaza, porque a keyword aparenta ser sufixo do
+    MESMO identificador. Cenário de probabilidade baixa (exige que um
+    valor aleatório contenha coincidentemente uma dessas palavras), sem
+    solução sem reabrir o over-masking de `AUTH_TOKEN` isolado — ver
+    `test_redigir_keyword_colada_a_identificador_isolado_preserva_o_nome`."""
+    saida = af.redigir("valor gerado: xY9zSecretKeyABC123!!")
+    assert "xY9z" in saida  # limite conhecido, não uma garantia de segurança
+    assert af._MASCARA in saida
+
+
 # Achado real da 9ª rodada da revisão adversarial da F2b: a correção da
 # 8ª rodada (remover o delimitador de ANTES) só resolveu a keyword como
 # SUFIXO de um nome colado (`DbPassword`). Como PREFIXO/miolo — com mais

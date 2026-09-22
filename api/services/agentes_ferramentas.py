@@ -179,6 +179,10 @@ def _corte_apos_keyword(linha: str, fim_keyword: int) -> int | None:
     return None
 
 
+_CHAR_MESMO_TOKEN = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
 def _redigir_linha(linha: str) -> str:
     m = _RE_KEYWORD.search(linha)
     if m is None:
@@ -188,14 +192,39 @@ def _redigir_linha(linha: str) -> str:
     # própria janela) e cortar a partir dela deixaria `linha[:corte]`
     # preservar tudo o que veio ANTES, inclusive um segredo real
     # associado à 1ª ocorrência (mesmo bug da 7ª rodada, pego durante o
-    # desenvolvimento desta correção antes de commitar). Corta sempre a
-    # partir da 1ª: no separador dela, se alcançável na janela; senão,
-    # a partir da própria keyword (fallback de sempre) — nunca falha por
-    # completo, mesmo com um separador fora de `:`/`=`.
+    # desenvolvimento desta correção antes de commitar).
     corte = _corte_apos_keyword(linha, m.end())
-    if corte is None:
-        corte = m.end()
-    return linha[:corte] + _MASCARA
+    if corte is not None:
+        # Separador reconhecível logo depois da keyword: é claramente um
+        # "campo: valor" (a keyword É o nome do campo) — masca só o
+        # valor, o nome continua visível.
+        return linha[:corte] + _MASCARA
+    # Achado real da 11ª rodada: sem separador reconhecível depois da
+    # keyword, não há garantia sobre a ESTRUTURA do que vem DEPOIS — pode
+    # ser texto livre (anotação/descrição de job, mensagem de log) onde
+    # um valor sensível vem ANTES da keyword, não depois (ex.: `"...
+    # 'admin123hardcoded' usado como password de fallback"`). Mascarar só
+    # a partir de `m.end()` deixava esse prefixo vazar por completo.
+    #
+    # Mas mascarar a linha INTEIRA sempre que cai neste fallback também
+    # erra — na direção oposta: quebra o caso em que a keyword é só o
+    # SUFIXO de um identificador maior (`AUTH_TOKEN` como STRING ISOLADA,
+    # o `name` de um parâmetro passado por `redigir_estrutura` — sem
+    # separador nenhum depois, porque não há mais nada depois). Aí não
+    # existe "valor antes" a proteger: "AUTH_" faz parte do MESMO
+    # identificador que "TOKEN", não é um token/palavra independente.
+    #
+    # Discriminador: o caractere IMEDIATAMENTE ANTES do início do match.
+    # Se for letra/dígito/`_`/`-` (`_CHAR_MESMO_TOKEN`), a keyword é
+    # sufixo do MESMO identificador — mascarar só a partir da keyword
+    # (`m.start()`) preserva um prefixo que é sempre parte do mesmo nome,
+    # nunca um valor independente. Qualquer outra coisa (espaço,
+    # pontuação, aspas, início de linha) é fronteira de PALAVRA — o que
+    # vem antes é um token separado, possivelmente um valor sensível, e
+    # não há como saber sem mascarar a linha inteira desde o início.
+    if m.start() > 0 and linha[m.start() - 1] in _CHAR_MESMO_TOKEN:
+        return linha[:m.end()] + _MASCARA
+    return _MASCARA
 
 
 def redigir(texto: str) -> str:
