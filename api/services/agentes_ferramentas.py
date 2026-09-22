@@ -130,8 +130,26 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # segundos — `re.sub` não cede controle ao loop, e `ferramenta_dsjob`
 # chama `redigir()` de forma SÍNCRONA (diferente de `run_dsjob`, que já
 # roda em thread por este mesmo motivo). 40 caracteres é generoso o
-# bastante para qualquer nome de parâmetro real, e limita o backtracking
-# a no máximo 40 tentativas por ocorrência — de volta a tempo linear.
+# bastante para a MAIORIA dos nomes de parâmetro reais, e limita o
+# backtracking a no máximo 40 tentativas por ocorrência — de volta a
+# tempo linear NESSA regra.
+#
+# Mas 40 é um TETO ARBITRÁRIO — achado real da 6ª rodada da revisão
+# adversarial da F2b: um nome de campo mais VERBOSO que 40 caracteres
+# entre a keyword e o separador (ex.:
+# "API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION: xyz", plausível em
+# nomenclatura de ETL — e D-07, o formato real do `dsjob`, segue aberta)
+# faz a regra ACIMA simplesmente NÃO CASAR — sem separador dentro do
+# teto, a regra falha por completo, e o segredo sai SEM MÁSCARA NENHUMA.
+# Trocar 40 por um número maior só adia o mesmo problema (e piora o
+# backtracking de novo). A correção de verdade é uma REDE DE SEGURANÇA
+# sem esse trade-off: `_RE_KEYWORD_SOLTA`, abaixo, NÃO TEM quantificador
+# variável antes de requisito obrigatório nenhum (não exige separador,
+# não tem sufixo) — é sempre O(n), sem exceção, e roda por LINHA sobre
+# qualquer linha que a regra principal não tenha mascarado ainda
+# (`redigir()`, abaixo): se ainda sobra uma ocorrência "crua" da keyword,
+# masca dali até o fim da linha — nunca deixa o valor visível só porque
+# o nome do campo não coube no padrão "bonito" da regra principal.
 _VALOR = r"[^\n]*"
 _RE_SEGREDO = re.compile(
     r"(?im)((?:^|[^a-zA-Z])[\"']?(?:senha|password|pwd|secret|token|api[_-]?key)"
@@ -140,6 +158,12 @@ _RE_SEGREDO = re.compile(
 _RE_ENCRYPTED = re.compile(
     r"(?im)((?:^|[^a-zA-Z])[\"']?Encrypted(?=$|[^a-zA-Z])[A-Za-z0-9_-]{0,40}[\"']?\s*[:=]?\s*)"
     r"(" + _VALOR + r")")
+# Sem sufixo, sem separador exigido — só "a keyword existe aqui, com
+# delimitador válido". `.search()` por linha é O(tamanho da linha), sem
+# nenhum quantificador variável competindo por um requisito obrigatório
+# — não tem COMO ter o mesmo problema de backtracking.
+_RE_KEYWORD_SOLTA = re.compile(
+    r"(?i)(?:^|[^a-zA-Z])(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)(?=$|[^a-zA-Z])")
 _MASCARA = "••••"
 
 
@@ -151,7 +175,20 @@ def redigir(texto: str) -> str:
         return texto or ""
     saida = _RE_SEGREDO.sub(lambda m: m.group(1) + _MASCARA, texto)
     saida = _RE_ENCRYPTED.sub(lambda m: m.group(1) + _MASCARA, saida)
-    return saida
+    # Rede de segurança linha a linha (ver comentário acima de
+    # `_RE_KEYWORD_SOLTA`): qualquer linha que a régua principal não
+    # tenha tratado (sem a máscara ainda) MAS que ainda contenha uma
+    # keyword sensível "crua" é mascarada a partir dali até o fim da
+    # linha — nunca falha por completo, só masca mais (over-masking
+    # aceito, nunca under-masking).
+    linhas = saida.split("\n")
+    for i, linha in enumerate(linhas):
+        if _MASCARA in linha:
+            continue
+        m = _RE_KEYWORD_SOLTA.search(linha)
+        if m:
+            linhas[i] = linha[:m.end()] + _MASCARA
+    return "\n".join(linhas)
 
 
 # Formato real de um PARÂMETRO de job DataStage (`dags/utils/isx_engine.py`,

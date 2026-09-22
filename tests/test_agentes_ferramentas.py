@@ -207,6 +207,31 @@ def test_redigir_nao_e_quadratico_saida_real_de_dsjob_200k():
     assert time.perf_counter() - t0 < 2.0
 
 
+# Achado real da 6ª rodada da revisão adversarial da F2b: o `{0,40}` que
+# corrigiu o ReDoS (rodada 5) trocou "disponibilidade" por
+# "confidencialidade" — um nome de campo mais VERBOSO que 40 caracteres
+# entre a keyword e o separador (plausível em nomenclatura de ETL — D-07,
+# o formato real do `dsjob`, segue aberta) fazia a regra principal
+# FALHAR POR COMPLETO, sem nenhuma máscara, vazando o segredo inteiro.
+# `_RE_KEYWORD_SOLTA` (sem quantificador variável nenhum — sempre O(n))
+# é a rede de segurança: roda por linha, só onde a regra principal não
+# tratou nada ainda.
+def test_redigir_nome_de_campo_mais_longo_que_o_limite_nao_vaza():
+    texto = "API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION: xyz123segredo"
+    saida = af.redigir(texto)
+    assert "xyz123segredo" not in saida
+    assert af._MASCARA in saida
+
+
+def test_redigir_rede_de_seguranca_nao_reprocessa_linha_ja_tratada():
+    """Uma linha JÁ mascarada pela regra principal (contém `_MASCARA`) não
+    é tocada de novo pela rede de segurança — evita reprocessamento
+    redundante e preserva o resultado da regra mais granular."""
+    texto = "senha: abc123"
+    saida = af.redigir(texto)
+    assert saida == "senha: ••••"  # não vira "senha••••" pela rede de segurança
+
+
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
 
 def test_truncar_texto_curto_nao_muda():
