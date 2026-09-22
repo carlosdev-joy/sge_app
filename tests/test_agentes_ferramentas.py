@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -113,6 +114,28 @@ def test_redigir_encrypted_com_aspas_mascara_o_valor_de_verdade():
 ])
 def test_redigir_valor_com_aspa_escapada_nao_vaza_o_resto(texto, escondido):
     assert escondido not in af.redigir(texto)
+
+
+# Achado real da 3ª rodada da revisão adversarial da F2: a tentativa anterior
+# de reconhecer "a aspa que fecha o valor" (via `\\.` antes de `[^"\\\n]`)
+# tratava uma barra invertida comum ANTES de uma aspa REAL de fechamento
+# (ex.: path Windows `"C:\Temp\"`) como se fosse uma aspa escapada, e seguia
+# procurando a PRÓXIMA aspa — que podia ser a abertura de um CAMPO SEGUINTE
+# inteiro. O segundo segredo saía sem nenhuma máscara (pior que o defeito
+# original, que só vazava o resto do MESMO valor).
+def test_redigir_barra_antes_da_aspa_real_nao_vaza_o_campo_seguinte():
+    texto = r'{"Encrypted": "C:\Temp\", "password": "anothersecret"}'
+    saida = af.redigir(texto)
+    assert "anothersecret" not in saida
+
+
+# O valor real de um parâmetro `Encrypted` do DataStage tem a forma
+# `{iisenc}<base64>` — a chave `}` é parte do CONTEÚDO, não um delimitador.
+# Uma tentativa anterior de "parar no primeiro `,`/`}`/`]`" cortava o valor
+# bem no meio (achado que eu mesmo encontrei ao testar a correção anterior).
+def test_redigir_no_valor_encrypted_do_datastage_com_chave_no_meio():
+    saida = af.redigir('  "Encrypted": "{iisenc}AbCdEf=="')
+    assert "AbCdEf" not in saida
 
 
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
@@ -376,3 +399,50 @@ async def test_semaforo_libera_para_o_proximo_apos_terminar(monkeypatch):
     r1 = await af.ferramenta_dsjob("ljobs", "BI_CVP", None, teto_sessoes=1, espera_max_s=2)
     r2 = await af.ferramenta_dsjob("ljobs", "BI_CVP", None, teto_sessoes=1, espera_max_s=2)
     assert r1["exit_code"] == 0 and r2["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelar_enquanto_na_fila_do_semaforo_nao_deixa_fantasma_rodando(monkeypatch):
+    """Achado moderado da 3ª rodada da revisão adversarial da F2: só a fase
+    'vaga obtida → trabalho → libera' de `ferramenta_dsjob` é protegida
+    contra cancelamento externo (via `asyncio.shield`) — a fase de FILA
+    (ainda sem vaga) precisa continuar cancelável DE VERDADE. Sem isso, uma
+    tentativa "fantasma" (de uma pergunta cujo orçamento já estourou)
+    continuaria tentando a vaga em segundo plano e chegaria a RODAR
+    `run_dsjob` assim que a vaga abrisse — mesmo sem ninguém mais precisar
+    do resultado. Prova pelo efeito observável (quantas vezes `run_dsjob`
+    roda), não só pelo tempo de retorno de `.cancel()` — `asyncio.shield`
+    sempre deixa quem CHAMOU `.cancel()` desistir rápido, isso sozinho não
+    prova que não sobrou um fantasma rodando por trás."""
+    monkeypatch.setattr(af, "ssh_configured", lambda: True)
+    liberar1 = asyncio.Event()
+    chamadas: list[str] = []
+
+    def _run(comando, projeto, job=None):
+        import time as _t
+        chamadas.append(comando)
+        if len(chamadas) == 1:  # só a 1ª chamada (tarefa1) bloqueia de propósito
+            while not liberar1.is_set():
+                _t.sleep(0.01)
+        return {"exit_code": 0, "stdout": "ok", "stderr": "", "duration_ms": 1}
+    monkeypatch.setattr(af, "run_dsjob", _run)
+    af.SEMAFORO_SSH = af.SemaforoSsh()
+
+    tarefa1 = asyncio.create_task(
+        af.ferramenta_dsjob("ljobs", "BI_CVP", None, teto_sessoes=1, espera_max_s=5))
+    await asyncio.sleep(0.05)  # garante que a 1ª já pegou a vaga e está "trabalhando"
+
+    tarefa2 = asyncio.create_task(
+        af.ferramenta_dsjob("ljobs", "BI_CVP", None, teto_sessoes=1, espera_max_s=10))
+    await asyncio.sleep(0.05)  # garante que a 2ª já está esperando na fila (sem vaga)
+
+    tarefa2.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tarefa2
+
+    liberar1.set()  # libera a tarefa1 — a vaga fica disponível de novo
+    r1 = await tarefa1
+    assert r1["exit_code"] == 0
+
+    await asyncio.sleep(0.3)  # dá chance a um eventual "fantasma" da tarefa2 rodar
+    assert chamadas == ["ljobs"]  # só a tarefa1 — o fantasma da tarefa2 nunca chegou a rodar

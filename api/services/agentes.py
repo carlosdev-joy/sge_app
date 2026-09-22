@@ -423,30 +423,17 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
     return {"texto": r["saida_redigida"]}, None
 
 
-async def _esperar_sem_cancelar(coro, timeout: float):
-    """Espera `coro` até `timeout` SEM cancelar quando o tempo estoura —
-    diferente de `asyncio.wait_for`. Achado real da 2ª rodada da revisão
-    adversarial da F2: `_executar_ferramenta` (ramo `dsjob`) segura o
-    semáforo SSH num `async with` por cima de `asyncio.to_thread(run_dsjob,
-    ...)` — uma THREAD real (paramiko), não interrompível. Cancelar a Task
-    no timeout interrompe o `async with` no meio e libera o semáforo
-    IMEDIATAMENTE, mas a thread de verdade segue rodando no servidor
-    DataStage até seu próprio fim — o teto `agentes_ssh_max` deixava de
-    valer durante essa janela (uma pergunta nova podia abrir sessão SSH
-    extra enquanto a "cancelada" ainda estava viva).
-
-    Aqui a Task continua em segundo plano até terminar sozinha — só ela
-    libera o que segura, no momento certo. Levanta `asyncio.TimeoutError`
-    para o chamador imediatamente; qualquer exceção da Task órfã é
-    consumida (nunca é `Exception` de verdade, `_executar_ferramenta` nunca
-    escapa — o callback é só defesa em profundidade contra um bug futuro
-    virar warning de 'exception never retrieved')."""
-    tarefa = asyncio.ensure_future(coro)
-    concluidas, pendentes = await asyncio.wait({tarefa}, timeout=timeout)
-    if tarefa in pendentes:
-        tarefa.add_done_callback(lambda t: None if t.cancelled() else t.exception())
-        raise asyncio.TimeoutError()
-    return tarefa.result()
+# A proteção contra cancelar a sessão SSH real no meio (achado da revisão
+# adversarial da F2) mora DENTRO de `agentes_ferramentas.ferramenta_dsjob`
+# (via `asyncio.shield`, só na fase "vaga obtida → trabalho → libera") —
+# não aqui. Uma versão anterior tentava resolver isso por FORA, com um
+# `_esperar_sem_cancelar` que nunca cancelava a Task inteira de
+# `_executar_ferramenta` — só que isso também parava de cancelar a ESPERA
+# NA FILA do semáforo (ainda sem vaga), deixando tentativas "fantasmas"
+# na fila por até `espera_max_s` depois da pergunta já ter sido respondida
+# como "tempo esgotado" (achado moderado da 3ª rodada). Resolvido na
+# origem: aqui, `wait_for` cancelando de verdade é seguro de novo — a fila
+# cancela na hora, e a fase protegida cancela sozinha por dentro.
 
 
 async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | None,
@@ -519,7 +506,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         espera = max(0.5, min(resta - 5, 30))
         try:
-            dado, projeto_novo = await _esperar_sem_cancelar(
+            dado, projeto_novo = await asyncio.wait_for(
                 _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
                                      ssh_max=ssh_max, espera_max_s=espera),
                 timeout=max(1.0, resta - 2))

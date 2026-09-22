@@ -47,14 +47,30 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # só a pontuação logo após o nome (ex.: a aspas de abertura do valor) e
 # deixava o segredo de verdade visível atrás da máscara.
 #
-# O valor entre aspas duplas usa a régua de string JSON (`\\.` antes de
-# `[^"\\\n]`, não o contrário): uma aspa ESCAPADA (`\"`, o que `json.dumps`
-# produz sempre que o segredo em si contém uma aspa) não pode ser tratada
-# como fim do valor — achado real da 2ª rodada da revisão adversarial da F2:
-# `"(?:[^"\n])*"` parava na aspa escapada e deixava o resto do segredo, DEPOIS
-# dela, visível atrás da máscara (`redigir('{"Encrypted": "sec\\"ret123"}')`
-# só mascarava até o `\`, e `ret123` sobrevivia em claro).
-_VALOR = r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[^\s,}\]]+'
+# O valor NÃO tenta reconhecer onde "termina" (nem por aspas, nem por
+# delimitador estrutural tipo `,`/`}`/`]`) — mascara tudo da posição atual
+# até o FIM DA LINHA, sempre. Duas tentativas mais "espertas" já se
+# provaram erradas nesta mesma função:
+#   1ª tentativa (régua de escape estilo JSON, `\\.` antes de `[^"\\\n]`):
+#      um texto ARBITRÁRIO (a saída crua do `dsjob`, formato não confirmado
+#      — D-07) pode ter uma barra invertida comum bem antes de uma aspa
+#      REAL de fechamento (ex.: path Windows `"C:\Temp\"`), indistinguível
+#      de uma aspa escapada — o regex tratava a aspa real como escapada e
+#      seguia procurando a PRÓXIMA aspa, que podia abrir o valor de um
+#      CAMPO SEGUINTE inteiro — esse segundo segredo saía sem máscara
+#      nenhuma (achado real da 3ª rodada da revisão adversarial da F2).
+#   2ª tentativa (parar em `,`/`}`/`]`/quebra de linha, sem olhar aspas):
+#      o valor real de um parâmetro `Encrypted` do DataStage tem a FORMA
+#      `{iisenc}<base64>` — a chave `}` faz parte do CONTEÚDO, não é um
+#      delimitador de nada. Parar nela cortava o valor no meio e deixava o
+#      resto (o segredo de verdade) exposto sem máscara.
+# "Até o fim da linha" nunca tem essa ambiguidade: não existe combinação de
+# aspas/chaves/vírgulas dentro do valor que engane onde ele "termina" — o
+# preço é mascarar informação não sensível que porventura esteja DEPOIS, na
+# MESMA linha (nunca um segredo de um campo diferente escapa). É
+# exatamente o design pré-F2 desta função, restaurado com o motivo
+# documentado desta vez.
+_VALOR = r"[^\n]*"
 _RE_SEGREDO = re.compile(
     r"(?im)([\"']?\b(?:senha|password|pwd|secret|token|api[_-]?key)\b[\"']?\s*[:=]\s*)"
     r"(" + _VALOR + r")")
@@ -312,16 +328,44 @@ async def ferramenta_dsjob(comando: str, ds_project: str, job_name: str | None,
     (comando/nome inválido, SSH não configurado) ou `ServidorOcupado`
     (semáforo estourou a espera) — o chamador (a orquestração) as traduz em
     mensagem nomeada; nunca deixa o modelo escolher um comando fora da
-    allowlist, mesmo que o pedido venha bem formado."""
+    allowlist, mesmo que o pedido venha bem formado.
+
+    Duas fases com segurança de cancelamento DIFERENTE (achado real da 3ª
+    rodada da revisão adversarial da F2): enquanto só está NA FILA do
+    semáforo, cancelar de fora (ex.: o orçamento da rodada estourando) é
+    seguro e desejável — larga a vaga na hora, sem custo. Mas depois de
+    OBTIDA a vaga, a sessão real (paramiko, via `asyncio.to_thread`) não é
+    interrompível — abandonar o `async with` no meio liberaria o semáforo
+    "mentindo": o teto contaria a vaga como livre enquanto a sessão de
+    verdade ainda roda no servidor DataStage. Por isso só ESSA fase
+    (adquirido → trabalho → libera) é protegida com `asyncio.shield`: um
+    cancelamento externo durante ela não a interrompe, só deixa de esperar
+    por ela — ela termina sozinha, no seu tempo, e libera o semáforo no
+    momento certo."""
     if comando not in ALLOWLIST_DSJOB:
         raise DsConsoleError(f"Comando '{comando}' não é permitido — só {', '.join(ALLOWLIST_DSJOB)}.")
     if not ssh_configured():
         raise DsConsoleError("SSH do DataStage não configurado no servidor.")
     t0 = time.monotonic()
-    async with await SEMAFORO_SSH(teto_sessoes, espera_max_s):
-        # run_dsjob é síncrono/bloqueante (paramiko) — roda num thread para
-        # não travar o loop async, mesmo padrão de routers/lineage_isx.py.
-        resultado = await asyncio.to_thread(run_dsjob, comando, ds_project, job_name)
+    gerenciador = await SEMAFORO_SSH(teto_sessoes, espera_max_s)  # cancelável — só fila, nada obtido ainda
+
+    async def _com_a_vaga_obtida():
+        async with gerenciador:
+            # run_dsjob é síncrono/bloqueante (paramiko) — roda num thread
+            # para não travar o loop async, mesmo padrão de
+            # routers/lineage_isx.py.
+            return await asyncio.to_thread(run_dsjob, comando, ds_project, job_name)
+
+    tarefa = asyncio.ensure_future(_com_a_vaga_obtida())
+    try:
+        resultado = await asyncio.shield(tarefa)
+    except asyncio.CancelledError:
+        if not tarefa.cancelled():
+            # Abandonada, não cancelada — segue rodando sozinha (é ela quem
+            # libera o semáforo, no fim). Consome uma eventual exceção só
+            # para não virar warning de "exception never retrieved".
+            tarefa.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+        raise
     resultado["saida_redigida"] = _truncar(redigir(resultado.get("stdout") or ""))
     resultado["espera_ms"] = int((time.monotonic() - t0) * 1000) - resultado.get("duration_ms", 0)
     return resultado
