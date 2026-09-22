@@ -423,6 +423,32 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
     return {"texto": r["saida_redigida"]}, None
 
 
+async def _esperar_sem_cancelar(coro, timeout: float):
+    """Espera `coro` até `timeout` SEM cancelar quando o tempo estoura —
+    diferente de `asyncio.wait_for`. Achado real da 2ª rodada da revisão
+    adversarial da F2: `_executar_ferramenta` (ramo `dsjob`) segura o
+    semáforo SSH num `async with` por cima de `asyncio.to_thread(run_dsjob,
+    ...)` — uma THREAD real (paramiko), não interrompível. Cancelar a Task
+    no timeout interrompe o `async with` no meio e libera o semáforo
+    IMEDIATAMENTE, mas a thread de verdade segue rodando no servidor
+    DataStage até seu próprio fim — o teto `agentes_ssh_max` deixava de
+    valer durante essa janela (uma pergunta nova podia abrir sessão SSH
+    extra enquanto a "cancelada" ainda estava viva).
+
+    Aqui a Task continua em segundo plano até terminar sozinha — só ela
+    libera o que segura, no momento certo. Levanta `asyncio.TimeoutError`
+    para o chamador imediatamente; qualquer exceção da Task órfã é
+    consumida (nunca é `Exception` de verdade, `_executar_ferramenta` nunca
+    escapa — o callback é só defesa em profundidade contra um bug futuro
+    virar warning de 'exception never retrieved')."""
+    tarefa = asyncio.ensure_future(coro)
+    concluidas, pendentes = await asyncio.wait({tarefa}, timeout=timeout)
+    if tarefa in pendentes:
+        tarefa.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+        raise asyncio.TimeoutError()
+    return tarefa.result()
+
+
 async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | None,
                     provedor_cfg: dict, identidade: str | None, campo_identidade: str | None,
                     ssh_max: int) -> dict:
@@ -493,7 +519,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         espera = max(0.5, min(resta - 5, 30))
         try:
-            dado, projeto_novo = await asyncio.wait_for(
+            dado, projeto_novo = await _esperar_sem_cancelar(
                 _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
                                      ssh_max=ssh_max, espera_max_s=espera),
                 timeout=max(1.0, resta - 2))

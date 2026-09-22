@@ -102,6 +102,19 @@ def test_redigir_encrypted_com_aspas_mascara_o_valor_de_verdade():
     assert af._MASCARA in saida
 
 
+# Achado real da 2ª rodada da revisão adversarial da F2: o valor entre aspas
+# parava na primeira aspa LITERAL, mesmo quando ela vinha escapada (`\"`,
+# exatamente o que `json.dumps()` produz quando o segredo contém uma aspa) —
+# o restante do valor, depois da aspa escapada, sobrevivia atrás da máscara.
+@pytest.mark.parametrize("texto,escondido", [
+    (r'{"Encrypted": "sec\"ret123suffix"}', "ret123suffix"),
+    (r'[{"ParamName":"DB_PASS","Encrypted":"P@ss\"word123"}]', "word123"),
+    (r'{"password": "abc\"def456"}', "def456"),
+])
+def test_redigir_valor_com_aspa_escapada_nao_vaza_o_resto(texto, escondido):
+    assert escondido not in af.redigir(texto)
+
+
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
 
 def test_truncar_texto_curto_nao_muda():

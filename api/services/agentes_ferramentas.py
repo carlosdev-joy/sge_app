@@ -46,12 +46,21 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # (`"..."`/`'...'`/sem aspas) em vez de um `\S+` genérico, que antes casava
 # só a pontuação logo após o nome (ex.: a aspas de abertura do valor) e
 # deixava o segredo de verdade visível atrás da máscara.
+#
+# O valor entre aspas duplas usa a régua de string JSON (`\\.` antes de
+# `[^"\\\n]`, não o contrário): uma aspa ESCAPADA (`\"`, o que `json.dumps`
+# produz sempre que o segredo em si contém uma aspa) não pode ser tratada
+# como fim do valor — achado real da 2ª rodada da revisão adversarial da F2:
+# `"(?:[^"\n])*"` parava na aspa escapada e deixava o resto do segredo, DEPOIS
+# dela, visível atrás da máscara (`redigir('{"Encrypted": "sec\\"ret123"}')`
+# só mascarava até o `\`, e `ret123` sobrevivia em claro).
+_VALOR = r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[^\s,}\]]+'
 _RE_SEGREDO = re.compile(
     r"(?im)([\"']?\b(?:senha|password|pwd|secret|token|api[_-]?key)\b[\"']?\s*[:=]\s*)"
-    r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s,}\]]+)")
+    r"(" + _VALOR + r")")
 _RE_ENCRYPTED = re.compile(
     r"(?im)([\"']?\bEncrypted\b[\"']?\s*[:=]?\s*)"
-    r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s,}\]]+)")
+    r"(" + _VALOR + r")")
 _MASCARA = "••••"
 
 

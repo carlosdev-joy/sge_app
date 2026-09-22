@@ -378,3 +378,51 @@ async def test_orcamento_por_operacao_corta_uma_chamada_lenta_de_verdade(monkeyp
     dt = time.monotonic() - t0
     assert r["status"] == "tempo_esgotado"
     assert dt < 10  # cortado bem antes dos 30s do dublê e dos 60s do TIMEOUT_S real
+
+
+@pytest.mark.asyncio
+async def test_dsjob_cortado_pelo_orcamento_nao_solta_o_semaforo_antes_da_hora(monkeypatch):
+    """Achado real da 2ª rodada da revisão adversarial da F2: cancelar a Task
+    de `_executar_ferramenta` no timeout interrompia o `async with
+    SEMAFORO_SSH` no meio e liberava o semáforo IMEDIATAMENTE — mas a THREAD
+    real por trás (`asyncio.to_thread(run_dsjob, ...)`, paramiko, não
+    interrompível) seguia rodando no servidor DataStage até seu próprio fim.
+    O teto `agentes_ssh_max` deixava de valer durante essa janela.
+
+    Prova real, com teto=1: enquanto a tarefa "abandonada" ainda está
+    rodando (a thread de verdade ainda dormindo), uma 2ª tentativa de
+    adquirir a MESMA sessão não consegue — o semáforo só libera quando a
+    tarefa termina sozinha."""
+    teto = af.SemaforoSsh()
+    monkeypatch.setattr(af, "SEMAFORO_SSH", teto)
+    monkeypatch.setattr(af, "ssh_configured", lambda: True)
+    monkeypatch.setattr(af, "resolver_projeto",
+                        lambda cur, nome=None, **kw: {"estado": "resolvido", "projeto": "BI_CVP",
+                                                      "tem_dsx": False, "sugerido": None, "sugestoes": []})
+
+    def _dsjob_bloqueante(comando, ds_project, job_name):
+        time.sleep(4.0)  # bloqueia a THREAD de verdade — paramiko não é cancelável
+        return {"exit_code": 0, "stdout": "ok", "stderr": "", "duration_ms": 4000}
+    monkeypatch.setattr(af, "run_dsjob", _dsjob_bloqueante)
+    monkeypatch.setattr(svc, "ORCAMENTO_AGENTE_S", 5.3)  # mínimo >5 para passar a 1ª checagem
+
+    provedor = _Provedor([
+        '```json\n{"ferramenta": "resolver_projeto", "args": {"projeto": "BI_CVP"}}\n```',
+        '```json\n{"ferramenta": "dsjob", "args": {"comando": "ljobs"}}\n```',
+    ])
+    monkeypatch.setattr(ia_provedor, "chat_conversa", provedor)
+
+    r = await svc.conversar(_abrir_fake, mensagens=[{"role": "user", "content": "oi"}],
+                            projeto_atual=None, provedor_cfg={}, identidade=None, campo_identidade=None, ssh_max=1)
+    assert r["status"] == "tempo_esgotado"
+
+    # Logo depois do corte: a tarefa de fundo ainda segura a sessão (a
+    # thread real ainda dormindo) — uma 2ª tentativa não consegue de imediato.
+    with pytest.raises(af.ServidorOcupado):
+        async with await teto(1, espera_max_s=0.1):
+            pass
+
+    # Espera a tarefa de fundo terminar sozinha — só ENTÃO libera.
+    await asyncio.sleep(1.5)
+    async with await teto(1, espera_max_s=0.1):
+        pass  # não levanta — a sessão "órfã" já soltou o semáforo sozinha
