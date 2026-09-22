@@ -57,138 +57,84 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # exato): mascara qualquer coisa que PAREÇA um valor de campo sensível, e o
 # nome do parâmetro/campo continua visível (é o que o operador precisa ler).
 #
-# O nome do campo (e o separador) pode vir entre aspas — formato JSON, como
-# `-report`/`-lparams` às vezes devolvem (`"password": "abc123"`). Sem os
-# `["\']?` ao redor do nome/separador, a aspas que fecha o NOME quebrava o
-# casamento logo antes do `:` e a linha inteira passava incólume (achado real
-# da revisão adversarial da F2: miss silencioso em `{"password":"abc123"}`).
-# O VALOR também pode vir entre aspas — capturado como grupo próprio
-# (`"..."`/`'...'`/sem aspas) em vez de um `\S+` genérico, que antes casava
-# só a pontuação logo após o nome (ex.: a aspas de abertura do valor) e
-# deixava o segredo de verdade visível atrás da máscara.
+# HISTÓRICO (7 rodadas de revisão adversarial da F2, depois F2b — deixado
+# registrado porque cada tentativa "mais esperta" baseada numa ÚNICA regex
+# complexa (`.sub()` com quantificador variável + requisito condicional)
+# se provou frágil de um jeito NOVO a cada rodada: miss por aspas ao redor
+# do nome; vazamento do resto do MESMO valor por aspa escapada; vazamento
+# de um CAMPO SEGUINTE inteiro por barra-antes-de-aspa-real; corte no meio
+# de um valor `{iisenc}...` por causa de `}` tratado como delimitador;
+# `\b` não reconhecendo `_` como fronteira de SNAKE_CASE; um sufixo SEM
+# limite virando ReDoS quadrático; um sufixo COM limite virando falha
+# total de match (vazamento) para nome mais longo que o limite; e por
+# fim, uma "rede de segurança" testando `_MASCARA in linha` (a linha
+# INTEIRA) como proxy de "já tratada" — que erra quando a MESMA linha tem
+# DOIS segredos (um tratado, um não) ou quando o texto original já
+# continha "••••" por acaso, pulando a linha e vazando por completo.
 #
-# O valor NÃO tenta reconhecer onde "termina" (nem por aspas, nem por
-# delimitador estrutural tipo `,`/`}`/`]`) — mascara tudo da posição atual
-# até o FIM DA LINHA, sempre. Duas tentativas mais "espertas" já se
-# provaram erradas nesta mesma função:
-#   1ª tentativa (régua de escape estilo JSON, `\\.` antes de `[^"\\\n]`):
-#      um texto ARBITRÁRIO (a saída crua do `dsjob`, formato não confirmado
-#      — D-07) pode ter uma barra invertida comum bem antes de uma aspa
-#      REAL de fechamento (ex.: path Windows `"C:\Temp\"`), indistinguível
-#      de uma aspa escapada — o regex tratava a aspa real como escapada e
-#      seguia procurando a PRÓXIMA aspa, que podia abrir o valor de um
-#      CAMPO SEGUINTE inteiro — esse segundo segredo saía sem máscara
-#      nenhuma (achado real da 3ª rodada da revisão adversarial da F2).
-#   2ª tentativa (parar em `,`/`}`/`]`/quebra de linha, sem olhar aspas):
-#      o valor real de um parâmetro `Encrypted` do DataStage tem a FORMA
-#      `{iisenc}<base64>` — a chave `}` faz parte do CONTEÚDO, não é um
-#      delimitador de nada. Parar nela cortava o valor no meio e deixava o
-#      resto (o segredo de verdade) exposto sem máscara.
-# "Até o fim da linha" nunca tem essa ambiguidade: não existe combinação de
-# aspas/chaves/vírgulas dentro do valor que engane onde ele "termina" — o
-# preço é mascarar informação não sensível que porventura esteja DEPOIS, na
-# MESMA linha (nunca um segredo de um campo diferente escapa). É
-# exatamente o design pré-F2 desta função, restaurado com o motivo
-# documentado desta vez.
-#
-# O delimitador ao redor da keyword NÃO é `\b` — achado real da 4ª rodada
-# da revisão adversarial da F2b, aplicando à `redigir()` original o mesmo
-# problema já corrigido em `_RE_NOME_PARAMETRO_SENSIVEL`: `_` é caractere
-# de PALAVRA em regex (`\w` inclui `_`), então `\btoken\b`/`\bpassword\b`
-# nunca casam dentro de um nome SNAKE_CASE (`"AUTH_TOKEN": "..."`,
-# `DB_PASSWORD=...`) — e essa é exatamente a saída AO VIVO do `dsjob`
-# (`ferramenta_dsjob` redige o stdout com esta função antes de ir ao
-# modelo). Corrigido com `(?:^|[^a-zA-Z])` ANTES da keyword (consumidor —
-# fica dentro do grupo capturado, então o caractere reconhecido permanece
-# no texto final tal como estava: `"AUTH_TOKEN": ••••`, não
-# `AUTH"TOKEN": ••••`) e `(?=$|[^a-zA-Z])` DEPOIS (LOOKAHEAD — não pode
-# consumir: um separador `:`/`=` colado direto na keyword, como em
-# `DB_PASSWORD=...`, precisa continuar disponível para a parte da regex
-# que o exige logo em seguida; testado e corrigido depois de uma 1ª
-# tentativa com `(?:$|[^a-zA-Z])` consumidor que quebrava esse caso).
-#
-# Depois do delimitador de FIM da keyword, um SUFIXO até o separador —
-# cobre nome com sufixo depois da keyword (`API_KEY_PROD: ...`, a keyword
-# é só "API_KEY", o "_PROD" vem depois). Isso NÃO reabre a brecha de
-# "TOKENIZER" (que o `\b` original também evitava, e a comparação direta
-# já testou): o delimitador de FIM já EXIGE que a keyword termine numa
-# fronteira válida antes desse sufixo começar — "TOKENIZER" nunca chega a
-# satisfazer esse delimitador (depois de "token" vem "i", uma letra),
-# então a tentativa de casar a partir dali já falha, antes mesmo do
-# sufixo entrar em jogo.
-#
-# O sufixo é LIMITADO (`{0,40}`, nunca `*`) — achado real da 5ª rodada da
-# revisão adversarial da F2b: um quantificador SEM limite, logo antes de
-# um separador OBRIGATÓRIO (`[:=]` em `_RE_SEGREDO`), é uma receita clássica
-# de backtracking catastrófico — quando não há `:`/`=` no resto da linha,
-# o motor consome o sufixo até o fim (greedy), falha no separador, e
-# recua caractere a caractere: O(tamanho da linha) por TENTATIVA, repetido
-# a cada ocorrência da keyword na mesma linha — O(n²) total. Medido:
-# `redigir("AUTH_TOKEN_" * 4000)` (44 000 chars) levava ~5s; uma entrada
-# maior (a saída real do `dsjob`, truncada em 200 000 chars por
-# `run_dsjob`) travaria o event loop do worker da API por dezenas de
-# segundos — `re.sub` não cede controle ao loop, e `ferramenta_dsjob`
-# chama `redigir()` de forma SÍNCRONA (diferente de `run_dsjob`, que já
-# roda em thread por este mesmo motivo). 40 caracteres é generoso o
-# bastante para a MAIORIA dos nomes de parâmetro reais, e limita o
-# backtracking a no máximo 40 tentativas por ocorrência — de volta a
-# tempo linear NESSA regra.
-#
-# Mas 40 é um TETO ARBITRÁRIO — achado real da 6ª rodada da revisão
-# adversarial da F2b: um nome de campo mais VERBOSO que 40 caracteres
-# entre a keyword e o separador (ex.:
-# "API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION: xyz", plausível em
-# nomenclatura de ETL — e D-07, o formato real do `dsjob`, segue aberta)
-# faz a regra ACIMA simplesmente NÃO CASAR — sem separador dentro do
-# teto, a regra falha por completo, e o segredo sai SEM MÁSCARA NENHUMA.
-# Trocar 40 por um número maior só adia o mesmo problema (e piora o
-# backtracking de novo). A correção de verdade é uma REDE DE SEGURANÇA
-# sem esse trade-off: `_RE_KEYWORD_SOLTA`, abaixo, NÃO TEM quantificador
-# variável antes de requisito obrigatório nenhum (não exige separador,
-# não tem sufixo) — é sempre O(n), sem exceção, e roda por LINHA sobre
-# qualquer linha que a regra principal não tenha mascarado ainda
-# (`redigir()`, abaixo): se ainda sobra uma ocorrência "crua" da keyword,
-# masca dali até o fim da linha — nunca deixa o valor visível só porque
-# o nome do campo não coube no padrão "bonito" da regra principal.
-_VALOR = r"[^\n]*"
-_RE_SEGREDO = re.compile(
-    r"(?im)((?:^|[^a-zA-Z])[\"']?(?:senha|password|pwd|secret|token|api[_-]?key)"
-    r"(?=$|[^a-zA-Z])[A-Za-z0-9_-]{0,40}[\"']?\s*[:=]\s*)"
-    r"(" + _VALOR + r")")
-_RE_ENCRYPTED = re.compile(
-    r"(?im)((?:^|[^a-zA-Z])[\"']?Encrypted(?=$|[^a-zA-Z])[A-Za-z0-9_-]{0,40}[\"']?\s*[:=]?\s*)"
-    r"(" + _VALOR + r")")
-# Sem sufixo, sem separador exigido — só "a keyword existe aqui, com
-# delimitador válido". `.search()` por linha é O(tamanho da linha), sem
-# nenhum quantificador variável competindo por um requisito obrigatório
-# — não tem COMO ter o mesmo problema de backtracking.
-_RE_KEYWORD_SOLTA = re.compile(
-    r"(?i)(?:^|[^a-zA-Z])(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)(?=$|[^a-zA-Z])")
+# A causa raiz comum: tentar resolver "onde o valor termina" e "o nome
+# cabe no padrão" na MESMA regex, com um separador CONDICIONAL disputando
+# posição com um quantificador. O desenho abaixo (7ª rodada) separa as
+# duas decisões: (1) achar a PRIMEIRA ocorrência de QUALQUER keyword na
+# linha — sempre O(1) por keyword, sem quantificador variável nenhum,
+# então NUNCA pode ter backtracking catastrófico nem falhar por tamanho
+# de nome; (2) por PYTHON PURO (não regex), numa janela CURTA e fixa
+# logo depois da keyword, procurar um separador `:`/`=` — se achar,
+# masca a partir dali (boa granularidade, nome completo visível); se não
+# achar dentro da janela, masca a partir da PRÓPRIA keyword (nunca falha
+# por completo — o preço é perder a visibilidade do nome quando ele é
+# mais verboso que a janela, nunca vazar o valor). Processa só a
+# PRIMEIRA ocorrência de cada linha porque, como sempre masca até o FIM
+# da linha a partir dali, qualquer segredo SEGUINTE na mesma linha já
+# fica coberto — não existe mais a possibilidade de "pular" um segredo
+# anterior para tratar um posterior, que era a causa da 7ª rodada.
+_JANELA_NOME_S = 40  # generoso para qualquer nome de parâmetro real
+_RE_KEYWORD = re.compile(
+    r"(?i)(?:^|[^a-zA-Z])(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)(?=$|[^a-zA-Z])",
+    re.M)
+_CHAR_NOME = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-\"' ")
 _MASCARA = "••••"
+
+
+def _corte_apos_keyword(linha: str, fim_keyword: int) -> int:
+    """A partir do fim da keyword, procura um separador `:`/`=` numa
+    janela CURTA e FIXA (`_JANELA_NOME_S` chars, checagem char a char em
+    Python — nunca regex, nunca backtracking). Achando, devolve a
+    posição logo depois dele (e de espaços/tabs seguintes). Não achando
+    dentro da janela (nome mais verboso, ou não é claramente um "nome de
+    campo"), devolve `fim_keyword` — masca a partir da própria keyword,
+    nunca deixa de mascarar."""
+    limite = min(len(linha), fim_keyword + _JANELA_NOME_S)
+    i = fim_keyword
+    while i < limite:
+        ch = linha[i]
+        if ch in ":=":
+            i += 1
+            while i < len(linha) and linha[i] in " \t":
+                i += 1
+            return i
+        if ch not in _CHAR_NOME:
+            break
+        i += 1
+    return fim_keyword
+
+
+def _redigir_linha(linha: str) -> str:
+    m = _RE_KEYWORD.search(linha)
+    if m is None:
+        return linha
+    corte = _corte_apos_keyword(linha, m.end())
+    return linha[:corte] + _MASCARA
 
 
 def redigir(texto: str) -> str:
     """Mascara o VALOR de qualquer linha que pareça um campo sensível — o
-    NOME do campo/parâmetro fica visível. Nunca levanta: texto vazio/None
-    volta como veio."""
+    NOME do campo/parâmetro fica visível quando cabe numa janela curta
+    depois da keyword; sempre mascarado (nunca vaza), mesmo quando não
+    cabe. Nunca levanta: texto vazio/None volta como veio."""
     if not texto:
         return texto or ""
-    saida = _RE_SEGREDO.sub(lambda m: m.group(1) + _MASCARA, texto)
-    saida = _RE_ENCRYPTED.sub(lambda m: m.group(1) + _MASCARA, saida)
-    # Rede de segurança linha a linha (ver comentário acima de
-    # `_RE_KEYWORD_SOLTA`): qualquer linha que a régua principal não
-    # tenha tratado (sem a máscara ainda) MAS que ainda contenha uma
-    # keyword sensível "crua" é mascarada a partir dali até o fim da
-    # linha — nunca falha por completo, só masca mais (over-masking
-    # aceito, nunca under-masking).
-    linhas = saida.split("\n")
-    for i, linha in enumerate(linhas):
-        if _MASCARA in linha:
-            continue
-        m = _RE_KEYWORD_SOLTA.search(linha)
-        if m:
-            linhas[i] = linha[:m.end()] + _MASCARA
-    return "\n".join(linhas)
+    return "\n".join(_redigir_linha(linha) for linha in texto.split("\n"))
 
 
 # Formato real de um PARÂMETRO de job DataStage (`dags/utils/isx_engine.py`,

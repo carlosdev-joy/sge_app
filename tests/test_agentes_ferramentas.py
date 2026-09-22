@@ -207,29 +207,46 @@ def test_redigir_nao_e_quadratico_saida_real_de_dsjob_200k():
     assert time.perf_counter() - t0 < 2.0
 
 
-# Achado real da 6ª rodada da revisão adversarial da F2b: o `{0,40}` que
-# corrigiu o ReDoS (rodada 5) trocou "disponibilidade" por
-# "confidencialidade" — um nome de campo mais VERBOSO que 40 caracteres
-# entre a keyword e o separador (plausível em nomenclatura de ETL — D-07,
-# o formato real do `dsjob`, segue aberta) fazia a regra principal
-# FALHAR POR COMPLETO, sem nenhuma máscara, vazando o segredo inteiro.
-# `_RE_KEYWORD_SOLTA` (sem quantificador variável nenhum — sempre O(n))
-# é a rede de segurança: roda por linha, só onde a regra principal não
-# tratou nada ainda.
-def test_redigir_nome_de_campo_mais_longo_que_o_limite_nao_vaza():
+# Achado real da 6ª rodada da revisão adversarial da F2b: um nome de
+# campo mais VERBOSO que a janela de busca do separador (plausível em
+# nomenclatura de ETL — D-07, o formato real do `dsjob`, segue aberta)
+# não pode fazer a redação FALHAR POR COMPLETO — o design da 7ª rodada
+# (`_redigir_linha`/`_corte_apos_keyword`) sempre masca a partir da
+# keyword quando não acha separador na janela, nunca deixa de mascarar.
+def test_redigir_nome_de_campo_mais_longo_que_a_janela_nao_vaza():
     texto = "API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION: xyz123segredo"
     saida = af.redigir(texto)
     assert "xyz123segredo" not in saida
     assert af._MASCARA in saida
 
 
-def test_redigir_rede_de_seguranca_nao_reprocessa_linha_ja_tratada():
-    """Uma linha JÁ mascarada pela regra principal (contém `_MASCARA`) não
-    é tocada de novo pela rede de segurança — evita reprocessamento
-    redundante e preserva o resultado da regra mais granular."""
+def test_redigir_nome_curto_preserva_formatacao():
     texto = "senha: abc123"
+    assert af.redigir(texto) == "senha: ••••"
+
+
+# Achado real da 7ª rodada da revisão adversarial da F2b: a "rede de
+# segurança" da 6ª rodada testava `_MASCARA in linha` (a LINHA INTEIRA)
+# como proxy de "já tratada" — errado quando a MESMA linha tem DOIS
+# campos sensíveis (um de nome curto, tratado; outro de nome longo, não)
+# ou quando o texto original já continha "••••" por acaso: a linha
+# inteira era pulada, vazando por completo. O design da 7ª rodada não
+# tem mais essa heurística — processa sempre a PRIMEIRA ocorrência da
+# linha e masca a partir dali até o fim (cobrindo qualquer segredo
+# seguinte na mesma linha, tratado ou não pela regra "bonita").
+def test_redigir_dois_segredos_na_mesma_linha_nenhum_vaza():
+    texto = ('{"API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION": '
+            '"leak1_segredo_real", "token": "leak2"}')
     saida = af.redigir(texto)
-    assert saida == "senha: ••••"  # não vira "senha••••" pela rede de segurança
+    assert "leak1_segredo_real" not in saida
+    assert "leak2" not in saida
+
+
+def test_redigir_mascara_preexistente_no_texto_nao_esconde_segredo_real():
+    texto = ('log_marker: "••••" (progress) — '
+            "API_KEY_FOR_EXTERNAL_PAYMENT_GATEWAY_INTEGRATION=leak3_real")
+    saida = af.redigir(texto)
+    assert "leak3_real" not in saida
 
 
 # ═══════════ 2. truncagem ═════════════════════════════════════════════════════
