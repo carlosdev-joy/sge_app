@@ -286,25 +286,52 @@ def test_redigir_camel_case_e_o_primeiro_segredo_da_linha_nao_vaza():
     assert "REALSECRET2" not in saida
 
 
-def test_redigir_tokenizer_continua_sem_falso_positivo():
-    """Sem NENHUM separador (`:`/`=`) na linha, não há estrutura
-    "campo:valor" possível — a guarda global de `_redigir_linha` (9ª
-    rodada) devolve a linha intacta antes mesmo de procurar keyword,
-    então "TOKENIZER" (ou qualquer keyword solta em texto livre sem
-    separador) nunca é tocado."""
+# Achado real da 10ª rodada: uma guarda global "linha sem `:`/`=` fica
+# intacta" (9ª rodada) parecia resolver o over-masking de "TOKENIZER" —
+# mas também deixava vazar por completo qualquer segredo cujo separador
+# real não fosse `:`/`=` (tab, `|`, `->`, espaços múltiplos — o formato
+# exato do `dsjob` segue sem confirmação, D-07 aberta). Removida: agora
+# QUALQUER ocorrência de keyword é mascarada, mesmo sem separador
+# reconhecível — inclusive "TOKENIZER" puro. Preço aceito (nunca vazar
+# > over-masking, o mesmo trade-off de sempre).
+def test_redigir_tokenizer_agora_e_mascarado_por_seguranca():
     texto = "O TOKENIZER processa o texto normalmente."
-    assert af.redigir(texto) == texto
+    saida = af.redigir(texto)
+    assert saida != texto
+    assert af._MASCARA in saida
 
 
 def test_redigir_linha_sem_separador_e_sem_keyword_fica_intacta():
     assert af.redigir("nada de especial por aqui") == "nada de especial por aqui"
 
 
-def test_redigir_keyword_sem_separador_na_linha_mas_com_pontuacao_fica_intacta():
-    """"senhas" (plural) aparece na frase, mas não há `:`/`=` na linha
-    inteira — a guarda global evita over-masking de texto livre comum."""
+def test_redigir_senhas_plural_sem_separador_e_mascarado_por_seguranca():
+    """"senhas" (plural) aparece na frase, sem `:`/`=` na linha — antes
+    da 10ª rodada isso ficava intacto (guarda global); removida a
+    guarda, o preço é mascarar também este caso, para nunca depender de
+    reconhecer o separador exato do segredo real."""
     texto = "Existem 3 senhas cadastradas no sistema"
-    assert af.redigir(texto) == texto
+    saida = af.redigir(texto)
+    assert saida != texto
+    assert af._MASCARA in saida
+
+
+# Achados reais da 10ª rodada: um segredo real cujo separador não é
+# `:`/`=` (tab, pipe, seta, espaços múltiplos — todos plausíveis num
+# relatório tabular de CLI, e D-07 segue sem confirmar o formato real
+# do `dsjob`) vazava por completo com a guarda global da 9ª rodada, já
+# que ela nunca deixava `_RE_KEYWORD.search()` rodar.
+@pytest.mark.parametrize("texto,segredo", [
+    ("Password\tSEGREDOTAB789", "SEGREDOTAB789"),
+    ("Password|SEGREDOPIPE000", "SEGREDOPIPE000"),
+    ("Password -> SEGREDOARROW111", "SEGREDOARROW111"),
+    ("Password    SEGREDOESPACO222", "SEGREDOESPACO222"),
+    ("EncryptedField\tSEGREDOTABREPORT", "SEGREDOTABREPORT"),
+])
+def test_redigir_separador_fora_de_dois_pontos_e_igual_nao_vaza(texto, segredo):
+    saida = af.redigir(texto)
+    assert segredo not in saida
+    assert af._MASCARA in saida
 
 
 # Achado real da 9ª rodada da revisão adversarial da F2b: a correção da

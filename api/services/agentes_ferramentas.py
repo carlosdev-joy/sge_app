@@ -112,37 +112,44 @@ from services.ssh_datastage import DsConsoleError, run_dsjob, ssh_configured
 # colado, com mais letras ENTRE ela e o separador (`PasswordHash=`,
 # `SecretKey=`, `TokenValue=`, `encryptedValue":`) — continuava vazando
 # por completo: o delimitador de DEPOIS (`(?=$|[^a-zA-Z])`) também
-# falhava aqui, pelo mesmo motivo. Removê-lo TAMBÉM reabriria o
-# over-masking de "TOKENIZER" em qualquer linha (mascararia até o fim
-# mesmo sem nenhum separador na linha inteira — não há "campo:valor"
-# nenhum ali).
+# falhava aqui, pelo mesmo motivo. 1ª tentativa desta correção: remover
+# TAMBÉM o delimitador de DEPOIS, mas guardar `_redigir_linha` com "se a
+# linha não tem `:`/`=` em lugar nenhum, devolve intacta sem procurar
+# keyword" — preservava "TOKENIZER processa..." ileso.
 #
-# Correção: em vez de decidir "é keyword de verdade?" só pela FORMA da
-# palavra (letra antes/depois), decide pela mesma evidência que já
-# importa no resto do design — existe um SEPARADOR alcançável. Dois
-# passos, ambos O(n), sem lookahead algum na regex da keyword:
-#   1. Guarda de linha inteira: se a linha não tem NENHUM `:`/`=` em
-#      lugar nenhum, não há estrutura "campo:valor" possível — devolve
-#      a linha intacta sem sequer procurar keyword (é o que preserva
-#      "TOKENIZER processa o texto normalmente." sem separador nenhum).
-#   2. Havendo separador em algum lugar, percorre TODAS as ocorrências
-#      de keyword da linha (`finditer`, sem lookahead — pode estar
-#      colada em qualquer posição). Para a PRIMEIRA que tiver separador
-#      dentro da janela curta (`_corte_apos_keyword`), masca a partir
-#      dali — essa é a keyword "de verdade" (achado real: "PasswordHash="
-#      só tem separador alcançável a partir de "Password", não de
-#      "TOKENIZER" solto no meio de outra frase da mesma linha).
-#      Nenhuma ocorrência alcançando separador na própria janela, mas a
-#      linha TENDO separador em algum lugar mais distante (nome verboso
-#      >40 chars, ou pontuação no meio bloqueando a varredura) — mesma
-#      garantia de sempre: masca a partir da PRIMEIRA ocorrência de
-#      qualquer forma, nunca falha por completo.
-# Preço aceito (o mesmo trade-off de sempre, nunca vazamento): uma
-# palavra tipo "Pwdless"/"passwordless" numa linha que TAMBÉM tenha
-# outro separador mais adiante agora é mascarada por inteiro a partir
-# dali — over-masking que o design anterior evitava, mas ao custo do
-# vazamento real corrigido aqui. Sem separador NENHUM na linha, texto
-# livre como "TOKENIZER"/"senhas cadastradas" continua imune.
+# Achado real da 10ª rodada: essa guarda tem a MESMA forma de bug de
+# TODAS as rodadas anteriores — assumir um formato fixo (aqui, que o
+# separador só pode ser `:`/`=`) quando D-07 (o formato real do
+# `dsjob`) segue ABERTA. Qualquer separador fora desse alfabeto (tab,
+# `|`, `->`, espaços múltiplos — todos plausíveis em saída tabular de
+# CLI) fazia a linha passar **intacta**, mesmo com uma keyword real
+# colada a um segredo logo depois: `"Password\tSEGREDO123"` saía sem
+# máscara nenhuma, porque a guarda nunca deixava `_RE_KEYWORD.search()`
+# rodar.
+#
+# Correção final: removida a guarda de linha inteira. `_redigir_linha`
+# tenta a keyword SEMPRE (`search()`, sem lookahead algum antes/depois
+# — primeira ocorrência da linha, nunca uma posterior: cortar a partir
+# de uma ocorrência posterior deixaria `linha[:corte]` preservar um
+# segredo associado à ocorrência anterior, o mesmo bug da 7ª rodada,
+# pego durante o desenvolvimento desta mesma correção). Achando
+# separador `:`/`=` na janela curta, masca a partir dali (boa
+# granularidade). Não achando — janela sem separador reconhecido, seja
+# porque não há um, seja porque é um separador fora do alfabeto
+# conhecido, seja porque pontuação no meio bloqueou a varredura —
+# masca a partir da PRÓPRIA keyword até o fim da linha: cobre qualquer
+# separador, conhecido ou não, sem precisar enumerá-los. É a mesma
+# garantia "nunca falha por completo" de sempre, agora sem depender de
+# reconhecer o separador para sequer TENTAR mascarar.
+# Preço aceito (o mesmo trade-off de sempre, nunca vazamento): qualquer
+# menção às keywords em texto livre — mesmo "TOKENIZER processa o texto
+# normalmente." SEM separador nenhum na linha — agora é mascarada a
+# partir do ponto de match. Não há mais como diferenciar sintaticamente
+# "é uma palavra comum que contém a keyword" de "é um campo sensível
+# com separador desconhecido" sem arriscar reabrir uma nova classe de
+# vazamento a cada tentativa — as 10 rodadas desta função confirmam
+# isso na prática. Dado o histórico, a escolha é sempre a mais
+# conservadora: masca.
 _JANELA_NOME_S = 40  # generoso para qualquer nome de parâmetro real
 _RE_KEYWORD = re.compile(
     r"(?i)(?:senha|password|pwd|secret|token|api[_-]?key|Encrypted)", re.M)
@@ -173,18 +180,18 @@ def _corte_apos_keyword(linha: str, fim_keyword: int) -> int | None:
 
 
 def _redigir_linha(linha: str) -> str:
-    if ":" not in linha and "=" not in linha:
-        return linha  # sem separador algum: não há "campo:valor" a mascarar
     m = _RE_KEYWORD.search(linha)
     if m is None:
-        return linha  # nenhuma keyword na linha
-    # SEMPRE a PRIMEIRA ocorrência da linha, nunca uma posterior — achado
-    # real desta mesma rodada: pular para uma 2ª ocorrência (por a 1ª não
-    # ter achado separador na própria janela) e cortar a partir dela
-    # deixa `linha[:corte]` preservar tudo o que veio ANTES, inclusive um
-    # segredo real associado à 1ª ocorrência. Corta sempre a partir da
-    # 1ª: no separador dela, se alcançável na janela; senão, a partir da
-    # própria keyword (fallback de sempre) — nunca falha por completo.
+        return linha  # nenhuma keyword na linha: nada a mascarar
+    # SEMPRE a PRIMEIRA ocorrência da linha, nunca uma posterior — pular
+    # para uma 2ª ocorrência (por a 1ª não ter achado separador na
+    # própria janela) e cortar a partir dela deixaria `linha[:corte]`
+    # preservar tudo o que veio ANTES, inclusive um segredo real
+    # associado à 1ª ocorrência (mesmo bug da 7ª rodada, pego durante o
+    # desenvolvimento desta correção antes de commitar). Corta sempre a
+    # partir da 1ª: no separador dela, se alcançável na janela; senão,
+    # a partir da própria keyword (fallback de sempre) — nunca falha por
+    # completo, mesmo com um separador fora de `:`/`=`.
     corte = _corte_apos_keyword(linha, m.end())
     if corte is None:
         corte = m.end()
