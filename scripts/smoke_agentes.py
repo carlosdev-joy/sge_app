@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Smoke dos agentes de IA pela API (spec docs/spec-agentes-datastage.md §7 e
-docs/spec-agentes-feedback-progresso.md).
+"""Smoke dos agentes de IA pela API (spec docs/spec-agentes-datastage.md §7,
+docs/spec-agentes-feedback-progresso.md e docs/spec-agentes-admin.md).
 
 Uso (a senha pelo `read -s`, para não ficar no histórico do shell):
 
@@ -16,10 +16,16 @@ Uso (a senha pelo `read -s`, para não ficar no histórico do shell):
   - `SMOKE_JOB`: nome **exato** de um job/sequence que EXISTE — faz uma pergunta que usa
     ferramenta (consulta o DataStage de verdade; pode levar até 4 min). Sem ele, a
     pergunta não pede ferramenta nenhuma.
+  - `SMOKE_AGENTE`: id de um agente **criado pela tela**, ligado e liberado para o
+    ORQ_USER — conversa com ele pela rota do agente (só conversa: confere que nenhuma
+    ferramenta rodou).
+- ORQ_USER **admin** roda também os itens do prompt editável e do cadastro de agentes
+  (só leitura e recusas — nada é gravado).
 
 O que ele NÃO altera: nenhuma proposta é decidida, nenhuma configuração muda, nada é
-validado na curadoria. Ele cria **uma conversa** no histórico do ORQ_USER (vence em 30
-dias como qualquer outra). ⚠️ Com `SMOKE_JOB`, a pergunta é uma pergunta de verdade: o que
+validado na curadoria, nenhuma versão de prompt é gravada, nenhum agente é criado ou
+alterado. Ele cria **uma conversa** no histórico do ORQ_USER (duas, com `SMOKE_AGENTE`;
+vencem em 30 dias como qualquer outra). ⚠️ Com `SMOKE_JOB`, a pergunta é uma pergunta de verdade: o que
 as ferramentas lerem vira **fato** (e a extração ISX grava o cache), e um nome ERRADO vira
 um erro validado que **bloqueia a mesma chamada para todos** até vencer (1 dia no
 `dsjob`) — por isso, só com um job que existe.
@@ -43,6 +49,7 @@ SENHA = os.environ.get("ORQ_PASS", "")
 USUARIO2 = os.environ.get("ORQ_USER2", "")
 SENHA2 = os.environ.get("ORQ_PASS2", "")
 JOB = os.environ.get("SMOKE_JOB", "").strip()
+AGENTE = os.environ.get("SMOKE_AGENTE", "").strip()
 
 FALHAS: list[str] = []
 
@@ -91,9 +98,10 @@ def code(r) -> str | None:
     return r.get("detail", {}).get("code") if isinstance(r, dict) and isinstance(r.get("detail"), dict) else None
 
 
-def stream(token: str, corpo: dict, teto_s: float = 280) -> tuple[list[tuple[float, dict]], float]:
+def stream(token: str, corpo: dict, teto_s: float = 280,
+           agente: str = "datastage") -> tuple[list[tuple[float, dict]], float]:
     """Lê o `text/event-stream` guardando QUANDO cada evento chegou (s desde o envio)."""
-    req = urllib.request.Request(f"{URL}/agentes/datastage/conversar/stream",
+    req = urllib.request.Request(f"{URL}/agentes/{urllib.parse.quote(agente)}/conversar/stream",
                                  data=json.dumps(corpo).encode(), method="POST")
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
@@ -202,20 +210,94 @@ def main() -> int:
     ok("decisão inválida → 422") if st == 422 and code(r) == "decisao_invalida" else falhou(f"decisão inválida → {st} {r}")
     st, r = chamar("POST", "/agentes/propostas/2147483647/decidir", token, {"decisao": "recusar"})
     ok("proposta inexistente → 404") if st == 404 else falhou(f"proposta inexistente → {st}")
+    # A tela decide pela rota DO AGENTE desde a B3 da spec admin
+    st, r = chamar("POST", "/agentes/datastage/propostas/1/decidir", token, {"decisao": "talvez"})
+    ok("rota do agente: decisão inválida → 422") if st == 422 else falhou(f"rota do agente → {st} {r}")
 
-    print("▶ curadoria")
-    st, r = chamar("GET", "/agentes/aprendizados?estado=rascunho", token)
+    print("▶ curadoria (pela rota do agente, a que a tela usa)")
+    st, r = chamar("GET", "/agentes/datastage/aprendizados?estado=rascunho", token)
     if agentes["datastage"].get("curador"):
         if st == 200:
             sementes = [a for a in r.get("aprendizados", []) if a.get("origem") == "semente"]
             ok(f"fila do curador: {len(r.get('aprendizados', []))} a revisar ({len(sementes)} sementes)")
-            st2, v = chamar("GET", "/agentes/aprendizados?estado=validado", token)
+            st2, v = chamar("GET", "/agentes/datastage/aprendizados?estado=validado", token)
             if st2 == 200 and not any(a.get("origem") == "semente" for a in v.get("aprendizados", [])):
                 aviso("nenhuma semente validada ainda — o curador valida em Agentes › Curadoria")
         else:
             falhou(f"curador sem acesso à fila ({st} {code(r)})")
     else:
         ok("não é curador → 403") if st == 403 else falhou(f"não-curador acessou a fila ({st})")
+
+    print("▶ prompt editável e cadastro de agentes (spec admin — só leitura e recusas)")
+    st, lst = chamar("GET", "/agentes/admin/agentes", token)
+    if st == 403:
+        aviso("ORQ_USER não é admin — itens do prompt e do cadastro pulados")
+    elif st != 200 or not isinstance(lst, dict):
+        falhou(f"lista de agentes do admin → {st} (migration 121 aplicada?)")
+    else:
+        origens = {a["id"]: a.get("origem") for a in lst.get("agentes", [])}
+        ok(f"{len(origens)} agente(s) no cadastro") if origens.get("datastage") == "codigo" \
+            else falhou(f"DataStage fora do cadastro ou com origem errada: {origens}")
+        # A lista responde mesmo SEM a 121 (degrada para os agentes do código). Um id
+        # válido e inexistente obriga a ler dbo.etl_agente: 404 = tabela existe; 500 =
+        # falta a migration. Nada é gravado (o PUT de um agente que não existe para no 404).
+        st, r = chamar("PUT", "/agentes/admin/agentes/smoke_nao_existe_x", token, {"ativo": True})
+        ok("tabela do cadastro (migration 121) presente") if st == 404 and code(r) == "agente_desconhecido" \
+            else falhou(f"PUT num agente inexistente → {st} {code(r)} — migration 121 aplicada?")
+        st, pr = chamar("GET", "/agentes/admin/agentes/datastage/prompt", token)
+        if st == 200 and isinstance(pr, dict):
+            ativa = pr.get("ativa") or {}
+            nome = "padrão do código" if ativa.get("padrao") else f"versão {ativa.get('versao')}"
+            ok(f"prompt do DataStage em uso: {nome} (hash {ativa.get('hash')})")
+            if "## Como usar as ferramentas" not in (pr.get("parte_fixa") or {}).get("depois", ""):
+                falhou("parte fixa do prompt sem o protocolo de ferramentas")
+        else:
+            falhou(f"prompt do DataStage → {st} (migration 120 aplicada?)")
+        st, vs = chamar("GET", "/agentes/admin/agentes/datastage/prompt/versoes", token)
+        if st == 200 and isinstance(vs, dict) and vs.get("versoes") \
+                and all("vigente_de" in v and "respostas" in v for v in vs["versoes"]):
+            ok(f"histórico de versões com vigência ({len(vs['versoes'])} linha(s))")
+        else:
+            falhou(f"histórico de versões → {st}")
+        st, r = chamar("PUT", "/agentes/admin/agentes/datastage/prompt", token,
+                       {"texto": "", "motivo": "smoke", "versao_base": 0})
+        ok("prompt vazio → 422 (nada gravado)") if st == 422 and code(r) == "prompt_vazio" \
+            else falhou(f"prompt vazio → {st} {code(r)}")
+        st, r = chamar("PUT", "/agentes/admin/agentes/datastage", token, {"ativo": False})
+        ok("DataStage não se altera pelo cadastro → 409") if st == 409 and code(r) == "agente_do_codigo" \
+            else falhou(f"alterar o DataStage pelo cadastro → {st} {code(r)}")
+        st, r = chamar("POST", "/agentes/admin/agentes", token, {"id": "datastage", "nome": "x", "descricao": "x",
+                       "acesso": "manual", "perfis": ["desenvolvedor"], "ferramentas": [], "prompt": "x",
+                       "motivo": "smoke"})
+        ok("id reservado → 422 (nada criado)") if st == 422 and code(r) == "agente_id_reservado" \
+            else falhou(f"criar com id reservado → {st} {code(r)}")
+
+    if AGENTE:
+        print(f"▶ agente criado pela tela: {AGENTE}")
+        if AGENTE not in agentes:
+            falhou(f"{AGENTE} fora do catálogo do ORQ_USER — ligado? liberado? tela Agentes? relogin?")
+        else:
+            ferramentas = agentes[AGENTE].get("ferramentas")
+            try:
+                eventos, total = stream(token, {"mensagem": "Em uma frase: o que você faz?"}, agente=AGENTE)
+                final = next((e for _t, e in eventos if e.get("tipo") in ("resposta", "erro")), None)
+            except Exception as e:  # noqa: BLE001
+                final = None
+                falhou(f"stream do {AGENTE} não completou: {type(e).__name__}: {e}")
+            if final and final.get("tipo") == "resposta":
+                # `conversar` nunca levanta: falha do gateway volta como resposta com status
+                if final.get("status") == "ok":
+                    ok(f"respondeu em {total:.1f}s pela rota do agente")
+                else:
+                    falhou(f"{AGENTE} respondeu com status {final.get('status')!r}: {final.get('texto')}")
+                if ferramentas == [] and final.get("artefatos"):
+                    falhou(f"agente só de conversa rodou ferramenta: {final.get('artefatos')}")
+                elif ferramentas == []:
+                    ok("só de conversa: nenhuma ferramenta rodou")
+            elif final is not None:
+                falhou(f"{AGENTE} respondeu com erro: {final}")
+            else:
+                falhou(f"o stream do {AGENTE} terminou sem resposta")
 
     if USUARIO2 and SENHA2:
         print("▶ usuário sem o agente")
@@ -249,6 +331,19 @@ def main() -> int:
         "i) desligar agente_datastage_enabled → some do seletor; API 503",
         "j) 3–5 abas perguntando ao mesmo tempo → teto de sessões SSH respeitado; Console DataStage responde",
         "k) Airflow › etl_log_cleanup › limpar_conversas_agentes apaga só > 30 dias",
+        "l) DataStage (A0): filhos de sequence, colunas de PARALLEL, status da última execução, SsdPrs_* sem"
+        " projeto — respostas como antes",
+        "m) Admin › Agentes › Prompt: gravar uma versão com motivo → vale na PRÓXIMA pergunta; Restaurar a"
+        " padrão → vale de novo; histórico mostra vigência, duração e respostas",
+        "n) duas abas no mesmo prompt: começar a editar na A, gravar na B, ESPERAR 30 s e voltar à A → aviso"
+        " 'a versão em uso mudou' (a tela só relê depois de 30 s); salvar dá conflito e o texto vai para"
+        " 'Seu texto'",
+        "o) ⚠️ agente não se exclui e o id não volta: use um id de teste (ex.: smoke_conversa) e desligue ao"
+        " fim — criar só de conversa, por perfil → nasce desligado; ligar; usuário do perfil COM a tela"
+        " Agentes vê e conversa; sem projeto nem grafo",
+        "p) no formulário de novo agente (SEM clicar em Criar): marcar 'DataStage ao vivo' → 'Por perfil'"
+        " indisponível; o perfil consulta não aparece na lista",
+        "q) conversa de um agente não abre na rota de outro; curador de um agente não cura outro",
     ):
         print(f"  [ ] {item}")
 

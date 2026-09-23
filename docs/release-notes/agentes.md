@@ -2,7 +2,7 @@
 
 **Compatibilidade:** Apache Airflow 2.x | SQL Server | gateway de IA com identidade por usuário (provedor `caixa_gateway`) | acesso SSH ao servidor do DataStage (`DS_SSH_*`, o mesmo do Console) | extração ISX (a mesma do lineage, `docs/release-notes/lineage-isx.md`) | `.dsx` em `DSX_BASE_DIR` (opcional)
 **Migrations:** **116** (IA desacoplada do Caixa), **117** (tabelas dos agentes), **118** (limpa títulos gravados antes da redação — **no mesmo deploy da F4**), **119** (semente dos aprendizados, só dados) — etapa 6c, responder **s**
-**Spec:** `docs/spec-agentes-datastage.md` (F0–F7) · `docs/spec-agentes-feedback-progresso.md` (progresso em tempo real) · `docs/spec-agentes-admin.md` (📋 rascunho — tela de criação de agentes, **não implementada**)
+**Spec:** `docs/spec-agentes-datastage.md` (F0–F7) · `docs/spec-agentes-feedback-progresso.md` (progresso em tempo real) · `docs/spec-agentes-admin.md` (✅ entregue — prompt editável e criação de agentes: ver `docs/release-notes/agentes-admin.md`)
 **Manual:** `docs/MANUAL_USUARIO.md` §3.12 (usar), §4.11 (administrar), §4.6 (deploy), §5 (FAQ)
 **PRs:** #417/#418 (spec) · #419 F0 · #420 F1 · #421 F2 · #422 F2b · #423 + #424 F3 · #425 F4 · #426 F5 · #427 F6 (+ port das melhorias de produção de 22/09) · #428 progresso SSE, duração, inferência do projeto, barra do topo · #429 ajustes de produção de 23/09, histórico sem corte · F7 (esta nota, manual, smoke)
 
@@ -173,6 +173,6 @@ fim (spec §7).
 
 ## 🧭 Próximos passos (backlog)
 
-- **Tela de criação de agentes e prompt editável sem deploy** — `docs/spec-agentes-admin.md`
-  (📋 rascunho, com 8 conflitos a decidir antes de implementar).
+- ~~Tela de criação de agentes e prompt editável sem deploy~~ — **entregue** (#432–#438):
+  `docs/release-notes/agentes-admin.md`.
 - Ler o que entra e sai das conversas para gerar funcionalidades (B-07, exige política).

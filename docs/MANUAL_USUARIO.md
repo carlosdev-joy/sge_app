@@ -1042,6 +1042,14 @@ Agentes (o item do menu) e o **agente** DataStage em si — este **usuário a us
 para o perfil **Desenvolvedor ETL**. Com a tela e sem o agente, a tela abre e explica.
 Depois de receber a liberação, **saia e entre de novo** para ela valer.
 
+**Outros agentes.** O administrador pode criar outros agentes (§4.11) — quando houver
+mais de um liberado para você, escolha no seletor **Agente**, no alto da tela. Um agente
+**só de conversa** não acessa sistema nenhum: responde com o que sabe e com o que você
+informar, sem projeto, grafo, propostas nem curadoria. Um agente com **parte das
+ferramentas** funciona como o DataStage, mas só consulta o que lhe foi dado — se ele
+tentar outra, a linha *Consultei:* mostra *(indisponível)*. Cada agente tem o próprio
+histórico, as próprias propostas e a própria curadoria.
+
 **Aviso do gateway.** Cada pergunta vai ao gateway de IA com a **sua** identidade
 (`cvp-<matrícula>`, ou a que o administrador cadastrou para você). Se a tela disser
 *"Sua matrícula ainda não está cadastrada no gateway de IA"*, siga o texto do aviso
@@ -1159,7 +1167,9 @@ Lembretes:
   `dist/`; `config/` → **n** (nada muda no nginx). Depois: ligar os interruptores,
   preencher o campo de identidade, **liberar a tela Agentes** e conceder o agente um a um.
   Roteiro, conferência e smoke (`scripts/smoke_agentes.py`) em
-  `docs/release-notes/agentes.md`.
+  `docs/release-notes/agentes.md`. **Prompt editável e criação de agentes**: migrations
+  **120** e **121** na etapa 6c; API e `dist/`; nada obrigatório depois (o DataStage segue
+  com o prompt padrão). Roteiro em `docs/release-notes/agentes-admin.md`.
 - **E-mail (§3.5-A / §3.5-B / §4.10)**: migration **111** na etapa 6c;
   `dags/utils/` ganhou dois arquivos → **reiniciar o worker** do Airflow;
   opcional no `.env` do host: `EMAIL_SENDMAIL_BIN` (padrão `/usr/sbin/sendmail`),
@@ -1480,8 +1490,9 @@ lista de escolha". Depois de desativar ou excluir um padrão, marque outro.
 ---
 
 ### 4.11 Agentes (Admin → Acessos & Comunicação → Agentes)
-A aba governa a tela **Agentes** (§3.12). Exige as migrations **116–119** — **não ligue
-os interruptores antes delas** (sem a 117 a aba abre com os padrões e o chat falha).
+A aba governa a tela **Agentes** (§3.12). Exige as migrations **116–121** — **não ligue
+os interruptores antes delas** (sem a 117 a aba abre com os padrões e o chat falha; sem a
+120/121, o prompt não tem versões e não dá para criar agentes).
 
 **Interruptores.** *Agentes ligados/desligados* é o geral: desligado, **ninguém** vê
 agente nenhum, nem o administrador (é o kill switch). Cada agente tem o seu (*Mapeamento
@@ -1526,6 +1537,50 @@ incompatível"*.
 `etl_log_cleanup` apaga o que passa disso — a tela já esconde as vencidas mesmo que a
 DAG não rode. **Fatos, propostas e aprendizados não vencem** com a conversa.
 
+**Agentes (criar e editar).** A seção **Agentes** lista o DataStage (vem do código — liga
+e desliga em *Interruptores*) e os criados aqui. **+ Novo agente** pede:
+- **Nome**, **id** (minúsculas, números e `_`; não muda depois e **nunca é reaproveitado**)
+  e **descrição** (aparece para o usuário no alto da tela);
+- **Ferramentas**: *Nenhuma — só conversa* (sem acesso a sistemas) ou as que ele pode
+  usar, entre as do DataStage (*projeto* entra sozinho quando outra precisa dele).
+  Ferramenta nova só por desenvolvimento;
+- **Acesso**: *Manual* (você libera usuário a usuário em *Quem pode usar*, como o
+  DataStage) ou *Por perfil* (todo usuário dos perfis escolhidos, sem liberação
+  individual). Nos dois casos o usuário precisa ser de um dos **perfis escolhidos** e ter
+  a **tela Agentes**. **Por perfil não vale** com ferramenta que toca o servidor
+  (*DataStage ao vivo*, *extração ISX*, *arquivo DSX*), e o perfil **consulta** nunca
+  recebe agente. Se o perfil escolhido não tem a tela Agentes, o formulário avisa —
+  libere a tela em *Perfis*;
+- **Prompt inicial** (até 20.000 caracteres) e **motivo** (3 a 200) — viram a versão 1 do
+  prompt.
+
+O agente **nasce desligado**: confira o prompt e quem pode usar e só então ligue (o
+interruptor na linha dele). **Editar** muda nome, descrição, ferramentas, acesso e perfis.
+Não há exclusão: desligado, ele some para todos, e as conversas, propostas e
+aprendizados ficam. *Quem pode usar*, *Curadores* (só em agente com ferramentas) e
+*Prompt* aparecem para cada agente, abaixo. Os agentes criados aqui também aparecem nas
+*permissões extras* do usuário (Usuários & Perfis → ícone da chave).
+
+**Prompt (versões).** A seção **Prompt** de cada agente edita as **instruções do domínio**
+— quem é o agente, a ordem em que usa as ferramentas, as armadilhas conhecidas, como
+responder. O protocolo das ferramentas, as regras de segurança e o formato das
+propostas o Orquestra acrescenta sozinho (*Parte fixa montada pelo Orquestra*, só
+leitura). **Salvar versão** pede o motivo e **vale a partir da próxima pergunta**, sem
+reiniciar nada. O texto vai até **20.000 caracteres** e o motivo tem de **3 a 200**. O
+**Histórico de versões** mostra, de cada uma, de quando a quando valeu, quanto tempo
+ficou em uso, quantas respostas deu e o tempo médio delas (contando as conversas ainda
+guardadas — a limpeza diária apaga as de mais de 30 dias); **Ver** mostra o texto e
+**Restaurar** (também pede motivo) grava aquele texto como uma versão nova — nada é
+apagado. Uma versão antiga que hoje não passaria nas regras abaixo não pode ser
+restaurada. No DataStage, a linha *Padrão do código* é o texto que vem com o Orquestra:
+enquanto ninguém gravar uma versão, é ele que vale (e ele acompanha as atualizações). Um
+agente criado aqui não tem padrão — começa na versão 1.
+- Se outro administrador gravar enquanto você edita, a tela avisa (ao voltar para a aba,
+  quando ela se atualiza); de qualquer jeito, ao salvar o Orquestra recusa, o seu texto vai
+  para *Seu texto* (para copiar) e o editor mostra a versão nova.
+- O Orquestra **recusa** um texto com valor de credencial (`senha=…`, token, chave) —
+  o prompt vai ao gateway de IA a cada pergunta.
+
 ## 5. Perguntas frequentes
 
 **O pipeline não rodou no horário. Por quê?** Verifique, nesta ordem: (1) pipeline ativo? (2) data está num calendário de feriado ou blackout? (3) tipo "horários específicos": o horário consta na lista? (4) DAG gerado/atualizado após a última edição? (5) DAG despausado no Airflow?
@@ -1545,6 +1600,15 @@ só vale na sessão seguinte. Se o **menu** Agentes não aparece, falta a **tela
 administrador marca *Agentes* no seu perfil ou nas suas permissões extras). Se o menu
 aparece mas o agente não: os dois interruptores precisam estar ligados (§4.11), e o seu
 perfil precisa ser **desenvolvedor**.
+
+**Criei um agente e ninguém o vê.** Ele nasce **desligado** — ligue na linha dele em
+Admin › Agentes (e o interruptor geral *Agentes ligados* também). Depois, a pessoa
+precisa ser de um dos **perfis escolhidos** no agente e ter a **tela Agentes**; no acesso
+*Manual*, também ser liberada em *Quem pode usar* (e sair e entrar de novo).
+
+**Mudei o prompt e o agente piorou.** Em Admin › Agentes › Prompt › *Histórico de
+versões*, **Restaurar** a versão anterior (no DataStage, também o *Padrão do código*) —
+vale na próxima pergunta.
 
 **O agente diz "Sua matrícula ainda não está cadastrada no gateway de IA".** O gateway de IA não conhece a sua identidade.
 Peça o cadastro pelo canal do aviso; se a sua matrícula não segue `CVP`+dígitos, o
