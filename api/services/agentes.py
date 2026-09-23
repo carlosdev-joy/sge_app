@@ -319,7 +319,7 @@ _RE_BLOCO_JSON = re.compile(r"```[ \t]*(?:json)?[ \t]*\n?(\{(?:(?!```).)*\})\s*`
 # Abaixo do proxy_read_timeout (300 s na rota /orquestra/, D-14 ✅) — margem
 # para a resposta HTTP em si voltar antes do nginx desistir.
 ORCAMENTO_AGENTE_S = 240
-MAX_RODADAS_FERRAMENTA = 3
+MAX_RODADAS_FERRAMENTA = 4
 
 
 _RE_FECHA_FERRAMENTA = re.compile(r"</(\s*ferramenta)", re.I)
@@ -401,7 +401,7 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
      • Quando o prefixo for claro, chame `resolver_projeto` direto com o projeto inferido.
    - Se vier "quase" (caixa diferente mas prefixo distinto), tente com o projeto inferido antes de perguntar.
    - Se o prefixo não for reconhecível e o projeto não estiver resolvido na conversa, chame
-     `resolver_projeto` com {{"listar": true}} para obter os projetos disponíveis e peça ao
+     `resolver_projeto` com {{"listar": true}} para obter os projetos conhecidos e peça ao
      usuário para selecionar um — nunca diga "não encontrado" sem antes ter listado as opções.
 
 2. **base** {{"job_name": "NOME"}} — o que o Orquestra já sabe (rápido, sem tocar servidor):
@@ -472,7 +472,7 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 - Nunca diga "saída truncada" ou "não foi possível determinar" quando tiver children populado.
 - Quando a pergunta for sobre status/execução: use dsjob jobinfo ou report, não isx_extrair.
 - Quando a pergunta for sobre colunas/campos/SQL: use isx_extrair (após dsjob lstages confirmar que é PARALLEL).
-- Quando a pergunta for sobre jobs filhos de uma sequence: use isx_extrair e leia o campo `children`.
+- Quando a pergunta for sobre jobs filhos de uma sequence: vá DIRETO ao isx_extrair — NÃO chame dsjob antes. Leia o campo `children` no resultado.
 - Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, explique ao
   usuário o motivo informado.
 
@@ -587,6 +587,17 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
                                        resta_agora, validade_dias: int = 7) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
+    if nome == "resolver_projeto" and _pede_listagem(args):
+        # O prefixo do job não diz o projeto: lista as opções para o usuário
+        # escolher (ajuste de produção de 23/09/2026 — nunca "não encontrado"
+        # sem mostrar as opções).
+        projetos = _com_cursor(abrir_conn, af.projetos_conhecidos)
+        if not projetos:
+            return {"texto": "O Orquestra ainda não conhece nenhum projeto DataStage (base e DSX vazios)."}, None
+        lista = ", ".join(p["projeto"] + (" (tem .dsx)" if p["tem_dsx"] else "") for p in projetos)
+        return ({"texto": f"Projetos DataStage conhecidos pelo Orquestra: {lista}. "
+                          "Peça ao usuário para escolher um e chame resolver_projeto com ele."}, None)
+
     if nome == "resolver_projeto":
         candidato = str(args.get("projeto") or "").strip() or None
         pipeline_name = str(args.get("pipeline_name") or "").strip() or None
@@ -597,16 +608,23 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
             extra = " (tem arquivo .dsx disponível)" if r["tem_dsx"] else ""
             return {"texto": f"Projeto resolvido: {r['projeto']}{extra}."}, r["projeto"]
         if r["estado"] == "quase":
-            # SÓ sugestão — nunca resolve sozinho aqui (critério 11 da F2).
-            # O modelo confirma com o usuário e chama de novo com a grafia exata.
+            # SÓ sugestão — nunca resolve sozinho aqui (critério 11 da F2): o
+            # modelo precisa chamar DE NOVO com a grafia exata, que só resolve
+            # se o nome existir na base/DSX. Ajuste de produção de 23/09/2026:
+            # quando o prefixo do job confirma o projeto, o modelo pode seguir
+            # sem perguntar; na dúvida, confirma com o usuário.
             # F6: a grafia canônica é fato da base — vira aprendizado de busca.
             _registrar_seguro(abrir_conn, ap.aprendizado_de_busca(candidato or "", r["sugerido"] or ""))
             return ({"texto": f"'{candidato}' é parecido com '{r['sugerido']}' (o DataStage é "
-                              f"sensível a maiúsculas/minúsculas). Confirme com o usuário e, se for "
-                              f"esse mesmo, peça resolver_projeto de novo com \"{r['sugerido']}\" "
-                              f"exatamente assim."}, None)
+                              f"sensível a maiúsculas/minúsculas). Se o prefixo do job confirma "
+                              f"esse projeto, chame resolver_projeto de novo com \"{r['sugerido']}\" "
+                              f"exatamente assim; se houver dúvida, confirme com o usuário."}, None)
         sugestoes = ", ".join(r["sugestoes"]) or "nenhuma sugestão disponível"
-        alvo = candidato or f"{pipeline_name}/{job_name_pipeline}" if pipeline_name else "(nenhum)"
+        # Parênteses explícitos: sem eles o Python lia `(candidato or …) if
+        # pipeline_name else "(nenhum)"`, e um nome de projeto digitado sem
+        # pipeline saía como "(nenhum)" na mensagem (bug da F2, achado no
+        # ajuste de 23/09).
+        alvo = candidato or (f"{pipeline_name}/{job_name_pipeline}" if pipeline_name else "(nenhum)")
         return ({"texto": f"Não reconheço o projeto '{alvo}'. "
                           f"Projetos conhecidos: {sugestoes}."}, None)
 
@@ -1032,10 +1050,46 @@ async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None,
 # cancela na hora, e a fase protegida cancela sozinha por dentro.
 
 
+def _pede_listagem(args: dict) -> bool:
+    """`resolver_projeto {"listar": true}` — aceita o booleano e o texto
+    "true" (o modelo às vezes manda como string)."""
+    v = (args or {}).get("listar")
+    return v is True or (isinstance(v, str) and v.strip().lower() == "true")
+
+
+_RE_NOME_STATUS = re.compile(r"^[A-Za-z0-9_.$#-]{1,80}$")
+
+
+def texto_de_progresso(ferramenta: str, args: dict, projeto: str | None, *, repetida: bool = False) -> str:
+    """A frase de progresso de cada ferramenta (spec de feedback). Só cita
+    nome de job/projeto que pareça identificador DataStage — o argumento foi
+    escrito pelo modelo, e a frase vai direto para a tela."""
+    if repetida:
+        return "Essa consulta já falhou antes — não vou repetir."
+    job = str((args or {}).get("job_name") or "").strip()
+    job = job if _RE_NOME_STATUS.match(job) else ""
+    proj = str((args or {}).get("projeto") or projeto or "").strip()
+    proj = proj if _RE_NOME_STATUS.match(proj) else ""
+    if ferramenta == "resolver_projeto" and _pede_listagem(args):
+        return "Listando os projetos conhecidos…"
+    if ferramenta == "resolver_projeto":
+        return f"Verificando o projeto {proj}…" if proj else "Verificando o projeto…"
+    if ferramenta == "base":
+        return f"Consultando o que o Orquestra já sabe sobre {job}…" if job else "Consultando a base do Orquestra…"
+    if ferramenta == "dsjob":
+        return f"Consultando {job} ao vivo no DataStage…" if job else "Consultando o DataStage ao vivo…"
+    if ferramenta == "isx_extrair":
+        return "Extraindo a definição do job via istool — pode levar até 60 s…"
+    if ferramenta == "dsx_consulta":
+        return "Lendo o arquivo DSX do projeto…"
+    return "Consultando…"
+
+
 async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | None,
                     provedor_cfg: dict, identidade: str | None, campo_identidade: str | None,
                     ssh_max: int, acao_editar: bool = False, matricula: str | None = None,
-                    validade_fatos_dias: int = 7, falhas_anteriores: set[str] | None = None) -> dict:
+                    validade_fatos_dias: int = 7, falhas_anteriores: set[str] | None = None,
+                    emit_status=None) -> dict:
     """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
     (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
     allowlist, e devolve a resposta final. Controla o orçamento de tempo
@@ -1053,6 +1107,17 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
 
     def _resta() -> float:
         return ORCAMENTO_AGENTE_S - (time.monotonic() - t0)
+
+    async def _status(texto: str) -> None:
+        # Progresso para a tela (endpoint de stream). Opcional: sem callback,
+        # nada muda. Nunca derruba a rodada — o progresso é enfeite, a
+        # resposta é o produto.
+        if emit_status is None:
+            return
+        try:
+            await emit_status(texto)
+        except Exception:  # noqa: BLE001
+            pass
 
     # O corte do histórico vive AQUI, e só aqui: é esta função que monta o
     # que vai ao gateway. Antes havia dois — este (`mensagens[-12:]`, por
@@ -1094,6 +1159,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             usados.update({i["id"]: i["titulo"] for i in aprendizados})
         sistema = _prompt_sistema(projeto, af.projeto_tem_dsx(projeto) if projeto else False,
                                   ap.formatar_contexto(aprendizados))
+        await _status("Pensando na pergunta…" if rodada == 0 else "Analisando o que foi lido…")
         # O orçamento também vale por OPERAÇÃO, não só entre rodadas — sem
         # isto, uma única chamada ao gateway podia levar até TIMEOUT_S (60s)
         # mesmo com o orçamento quase esgotado, e a soma gateway+ferramenta de
@@ -1118,6 +1184,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
 
         texto, pedido = extrair_pedido_ferramenta(resposta)
         if pedido is None:
+            await _status("Formatando a resposta…")
             historico.append({"role": "assistant", "content": resposta})
             texto, brutas_ap = ap.extrair_sugestoes(texto or resposta)
             texto, brutas = ac.extrair_propostas(texto)
@@ -1161,6 +1228,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         chave = ap.chave_da_chamada(nome_ferramenta, args, projeto_da_chamada)
         conhecido = None if chave in falhas else _erro_conhecido_seguro(
             abrir_conn, nome_ferramenta, args, projeto_da_chamada)
+        await _status(texto_de_progresso(nome_ferramenta, args, projeto_da_chamada,
+                                         repetida=chave in falhas or conhecido is not None))
         if chave in falhas:
             # Guarda de reexecução (F6): a MESMA chamada já falhou nesta conversa.
             dado, projeto_novo = ({"texto": "Esta mesma chamada já falhou nesta conversa — não repeti. "
@@ -1206,6 +1275,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             _registrar_seguro(abrir_conn, ap.aprendizado_de_falha(
                 nome_ferramenta, args, projeto_da_chamada, falha))
         artefatos.append(artefato)
+        if nome_ferramenta == "isx_extrair" and dado.get("lido"):
+            await _status("Analisando stages e colunas…")
         if dado.get("lido"):
             # Só LEITURA de verdade (dsjob/isx_extrair/dsx_consulta com
             # sucesso, sobre um job) serve de evidência a proposta. Mensagens
