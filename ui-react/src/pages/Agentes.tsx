@@ -23,6 +23,7 @@ import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, mensagemDeErro } 
 import { HistoricoConversas } from '../components/agentes/HistoricoConversas'
 import { AvisoSonda } from '../components/agentes/AvisoSonda'
 import { ChatAgente } from '../components/agentes/ChatAgente'
+import { CuradoriaAprendizados } from '../components/agentes/CuradoriaAprendizados'
 import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
 import { IndicadorProjeto } from '../components/agentes/IndicadorProjeto'
 import { toast } from '../components/ui/Toast'
@@ -100,6 +101,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   const [grafoAberto, setGrafoAberto] = useState(false)
   const [stageSel, setStageSel] = useState<string | null>(null)
   const [historicoAberto, setHistoricoAberto] = useState(false)
+  const [curadoriaAberta, setCuradoriaAberta] = useState(false)
   const [retomando, setRetomando] = useState(false)
   const [decidindo, setDecidindo] = useState<ReadonlySet<number>>(() => new Set())
   // Descarta resposta que chega DEPOIS de "nova conversa" — mesmo cuidado do
@@ -137,6 +139,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           artefatos: r.artefatos, status: r.status,
           propostas: r.propostas?.length ? r.propostas : undefined,
           propostasRecusadas: r.propostas_recusadas?.length ? r.propostas_recusadas : undefined,
+          aprendizadosUsados: r.aprendizados_usados?.length ? r.aprendizados_usados.map(a => a.titulo) : undefined,
+          aprendizadosSugeridos: r.aprendizados_sugeridos?.length ? r.aprendizados_sugeridos : undefined,
         }]
         guardar(agente.id, { conversa_id: r.conversa_id, projeto: r.projeto, mensagens: novas })
         return novas
@@ -261,6 +265,19 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   return (
     <>
       <div className="flex justify-end gap-3 -mt-2">
+        {agente.curador && (
+          // Só para quem tem `agente_curador` (o catálogo diz); a API recusa
+          // os demais com 403 de qualquer jeito (critério 4 da F6).
+          <button
+            type="button"
+            onClick={() => setCuradoriaAberta(v => !v)}
+            aria-expanded={curadoriaAberta}
+            className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
+            data-agentes-abrir-curadoria
+          >
+            {curadoriaAberta ? 'voltar à conversa' : 'curadoria'}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setHistoricoAberto(v => !v)}
@@ -316,6 +333,9 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         />
       )}
 
+      {curadoriaAberta && agente.curador ? (
+        <CuradoriaAprendizados onFechar={() => setCuradoriaAberta(false)} />
+      ) : (
       <div className="flex-1 min-h-0 flex flex-col sm:flex-row gap-3">
         {historicoAberto && (
           <HistoricoConversas
@@ -340,6 +360,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         />
         </div>
       </div>
+      )}
     </>
   )
 }

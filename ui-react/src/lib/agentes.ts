@@ -57,6 +57,10 @@ export type StatusRodada =
 export interface ArtefatoFerramenta {
   ferramenta: string
   args?: Record<string, unknown>
+  /** F6: a chamada falhou de forma permanente (categoria da falha). */
+  falhou?: string
+  /** F6: a chamada NÃO rodou — já tinha falhado (nesta conversa ou antes). */
+  repetida?: boolean
 }
 
 /** Estados de `etl_agente_proposta.estado` (F5). */
@@ -96,6 +100,10 @@ export interface RespostaConversa {
   propostas?: PropostaAgente[]
   /** Por que as demais propostas do modelo não passaram pela régua. */
   propostas_recusadas?: string[]
+  /** F6: aprendizados validados que foram ao contexto desta resposta. */
+  aprendizados_usados?: { id: number; titulo: string }[]
+  /** F6: aprendizados que o agente sugeriu (rascunho, vão para a curadoria). */
+  aprendizados_sugeridos?: string[]
 }
 
 export interface MensagemChat {
@@ -117,6 +125,10 @@ export interface MensagemChat {
   propostas?: PropostaAgente[]
   /** Só na resposta da rodada atual: quantas a régua descartou e por quê. */
   propostasRecusadas?: string[]
+  /** Só na resposta da rodada atual (F6): títulos dos aprendizados considerados. */
+  aprendizadosUsados?: string[]
+  /** Só na resposta da rodada atual (F6): o que foi sugerido à curadoria. */
+  aprendizadosSugeridos?: string[]
 }
 
 /** `conversa_id` aceito pelo backend: 8 a 36 chars, `[A-Za-z0-9_-]`. */
@@ -302,6 +314,65 @@ export function aplicarDecisao(mensagens: MensagemChat[], proposta: PropostaAgen
   ))
 }
 
+// ── Curadoria dos aprendizados (F6) ─────────────────────────────────────
+
+export type EstadoAprendizado = 'rascunho' | 'validado' | 'obsoleto' | 'rejeitado'
+export type AcaoAprendizado = 'validar' | 'rejeitar' | 'obsoletar'
+
+/** Um item da base de aprendizados (`GET /agentes/aprendizados`). */
+export interface Aprendizado {
+  id: number
+  tipo: string
+  titulo: string
+  corpo: string
+  /** O que o curador lê para decidir — o modelo nunca recebe a evidência. */
+  evidencia: string | null
+  origem: 'ferramenta' | 'interpretacao' | 'semente' | string
+  estado: EstadoAprendizado
+  criado_em: string | null
+  validado_por: string | null
+  validado_em: string | null
+  ultimo_uso_em: string | null
+  usos: number
+  revalidar_em: string | null
+}
+
+/** Espelha `agentes_aprendizado.ESTADOS` — a ordem é a das abas. */
+export const ESTADOS_APRENDIZADO: { estado: EstadoAprendizado; rotulo: string }[] = [
+  { estado: 'rascunho', rotulo: 'A revisar' },
+  { estado: 'validado', rotulo: 'Validados' },
+  { estado: 'obsoleto', rotulo: 'Obsoletos' },
+  { estado: 'rejeitado', rotulo: 'Rejeitados' },
+]
+
+/** Espelha `agentes_aprendizado.TRANSICOES`: o que se pode fazer em cada estado. */
+export const ACOES_APRENDIZADO: Record<EstadoAprendizado, AcaoAprendizado[]> = {
+  rascunho: ['validar', 'rejeitar'],
+  validado: ['obsoletar', 'rejeitar'],
+  obsoleto: ['validar', 'rejeitar'],
+  rejeitado: [],
+}
+
+export const ROTULO_ACAO: Record<AcaoAprendizado, string> = {
+  validar: 'Validar',
+  rejeitar: 'Rejeitar',
+  obsoletar: 'Marcar obsoleto',
+}
+
+export const TIPOS_APRENDIZADO: Record<string, string> = {
+  acesso: 'acesso',
+  busca: 'busca',
+  leitura: 'leitura',
+  detalhamento: 'detalhamento',
+  erro: 'erro',
+}
+
+export const ORIGEM_APRENDIZADO: Record<string, string> = {
+  ferramenta: 'comprovado por ferramenta',
+  interpretacao: 'sugerido pelo agente',
+  semente: 'semente inicial',
+}
+
 /** Dias que uma conversa fica disponível — espelha `RETENCAO_CONVERSAS_DIAS`. */
 export const RETENCAO_CONVERSAS_DIAS = 30
 
@@ -320,6 +391,13 @@ export function quando(iso: string | null | undefined, agora: Date = new Date())
   if (dias === 1) return 'ontem'
   if (dias < 7) return `há ${dias} dias`
   return d.toLocaleDateString('pt-BR')
+}
+
+/** Data curta (dd/mm/aaaa) — para datas FUTURAS, que `quando` não trata. */
+export function dataCurta(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso.replace(' ', 'T'))
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR')
 }
 
 /** Chave de storage da conversa aberta, por agente (mesma ideia de `lib/maestro.ts`). */

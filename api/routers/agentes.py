@@ -8,6 +8,8 @@ docs/spec-agentes-datastage.md).
   POST /agentes/admin/config           grava config de Agentes (admin)
   POST /agentes/datastage/conversar    uma rodada com o agente DataStage (F2)
   POST /agentes/propostas/{id}/decidir aprovar/recusar uma proposta do agente (F5)
+  GET  /agentes/aprendizados           fila do curador, por estado (F6)
+  POST /agentes/aprendizados/{id}/decidir  validar/rejeitar/obsoletar (F6, curador)
 
 `tela_agentes` é checada por `require_perm` puro — como qualquer outra tela
 (perfil ∪ overrides). O que É especial é o acesso a CADA AGENTE
@@ -30,6 +32,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from db import get_db_conn
 from deps import PERM_EDITAR, get_admin_user, require_perm
 from services import agentes as svc
+from services import agentes_aprendizado as ap
 from services import agentes_conhecimento as ac
 from services import agentes_ferramentas as af
 from services import ia_provedor
@@ -38,6 +41,7 @@ router = APIRouter()
 
 _require_tela = require_perm("tela_agentes")
 _require_datastage = svc.require_agente(svc.AGENTE_DATASTAGE)
+_require_curador = svc.require_agente(svc.AGENTE_DATASTAGE, curador=True)
 
 _RE_CAMPO = re.compile(r"^(header|body):.+$")
 _RE_CONVERSA_ID = re.compile(r"^[A-Za-z0-9_-]{8,36}$")
@@ -108,6 +112,26 @@ def _separar_artefatos(lista: list) -> tuple[list, list[int]]:
         elif "ferramenta" in a:
             ferramentas.append(a)
     return ferramentas, ids
+
+
+def _falhas_da_conversa(cur, conversa_id: str) -> set[str]:
+    """As chamadas que já falharam de forma permanente NESTA conversa (F6,
+    guarda de reexecução) — gravadas pela orquestração em `artefatos_json`
+    como `{"falhou", "chamada"}`. Leitura tolerante: sem a informação, a
+    guarda só vale dentro da pergunta atual (nada quebra)."""
+    try:
+        cur.execute(
+            "SELECT artefatos_json FROM dbo.etl_agente_mensagem "
+            "WHERE conversa_id = ? AND papel = 'assistant' AND artefatos_json LIKE ?",
+            [conversa_id, '%"falhou"%'])
+        falhas = set()
+        for r in cur.fetchall() or []:
+            for a in _json_lista(r[0] if r else None):
+                if isinstance(a, dict) and a.get("falhou") and isinstance(a.get("chamada"), str):
+                    falhas.add(a["chamada"])
+        return falhas
+    except Exception:  # noqa: BLE001
+        return set()
 
 
 def _validade_dias(cfg: dict) -> int:
@@ -457,6 +481,7 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
                  svc.titulo_da_conversa(mensagem_redigida)])
             projeto_atual = None
             historico: list[dict] = []
+            falhas_anteriores: set[str] = set()
         else:
             projeto_atual = row[0]
             cur.execute(
@@ -467,6 +492,7 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
             # Cortar nos dois lugares foi o defeito que a revisão da F4
             # pegou: o corte de lá vencia, e este virava enfeite.
             historico = [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
+            falhas_anteriores = _falhas_da_conversa(cur, conversa_id)
         provedor_cfg = ia_provedor.load_config(cur)
         cadastro = None
         try:
@@ -502,7 +528,7 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
         projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
         identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
         acao_editar=acao_editar, matricula=matricula,
-        validade_fatos_dias=_validade_dias(agentes_cfg))
+        validade_fatos_dias=_validade_dias(agentes_cfg), falhas_anteriores=falhas_anteriores)
 
     texto_redigido = af.redigir(resultado.get("texto") or "")
     artefatos = list(resultado.get("artefatos") or [])
@@ -533,7 +559,9 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
     return {"conversa_id": conversa_id, "status": resultado.get("status"),
             "texto": texto_redigido, "projeto": resultado.get("projeto"),
             "artefatos": artefatos, "propostas": propostas,
-            "propostas_recusadas": list(resultado.get("propostas_recusadas") or [])}
+            "propostas_recusadas": list(resultado.get("propostas_recusadas") or []),
+            "aprendizados_usados": list(resultado.get("aprendizados_usados") or []),
+            "aprendizados_sugeridos": list(resultado.get("aprendizados_sugeridos") or [])}
 
 
 _RE_DECISAO = re.compile(r"^(aprovar|recusar)$")
@@ -573,3 +601,48 @@ async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={
     finally:
         _fechar(conn, cur)
     return {"proposta": proposta}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Curadoria dos aprendizados (F6) — só quem tem `agente_curador` (admin passa)
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/agentes/aprendizados", tags=["agentes"])
+async def agentes_aprendizados(estado: str = Query(default="rascunho"),
+                               _user: dict = Depends(_require_curador)):
+    """A fila do curador: rascunhos (sugestões do agente e a semente) para
+    validar ou rejeitar, e os validados para marcar como obsoletos. A
+    evidência vem junto — é o que o curador lê para decidir; o modelo nunca
+    a recebe."""
+    if estado not in ap.ESTADOS:
+        raise HTTPException(status_code=422, detail={
+            "code": "estado_invalido", "message": f"estado deve ser um de: {', '.join(ap.ESTADOS)}"})
+    conn, cur = _abrir()
+    try:
+        itens = ap.listar(cur, agente=svc.AGENTE_DATASTAGE, estado=estado)
+    finally:
+        _fechar(conn, cur)
+    return {"aprendizados": itens}
+
+
+@router.post("/agentes/aprendizados/{aprendizado_id}/decidir", tags=["agentes"])
+async def agentes_aprendizado_decidir(aprendizado_id: int, body: dict = Body(default={}),
+                                      user: dict = Depends(_require_curador)):
+    acao = str(body.get("acao") or "").strip().lower()
+    if acao not in ap.TRANSICOES:
+        raise HTTPException(status_code=422, detail={
+            "code": "acao_invalida", "message": "acao deve ser 'validar', 'rejeitar' ou 'obsoletar'"})
+    conn, cur = _abrir()
+    try:
+        item = ap.decidir(conn, cur, aprendizado_id=aprendizado_id, agente=svc.AGENTE_DATASTAGE,
+                          acao=acao, matricula=user["matricula"])
+    except ap.AprendizadoNaoEncontrado:
+        raise HTTPException(status_code=404, detail={
+            "code": "aprendizado_nao_encontrado", "message": "aprendizado não encontrado"})
+    except ap.TransicaoInvalida as e:
+        raise HTTPException(status_code=409, detail={
+            "code": "transicao_invalida",
+            "message": f"não dá para {acao} um aprendizado {e.atual['estado']}", "aprendizado": e.atual})
+    finally:
+        _fechar(conn, cur)
+    return {"aprendizado": item}

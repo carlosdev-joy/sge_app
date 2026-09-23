@@ -230,19 +230,26 @@ export function AgentesTab() {
         )}
       </section>
 
-      {agentes.map(ag => {
-        const comAcesso = porRecurso[ag.recurso] ?? []
+      {agentes.flatMap(ag => [
+        // Dois papéis, a MESMA política (perfil elegível + concessão usuário a
+        // usuário): usar o agente e ser curador dos aprendizados dele (F6).
+        { chave: `${ag.id}:uso`, recurso: ag.recurso, titulo: `Quem pode usar — ${ag.nome}`,
+          texto: 'Concedido usuário a usuário, nunca por perfil.' },
+        { chave: `${ag.id}:curador`, recurso: ag.recurso_curador, titulo: `Curadores — ${ag.nome}`,
+          texto: 'Validam, rejeitam e marcam como obsoletos os aprendizados do agente, na aba Curadoria da tela Agentes — o curador também precisa estar em “Quem pode usar” para abrir a tela.' },
+      ].map(papel => {
+        const comAcesso = porRecurso[papel.recurso] ?? []
         const elegiveis = (usuarios.data?.usuarios ?? []).filter(
           u => u.ativo
             && ag.perfis_elegiveis.includes(u.perfil)
             && !comAcesso.some(c => c.matricula === u.matricula))
         return (
-          <section key={ag.id} className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3"
-                   data-agentes-acesso={ag.id}>
+          <section key={papel.chave} className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3"
+                   data-agentes-acesso={papel.chave}>
             <div>
-              <h3 className="text-sm font-semibold text-ink">Quem pode usar — {ag.nome}</h3>
+              <h3 className="text-sm font-semibold text-ink">{papel.titulo}</h3>
               <p className="text-xs text-dim mt-0.5">
-                Concedido usuário a usuário, nunca por perfil. Só perfis elegíveis
+                {papel.texto} Só perfis elegíveis
                 ({ag.perfis_elegiveis.join(', ')}) aparecem na lista; o administrador já tem acesso
                 por `acao_admin`, sem precisar de concessão.
               </p>
@@ -267,7 +274,7 @@ export function AgentesTab() {
                       variant="ghost" size="sm"
                       disabled={trocarAcesso.isPending || !acessoPronto}
                       onClick={() => trocarAcesso.mutate(
-                        { matricula: u.matricula, recurso: ag.recurso, conceder: false })}
+                        { matricula: u.matricula, recurso: papel.recurso, conceder: false })}
                     >
                       Remover
                     </Button>
@@ -279,9 +286,9 @@ export function AgentesTab() {
             <div className="flex flex-wrap items-end gap-2 pt-1">
               <Select
                 label="Incluir usuário"
-                value={aIncluir[ag.id] ?? ''}
+                value={aIncluir[papel.chave] ?? ''}
                 disabled={!acessoPronto}
-                onChange={e => setAIncluir({ ...aIncluir, [ag.id]: e.target.value })}
+                onChange={e => setAIncluir({ ...aIncluir, [papel.chave]: e.target.value })}
               >
                 <option value="">Selecione…</option>
                 {elegiveis.map(u => (
@@ -291,13 +298,13 @@ export function AgentesTab() {
                 ))}
               </Select>
               <Button
-                disabled={!aIncluir[ag.id] || trocarAcesso.isPending || !acessoPronto}
+                disabled={!aIncluir[papel.chave] || trocarAcesso.isPending || !acessoPronto}
                 loading={trocarAcesso.isPending}
                 onClick={() => {
-                  const mat = aIncluir[ag.id]
+                  const mat = aIncluir[papel.chave]
                   if (!mat) return
-                  trocarAcesso.mutate({ matricula: mat, recurso: ag.recurso, conceder: true })
-                  setAIncluir({ ...aIncluir, [ag.id]: '' })
+                  trocarAcesso.mutate({ matricula: mat, recurso: papel.recurso, conceder: true })
+                  setAIncluir({ ...aIncluir, [papel.chave]: '' })
                 }}
               >
                 Conceder
@@ -310,7 +317,7 @@ export function AgentesTab() {
             </div>
           </section>
         )
-      })}
+      }))}
     </div>
   )
 }

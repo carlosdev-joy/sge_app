@@ -40,6 +40,7 @@ import time
 from fastapi import Depends, HTTPException
 
 from deps import PERM_ADMIN, get_current_user
+from services import agentes_aprendizado as ap
 from services import agentes_conhecimento as ac
 from services import agentes_ferramentas as af
 from services import ia_provedor
@@ -352,7 +353,7 @@ def extrair_pedido_ferramenta(texto: str) -> tuple[str, dict | None]:
     return limpo, obj
 
 
-def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False) -> str:
+def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False, contexto_aprendizados: str = "") -> str:
     """Gerado do VOCABULÁRIO das ferramentas (allowlist de
     `agentes_ferramentas`), não digitado à mão duas vezes — o mesmo
     anti-drift do Maestro: se a allowlist de `dsjob` mudar, o prompt muda
@@ -428,7 +429,15 @@ No máximo 3 propostas. O job_name precisa ser um job que dsjob, isx_extrair ou 
 LERAM nesta pergunta, e a evidência precisa aparecer, igual, no que ESSA leitura devolveu —
 senão a proposta é descartada (o que a 'base' devolve não serve de evidência). Nunca proponha senha, token ou valor de
 parâmetro. Só proponha o que for útil para quem vier depois; na dúvida, não proponha.
-"""
+
+Se nesta conversa você descobrir algo sobre COMO usar as ferramentas neste ambiente (onde
+buscar, como ler um tipo de job, um caminho que funcionou), pode sugerir um aprendizado para
+o curador revisar, no MESMO bloco final (chave "aprendizados", no máximo 2):
+{{"aprendizados": [{{"tipo": "acesso|busca|leitura|detalhamento", "titulo": "curto",
+  "corpo": "o que fazer da próxima vez"}}]}}
+Ele só passa a valer depois que um curador validar. Chamadas que já falharam não são
+repetidas pelo Orquestra — quando isso acontecer, explique ao usuário o motivo informado.
+""" + (f"\n{contexto_aprendizados}\n" if contexto_aprendizados else "")
 
 
 def _com_cursor(abrir_conn, fn):
@@ -498,11 +507,14 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
             abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s,
             acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx,
             resta_agora=resta_agora, validade_dias=validade_dias)
-    except (af.ServidorOcupado, DsConsoleError) as e:
+    except af.ServidorOcupado as e:
+        return {"texto": af.redigir(str(e))}, None  # passageiro: pode tentar de novo
+    except DsConsoleError as e:
         # `redigir()` porque `DsConsoleError` ecoa o argumento bruto que o
         # MODELO escolheu (ex.: "Comando 'X' não é permitido") — follow-up
         # de baixo risco apontado pela 16ª rodada da revisão adversarial.
-        return {"texto": af.redigir(str(e))}, None
+        return ({"texto": af.redigir(str(e)),
+                 "falha": ap.falha_do_console(str(e), ssh_configurado=af.ssh_configured())}, None)
     except Exception as e:  # banco/SSH/rede: nunca derruba a rodada
         return {"texto": f"Falha ao executar a ferramenta '{nome}' ({type(e).__name__}) — tente de novo."}, None
 
@@ -525,6 +537,8 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
         if r["estado"] == "quase":
             # SÓ sugestão — nunca resolve sozinho aqui (critério 11 da F2).
             # O modelo confirma com o usuário e chama de novo com a grafia exata.
+            # F6: a grafia canônica é fato da base — vira aprendizado de busca.
+            _registrar_seguro(abrir_conn, ap.aprendizado_de_busca(candidato or "", r["sugerido"] or ""))
             return ({"texto": f"'{candidato}' é parecido com '{r['sugerido']}' (o DataStage é "
                               f"sensível a maiúsculas/minúsculas). Confirme com o usuário e, se for "
                               f"esse mesmo, peça resolver_projeto de novo com \"{r['sugerido']}\" "
@@ -595,7 +609,8 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
         # redigem antes de truncar (linhas 467, 593, 610, 638) — só este
         # tinha a ordem invertida.
         erro_redigido = af.redigir(r.get("stderr") or "")[:1000]
-        return {"texto": f"dsjob {comando} falhou (código {r['exit_code']}): {erro_redigido}"}, None
+        return ({"texto": f"dsjob {comando} falhou (código {r['exit_code']}): {erro_redigido}",
+                 "falha": ap.falha_do_dsjob(r["exit_code"], r.get("stderr") or "")}, None)
     # O retrato sai do stdout INTEIRO (redigido), não de `saida_redigida`,
     # que já vem cortada em MAX_SAIDA_MODELO para o modelo: cortada, a
     # última linha virava um stage "pela metade" e os stages depois do corte
@@ -634,6 +649,39 @@ def _gravar_fatos_seguro(abrir_conn, *, matricula: str | None, **kw) -> None:
     except Exception:  # noqa: BLE001
         log.warning("agentes: falha ao gravar fatos de %s/%s", kw.get("ds_project"), kw.get("job_name"),
                     exc_info=True)
+
+
+def _registrar_seguro(abrir_conn, aprendizado: dict | None) -> None:
+    """Grava um aprendizado numa conexão curta própria. Como os fatos: nunca
+    derruba a rodada (o aprendizado é efeito colateral, não a resposta)."""
+    if not aprendizado:
+        return
+    try:
+        _com_conexao(abrir_conn, lambda conn, cur: ap.registrar(conn, cur, agente=AGENTE_DATASTAGE, a=aprendizado))
+    except Exception:  # noqa: BLE001
+        log.warning("agentes: falha ao registrar aprendizado %s", aprendizado.get("tipo"), exc_info=True)
+
+
+def _erro_conhecido_seguro(abrir_conn, nome: str, args: dict, projeto: str | None) -> dict | None:
+    if nome not in ap.FERRAMENTAS_COM_GUARDA:
+        return None
+    try:
+        return _com_cursor(abrir_conn, lambda cur: ap.erro_conhecido(
+            cur, agente=AGENTE_DATASTAGE, ferramenta=nome, args=args, projeto=projeto))
+    except Exception:  # noqa: BLE001 — sem a tabela, a guarda só não bloqueia
+        return None
+
+
+def _recuperar_seguro(abrir_conn, pergunta: str, projeto: str | None) -> list[dict]:
+    try:
+        def _fn(cur):
+            itens = ap.recuperar(cur, agente=AGENTE_DATASTAGE, pergunta=pergunta, projeto=projeto)
+            if itens:
+                ap.marcar_uso(cur, [i["id"] for i in itens])
+            return itens
+        return _com_cursor(abrir_conn, _fn) or []
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _ler_fatos_seguro(abrir_conn, projeto: str, job_name: str, validade_dias: int) -> list[dict]:
@@ -723,7 +771,7 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
     try:
         cfg = af.lineage_isx.config()
     except Exception as e:  # noqa: BLE001 — ISXError(503)/HTTPException do serviço
-        return {"texto": af.mensagem_erro_lineage(e)}, None
+        return {"texto": af.mensagem_erro_lineage(e), "falha": ap.falha_de_excecao_isx(e)}, None
 
     if em_pipeline:
         cab, tem_linhas, mapa = _com_cursor(abrir_conn, lambda cur: (
@@ -746,7 +794,7 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
             af.lineage_isx.extrair, cfg, projeto_isx, job_canon, cab, tem_linhas, forcar, mapa,
             teto=af.ISX_TETO_EXTRAIR_S)
     except Exception as e:  # noqa: BLE001 — ISXError/HTTPException(504) do executor
-        return {"texto": af.mensagem_erro_lineage(e)}, None
+        return {"texto": af.mensagem_erro_lineage(e), "falha": ap.falha_de_excecao_isx(e)}, None
 
     if not em_pipeline:
         # Fora de pipeline: NÃO grava em etl_job_lineage/etl_ds_job_isx (a
@@ -781,7 +829,7 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
                 resultado=resultado, usuario=usuario_registro,
                 duracao_ms=int((time.monotonic() - t0) * 1000)))
         except Exception as e:  # noqa: BLE001 — ISXError(409, outra extração em andamento) etc.
-            return {"texto": af.mensagem_erro_lineage(e)}, None
+            return {"texto": af.mensagem_erro_lineage(e), "falha": ap.falha_de_excecao_isx(e)}, None
 
     resposta = _com_cursor(abrir_conn, lambda cur: af.lineage_isx.montar(cur, pipeline_canon, job_canon))
     if resposta is None:
@@ -814,7 +862,7 @@ async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None,
     except ValueError as e:
         # Mesmo motivo do `DsConsoleError` acima: a mensagem ecoa a
         # `operacao` bruta escolhida pelo modelo.
-        return {"texto": af.redigir(str(e))}, None
+        return {"texto": af.redigir(str(e)), "falha": ap.Falha("uso_invalido", True)}, None
     except (asyncio.TimeoutError, TimeoutError):
         return ({"texto": "A consulta ao DSX não terminou a tempo — tente uma busca mais "
                           "específica (ex.: informe a pasta)."}, None)
@@ -835,7 +883,12 @@ async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None,
     job_lido = None
     if operacao == "extrair" and resultado.get("sucesso"):
         job_lido = str(resultado.get("job_name") or args.get("job_name") or "").strip() or None
-    return {"texto": texto, "lido": job_lido}, None
+    dado = {"texto": texto, "lido": job_lido}
+    if operacao == "extrair" and resultado.get("erro"):
+        falha_dsx = ap.falha_do_dsx(str(resultado.get("erro")))
+        if falha_dsx is not None:
+            dado["falha"] = falha_dsx
+    return dado, None
 
 
 # A proteção contra cancelar a sessão SSH real no meio (achado da revisão
@@ -854,7 +907,7 @@ async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None,
 async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | None,
                     provedor_cfg: dict, identidade: str | None, campo_identidade: str | None,
                     ssh_max: int, acao_editar: bool = False, matricula: str | None = None,
-                    validade_fatos_dias: int = 7) -> dict:
+                    validade_fatos_dias: int = 7, falhas_anteriores: set[str] | None = None) -> dict:
     """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
     (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
     allowlist, e devolve a resposta final. Controla o orçamento de tempo
@@ -887,6 +940,14 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     # O que as ferramentas devolveram NESTA pergunta (já redigido) — é contra
     # isto que a evidência de cada proposta é conferida (F5).
     saidas: list[str] = []
+    # F6 — guarda de reexecução: chamadas que falharam de forma PERMANENTE
+    # nesta conversa (as de perguntas anteriores vêm do router, lidas de
+    # `artefatos_json`). Estão aqui para não rodar de novo (critério 1).
+    falhas: set[str] = set(falhas_anteriores or ())
+    pergunta = str((mensagens[-1] or {}).get("content") or "") if mensagens else ""
+    aprendizados: list[dict] = []
+    usados: dict[int, str] = {}
+    projeto_do_contexto: object = object()  # força a 1ª recuperação
 
     texto_esgotado = {"status": "tempo_esgotado", "projeto": None, "artefatos": None,
                       "texto": "O tempo desta pergunta esgotou — tente de novo, ou peça algo mais direto."}
@@ -897,7 +958,14 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         # `projeto_tem_dsx` é só leitura de arquivo local (sem banco) — barato
         # o bastante para recalcular a cada rodada em vez de guardar estado.
-        sistema = _prompt_sistema(projeto, af.projeto_tem_dsx(projeto) if projeto else False)
+        if projeto != projeto_do_contexto:
+            # Recuperação por relevância (F6): na 1ª rodada e quando o projeto
+            # muda — o projeto é o termo que mais separa um aprendizado útil.
+            aprendizados = _recuperar_seguro(abrir_conn, pergunta, projeto)
+            projeto_do_contexto = projeto
+            usados.update({i["id"]: i["titulo"] for i in aprendizados})
+        sistema = _prompt_sistema(projeto, af.projeto_tem_dsx(projeto) if projeto else False,
+                                  ap.formatar_contexto(aprendizados))
         # O orçamento também vale por OPERAÇÃO, não só entre rodadas — sem
         # isto, uma única chamada ao gateway podia levar até TIMEOUT_S (60s)
         # mesmo com o orçamento quase esgotado, e a soma gateway+ferramenta de
@@ -923,14 +991,21 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         texto, pedido = extrair_pedido_ferramenta(resposta)
         if pedido is None:
             historico.append({"role": "assistant", "content": resposta})
-            texto, brutas = ac.extrair_propostas(texto or resposta)
+            texto, brutas_ap = ap.extrair_sugestoes(texto or resposta)
+            texto, brutas = ac.extrair_propostas(texto)
             propostas, recusadas = ac.filtrar_propostas(brutas, projeto=projeto, saidas=saidas)
+            evidencia_sug = "\n".join(s["texto"] for s in saidas)[:1500] or "(sem leitura de ferramenta nesta pergunta)"
+            sugestoes, recusadas_ap = ap.filtrar_sugestoes(brutas_ap, evidencia=f"Leituras da pergunta:\n{evidencia_sug}")
+            for sug in sugestoes:
+                _registrar_seguro(abrir_conn, sug)
             if not texto:
                 texto = ("Deixei as propostas abaixo para você decidir." if propostas
                          else "Não tenho mais nada a acrescentar.")
             return {"status": "ok", "projeto": projeto, "artefatos": artefatos, "texto": texto,
                     "modelo": modelo, "historico": historico,
-                    "propostas": propostas, "propostas_recusadas": recusadas}
+                    "propostas": propostas, "propostas_recusadas": recusadas + recusadas_ap,
+                    "aprendizados_usados": [{"id": i, "titulo": t} for i, t in usados.items()],
+                    "aprendizados_sugeridos": [sg["titulo"] for sg in sugestoes]}
 
         if rodada == MAX_RODADAS_FERRAMENTA:
             return {"status": "limite_rodadas", "projeto": projeto, "artefatos": artefatos,
@@ -947,15 +1022,32 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         if resta <= 5:
             return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         espera = max(0.5, min(resta - 5, 30))
-        try:
-            dado, projeto_novo = await asyncio.wait_for(
-                _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
-                                     ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
-                                     matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=_resta,
-                                     validade_dias=validade_fatos_dias),
-                timeout=max(1.0, resta - 2))
-        except (asyncio.TimeoutError, TimeoutError):
-            return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
+        projeto_da_chamada = projeto
+        # Hash da chamada (nada cru sai do servidor; ver `ap.chave_da_chamada`).
+        chave = ap.chave_da_chamada(nome_ferramenta, args, projeto_da_chamada)
+        conhecido = None if chave in falhas else _erro_conhecido_seguro(
+            abrir_conn, nome_ferramenta, args, projeto_da_chamada)
+        if chave in falhas:
+            # Guarda de reexecução (F6): a MESMA chamada já falhou nesta conversa.
+            dado, projeto_novo = ({"texto": "Esta mesma chamada já falhou nesta conversa — não repeti. "
+                                            "Explique ao usuário o motivo informado antes, ou tente outro "
+                                            "caminho (outra ferramenta, ou confirme o nome)."}, None)
+        elif conhecido is not None:
+            # Erro VALIDADO de conversa anterior (critério 1): 0 chamadas, e o
+            # aprendizado vai ao contexto — só título e corpo gerados por código.
+            usados[conhecido["id"]] = conhecido["titulo"]
+            dado, projeto_novo = ({"texto": f"Não repeti esta chamada: ela já falhou antes e o erro está "
+                                            f"registrado. {conhecido['titulo']}: {conhecido['corpo']}"}, None)
+        else:
+            try:
+                dado, projeto_novo = await asyncio.wait_for(
+                    _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
+                                         ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
+                                         matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=_resta,
+                                         validade_dias=validade_fatos_dias),
+                    timeout=max(1.0, resta - 2))
+            except (asyncio.TimeoutError, TimeoutError):
+                return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
         if projeto_novo:
             projeto = projeto_novo
         # Achado real da 15ª rodada da revisão adversarial da F2b: `args`
@@ -967,7 +1059,19 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         # termo de busca em `dsx_consulta`). Amplificador, não fonte
         # independente — mas a mesma defesa em profundidade do resto do
         # pipeline vale aqui também.
-        artefatos.append({"ferramenta": nome_ferramenta, "args": af.redigir_estrutura(args)})
+        artefato = {"ferramenta": nome_ferramenta, "args": af.redigir_estrutura(args)}
+        falha = dado.get("falha")
+        if chave in falhas or conhecido is not None:
+            artefato["repetida"] = True
+        elif isinstance(falha, ap.Falha) and falha.permanente:
+            falhas.add(chave)
+            # `chamada` vai para artefatos_json: é como a PRÓXIMA pergunta
+            # desta conversa sabe o que não repetir (o router a relê).
+            artefato["falhou"] = falha.categoria
+            artefato["chamada"] = chave
+            _registrar_seguro(abrir_conn, ap.aprendizado_de_falha(
+                nome_ferramenta, args, projeto_da_chamada, falha))
+        artefatos.append(artefato)
         if dado.get("lido"):
             # Só LEITURA de verdade (dsjob/isx_extrair/dsx_consulta com
             # sucesso, sobre um job) serve de evidência a proposta. Mensagens
