@@ -365,7 +365,7 @@ PUT    /agentes/admin/agentes/{id}       → nome, descrição, acesso, perfis, 
 |---|---|---|
 | **A0** ✅ | separar domínio e protocolo em `_prompt_sistema`; teste do prompt montado — **mergeada (#432, `fed2050`)**; falta a validação em produção depois do deploy | API |
 | **A1** | migration 120 + leitura por pergunta + endpoints + validações + `prompt_versao` | 6c `s` (120) + API |
-| **A2** | editor, parte fixa e histórico/restaurar na `AgentesTab` | `dist/` |
+| **A2** | editor, parte fixa e histórico/restaurar na `AgentesTab`, + **BK-1** (vigência, duração, respostas e tempo médio por versão) | API + `dist/` |
 | **B1** | migration 121 + CRUD admin + catálogo híbrido (todas as funções da §4.2) + acesso manual/perfil + checagem dinâmica com `tela_agentes` | 6c `s` (121) + API |
 | **B2** | rotas genéricas (conversa, propostas, curadoria) + conversa presa ao agente + execução só-conversa / subconjunto | API |
 | **B3** | admin: lista/criar/editar/desativar; `/agentes` adaptada; rótulos RBAC vindos da API | `dist/` |
@@ -381,7 +381,9 @@ PUT    /agentes/admin/agentes/{id}       → nome, descrição, acesso, perfis, 
 
 ## 8. Backlog
 
-- **BK-1 — Período de vigência de cada versão do prompt** (pedido do usuário em 23/09, durante a A1):
+- **BK-1 — Período de vigência de cada versão do prompt** (pedido do usuário em 23/09, durante a A1) — ✅ **entregue
+  junto com a A2**. Fim **derivado**, sem coluna nova: o `criado_em` da versão seguinte é gravado no momento de versionar,
+  e a regra T1 (só acrescenta) continua valendo:
   - ao versionar, guardar **início e fim** do período em que cada versão ficou ativa;
   - mostrar **quanto tempo** ela ficou em uso.
   - Para desenhar na hora de implementar:
