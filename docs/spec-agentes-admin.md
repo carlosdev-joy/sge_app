@@ -1,7 +1,7 @@
 # Spec: Agentes pela tela de Admin — prompt editável e criação de agentes
 
 **Data:** 2026-09-23 (rascunho `c7cff0f` da equipe, revisado com as decisões do usuário no mesmo dia)
-**Status:** 📋 PROPOSTA — aguardando aprovação para implementar a partir da A1 (a **A0 já está na main**: PR #432, `fed2050`)
+**Status:** ✅ ENTREGUE — A0–A2 + BK-1 e B1–B4 (PRs #432, #434–#438; release note `docs/release-notes/agentes-admin.md`)
 **Base:** `docs/spec-agentes-datastage.md` (F0–F7 entregues, PRs #419–#431)
 **Prioridade:** Alta — hoje cada ajuste de prompt exige editar código, `docker cp` e restart da API
 
@@ -76,7 +76,9 @@ Hoje `_prompt_sistema()` é um texto único. Ele passa a ser **montado em blocos
     um fato da conversa, não uma regra, então o domínio não tem o que sobrescrever nele.
   - Os blocos 3–6 vêm **depois** do domínio. Assim, o que o admin escrever não passa por cima do protocolo.
 - Como a ordem das seções muda, a A0 é validada **em produção logo depois do deploy** com as perguntas reais da
-  sessão de 22/09. O DEV não tem o gateway de IA nem o DataStage. Se alguma resposta piorar, basta reverter a PR.
+  sessão de 22/09. O DEV não tem o gateway de IA nem o DataStage. Se alguma resposta piorar: na hora, gravar
+  uma versão do domínio que reforce a instrução; definitivo, uma PR na montagem dos blocos. **Não reverter a
+  #432** — as fases seguintes dependem dela (ver `docs/release-notes/agentes-admin.md`).
   As perguntas:
   1. filhos de uma sequence;
   2. colunas de um job PARALLEL;
@@ -355,7 +357,7 @@ PUT    /agentes/admin/agentes/{id}       → nome, descrição, acesso, perfis, 
 | Prompt ruim publicado piora as respostas | histórico + restaurar em um clique; `prompt_versao` em cada resposta mostra quando piorou |
 | Admin apaga uma regra de segurança do texto | as regras de segurança ficam nos blocos fixos (D4), e o backend continua impondo allowlist, projeto e régua de proposta |
 | Domínio imitando o protocolo ou com segredo | 422 `prompt_com_marcador` / `prompt_com_segredo` |
-| Reordenar o prompt na A0 muda o comportamento do DataStage | contexto do projeto mantido no topo; validação em produção logo depois do deploy, com as perguntas reais; reverter a PR se piorar (§3.1) |
+| Reordenar o prompt na A0 muda o comportamento do DataStage | contexto do projeto mantido no topo; validação em produção logo depois do deploy, com as perguntas reais; se piorar, versão do domínio na hora e PR na montagem — não reverter a #432 (§3.1) |
 | Agente com ferramentas dá acesso a SSH/ISX para mais gente | ferramentas só do código, subconjunto escolhido por admin, mesmos limites e travas; acesso por perfil exige ação explícita do admin |
 | Correções direto no container voltarem | com o prompt no banco, ajuste de texto deixa de precisar de container; mudança de código continua por PR |
 
@@ -363,13 +365,13 @@ PUT    /agentes/admin/agentes/{id}       → nome, descrição, acesso, perfis, 
 
 | Fase | Entrega | Deploy |
 |---|---|---|
-| **A0** ✅ | separar domínio e protocolo em `_prompt_sistema`; teste do prompt montado — **mergeada (#432, `fed2050`)**; falta a validação em produção depois do deploy | API |
-| **A1** | migration 120 + leitura por pergunta + endpoints + validações + `prompt_versao` | 6c `s` (120) + API |
-| **A2** | editor, parte fixa e histórico/restaurar na `AgentesTab`, + **BK-1** (vigência, duração, respostas e tempo médio por versão) | API + `dist/` |
-| **B1** | migration 121 + CRUD admin + catálogo híbrido (todas as funções da §4.2) + acesso manual/perfil + checagem dinâmica com `tela_agentes` | 6c `s` (121) + API |
-| **B2** | rotas genéricas (conversa, propostas, curadoria) + conversa presa ao agente + execução só-conversa / subconjunto | API |
-| **B3** | admin: lista/criar/editar/desativar; `/agentes` adaptada; rótulos RBAC vindos da API | `dist/` |
-| **B4** | manual (§3.12/§4.11), release notes, `smoke_agentes.py` estendido | — |
+| **A0** ✅ #432 | separar domínio e protocolo em `_prompt_sistema`; teste do prompt montado — falta a validação em produção depois do deploy | API |
+| **A1** ✅ #434 | migration 120 + leitura por pergunta + endpoints + validações + `prompt_versao` | 6c `s` (120) + API |
+| **A2** ✅ #435 | editor, parte fixa e histórico/restaurar na `AgentesTab`, + **BK-1** (vigência, duração, respostas e tempo médio por versão) | API + `dist/` |
+| **B1** ✅ #436 | migration 121 + CRUD admin + catálogo híbrido (todas as funções da §4.2) + acesso manual/perfil + checagem dinâmica com `tela_agentes` | 6c `s` (121) + API |
+| **B2** ✅ #437 | rotas genéricas (conversa, propostas, curadoria) + conversa presa ao agente + execução só-conversa / subconjunto | API |
+| **B3** ✅ #438 | admin: lista/criar/editar/desativar; `/agentes` adaptada; rótulos RBAC vindos da API | `dist/` |
+| **B4** ✅ | manual (§3.12/§4.11), release notes (`docs/release-notes/agentes-admin.md`), `smoke_agentes.py` estendido | — |
 
 ## 7. Fora do escopo
 
