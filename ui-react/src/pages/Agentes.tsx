@@ -20,7 +20,7 @@ import type {
   AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, DecisaoProposta, EstadoSonda,
   MensagemChat, PropostaAgente, RespostaConversa, StatusAgentes,
 } from '../lib/agentes'
-import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, mensagemDeErro } from '../lib/agentes'
+import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, ehSoConversa, mensagemDeErro } from '../lib/agentes'
 import { conversarPorStream, rotaStreamAusente } from '../lib/agentesStream'
 import { HistoricoConversas } from '../components/agentes/HistoricoConversas'
 import { AvisoSonda } from '../components/agentes/AvisoSonda'
@@ -171,6 +171,10 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
 
   const infoSonda = sonda ? SONDA[sonda] : null
   const bloqueado = infoSonda?.bloqueia ?? false
+  // Agente só de conversa (spec admin B3): sem projeto nem grafo. A curadoria
+  // já some sozinha — o catálogo manda `curador: false` para quem não tem
+  // ferramentas (não gera aprendizado).
+  const soConversa = ehSoConversa(agente)
 
   async function enviar(mensagemBruta?: string) {
     const conteudo = (mensagemBruta ?? texto).trim()
@@ -297,7 +301,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
       return novas
     })
     try {
-      const r = await apiFetch<{ proposta: PropostaAgente }>(`/agentes/propostas/${id}/decidir`, {
+      // Rota DO AGENTE (spec admin B2): a antiga só atende o DataStage.
+      const r = await apiFetch<{ proposta: PropostaAgente }>(`/agentes/${agente.id}/propostas/${id}/decidir`, {
         method: 'POST',
         body: JSON.stringify({ decisao }),
       })
@@ -381,6 +386,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         />
       )}
 
+      {!soConversa && (
       <div className="flex flex-wrap items-center justify-between gap-2">
         <IndicadorProjeto
           projeto={projeto}
@@ -397,8 +403,9 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           </button>
         )}
       </div>
+      )}
 
-      {grafoAberto && plotavel && (
+      {!soConversa && grafoAberto && plotavel && (
         <GrafoJobAgente
           pipeline={plotavel.pipeline}
           job={plotavel.job}
@@ -409,7 +416,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
       )}
 
       {curadoriaAberta && agente.curador ? (
-        <CuradoriaAprendizados onFechar={() => setCuradoriaAberta(false)} />
+        <CuradoriaAprendizados agenteId={agente.id} onFechar={() => setCuradoriaAberta(false)} />
       ) : (
       <div className="flex-1 min-h-0 flex flex-col sm:flex-row gap-3">
         {historicoAberto && (
@@ -474,8 +481,8 @@ export default function Agentes() {
           <Bot className="w-8 h-8 mx-auto text-dim" aria-hidden="true" />
           <h2 className="text-base font-semibold text-ink mt-3">Nenhum agente liberado para você</h2>
           <p className="text-sm text-dim mt-2">
-            Os agentes de IA são liberados usuário a usuário pelo administrador. Se você precisa
-            usar o agente de mapeamento DataStage, peça a liberação em Admin › Agentes.
+            Os agentes de IA são liberados pelo administrador, em Admin › Agentes. Se você precisa
+            de um agente — como o de mapeamento DataStage —, peça a liberação a ele.
           </p>
           {catalogo.isError && (
             <p className="text-sm text-dim mt-3">

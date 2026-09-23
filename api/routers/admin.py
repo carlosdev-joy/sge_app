@@ -607,7 +607,16 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             # Código + agentes criados pela tela (spec admin B1): sem o
             # registro, um `agente_<id>` do banco passaria sem checar perfil.
             agentes_reg = reg_agentes.carregar(cur)
+            # Só o que está sendo CONCEDIDO agora passa pela régua. Um grant
+            # que o usuário já tinha e ficou inelegível (o admin tirou o perfil
+            # dele do agente) não dá acesso nenhum — `motivo_sem_acesso` confere
+            # o perfil a cada uso — e recusá-lo aqui travava QUALQUER mudança
+            # nas permissões extras do usuário (revisão da B3 da spec admin).
+            cur.execute("SELECT recurso FROM dbo.etl_usuario_permissao WHERE matricula = ?", [mat])
+            ja_tinha = {r[0] for r in cur.fetchall()}
             for rec in permissoes:
+                if str(rec).strip() in ja_tinha:
+                    continue
                 ag = svc_agentes.agente_do_recurso(str(rec).strip(), agentes_reg)
                 if ag is not None and not svc_agentes.elegivel_por_perfil(ag["id"], perfil_alvo, agentes_reg):
                     raise HTTPException(status_code=422, detail={

@@ -15,6 +15,7 @@ import { renderMarkdown } from '../lib/markdown'
 import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
 import { UtilitariosTab } from '../components/admin/UtilitariosTab'
 import { AgentesTab } from '../components/admin/AgentesTab'
+import { Q_AGENTES_ADMIN, mensagemDeErro } from '../lib/agentes'
 import { MaestroTab } from '../components/admin/MaestroTab'
 import { EmailTab } from '../components/admin/EmailTab'
 import {
@@ -852,6 +853,18 @@ function UsuariosTab() {
 
   const { data, isLoading } = useQuery<{ usuarios: UsuarioRow[] }>({ queryKey: ['admin-usuarios'], queryFn: () => adminPost('user_list') })
   const { data: perfis } = useQuery<{ perfis: PerfilRow[] }>({ queryKey: ['admin-perfis'], queryFn: () => adminPost('perfil_list') })
+  // Recursos dos agentes criados pela tela (spec admin B3) — vêm da API, não
+  // de uma 2ª lista à mão. Só quando o modal abre; sem a lista, o modal segue
+  // com os fixos (o `permDraft` reenvia os grants que não aparecem).
+  const agentesDaTela = useQuery<{ agentes: { origem: string; nome: string; recurso: string; recurso_curador: string | null }[] }>({
+    queryKey: Q_AGENTES_ADMIN, queryFn: () => apiFetch('/agentes/admin/agentes'), enabled: permUser !== null,
+  })
+  const recursosDeAgentes: [string, string][] = (agentesDaTela.data?.agentes ?? [])
+    .filter(a => a.origem === 'banco')
+    .flatMap(a => [
+      [a.recurso, `Agente — ${a.nome}`] as [string, string],
+      ...(a.recurso_curador ? [[a.recurso_curador, `Agente — Curador — ${a.nome}`] as [string, string]] : []),
+    ])
   const { data: roleMap } = useQuery<{ dados: RoleMapRow[] }>({ queryKey: ['admin-rolemap'], queryFn: () => adminPost('role_map_list') })
   const { data: userPerms } = useQuery<{ permissoes: Record<string, string[]> }>({ queryKey: ['admin-user-perms'], queryFn: () => adminPost('user_perm_list') })
 
@@ -888,7 +901,9 @@ function UsuariosTab() {
   const userPermSet = useMutation({
     mutationFn: (p: { matricula: string; permissoes: string[] }) => adminPost('user_perm_set', p),
     onSuccess: (_, v) => { toast.success(`Permissões extras de ${v.matricula} salvas (sessões do usuário renovadas)`); queryClient.invalidateQueries({ queryKey: ['admin-user-perms'] }); setPermUser(null) },
-    onError: (e: any) => toast.error(e.message),
+    // `detail` do 422 de agente é OBJETO ({code, message}); `e.message` virava
+    // só "422 Unprocessable Entity" (revisão da B3 da spec admin).
+    onError: (e: unknown) => toast.error(mensagemDeErro(e, 'Não foi possível salvar as permissões')),
   })
   const userIdentidadeSet = useMutation({
     mutationFn: (p: { matricula: string; identidade_gateway: string }) => adminPost('user_identidade_set', p),
@@ -1097,6 +1112,24 @@ function UsuariosTab() {
                     </label>
                   )
                 })}
+                {recursosDeAgentes.length > 0 && (
+                  <p className="text-[11px] font-semibold text-dim pt-2" data-perm-agentes-da-tela>Agentes criados na tela</p>
+                )}
+                {recursosDeAgentes.map(([rec, lbl]) => (
+                  <label key={rec} className="flex items-center gap-2 text-xs text-ink cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={permDraft.has(rec)}
+                      onChange={() => setPermDraft(prev => {
+                        const n = new Set(prev)
+                        if (n.has(rec)) n.delete(rec)
+                        else n.add(rec)
+                        return n
+                      })}
+                    />
+                    {lbl}
+                  </label>
+                ))}
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="secondary" size="sm" onClick={() => setPermUser(null)}>Cancelar</Button>

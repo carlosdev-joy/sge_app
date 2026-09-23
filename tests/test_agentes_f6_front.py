@@ -43,8 +43,12 @@ def test_curadoria_so_para_quem_e_curador():
 
 def test_curadoria_usa_os_endpoints_do_backend():
     fonte = codigo(CURADORIA)
-    assert "`/agentes/aprendizados?estado=${estado}`" in fonte
-    assert "`/agentes/aprendizados/${id}/decidir`" in fonte and "JSON.stringify({ acao })" in fonte
+    # Spec admin B2/B3: a fila é POR AGENTE — a rota antiga só atende o DataStage.
+    assert "const base = `/agentes/${encodeURIComponent(agenteId)}/aprendizados`" in fonte
+    assert "`${base}?estado=${estado}`" in fonte
+    assert "`${base}/${id}/decidir`" in fonte and "JSON.stringify({ acao })" in fonte
+    assert "queryKey: ['agentes-aprendizados', agenteId, estado]" in fonte
+    assert "<CuradoriaAprendizados agenteId={agente.id}" in codigo(PAGINA)
     assert "codigoDoErro(e) === 'transicao_invalida'" in fonte
     assert "qc.invalidateQueries({ queryKey: ['agentes-aprendizados'] })" in fonte
 

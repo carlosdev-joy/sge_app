@@ -15,6 +15,17 @@ export interface AgenteCatalogo {
   nome: string
   descricao: string
   curador: boolean
+  /**
+   * Spec admin (Fase B): o conjunto de ferramentas do agente. Vazio = agente
+   * SÓ DE CONVERSA (sem projeto, grafo nem curadoria). Ausente = API anterior
+   * à Fase B, que só tinha o DataStage (com todas).
+   */
+  ferramentas?: string[]
+}
+
+/** Agente só de conversa: a API mandou o conjunto, e ele está vazio. */
+export function ehSoConversa(ag: Pick<AgenteCatalogo, 'ferramentas'>): boolean {
+  return Array.isArray(ag.ferramentas) && ag.ferramentas.length === 0
 }
 
 /** Os 8 estados de `ia_provedor.sondar_usuario` (SONDA_*). */
@@ -61,6 +72,8 @@ export interface ArtefatoFerramenta {
   falhou?: string
   /** F6: a chamada NÃO rodou — já tinha falhado (nesta conversa ou antes). */
   repetida?: boolean
+  /** Spec admin B2: a ferramenta não é deste agente — recusada, não rodou. */
+  recusada?: string
 }
 
 /** Estados de `etl_agente_proposta.estado` (F5). */
@@ -569,4 +582,115 @@ export function dataHoraCurta(iso: string | null | undefined): string {
   if (!iso) return '—'
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(iso)
   return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : '—'
+}
+
+
+// ── Cadastro de agentes (spec docs/spec-agentes-admin.md, B3) ──────────────
+
+/** Um agente na lista do Admin (`GET /agentes/admin/agentes`). */
+export interface AgenteAdminItem {
+  id: string
+  nome: string
+  descricao: string
+  /** 'codigo' = o DataStage (não se altera por aqui); 'banco' = criado pela tela. */
+  origem: 'codigo' | 'banco'
+  acesso: AcessoAgente
+  perfis: string[]
+  ferramentas: string[]
+  ativo: boolean
+  recurso: string
+  recurso_curador: string | null
+  criado_em: string | null
+  criado_por: string | null
+  atualizado_em: string | null
+  atualizado_por: string | null
+}
+
+export interface AgentesAdminResposta {
+  agentes: AgenteAdminItem[]
+  /** A allowlist inteira, na ordem canônica. */
+  ferramentas: string[]
+  /** As que tocam o servidor — nunca com acesso por perfil. */
+  ferramentas_servidor: string[]
+  /** Perfis que nunca recebem agente (`consulta`). */
+  perfis_proibidos: string[]
+}
+
+export type AcessoAgente = 'manual' | 'perfil'
+
+/** Chave do cache de `GET /agentes/admin/agentes` — a mesma no Cadastro, na aba e no Admin. */
+export const Q_AGENTES_ADMIN = ['agentes-admin-agentes'] as const
+
+export const ROTULO_ACESSO: Record<AcessoAgente, string> = {
+  manual: 'Manual — o admin libera usuário a usuário',
+  perfil: 'Por perfil — todo usuário dos perfis escolhidos',
+}
+
+/** O mesmo formato de id que o backend aceita (`agentes_registro.RE_ID`). */
+export const RE_ID_AGENTE = /^[a-z][a-z0-9_]{2,29}$/
+
+/** Ids que o backend recusa (código, rotas e o sufixo de curador). */
+export function idReservado(id: string, idsDoCodigo: readonly string[] = ['datastage']): boolean {
+  return idsDoCodigo.includes(id)
+    || ['admin', 'catalogo', 'status', 'conversas', 'propostas', 'aprendizados'].includes(id)
+    || id === 'curador' || id.endsWith('_curador')
+}
+
+const DE_PROJETO = ['base', 'dsjob', 'dsx_consulta', 'isx_extrair']
+
+/**
+ * Como o backend grava o conjunto: só as da allowlist, na ordem dela, e
+ * `resolver_projeto` junto de qualquer uma que dependa de projeto. A tela
+ * mostra o resultado ANTES de salvar, para o admin não se surpreender.
+ */
+export function normalizarFerramentas(escolhidas: readonly string[], allowlist: readonly string[]): string[] {
+  const conjunto = new Set(escolhidas.filter(f => allowlist.includes(f)))
+  if (DE_PROJETO.some(f => conjunto.has(f))) conjunto.add('resolver_projeto')
+  return allowlist.filter(f => conjunto.has(f))
+}
+
+export interface RascunhoAgente {
+  id: string
+  nome: string
+  descricao: string
+  acesso: AcessoAgente
+  perfis: string[]
+  ferramentas: string[]
+  prompt: string
+  motivo: string
+}
+
+/**
+ * Os problemas que o backend recusaria (422), ditos na tela antes de enviar.
+ * Não substitui a validação do servidor — só poupa a ida e volta. `criacao`
+ * false = edição (sem id, prompt e motivo).
+ */
+export function problemasDoAgente(r: RascunhoAgente, opcoes: {
+  criacao: boolean
+  ferramentasServidor: readonly string[]
+  perfisProibidos: readonly string[]
+  idsDoCodigo?: readonly string[]
+}): string[] {
+  const erros: string[] = []
+  if (opcoes.criacao) {
+    if (!RE_ID_AGENTE.test(r.id)) erros.push('Id: 3 a 30 caracteres — minúsculas, números e _, começando por letra.')
+    else if (idReservado(r.id, opcoes.idsDoCodigo)) erros.push(`O id "${r.id}" é reservado.`)
+  }
+  if (!r.nome.trim()) erros.push('Informe o nome.')
+  else if (r.nome.trim().length > 100) erros.push('O nome passa de 100 caracteres.')
+  if (!r.descricao.trim()) erros.push('Informe a descrição.')
+  else if (r.descricao.trim().length > 500) erros.push('A descrição passa de 500 caracteres.')
+  if (!r.perfis.length) erros.push('Escolha ao menos um perfil.')
+  const proibidos = r.perfis.filter(p => opcoes.perfisProibidos.includes(p))
+  if (proibidos.length) erros.push(`O perfil ${proibidos.join(', ')} não pode receber agente.`)
+  const servidor = r.ferramentas.filter(f => opcoes.ferramentasServidor.includes(f))
+  if (r.acesso === 'perfil' && servidor.length) {
+    erros.push(`Acesso por perfil não vale com ferramenta que toca o servidor (${servidor.join(', ')}) — use o acesso manual.`)
+  }
+  if (opcoes.criacao) {
+    if (!r.prompt.trim()) erros.push('Escreva o prompt inicial.')
+    else if (r.prompt.trim().length > 20000) erros.push('O prompt passa de 20.000 caracteres.')
+    if (!motivoValido(r.motivo)) erros.push('Informe o motivo (3 a 200 caracteres).')
+  }
+  return erros
 }
