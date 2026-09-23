@@ -130,18 +130,26 @@ def agente_do_recurso(recurso: str) -> dict | None:
     return None
 
 
+def agente_ligado(config: dict[str, str], agente_id: str) -> bool:
+    """Os DOIS interruptores ligados: o geral (`agentes_enabled`, o kill
+    switch da F3) e o do agente. Uma regra só — antes repetida no catálogo,
+    no chat e na curadoria."""
+    ag = CATALOGO.get(agente_id)
+    return (ag is not None and (config.get("agentes_enabled") or "0") == "1"
+            and (config.get(ag["config_enabled"]) or "0") == "1")
+
+
 def catalogo_do_usuario(user: dict, config: dict[str, str]) -> list[dict]:
     """Agentes que `user` pode abrir: no catálogo, elegível (perfil+grant,
     admin sempre), e com os DOIS interruptores ligados (`agentes_enabled`
     geral e o do próprio agente). `config` é `{config_key: config_value}` já
     lido de etl_app_config (mesmas chaves que `_carregar_config` devolve)."""
-    if (config.get("agentes_enabled") or "0") != "1":
-        return []  # geral desligado: ninguém vê nada, nem o admin (padrão maestro_enabled)
+    # Geral desligado: ninguém vê nada, nem o admin (padrão maestro_enabled).
     saida = []
     is_admin = PERM_ADMIN in user.get("permissoes", [])
     extras = set(user.get("permissoes_extra", []))
     for ag in CATALOGO.values():
-        if (config.get(ag["config_enabled"]) or "0") != "1":
+        if not agente_ligado(config, ag["id"]):
             continue
         liberado = is_admin or (
             user.get("perfil") in ag["perfis_elegiveis"] and ag["recurso"] in extras)
