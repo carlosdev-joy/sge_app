@@ -35,7 +35,10 @@ A tela de Admin deve permitir criar agentes, configurar acesso e editar o prompt
 >    `/agentes/datastage/conversar` e a orquestração (ferramentas, projeto, prompt) são por código e específicos do
 >    DataStage; o `RBAC_RECURSOS` do `Admin.tsx` é a 2ª lista à mão; permissão nova exige relogin. Um agente só no banco
 >    apareceria no catálogo sem endpoint, sem ferramentas e sem recurso concedível — a spec precisa dizer como ele conversa.
-> 8. **Cache de 60 s por processo** — com mais de um worker da API, cada um invalida o próprio cache; o `PUT` só
+> 8. **Histórico das versões do prompt** — o prompt carrega regras de segurança ("nunca proponha senha",
+>    anti-alucinação); a tabela proposta guarda só `atualizado_por`. Guardar cada versão (quem, quando, o texto)
+>    para auditoria e para voltar atrás (apontado na auditoria de segurança final da F7).
+> 9. **Cache de 60 s por processo** — com mais de um worker da API, cada um invalida o próprio cache; o `PUT` só
 >    limpa o do worker que o atendeu (os outros levam até 60 s).
 
 ## Problema

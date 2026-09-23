@@ -1,5 +1,25 @@
 export const BASE = '/orquestra'
 
+/** Apaga do navegador toda conversa de agente guardada (logout / sessão
+ *  expirada) — senão o próximo usuário da mesma estação via a última conversa
+ *  do anterior (auditoria de segurança da F7). Fica AQUI, sem import: este
+ *  arquivo é autocontido (os harnesses o executam sozinho). O prefixo é o
+ *  `PREFIXO_CONVERSA_AGENTE` de `lib/agentes.ts` — um teste prende os dois. */
+export const PREFIXO_CONVERSA_AGENTE = 'orquestra_agente_conversa_'
+
+export function esquecerConversasDeAgentes(): void {
+  try {
+    const chaves: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(PREFIXO_CONVERSA_AGENTE)) chaves.push(k)
+    }
+    for (const k of chaves) localStorage.removeItem(k)
+  } catch {
+    /* storage bloqueado: nada a limpar */
+  }
+}
+
 export function currentToken(): string | null {
   return localStorage.getItem('orquestra_token')
 }
@@ -8,6 +28,7 @@ export function currentToken(): string | null {
  *  `apiFetchBruto` e o upload por XHR (`lib/utilitariosEnvio.ts`) usam. */
 export function expirarSessao(): void {
   localStorage.removeItem('orquestra_token')
+  esquecerConversasDeAgentes()
   window.location.href = '/login'
 }
 

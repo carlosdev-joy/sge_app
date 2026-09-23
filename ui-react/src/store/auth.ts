@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { esquecerConversasDeAgentes } from '../lib/api'
 
 export interface User {
   matricula: string
@@ -30,6 +31,9 @@ export const useAuthStore = create<AuthState>()(
       },
       logout: () => {
         localStorage.removeItem('orquestra_token')
+        // A conversa aberta de um agente fica no navegador: sai junto com a
+        // sessão, para o próximo usuário da mesma estação não a ver.
+        esquecerConversasDeAgentes()
         set({ user: null, token: null })
       },
       isAdmin: () => get().user?.perfil === 'admin',

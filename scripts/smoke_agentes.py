@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Smoke dos agentes de IA pela API (spec docs/spec-agentes-datastage.md §7 e
+docs/spec-agentes-feedback-progresso.md).
+
+Uso (a senha pelo `read -s`, para não ficar no histórico do shell):
+
+    read -rs ORQ_PASS; export ORQ_PASS
+    ORQ_URL=https://servidor/orquestra ORQ_USER=matricula scripts/smoke_agentes.py
+
+- **ORQ_URL passando pelo nginx** (`…/orquestra`), não direto na :8000: o item do
+  progresso mede se os eventos chegam aos poucos — é o nginx que poderia segurá-los.
+- **ORQ_USER** precisa do agente DataStage liberado (desenvolvedor com a concessão, ou
+  admin). Se for curador (ou admin), o item da curadoria também roda.
+- Opcionais:
+  - `ORQ_USER2` / `ORQ_PASS2`: um usuário **sem** o agente — confere o 403.
+  - `SMOKE_JOB`: nome **exato** de um job/sequence que EXISTE — faz uma pergunta que usa
+    ferramenta (consulta o DataStage de verdade; pode levar até 4 min). Sem ele, a
+    pergunta não pede ferramenta nenhuma.
+
+O que ele NÃO altera: nenhuma proposta é decidida, nenhuma configuração muda, nada é
+validado na curadoria. Ele cria **uma conversa** no histórico do ORQ_USER (vence em 30
+dias como qualquer outra). ⚠️ Com `SMOKE_JOB`, a pergunta é uma pergunta de verdade: o que
+as ferramentas lerem vira **fato** (e a extração ISX grava o cache), e um nome ERRADO vira
+um erro validado que **bloqueia a mesma chamada para todos** até vencer (1 dia no
+`dsjob`) — por isso, só com um job que existe.
+
+Os itens que dependem da tela, de dois usuários em sequência ou de mexer no servidor
+DataStage são impressos no fim como roteiro manual.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+URL = os.environ.get("ORQ_URL", "").rstrip("/")
+USUARIO = os.environ.get("ORQ_USER", "")
+SENHA = os.environ.get("ORQ_PASS", "")
+USUARIO2 = os.environ.get("ORQ_USER2", "")
+SENHA2 = os.environ.get("ORQ_PASS2", "")
+JOB = os.environ.get("SMOKE_JOB", "").strip()
+
+FALHAS: list[str] = []
+
+
+def ok(msg: str) -> None:
+    print(f"  \033[32mOK\033[0m     {msg}")
+
+
+def falhou(msg: str) -> None:
+    print(f"  \033[31mFALHOU\033[0m {msg}")
+    FALHAS.append(msg)
+
+
+def aviso(msg: str) -> None:
+    print(f"  \033[33mATENÇÃO\033[0m {msg}")
+
+
+def chamar(metodo: str, caminho: str, token: str | None = None, corpo: dict | None = None,
+           timeout: float = 60) -> tuple[int, dict | str]:
+    dados = json.dumps(corpo).encode() if corpo is not None else None
+    req = urllib.request.Request(f"{URL}{caminho}", data=dados, method=metodo)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    if dados is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            texto = r.read().decode()
+            status = r.status
+    except urllib.error.HTTPError as e:
+        texto, status = e.read().decode(), e.code
+    try:
+        return status, json.loads(texto)
+    except ValueError:
+        return status, texto
+
+
+def login(usuario: str, senha: str) -> str | None:
+    status, r = chamar("POST", "/auth/login", corpo={"usuario": usuario, "senha": senha})
+    if status != 200 or not isinstance(r, dict) or not r.get("token"):
+        return None
+    return r["token"]
+
+
+def code(r) -> str | None:
+    return r.get("detail", {}).get("code") if isinstance(r, dict) and isinstance(r.get("detail"), dict) else None
+
+
+def stream(token: str, corpo: dict, teto_s: float = 280) -> tuple[list[tuple[float, dict]], float]:
+    """Lê o `text/event-stream` guardando QUANDO cada evento chegou (s desde o envio)."""
+    req = urllib.request.Request(f"{URL}/agentes/datastage/conversar/stream",
+                                 data=json.dumps(corpo).encode(), method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "text/event-stream")
+    t0 = time.monotonic()
+    eventos: list[tuple[float, dict]] = []
+    with urllib.request.urlopen(req, timeout=teto_s) as r:
+        bloco: list[str] = []
+        for linha_b in r:  # linha a linha, na hora em que chega
+            linha = linha_b.decode().rstrip("\r\n")
+            if linha:
+                bloco.append(linha)
+                continue
+            dados = [l[5:].lstrip() for l in bloco if l.startswith("data:")]
+            bloco = []
+            if dados:
+                eventos.append((time.monotonic() - t0, json.loads("\n".join(dados))))
+    return eventos, time.monotonic() - t0
+
+
+def main() -> int:
+    if not (URL and USUARIO and SENHA):
+        print(__doc__)
+        return 2
+
+    print("▶ login")
+    token = login(USUARIO, SENHA)
+    if not token:
+        print("login falhou — confira ORQ_URL/ORQ_USER/ORQ_PASS")
+        return 1
+    ok("token obtido")
+
+    print("▶ catálogo e sonda do gateway")
+    st, cat = chamar("GET", "/agentes/catalogo", token)
+    agentes = {a["id"]: a for a in cat.get("agentes", [])} if st == 200 and isinstance(cat, dict) else {}
+    if "datastage" in agentes:
+        ok(f"agente DataStage liberado (curador: {'sim' if agentes['datastage'].get('curador') else 'não'})")
+    else:
+        falhou(f"agente DataStage fora do catálogo ({st}) — interruptores ligados? concessão feita? relogin?")
+        return 1
+    st, son = chamar("GET", "/agentes/status", token)
+    estado = son.get("estado") if isinstance(son, dict) else None
+    if estado == "ok":
+        ok("gateway reconhece a identidade do usuário")
+    else:
+        falhou(f"sonda do gateway = {estado!r} — ver §4.11 do manual (sem_contrato = campo da identidade vazio)")
+
+    print("▶ validação antes do stream (nada é gravado)")
+    st, r = chamar("POST", "/agentes/datastage/conversar/stream", token, {"mensagem": "oi", "conversa_id": "x"})
+    ok("conversa_id inválido → 422") if st == 422 else falhou(f"conversa_id inválido → {st}")
+    st, r = chamar("POST", "/agentes/datastage/conversar/stream", token, {"mensagem": ""})
+    ok("mensagem vazia → 422") if st == 422 else falhou(f"mensagem vazia → {st}")
+
+    print("▶ progresso em tempo real (SSE)")
+    pergunta = ("Sem usar nenhuma ferramenta, responda em uma frase: o que você faz?"
+                if not JOB else f"Explique em poucas linhas o que o job {JOB} faz.")
+    conversa_id = None
+    try:
+        eventos, total = stream(token, {"mensagem": pergunta})
+    except Exception as e:  # noqa: BLE001
+        falhou(f"stream não completou: {type(e).__name__}: {e}")
+        eventos, total = [], 0.0
+    status_ev = [(t, e) for t, e in eventos if e.get("tipo") == "status"]
+    final = next((e for _t, e in eventos if e.get("tipo") in ("resposta", "erro")), None)
+    if final and final.get("tipo") == "resposta":
+        conversa_id = final.get("conversa_id")
+        ok(f"resposta em {total:.1f}s (status {final.get('status')}, duracao_ms {final.get('duracao_ms')})")
+        if not isinstance(final.get("duracao_ms"), int):
+            falhou("resposta sem duracao_ms")
+        if JOB and not final.get("artefatos"):
+            aviso("a pergunta com SMOKE_JOB não usou ferramenta nenhuma")
+        if JOB:
+            print(f"    consultou: {' › '.join(a.get('ferramenta', '?') for a in final.get('artefatos') or [])}")
+    else:
+        falhou(f"stream terminou sem resposta: {final}")
+    if len(status_ev) >= 2:
+        primeiro = status_ev[0][0]
+        ok(f"{len(status_ev)} eventos de progresso: " + " | ".join(e["texto"] for _t, e in status_ev[:4]))
+        # Com o nginx segurando o buffer, TUDO chega junto no fim: o 1º status chegaria
+        # colado na resposta. Chegando aos poucos, ele vem bem antes.
+        if total >= 3 and primeiro > total - 1:
+            falhou(f"os eventos chegaram todos no fim ({primeiro:.1f}s de {total:.1f}s) — buffer no "
+                   "nginx? conferir gzip para text/event-stream / proxy_buffering")
+        elif total >= 3:
+            ok(f"o 1º evento chegou em {primeiro:.1f}s de {total:.1f}s — sem buffer no caminho")
+        else:
+            aviso(f"resposta rápida demais ({total:.1f}s) para medir o buffer — rode com SMOKE_JOB")
+    else:
+        falhou(f"só {len(status_ev)} evento(s) de progresso")
+
+    if conversa_id:
+        print("▶ histórico")
+        st, lista = chamar("GET", "/agentes/conversas?agente=datastage", token)
+        ids = [c["conversa_id"] for c in lista.get("conversas", [])] if isinstance(lista, dict) else []
+        ok("conversa nova na lista") if conversa_id in ids else falhou(f"conversa fora da lista ({st})")
+        st, det = chamar("GET", f"/agentes/conversas/{conversa_id}", token)
+        msgs = det.get("mensagens", []) if isinstance(det, dict) else []
+        resp = [m for m in msgs if m.get("papel") == "assistant"]
+        if resp and isinstance(resp[-1].get("duracao_ms"), int):
+            ok("retomada traz a duração da resposta")
+        else:
+            falhou(f"retomada sem duracao_ms ({st})")
+
+    print("▶ propostas: régua da decisão (nada é decidido)")
+    st, r = chamar("POST", "/agentes/propostas/1/decidir", token, {"decisao": "talvez"})
+    ok("decisão inválida → 422") if st == 422 and code(r) == "decisao_invalida" else falhou(f"decisão inválida → {st} {r}")
+    st, r = chamar("POST", "/agentes/propostas/2147483647/decidir", token, {"decisao": "recusar"})
+    ok("proposta inexistente → 404") if st == 404 else falhou(f"proposta inexistente → {st}")
+
+    print("▶ curadoria")
+    st, r = chamar("GET", "/agentes/aprendizados?estado=rascunho", token)
+    if agentes["datastage"].get("curador"):
+        if st == 200:
+            sementes = [a for a in r.get("aprendizados", []) if a.get("origem") == "semente"]
+            ok(f"fila do curador: {len(r.get('aprendizados', []))} a revisar ({len(sementes)} sementes)")
+            st2, v = chamar("GET", "/agentes/aprendizados?estado=validado", token)
+            if st2 == 200 and not any(a.get("origem") == "semente" for a in v.get("aprendizados", [])):
+                aviso("nenhuma semente validada ainda — o curador valida em Agentes › Curadoria")
+        else:
+            falhou(f"curador sem acesso à fila ({st} {code(r)})")
+    else:
+        ok("não é curador → 403") if st == 403 else falhou(f"não-curador acessou a fila ({st})")
+
+    if USUARIO2 and SENHA2:
+        print("▶ usuário sem o agente")
+        t2 = login(USUARIO2, SENHA2)
+        if not t2:
+            falhou("login do ORQ_USER2 falhou")
+        else:
+            st, cat2 = chamar("GET", "/agentes/catalogo", t2)
+            ids2 = [a["id"] for a in cat2.get("agentes", [])] if st == 200 and isinstance(cat2, dict) else []
+            ok("agente fora do catálogo dele") if "datastage" not in ids2 else falhou("ORQ_USER2 vê o agente")
+            st, r = chamar("POST", "/agentes/datastage/conversar", t2, {"mensagem": "oi"})
+            ok("conversar → 403") if st == 403 else falhou(f"ORQ_USER2 conversar → {st}")
+            if conversa_id:
+                # 404 se ele tem a TELA (conversa alheia = inexistente); 403 se nem a
+                # tela ele tem — o normal para quem não usa agentes. Nunca 200.
+                st, r = chamar("GET", f"/agentes/conversas/{conversa_id}", t2)
+                ok(f"conversa alheia → {st}") if st in (403, 404) else falhou(f"conversa alheia → {st}")
+
+    print("\n▶ roteiro manual (spec §7) — conferir na tela / no servidor:")
+    for item in (
+        "a) usuário sem tela_agentes não vê o menu; perfil consulta com grant forçado → 403 agente_nao_elegivel",
+        "b) liberar a TELA Agentes (perfil ou permissões extras) E conceder o agente em Admin › Agentes"
+        " a um desenvolvedor → ele SAI e ENTRA → menu e agente aparecem",
+        "c) usuário sem cadastro no gateway → aviso com o texto configurado; gateway fora → 'Gateway indisponível'",
+        "d0) pergunta citando só SsdPrs_* → segue com BI_PRESTAMISTA; nome desconhecido → lista de projetos",
+        "d2) job fora de pipeline → responde sem gravar em etl_job_lineage; com pipeline → mesma lineage da Governança",
+        "e) job com XML inválido → erro nomeado; repetir em outra conversa → 'não repeti'",
+        "f) proposta → Aprovar grava o fato com quem aprovou; Recusar não grava",
+        "g) histórico: buscar, retomar, grupos por dia, título inteiro",
+        "h) curador valida as 5 sementes; Curadoria e Histórico não ficam ativos juntos",
+        "i) desligar agente_datastage_enabled → some do seletor; API 503",
+        "j) 3–5 abas perguntando ao mesmo tempo → teto de sessões SSH respeitado; Console DataStage responde",
+        "k) Airflow › etl_log_cleanup › limpar_conversas_agentes apaga só > 30 dias",
+    ):
+        print(f"  [ ] {item}")
+
+    print(f"\n{'✅ tudo certo' if not FALHAS else f'❌ {len(FALHAS)} falha(s)'} nos itens automáticos")
+    return 1 if FALHAS else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -11,8 +11,8 @@
 |---|---|---|
 | **Consulta** | Analistas, gestores, auditoria | Visualizar Dashboard, Logs, Malha, Governança (lineage, catálogo e **Job DataStage**) e Monitor DataStage |
 | **Operador** | Operação/Sustentação ETL | Tudo do Consulta + executar pipelines manualmente, reexecutar falhas, acompanhar SLA, **ver arquivos do servidor do DataStage** (Utilitários) |
-| **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX, **criar e editar arquivos no servidor** (Utilitários), **extrair o lineage direto do DataStage** (Governança › Job DataStage) |
-| **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout, **diretórios e extensões dos Utilitários**, **lote do lineage DataStage** |
+| **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX, **criar e editar arquivos no servidor** (Utilitários), **extrair o lineage direto do DataStage** (Governança › Job DataStage), **usar o agente de mapeamento DataStage** (menu Agentes — liberado pelo administrador usuário a usuário) |
+| **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout, **diretórios e extensões dos Utilitários**, **lote do lineage DataStage**, **agentes de IA** (interruptores, quem usa, curadores) |
 
 > **Como funciona:** todo usuário entra automaticamente no 1º login com perfil **consulta**. O administrador promove usuários e ajusta o que cada perfil acessa (telas e ações) em **Admin → Usuários & Perfis** — sem mexer no banco. A sessão sobrevive ao F5 e expira após o período configurado (padrão 12h); a senha nunca é armazenada, apenas um token de sessão revogável.
 
@@ -1031,6 +1031,82 @@ Mensagens de até 4.000 caracteres. Esc fecha o chat sem fechar a etapa.
 definitiva continua sendo a do disparo (`dsjob -lparams`, §3.10) — nome que o
 job não declara falha antes de disparar.
 
+### 3.12 Agentes — o agente de mapeamento DataStage (menu Agentes)
+O agente conversa sobre os fluxos DataStage que **já existem** — jobs, sequences,
+stages, tabelas, campos, parâmetros, status de execução e lineage — lendo a base do
+Orquestra e, quando precisa, o próprio DataStage. Ele **nunca altera o DataStage**:
+não importa, não compila, não executa, não para nem apaga nada.
+
+**Quem usa.** São duas liberações, as duas feitas pelo administrador (§4.11): a **tela**
+Agentes (o item do menu) e o **agente** DataStage em si — este **usuário a usuário**, só
+para o perfil **Desenvolvedor ETL**. Com a tela e sem o agente, a tela abre e explica.
+Depois de receber a liberação, **saia e entre de novo** para ela valer.
+
+**Aviso do gateway.** Cada pergunta vai ao gateway de IA com a **sua** identidade
+(`cvp-<matrícula>`, ou a que o administrador cadastrou para você). Se a tela disser
+*"Sua matrícula ainda não está cadastrada no gateway de IA"*, siga o texto do aviso
+para pedir o cadastro e clique em **verificar de novo**. *"Gateway indisponível"* é
+problema do gateway, não seu — tente depois; não é preciso pedir cadastro.
+
+**Como perguntar.**
+1. Diga o **job, a sequence ou o pipeline**. O agente descobre o **projeto** DataStage
+   sozinho quando dá: pelo pipeline do Orquestra, ou pelo prefixo do job (`SsdPrs_*` →
+   BI_PRESTAMISTA). Se não der, ele **lista os projetos conhecidos** para você escolher.
+   O projeto aparece acima do chat; *trocar projeto* muda.
+2. Enquanto ele trabalha, o balão mostra **o passo atual** — *Verificando o projeto…*,
+   *Consultando JobX ao vivo no DataStage…*, *Extraindo a definição do job via istool
+   — pode levar até 60 s…*. Abaixo de cada resposta aparece **quanto ela levou**
+   (*respondido em 42s*), para você calibrar a próxima pergunta.
+3. A linha *Consultei:* diz de onde veio a resposta — **base do Orquestra**, **arquivo
+   DSX** (um retrato antigo, com a data do arquivo), **DataStage ao vivo** (`dsjob`) ou
+   **extração ISX** (o detalhe completo: stages, colunas, SQL). *(falhou)* e *(não
+   repetida)* marcam o que não deu certo.
+
+**O que ajuda a ter respostas melhores.**
+- Para **filhos de uma sequence**, ele vai direto à extração ISX ao vivo e lista os
+  jobs reais; peça o detalhe de cada filho em outra pergunta.
+- Informe o **pipeline do Orquestra** quando souber: com ele, a extração grava a
+  lineage completa (a mesma do botão da Governança, §3.9).
+- Uma pergunta usa **até 4 ferramentas** e **até 2 extrações ISX**, e dura no máximo
+  **4 minutos**. Pergunta grande demais termina em *"A pergunta exigiu passos demais"* ou
+  *"A pergunta levou tempo demais"* — divida em partes. Com perguntas demais em
+  andamento ao mesmo tempo, a nova é **recusada** com *"Você já tem 2 perguntas em
+  andamento"* — espere uma terminar e envie de novo (uma pergunta abandonada no meio
+  continua rodando até terminar, por até 4 minutos).
+- Extrair pelo agente exige a mesma permissão do botão da Governança (`acao_editar`);
+  sem ela, ele devolve o caminho da Governança.
+
+**O que ele guarda.** O que as ferramentas **leram** vira *fato* e volta nas próximas
+perguntas (a *base* mostra a idade de cada fato). O que ele **concluiu** não é
+guardado sozinho: vira um **cartão de proposta** com a **evidência** ao lado — o
+trecho exato que a ferramenta devolveu. **Aprovar** registra a conclusão (com o seu
+nome e a hora); **Recusar** descarta. Leia a evidência antes de aprovar: o que você
+aprova passa a ser consultado por todos — e fica guardado sem prazo, então **não aprove
+proposta que traga nome de pessoa** (recuse e, se quiser, reformule a pergunta).
+
+**Erros não se repetem.** Uma chamada que falhou de forma definitiva (job não
+encontrado, XML do job inválido) **não é repetida** — nem na mesma conversa, nem por
+outros usuários enquanto o erro valer; o agente explica o motivo. Falha passageira
+(servidor ocupado, tempo) pode ser tentada de novo.
+
+**Histórico.** O botão **Histórico** lista as suas conversas dos últimos **30 dias**,
+agrupadas por dia, com busca pelo título; clique para retomar de onde parou (cada
+resposta antiga mostra a data e quanto levou). **Nova conversa** recomeça. Só você vê
+as suas conversas. A conversa aberta fica guardada no navegador **só para você** e é
+apagada ao sair (logout) — quem entrar depois na mesma máquina não a vê.
+
+**Curadoria** (só para quem o administrador fez **curador**). O botão **Curadoria**
+mostra os *aprendizados* — dicas de como usar as ferramentas neste ambiente,
+sugeridas pelo agente ou registradas automaticamente quando algo falha. Nas abas *A
+revisar*, *Validados*, *Obsoletos* e *Rejeitados*: **Validar** faz o agente passar a
+considerar; **Rejeitar** descarta de vez; **Marcar obsoleto** tira do contexto (um erro
+automático marcado como obsoleto volta se acontecer de novo; rejeitado, nunca).
+Só o que está validado chega ao agente. A **evidência** de cada item fica ao lado.
+
+⚠️ **Não cole senhas nem valores de parâmetro no chat.** O Orquestra mascara o que
+parece segredo antes de gravar e antes de enviar ao gateway, mas a proteção é para
+acidentes, não para uso normal.
+
 ## 4. Perfil Administrador
 
 Tudo dos demais, mais a aba **Admin** (visível apenas para administradores):
@@ -1073,9 +1149,17 @@ Lembretes:
   `docs/release-notes/parametros-datastage.md`.
 - **Maestro (§3.11 / §4.9)**: migration **110** na etapa 6c; `dags/etl_log_cleanup.py`
   ganhou a limpeza das conversas (arquivo de DAG — **sem** restart do worker);
-  o provedor de IA é o de *Caixa Seguro IA* (chave cifrada com `ORQUESTRA_CONN_KEY`
+  o provedor de IA é o da aba *IA* (chave cifrada com `ORQUESTRA_CONN_KEY`
   na API); ligar em Admin › Acessos & Comunicação › **Maestro**. Roteiro em
   `docs/release-notes/maestro.md`.
+- **Agentes (§3.12 / §4.11)**: migrations **116–119** na etapa 6c (a **118** tem de ir
+  no mesmo deploy da F4 — zera os títulos gravados antes da redação); `dags/` (purga
+  das conversas em `etl_log_cleanup.py`; `utils/isx_engine.py` também mudou — o
+  `deploy.sh` pergunta pelo restart do worker: responder **s** é inofensivo); API e
+  `dist/`; `config/` → **n** (nada muda no nginx). Depois: ligar os interruptores,
+  preencher o campo de identidade, **liberar a tela Agentes** e conceder o agente um a um.
+  Roteiro, conferência e smoke (`scripts/smoke_agentes.py`) em
+  `docs/release-notes/agentes.md`.
 - **E-mail (§3.5-A / §3.5-B / §4.10)**: migration **111** na etapa 6c;
   `dags/utils/` ganhou dois arquivos → **reiniciar o worker** do Airflow;
   opcional no `.env` do host: `EMAIL_SENDMAIL_BIN` (padrão `/usr/sbin/sendmail`),
@@ -1252,7 +1336,7 @@ A aba governa o assistente de parâmetros do §3.11. Exige a migration **110**
 (sem ela a aba diz isso em vez de carregar).
 
 **Interruptor.** *Maestro ligado/desligado*. Ligar exige o **provedor de IA com
-chave** configurado em *Caixa Seguro IA* (o mesmo provedor dos assistentes do
+chave** configurado na aba *IA* (o mesmo provedor dos assistentes do
 Caixa: Anthropic, OpenAI-compatível ou o gateway interno; o interruptor dos
 assistentes do Caixa é independente). Desligado — ou ligado sem chave — o
 avatar não aparece para ninguém. Ao lado, o provedor, o modelo, se a chave está
@@ -1395,6 +1479,53 @@ lista de escolha". Depois de desativar ou excluir um padrão, marque outro.
 
 ---
 
+### 4.11 Agentes (Admin → Acessos & Comunicação → Agentes)
+A aba governa a tela **Agentes** (§3.12). Exige as migrations **116–119** — **não ligue
+os interruptores antes delas** (sem a 117 a aba abre com os padrões e o chat falha).
+
+**Interruptores.** *Agentes ligados/desligados* é o geral: desligado, **ninguém** vê
+agente nenhum, nem o administrador (é o kill switch). Cada agente tem o seu (*Mapeamento
+DataStage: ligado*), que só vale com o geral ligado. Os dois **nascem desligados**.
+Desligado, o chat e a curadoria respondem *"Agente DataStage desligado"*.
+
+**Gateway e limites.**
+- **Campo da identidade no gateway** (`header:NOME` ou `body:CAMPO`): onde vai a
+  identidade de quem pergunta. **Vazio, o agente não roda** (a tela avisa *"Gateway sem
+  identificação por usuário"*) — preencha com o contrato do gateway.
+- **Aviso de cadastro no gateway**: o texto mostrado a quem não tem cadastro — diga o
+  canal real (chamado, e-mail), até 500 caracteres.
+- **Sessões SSH simultâneas** (1–50, padrão 10): teto de consultas ao vivo ao DataStage
+  ao mesmo tempo, para não disputar o servidor com o Console, os Utilitários e as DAGs.
+- **Validade dos fatos (dias)** (padrão 7): depois disso o agente reconsulta ao vivo em
+  vez de confiar no que já leu pelo `dsjob`.
+
+**Liberar a TELA primeiro.** A tela Agentes (`tela_agentes`) nasce **só no perfil
+admin**. Para os demais, marque **Agentes** em Usuários & Perfis → *Perfis* (no perfil
+`desenvolvedor`, por exemplo) ou nas *permissões extras* do usuário (ícone da chave). Sem
+ela, o menu não aparece — mesmo com o agente concedido.
+
+**Quem pode usar — Mapeamento DataStage.** O **agente** é concedido **usuário a usuário,
+nunca por perfil**, e só a quem é do perfil **desenvolvedor** (a lista só oferece esses).
+O administrador já usa sem concessão. **Curadores** — mesma regra; o curador também
+precisa estar em *Quem pode usar* para abrir a tela. Quem recebe (a tela ou o agente)
+precisa **sair e entrar de novo**.
+⚠️ Marcar `agente_datastage` num **perfil** pela tela genérica de Perfis **não dá
+acesso** — é de propósito.
+
+**Identidade de cada usuário no gateway.** O padrão é `cvp-<matrícula em minúsculas>`.
+Para quem o gateway conhece por outro identificador (matrícula fora do padrão
+`CVP`+dígitos), preencha **Identidade no gateway de IA** em Usuários & Perfis → ícone da
+chave (permissões extras) do usuário. Letras, números e `. _ @ -`, até 100, única por
+usuário.
+
+**Provedor de IA.** O agente usa o provedor da aba **IA** e exige o `caixa_gateway`
+(identidade por usuário); outro provedor deixa a tela em *"Provedor de IA
+incompatível"*.
+
+**Retenção.** As conversas ficam **30 dias** (desde a última mensagem); a DAG
+`etl_log_cleanup` apaga o que passa disso — a tela já esconde as vencidas mesmo que a
+DAG não rode. **Fatos, propostas e aprendizados não vencem** com a conversa.
+
 ## 5. Perguntas frequentes
 
 **O pipeline não rodou no horário. Por quê?** Verifique, nesta ordem: (1) pipeline ativo? (2) data está num calendário de feriado ou blackout? (3) tipo "horários específicos": o horário consta na lista? (4) DAG gerado/atualizado após a última edição? (5) DAG despausado no Airflow?
@@ -1408,6 +1539,22 @@ lista de escolha". Depois de desativar ou excluir um padrão, marque outro.
 **Salvei um parâmetro e a API respondeu "exigem a migration 107/108/109".** O banco desse ambiente ainda não recebeu a migration — rode a etapa 6c do deploy (§4.6).
 
 **O valor Encrypted apareceu no log do DataStage.** O DataStage só mascara parâmetros Encrypted **no job**; um Encrypted do Orquestra enviado a um parâmetro String do job sai em claro no `dsjob -logsum`. Troque o tipo do parâmetro no Designer ou não use Encrypted ali (§3.10).
+
+**Recebi o agente DataStage e ele não aparece.** Saia e entre de novo — permissão nova
+só vale na sessão seguinte. Se o **menu** Agentes não aparece, falta a **tela** (o
+administrador marca *Agentes* no seu perfil ou nas suas permissões extras). Se o menu
+aparece mas o agente não: os dois interruptores precisam estar ligados (§4.11), e o seu
+perfil precisa ser **desenvolvedor**.
+
+**O agente diz "Sua matrícula ainda não está cadastrada no gateway de IA".** O gateway de IA não conhece a sua identidade.
+Peça o cadastro pelo canal do aviso; se a sua matrícula não segue `CVP`+dígitos, o
+administrador precisa preencher *Identidade no gateway de IA* (§4.11).
+
+**O agente não repetiu uma consulta que falhou.** É de propósito: erro definitivo (job não
+encontrado, XML inválido) não é repetido por ninguém enquanto vale — confira o nome e o
+projeto, ou peça ao curador para marcar o aprendizado como obsoleto se o job já foi
+corrigido e **abra uma conversa nova** (na mesma conversa, o que já falhou continua sem
+se repetir).
 
 **Jobs em paralelo não rodam juntos.** Confirme que têm exatamente a mesma ordem de execução e que há workers Celery disponíveis.
 

@@ -555,6 +555,16 @@ async def _rodar_e_gravar(ctx: dict, emit_status=None) -> dict:
     caminho para os dois endpoints. `duracao_ms` conta do recebimento da
     pergunta até a resposta pronta, e é gravado junto (em `artefatos_json`)
     para a tela mostrar também ao retomar a conversa."""
+    try:
+        return await _rodar_e_gravar_interno(ctx, emit_status)
+    finally:
+        # A vaga ocupada em `_preparar_com_vaga` volta aqui — com sucesso,
+        # erro ou cancelamento. Só libera se o contexto veio de lá.
+        if ctx.get("vaga"):
+            _liberar_vaga(ctx["matricula"])
+
+
+async def _rodar_e_gravar_interno(ctx: dict, emit_status=None) -> dict:
     conversa_id, matricula = ctx["conversa_id"], ctx["matricula"]
     mensagem_redigida = ctx["mensagem_redigida"]
     kwargs = dict(ctx["kwargs"])
@@ -599,13 +609,52 @@ async def _rodar_e_gravar(ctx: dict, emit_status=None) -> dict:
             "duracao_ms": duracao_ms}
 
 
+# Teto de rodadas EM ANDAMENTO por usuário (por processo da API). Sem ele,
+# N perguntas em paralelo multiplicavam por N o custo no gateway e podiam
+# ocupar os 2 workers do executor ISX, que é o mesmo do botão da Governança
+# (achado da auditoria de segurança da F7). A rodada do stream segue depois
+# de o cliente desconectar — a vaga só é liberada quando ela termina.
+MAX_RODADAS_POR_USUARIO = 2
+_RODADAS_POR_USUARIO: dict[str, int] = {}
+
+
+def _ocupar_vaga(matricula: str) -> None:
+    if _RODADAS_POR_USUARIO.get(matricula, 0) >= MAX_RODADAS_POR_USUARIO:
+        raise HTTPException(status_code=429, detail={
+            "code": "rodadas_simultaneas",
+            "message": f"Você já tem {MAX_RODADAS_POR_USUARIO} perguntas em andamento — "
+                       "espere uma terminar para perguntar de novo."})
+    _RODADAS_POR_USUARIO[matricula] = _RODADAS_POR_USUARIO.get(matricula, 0) + 1
+
+
+def _liberar_vaga(matricula: str) -> None:
+    n = _RODADAS_POR_USUARIO.get(matricula, 0) - 1
+    if n > 0:
+        _RODADAS_POR_USUARIO[matricula] = n
+    else:
+        _RODADAS_POR_USUARIO.pop(matricula, None)
+
+
+def _preparar_com_vaga(body: dict, user: dict) -> dict:
+    """Ocupa a vaga ANTES de preparar (que já grava a conversa nova — sem
+    vaga, nada é gravado) e a devolve se a preparação falhar. Quem recebe o
+    contexto é dono da vaga: `_rodar_e_gravar` a libera no fim."""
+    matricula = str(user.get("matricula") or "").strip()
+    _ocupar_vaga(matricula)
+    try:
+        return {**_preparar_conversa(body, user), "vaga": True}
+    except BaseException:
+        _liberar_vaga(matricula)
+        raise
+
+
 @router.post("/agentes/datastage/conversar", tags=["agentes"])
 async def agentes_datastage_conversar(body: dict = Body(default={}),
                                       user: dict = Depends(_require_datastage)):
     """Uma rodada com o agente DataStage. `require_agente` já garante:
     admin passa sempre; não-admin exige perfil `desenvolvedor` e o grant em
     `permissoes_extra` (nunca o que vier só do perfil)."""
-    return await _rodar_e_gravar(_preparar_conversa(body, user))
+    return await _rodar_e_gravar(_preparar_com_vaga(body, user))
 
 
 # Rodadas do stream em andamento. A rodada roda numa task PRÓPRIA, fora do
@@ -637,7 +686,7 @@ async def agentes_datastage_conversar_stream(body: dict = Body(default={}),
     Gate, validação e 4xx/503 acontecem ANTES do stream (resposta HTTP
     normal). `X-Accel-Buffering: no` desliga o buffer do nginx só para esta
     resposta — o `nginx.conf` de produção não precisa mudar."""
-    ctx = _preparar_conversa(body, user)
+    ctx = _preparar_com_vaga(body, user)
     fila: asyncio.Queue = asyncio.Queue()
 
     async def _emitir(texto: str) -> None:

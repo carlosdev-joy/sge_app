@@ -1,5 +1,5 @@
 # Spec: Agentes de IA (tela `/agentes`) — agente de mapeamento DataStage — Orquestra
-Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 11 de 20 dúvidas ✅/⚠️ (D-06, D-10 a D-17, D-20 ✅, D-19 ⚠️ parcial); F0 a F4 IMPLEMENTADAS e MERGEADAS (F0–F3 em produção, 22/09); F5 mergeada e F6 implementada (22/09)**
+Data: 2026-09-21 · Status: **✅ ENTREGUE — F0 a F7 implementadas (PRs #419–#429 + F7, 22–23/09/2026)**. Dúvidas ainda abertas que não bloquearam a entrega (padrão conservador aplicado): D-01–D-05, D-07, D-08, D-09 (⚠️), D-19 (⚠️) — ver §8.1 e `docs/release-notes/agentes.md`
 
 > Origem: entrevista de descoberta de 2026-09-21 (skill `entrevista-projeto`), Entendimento do Projeto
 > **confirmado pelo usuário**. Esta spec é autossuficiente: quem a lê (inclusive um agente rodando no
@@ -485,6 +485,12 @@ multi-agente antes da PR** (`qa-adversarial`; `security-review` nas F1, F2, F5 e
 - **Validação:** padrão. **PR:** `feat(agentes): base de aprendizados, guarda de reexecução e tela do curador (F6)`.
 
 ### F7 — Fechamento: documentação, smoke e deploy
+- **🏁 IMPLEMENTADA 23/09/2026** (branch `docs/agentes-f7`): `docs/MANUAL_USUARIO.md` §3.12 (usar) e §4.11
+  (administrar), item no §4.6 e FAQ; `docs/release-notes/agentes.md` (a entrega inteira, #417–#429);
+  `scripts/smoke_agentes.py` (itens automáticos pela API — catálogo, sonda, validação, **progresso chegando aos
+  poucos** através do nginx, duração, histórico, régua de decisão, curadoria, usuário sem o agente — e o roteiro
+  manual impresso no fim; nada é decidido nem configurado). Provado contra um servidor de teste, inclusive a prova
+  reversa: com os eventos retidos até o fim, o smoke acusa o buffer.
 - **Entregável:** manual, release note, smoke e roteiro de deploy; memória viva e a cópia em `.claude/memory/`.
 - **Inclui:** nova seção em `docs/MANUAL_USUARIO.md`; `docs/release-notes/agentes.md`; `scripts/smoke_agentes.py`
   (no estilo dos `scripts/smoke_*.py`); revisão adversarial geral + `security-review` + `/simplify`.
@@ -555,6 +561,9 @@ j) **Concorrência:** 3 a 5 abas perguntando ao mesmo tempo sobre jobs sem base 
 k) **Purga:** no Airflow, `etl_log_cleanup` › `limpar_conversas_agentes` roda e apaga só o que passou de 30 dias.
 l) **Segredo:** digitar um valor canário parecido com senha no chat → não aparece em `etl_agente_mensagem`; ver que a resposta também não o repete.
 m) **Não-regressão:** Caixa Seguro (assistentes) e a triagem de chamados continuam usando `cvp-orquestra` e funcionando.
+n) **Progresso e duração** (#428): `scripts/smoke_agentes.py` com `ORQ_URL` pelo nginx — os eventos chegam aos poucos; cada resposta mostra *respondido em Xs*, também ao retomar.
+o) **Histórico** (#429): grupos por dia, título inteiro, lista rolando até o fim; **Curadoria** e **Histórico** nunca ativos juntos.
+p) **Filhos de sequence** (#429): a pergunta vai direto ao ISX; na pergunta seguinte, a `base` já traz os filhos (`filho:<job>`).
 
 ## 8. Dúvidas em aberto
 

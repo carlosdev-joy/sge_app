@@ -29,6 +29,7 @@ import { CuradoriaAprendizados } from '../components/agentes/CuradoriaAprendizad
 import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
 import { IndicadorProjeto } from '../components/agentes/IndicadorProjeto'
 import { toast } from '../components/ui/Toast'
+import { useAuthStore } from '../store/auth'
 
 interface ConversaGuardada {
   conversa_id: string
@@ -36,9 +37,10 @@ interface ConversaGuardada {
   mensagens: MensagemChat[]
 }
 
-function lerGuardada(agenteId: string): ConversaGuardada | null {
+function lerGuardada(agenteId: string, matricula: string): ConversaGuardada | null {
+  if (!matricula) return null
   try {
-    const cru = localStorage.getItem(chaveDaConversa(agenteId))
+    const cru = localStorage.getItem(chaveDaConversa(agenteId, matricula))
     if (!cru) return null
     const dado = JSON.parse(cru) as ConversaGuardada
     if (!dado?.conversa_id || !Array.isArray(dado.mensagens)) return null
@@ -48,9 +50,10 @@ function lerGuardada(agenteId: string): ConversaGuardada | null {
   }
 }
 
-function guardar(agenteId: string, dado: ConversaGuardada) {
+function guardar(agenteId: string, matricula: string, dado: ConversaGuardada) {
+  if (!matricula) return
   try {
-    localStorage.setItem(chaveDaConversa(agenteId), JSON.stringify(dado))
+    localStorage.setItem(chaveDaConversa(agenteId, matricula), JSON.stringify(dado))
   } catch {
     /* cota/modo privado: a conversa segue no servidor, só não sobrevive ao F5 */
   }
@@ -132,7 +135,9 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   onRecarregarSonda: () => void
   recarregandoSonda: boolean
 }) {
-  const guardada = useMemo(() => lerGuardada(agente.id), [agente.id])
+  // A conversa guardada é do USUÁRIO da sessão (chave com a matrícula).
+  const matricula = useAuthStore(s => s.user?.matricula ?? '')
+  const guardada = useMemo(() => lerGuardada(agente.id, matricula), [agente.id, matricula])
   const [mensagens, setMensagens] = useState<MensagemChat[]>(() => guardada?.mensagens ?? [])
   const [projeto, setProjeto] = useState<string | null>(() => guardada?.projeto ?? null)
   const [conversaId, setConversaId] = useState<string | null>(() => guardada?.conversa_id ?? null)
@@ -208,7 +213,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           aprendizadosSugeridos: r.aprendizados_sugeridos?.length ? r.aprendizados_sugeridos : undefined,
           duracaoMs: typeof r.duracao_ms === 'number' ? r.duracao_ms : undefined,
         }]
-        guardar(agente.id, { conversa_id: r.conversa_id, projeto: r.projeto, mensagens: novas })
+        guardar(agente.id, matricula, { conversa_id: r.conversa_id, projeto: r.projeto, mensagens: novas })
         return novas
       })
     } catch (e) {
@@ -258,7 +263,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
       setProjeto(d.projeto)
       setGrafoAberto(false)
       setStageSel(null)
-      guardar(agente.id, { conversa_id: d.conversa_id, projeto: d.projeto, mensagens: msgs })
+      guardar(agente.id, matricula, { conversa_id: d.conversa_id, projeto: d.projeto, mensagens: msgs })
     } catch (e) {
       if (pedidoRef.current !== meuPedido) return
       // `conversa_expirada` é o caso NORMAL de quem guardou um link de mais
@@ -287,8 +292,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
       // `conversa_id`/`projeto` do que JÁ está guardado, não do fechamento
       // desta função: eles podem ter mudado enquanto a decisão era salva, e
       // o guardado é sempre o par das mensagens que estão na tela.
-      const atual = lerGuardada(agente.id)
-      if (atual) guardar(agente.id, { ...atual, mensagens: novas })
+      const atual = lerGuardada(agente.id, matricula)
+      if (atual) guardar(agente.id, matricula, { ...atual, mensagens: novas })
       return novas
     })
     try {
@@ -329,7 +334,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
     setEnviando(false)
     setStatusTexto(null)
     setRetomando(false)
-    try { localStorage.removeItem(chaveDaConversa(agente.id)) } catch { /* ignore */ }
+    try { localStorage.removeItem(chaveDaConversa(agente.id, matricula)) } catch { /* ignore */ }
   }
 
   const plotavel = useMemo(() => jobPlotavel(mensagens), [mensagens])
