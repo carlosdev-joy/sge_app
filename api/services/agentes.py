@@ -473,9 +473,9 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 - Nunca diga "saída truncada" ou "não foi possível determinar" quando tiver children populado.
 - Quando a pergunta for sobre status/execução: use dsjob jobinfo ou report, não isx_extrair.
 - Quando a pergunta for sobre colunas/campos/SQL: use isx_extrair (após dsjob lstages confirmar que é PARALLEL).
-- Quando a pergunta for sobre jobs filhos de uma sequence: use dsx_consulta (extrair) PRIMEIRO
-  se o projeto tiver DSX — é rápido e já lista os filhos. Depois confirme com isx_extrair ao
-  vivo para garantir que não há jobs adicionais não gravados. NÃO chame dsjob antes de nenhum dos dois.
+- Quando a pergunta for sobre jobs filhos de uma sequence: vá DIRETO ao isx_extrair ao vivo —
+  NÃO use dsx_consulta antes (o DSX é um retrato estático que pode estar desatualizado e ter
+  menos jobs que o real). NÃO chame dsjob antes. Leia o campo `children` no resultado.
 - Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, explique ao
   usuário o motivo informado.
 
