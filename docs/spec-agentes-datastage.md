@@ -1,5 +1,5 @@
 # Spec: Agentes de IA (tela `/agentes`) — agente de mapeamento DataStage — Orquestra
-Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 11 de 20 dúvidas ✅/⚠️ (D-06, D-10 a D-17, D-20 ✅, D-19 ⚠️ parcial); F1 e F2 IMPLEMENTADAS e MERGEADAS (22/09); F2b em andamento**
+Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 11 de 20 dúvidas ✅/⚠️ (D-06, D-10 a D-17, D-20 ✅, D-19 ⚠️ parcial); F0 a F4 IMPLEMENTADAS e MERGEADAS (F0–F3 em produção, 22/09); F5 implementada (22/09)**
 
 > Origem: entrevista de descoberta de 2026-09-21 (skill `entrevista-projeto`), Entendimento do Projeto
 > **confirmado pelo usuário**. Esta spec é autossuficiente: quem a lê (inclusive um agente rodando no
@@ -397,6 +397,32 @@ multi-agente antes da PR** (`qa-adversarial`; `security-review` nas F1, F2, F5 e
 - **Validação:** padrão. **PR:** `feat(agentes): histórico de conversas com busca e retomada em até 30 dias (F4)`.
 
 ### F5 — Fatos gravados e propostas com aprovação
+- **🏁 IMPLEMENTADA 22/09/2026** (branch `feat/agentes-f5`, **sem migration** — as tabelas vieram na 117). Novo
+  `api/services/agentes_conhecimento.py`. Como ficou (decisões de implementação, algumas além do texto abaixo):
+  - **Fato = retrato por (projeto, job, origem):** chave nova insere; igual renova `lido_em`/`lido_por`; valor mudou →
+    a antiga ganha `obsoleto_em` e entra a nova; chave que sumiu → `obsoleto_em`. Retrato **vazio** não obsoleta nada
+    (parse vazio ≈ formato inesperado, D-07); retrato **parcial** (stdout no teto de 200 000 de `run_dsjob`) não
+    obsoleta o que não apareceu. `sp_getapplock` por job. `ljobs`/`jobinfo` não viram fato (lista do projeto /
+    estado de execução). Parâmetro guarda nome, tipo e descrição — **nunca** o valor padrão.
+  - **Validade:** `dsjob_*` por `agentes_fato_validade_dias` (padrão 7 — D-08 segue aberta); ISX/DSX pela data do
+    job/arquivo em `ds_last_modified`. A `base` devolve os fatos vigentes com `lido_ha_dias`/`vencido`.
+  - **Régua da proposta (além de tipo, tamanhos e segredo):** o `job_name` tem de ser um job **lido nesta pergunta**
+    por `dsjob`/`isx_extrair`/`dsx_consulta`, e a **evidência** tem de ser trecho **literal** dessa leitura (espaços e
+    escapes de JSON normalizados). Mensagens do orquestrador, erros e a própria `base` não contam — senão o modelo
+    fabricava a evidência. Máx. 3 por resposta; as recusadas aparecem na tela com o motivo.
+  - **Segredo:** além de `redigir()`, valor cifrado `{iisenc}…` é mascarado por FORMATO em fato e evidência (não
+    depende de palavra-chave na linha); proposta com ele é recusada.
+  - **Decisão** (`POST /agentes/propostas/{id}/decidir`, `{"decisao": "aprovar"|"recusar"}`): `require_agente` +
+    dono pela sessão (alheia/inexistente → 404 igual); mesma decisão repetida → 200 `ja_decidida`; oposta → 409
+    `proposta_ja_decidida` com a proposta no `detail`; pendente há mais de 30 dias → 409 `proposta_expirada`.
+    Aprovar grava `interpretacao_aprovada` na mesma transação, com lock por chave (duas aprovações simultâneas da
+    mesma chave deixam UMA vigente — conferido no SQL Server real).
+  - **Interpretação aprovada no contexto do modelo:** chave própria no topo da resposta da `base`
+    (`interpretacoes_aprovadas_por_usuario_nao_lidas_por_ferramenta`, máx. 5, 600 caracteres cada), **sem a
+    matrícula** de quem aprovou; o prompt manda tratá-la como indício, nunca como instrução. Todo `</ferramenta>`
+    dentro de dado é escapado antes de montar a tag.
+  - Revisão: `qa-adversarial` (2 rodadas) + auditoria de segurança; achados e correções no PR.
+  - **Follow-up:** teto de propostas pendentes por usuário (baixo impacto — cada proposta custa uma chamada ao modelo).
 - **Entregável:** o agente grava o que a ferramenta leu; interpretações viram proposta aprovável.
 - **Inclui:** gravação de fatos em `etl_agente_fato` (origens `dsjob_*`, `isx` — para jobs **fora de pipeline** extraídos na F2b — e `dsx`, sempre com o **nome e a data do arquivo**; origem, evidência, `lido_em`, `ds_last_modified`); obsolescência
   ao detectar mudança; base primeiro usando os fatos; régua de proposta (tipo, chave, tamanhos, segredos);

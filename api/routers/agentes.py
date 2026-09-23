@@ -7,6 +7,7 @@ docs/spec-agentes-datastage.md).
   GET  /agentes/admin/config           config de Agentes (admin)
   POST /agentes/admin/config           grava config de Agentes (admin)
   POST /agentes/datastage/conversar    uma rodada com o agente DataStage (F2)
+  POST /agentes/propostas/{id}/decidir aprovar/recusar uma proposta do agente (F5)
 
 `tela_agentes` é checada por `require_perm` puro — como qualquer outra tela
 (perfil ∪ overrides). O que É especial é o acesso a CADA AGENTE
@@ -29,6 +30,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from db import get_db_conn
 from deps import PERM_EDITAR, get_admin_user, require_perm
 from services import agentes as svc
+from services import agentes_conhecimento as ac
 from services import agentes_ferramentas as af
 from services import ia_provedor
 
@@ -87,6 +89,32 @@ def _json_lista(bruto) -> list:
     except (ValueError, TypeError):
         return []
     return dado if isinstance(dado, list) else []
+
+
+def _separar_artefatos(lista: list) -> tuple[list, list[int]]:
+    """`artefatos_json` guarda, na mesma lista, as ferramentas que rodaram
+    (`{"ferramenta", "args"}`) e os ids das propostas daquela resposta
+    (`{"proposta_id"}`, F5). A tela recebe os dois SEPARADOS: a linha
+    "Consultei:" só conhece ferramenta, e o cartão só conhece proposta."""
+    ferramentas, ids = [], []
+    for a in lista:
+        if not isinstance(a, dict):
+            continue
+        if "proposta_id" in a:
+            try:
+                ids.append(int(a["proposta_id"]))
+            except (TypeError, ValueError):
+                pass
+        elif "ferramenta" in a:
+            ferramentas.append(a)
+    return ferramentas, ids
+
+
+def _validade_dias(cfg: dict) -> int:
+    try:
+        return max(1, int(cfg.get("agentes_fato_validade_dias") or 7))
+    except (TypeError, ValueError):
+        return 7
 
 
 def _abrir():
@@ -255,16 +283,27 @@ async def agentes_conversa(conversa_id: str, user: dict = Depends(_require_tela)
             "SELECT papel, conteudo, status, artefatos_json, criada_em "
             "FROM dbo.etl_agente_mensagem WHERE conversa_id = ? ORDER BY id", [conversa_id])
         msgs = cur.fetchall()
+        # Propostas com o estado ATUAL (a decisão pode ter sido tomada depois
+        # da resposta). Sem a tabela/coluna, a conversa abre do mesmo jeito.
+        try:
+            propostas = {p["id"]: p for p in ac.propostas_da_conversa(cur, conversa_id, matricula)}
+        except Exception:  # noqa: BLE001
+            propostas = {}
     finally:
         _fechar(conn, cur)
+    mensagens = []
+    for m in msgs:
+        # O artefato é gravado como JSON; a tela quer a lista, não a string.
+        ferramentas, ids = _separar_artefatos(_json_lista(m[3]))
+        item = {"papel": m[0], "conteudo": m[1], "status": m[2],
+                "artefatos": ferramentas, "criada_em": _iso(m[4])}
+        if ids:
+            item["propostas"] = [propostas[i] for i in ids if i in propostas]
+        mensagens.append(item)
     return {
         "conversa_id": conversa_id, "agente": cab[0], "titulo": cab[1], "projeto": cab[2],
         "criada_em": _iso(cab[3]), "ultima_msg_em": _iso(cab[4]),
-        "mensagens": [
-            {"papel": m[0], "conteudo": m[1], "status": m[2],
-             # O artefato é gravado como JSON; a tela quer a lista, não a string.
-             "artefatos": _json_lista(m[3]), "criada_em": _iso(m[4])}
-            for m in msgs],
+        "mensagens": mensagens,
     }
 
 
@@ -462,19 +501,28 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
         _abrir, mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
         projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
         identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
-        acao_editar=acao_editar, matricula=matricula)
+        acao_editar=acao_editar, matricula=matricula,
+        validade_fatos_dias=_validade_dias(agentes_cfg))
 
     texto_redigido = af.redigir(resultado.get("texto") or "")
+    artefatos = list(resultado.get("artefatos") or [])
+    propostas: list[dict] = []
     conn, cur = _abrir()
     try:
         cur.execute(
             "INSERT INTO dbo.etl_agente_mensagem (conversa_id, papel, conteudo) VALUES (?, ?, ?)",
             [conversa_id, "user", mensagem_redigida])
+        if resultado.get("propostas"):
+            # Na MESMA transação das mensagens: ou a resposta e os cartões
+            # dela ficam juntos, ou nenhum dos dois.
+            propostas = ac.inserir_propostas(
+                cur, conversa_id=conversa_id, agente=svc.AGENTE_DATASTAGE, matricula=matricula,
+                propostas=resultado["propostas"])
         cur.execute(
             "INSERT INTO dbo.etl_agente_mensagem "
             "(conversa_id, papel, conteudo, status, artefatos_json) VALUES (?, ?, ?, ?, ?)",
             [conversa_id, "assistant", texto_redigido, resultado.get("status"),
-             json.dumps(resultado.get("artefatos") or [], ensure_ascii=False)])
+             json.dumps(artefatos + [{"proposta_id": p["id"]} for p in propostas], ensure_ascii=False)])
         cur.execute(
             "UPDATE dbo.etl_agente_conversa SET projeto = ?, ultima_msg_em = GETDATE() "
             "WHERE conversa_id = ?", [resultado.get("projeto"), conversa_id])
@@ -484,4 +532,44 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
 
     return {"conversa_id": conversa_id, "status": resultado.get("status"),
             "texto": texto_redigido, "projeto": resultado.get("projeto"),
-            "artefatos": resultado.get("artefatos") or []}
+            "artefatos": artefatos, "propostas": propostas,
+            "propostas_recusadas": list(resultado.get("propostas_recusadas") or [])}
+
+
+_RE_DECISAO = re.compile(r"^(aprovar|recusar)$")
+
+
+@router.post("/agentes/propostas/{proposta_id}/decidir", tags=["agentes"])
+async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={}),
+                                   user: dict = Depends(_require_datastage)):
+    """Aprovar ou recusar uma proposta do agente (F5). Só o DONO decide —
+    a matrícula vem da sessão e a de outro usuário dá **404 igual** à de uma
+    proposta inexistente (critério 3; sem oráculo de ids). Aprovar grava o
+    fato `interpretacao_aprovada` com quem aprovou e quando; recusar não grava
+    nada. Repetir a mesma decisão é inofensivo (devolve o estado atual)."""
+    decisao = str(body.get("decisao") or "").strip().lower()
+    if not _RE_DECISAO.match(decisao):
+        raise HTTPException(status_code=422, detail={
+            "code": "decisao_invalida", "message": "decisao deve ser 'aprovar' ou 'recusar'"})
+    matricula = (user.get("matricula") or "").strip()
+    if not matricula:
+        raise HTTPException(status_code=404, detail={
+            "code": "proposta_nao_encontrada", "message": "proposta não encontrada"})
+    conn, cur = _abrir()
+    try:
+        proposta = ac.decidir_proposta(conn, cur, proposta_id=proposta_id, matricula=matricula,
+                                       decisao=decisao, retencao_dias=svc.RETENCAO_CONVERSAS_DIAS)
+    except ac.PropostaNaoEncontrada:
+        raise HTTPException(status_code=404, detail={
+            "code": "proposta_nao_encontrada", "message": "proposta não encontrada"})
+    except ac.PropostaExpirada:
+        raise HTTPException(status_code=409, detail={
+            "code": "proposta_expirada",
+            "message": f"proposta com mais de {svc.RETENCAO_CONVERSAS_DIAS} dias — não pode mais ser decidida"})
+    except ac.PropostaJaDecidida as e:
+        raise HTTPException(status_code=409, detail={
+            "code": "proposta_ja_decidida",
+            "message": f"essa proposta já foi {e.proposta['estado']}", "proposta": e.proposta})
+    finally:
+        _fechar(conn, cur)
+    return {"proposta": proposta}
