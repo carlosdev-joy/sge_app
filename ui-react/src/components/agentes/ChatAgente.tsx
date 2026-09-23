@@ -45,6 +45,8 @@ function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['
   // tinha falhado — "(não repetida)".
   const nomes = artefatos.map(a => {
     const nome = FERRAMENTAS[a.ferramenta] ?? a.ferramenta
+    // Spec admin B2: a ferramenta não é deste agente — o Orquestra recusou.
+    if (a.recusada) return `${nome} (indisponível)`
     if (a.repetida) return `${nome} (não repetida)`
     if (a.falhou) return `${nome} (falhou)`
     return nome

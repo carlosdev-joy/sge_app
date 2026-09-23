@@ -19,6 +19,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { mensagemDeErro } from '../../lib/agentes'
 import { PromptAgente } from './PromptAgente'
+import { CadastroAgentes } from './CadastroAgentes'
+import { Q_AGENTES_ADMIN, type AgentesAdminResposta } from '../../lib/agentes'
 import { Button } from '../ui/Button'
 import { InfoBanner } from '../ui/InfoBanner'
 import { Input, Select } from '../ui/Input'
@@ -32,6 +34,17 @@ interface AgenteAdmin {
   recurso_curador: string
   config_enabled: string
   perfis_elegiveis: string[]
+}
+/** O que as seções de acesso e o Prompt precisam — do código OU da tela (spec admin B3). */
+interface AgenteComAcesso {
+  id: string
+  nome: string
+  recurso: string
+  /** `null`: agente só de conversa — sem curadoria. */
+  recurso_curador: string | null
+  perfis_elegiveis: string[]
+  /** Só os criados pela tela podem ser 'perfil'. */
+  acesso?: 'manual' | 'perfil'
 }
 interface ConfigResposta {
   sucesso: boolean
@@ -68,6 +81,10 @@ export function AgentesTab() {
   const perms = useQuery<{ permissoes: Record<string, string[]> }>({
     queryKey: Q_PERMS, queryFn: () => adminPost('user_perm_list'),
   })
+  // Os criados pela tela (spec admin B3) — o mesmo cache da seção Cadastro.
+  const doBanco = useQuery<AgentesAdminResposta>({
+    queryKey: Q_AGENTES_ADMIN, queryFn: () => apiFetch('/agentes/admin/agentes'),
+  })
 
   const [rascunho, setRascunho] = useState<Record<string, string> | null>(null)
   const [aIncluir, setAIncluir] = useState<Record<string, string>>({})
@@ -75,6 +92,15 @@ export function AgentesTab() {
   // Base do servidor + o que está sendo editado (o rascunho é parcial).
   const cfg = { ...(config.data?.config ?? {}), ...(rascunho ?? {}) }
   const agentes = config.data?.agentes ?? []
+  // "Quem pode usar", "Curadores" e o Prompt valem para TODOS: os do código
+  // (da config, com o interruptor próprio) e os criados pela tela.
+  const todos: AgenteComAcesso[] = [
+    ...agentes,
+    ...(doBanco.data?.agentes ?? []).filter(a => a.origem === 'banco').map(a => ({
+      id: a.id, nome: a.nome, recurso: a.recurso, recurso_curador: a.recurso_curador,
+      perfis_elegiveis: a.perfis, acesso: a.acesso,
+    })),
+  ]
 
   async function invalidar() {
     await Promise.all([
@@ -231,14 +257,32 @@ export function AgentesTab() {
         )}
       </section>
 
-      {agentes.flatMap(ag => [
+      {/* Cadastro dos agentes (spec docs/spec-agentes-admin.md, B3). */}
+      <CadastroAgentes />
+
+      {todos.flatMap(ag => [
         // Dois papéis, a MESMA política (perfil elegível + concessão usuário a
         // usuário): usar o agente e ser curador dos aprendizados dele (F6).
         { chave: `${ag.id}:uso`, recurso: ag.recurso, titulo: `Quem pode usar — ${ag.nome}`,
           texto: 'Concedido usuário a usuário, nunca por perfil.' },
-        { chave: `${ag.id}:curador`, recurso: ag.recurso_curador, titulo: `Curadores — ${ag.nome}`,
-          texto: 'Validam, rejeitam e marcam como obsoletos os aprendizados do agente, na aba Curadoria da tela Agentes — o curador também precisa estar em “Quem pode usar” para abrir a tela.' },
+        // Curadoria só existe em agente com ferramentas (os só de conversa não geram aprendizados).
+        ...(ag.recurso_curador ? [{ chave: `${ag.id}:curador`, recurso: ag.recurso_curador, titulo: `Curadores — ${ag.nome}`,
+          texto: 'Validam, rejeitam e marcam como obsoletos os aprendizados do agente, na aba Curadoria da tela Agentes — o curador também precisa estar em “Quem pode usar” para abrir a tela.' }] : []),
       ].map(papel => {
+        // Acesso POR PERFIL não tem concessão individual: a seção explica em
+        // vez de oferecer um "Conceder" que não mudaria nada.
+        if (ag.acesso === 'perfil' && papel.chave.endsWith(':uso')) {
+          return (
+            <section key={papel.chave} className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-1"
+                     data-agentes-acesso={papel.chave}>
+              <h3 className="text-sm font-semibold text-ink">{papel.titulo}</h3>
+              <p className="text-sm text-ink">
+                {`Todo usuário dos perfis ${ag.perfis_elegiveis.join(', ')} que tenha a tela Agentes.`}
+              </p>
+              <p className="text-xs text-dim">Acesso por perfil — sem concessão individual. Mude em Agentes › Editar.</p>
+            </section>
+          )
+        }
         const comAcesso = porRecurso[papel.recurso] ?? []
         const elegiveis = (usuarios.data?.usuarios ?? []).filter(
           u => u.ativo
@@ -321,7 +365,7 @@ export function AgentesTab() {
       }))}
 
       {/* Prompt do domínio, com versões (spec docs/spec-agentes-admin.md A2). */}
-      {agentes.map(ag => <PromptAgente key={`prompt-${ag.id}`} agente={ag} />)}
+      {todos.map(ag => <PromptAgente key={`prompt-${ag.id}`} agente={ag} />)}
     </div>
   )
 }

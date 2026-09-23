@@ -17,18 +17,20 @@ import {
 } from '../../lib/agentes'
 import { toast } from '../ui/Toast'
 
-export function CuradoriaAprendizados({ onFechar }: { onFechar: () => void }) {
+export function CuradoriaAprendizados({ agenteId, onFechar }: { agenteId: string; onFechar: () => void }) {
   const qc = useQueryClient()
   const [estado, setEstado] = useState<EstadoAprendizado>('rascunho')
+  // A fila é POR AGENTE (spec admin B2): a rota antiga só atende o DataStage.
+  const base = `/agentes/${encodeURIComponent(agenteId)}/aprendizados`
 
   const lista = useQuery<{ aprendizados: Aprendizado[] }>({
-    queryKey: ['agentes-aprendizados', estado],
-    queryFn: () => apiFetch(`/agentes/aprendizados?estado=${estado}`),
+    queryKey: ['agentes-aprendizados', agenteId, estado],
+    queryFn: () => apiFetch(`${base}?estado=${estado}`),
   })
 
   const decidir = useMutation({
     mutationFn: ({ id, acao }: { id: number; acao: AcaoAprendizado }) =>
-      apiFetch<{ aprendizado: Aprendizado }>(`/agentes/aprendizados/${id}/decidir`, {
+      apiFetch<{ aprendizado: Aprendizado }>(`${base}/${id}/decidir`, {
         method: 'POST', body: JSON.stringify({ acao }),
       }),
     onSuccess: (_r, v) => toast.success(`${ROTULO_ACAO[v.acao]}: feito.`),

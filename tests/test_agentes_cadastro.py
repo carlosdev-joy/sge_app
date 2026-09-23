@@ -594,3 +594,45 @@ def test_um_so_aceita_a_linha_com_id_identico(gravado):
     assert reg.um(cur, "assistente") is None
     cur.fetchone.return_value = _linha("assistente")
     assert reg.um(cur, "assistente")["id"] == "assistente"
+
+
+def test_user_perm_set_nao_trava_por_grant_antigo_que_ficou_inelegivel():
+    """Revisão da B3: o admin tirou o perfil do usuário do agente; o grant
+    antigo continua em etl_usuario_permissao. Salvar OUTRA permissão não
+    pode ser recusado por causa dele — o grant não dá acesso (a régua de uso
+    confere o perfil). Conceder o grant de NOVO a esse perfil continua 422."""
+    from tests.test_admin_identidade_agentes import _Conn, _Cur
+
+    class _CurComGrant(_Cur):
+        def __init__(self, ja_tinha, **kw):
+            super().__init__(**kw)
+            self.ja_tinha = ja_tinha
+
+        def execute(self, sql, params=None):
+            s = sql.lower()
+            if "from dbo.etl_agente" in s and "etl_agente_" not in s:
+                self.execs.append((sql, tuple(params or ())))
+                self._rows = [_linha(perfis=("desenvolvedor",))]
+                return
+            if "select recurso from dbo.etl_usuario_permissao" in s:
+                self.execs.append((sql, tuple(params or ())))
+                self._rows = [(r,) for r in self.ja_tinha]
+                return
+            super().execute(sql, params)
+
+    _app.dependency_overrides[get_current_user] = lambda: {
+        "matricula": "ADMIN1", "perfil": "admin", "permissoes": [PERM_ADMIN], "permissoes_extra": []}
+    try:
+        cliente = TestClient(_app)
+        cur = _CurComGrant({"agente_assistente"}, usuarios={"U1": "analista"})
+        with patch("routers.admin.get_db_conn", return_value=_Conn(cur)):
+            r = cliente.post("/admin", json={"action": "user_perm_set", "matricula": "U1",
+                                             "permissoes": ["agente_assistente", "tela_jobs"]})
+        assert r.status_code == 200, r.json()
+        cur = _CurComGrant(set(), usuarios={"U1": "analista"})
+        with patch("routers.admin.get_db_conn", return_value=_Conn(cur)):
+            r = cliente.post("/admin", json={"action": "user_perm_set", "matricula": "U1",
+                                             "permissoes": ["agente_assistente"]})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "agente_perfil_nao_elegivel"
+    finally:
+        _app.dependency_overrides.pop(get_current_user, None)

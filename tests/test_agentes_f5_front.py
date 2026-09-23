@@ -90,7 +90,9 @@ def test_sem_cor_fixa_nova_no_cartao():
 
 def test_decidir_chama_o_endpoint_com_o_verbo_do_backend():
     fonte = codigo(PAGINA)
-    assert "`/agentes/propostas/${id}/decidir`" in fonte
+    # Spec admin B2/B3: a rota DO AGENTE — a antiga só atende o DataStage.
+    assert "`/agentes/${agente.id}/propostas/${id}/decidir`" in fonte
+    assert "`/agentes/propostas/${id}/decidir`" not in fonte
     assert "JSON.stringify({ decisao })" in fonte
     assert re.search(r"type DecisaoProposta = 'aprovar' \| 'recusar'", codigo(LIB))
 
