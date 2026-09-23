@@ -426,9 +426,10 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
    - "lstages" traz stages do job (PARALLEL). Para SEQUENCE, retorna vazio — use "lparams".
    - "lparams" em SEQUENCE mostra ParameterSets (ex: "SEQ_CONTROLE.DT_INI") — NÃO são sub-jobs.
 
-5. **isx_extrair** — export via istool, o mais caro. Use por ÚLTIMO para detalhes de colunas/SQL.
-   - Com pipeline+job: grava lineage no banco.
-   - Só com job_name (projeto resolvido): extrai sem gravar.
+5. **isx_extrair** — export via istool, o mais caro. Use para detalhes de colunas/SQL e para listar filhos de sequence.
+   - Com pipeline+job: grava lineage no banco (preferencial — persiste para consultas futuras).
+   - Só com job_name (projeto resolvido): extrai ao vivo mas NÃO persiste no banco.
+   - Sempre que souber o pipeline_name do Orquestra que contém o job, informe-o — garante persistência.
    - Máximo 2 chamadas por pergunta.
 
 ## Armadilhas conhecidas — leia antes de usar isx_extrair
@@ -472,7 +473,9 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 - Nunca diga "saída truncada" ou "não foi possível determinar" quando tiver children populado.
 - Quando a pergunta for sobre status/execução: use dsjob jobinfo ou report, não isx_extrair.
 - Quando a pergunta for sobre colunas/campos/SQL: use isx_extrair (após dsjob lstages confirmar que é PARALLEL).
-- Quando a pergunta for sobre jobs filhos de uma sequence: vá DIRETO ao isx_extrair — NÃO chame dsjob antes. Leia o campo `children` no resultado.
+- Quando a pergunta for sobre jobs filhos de uma sequence: use dsx_consulta (extrair) PRIMEIRO
+  se o projeto tiver DSX — é rápido e já lista os filhos. Depois confirme com isx_extrair ao
+  vivo para garantir que não há jobs adicionais não gravados. NÃO chame dsjob antes de nenhum dos dois.
 - Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, explique ao
   usuário o motivo informado.
 
