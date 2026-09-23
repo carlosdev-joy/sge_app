@@ -554,9 +554,17 @@ def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False, contexto
     último, como antes."""
     if dominio is None:
         dominio = PROMPT_DOMINIO_PADRAO[AGENTE_DATASTAGE]
-    blocos = [_bloco_contexto(projeto, projeto_tem_dsx), dominio.strip(),
-              _bloco_protocolo(FERRAMENTAS_DATASTAGE), _BLOCO_REGRAS, _BLOCO_PROPOSTAS]
+    antes, depois = partes_fixas(projeto, projeto_tem_dsx)
+    blocos = [antes, dominio.strip(), depois]
     return "\n\n".join(b for b in blocos if b) + "\n" + (f"\n{contexto_aprendizados}\n" if contexto_aprendizados else "")
+
+
+def partes_fixas(projeto: str | None, projeto_tem_dsx: bool = False) -> tuple[str, str]:
+    """O que o código monta em volta do domínio: (antes, depois). A tela do
+    admin mostra as duas partes só para leitura (spec admin §3.3) — são
+    exatamente as que `_prompt_sistema` usa, não uma cópia."""
+    return (_bloco_contexto(projeto, projeto_tem_dsx),
+            "\n\n".join((_bloco_protocolo(FERRAMENTAS_DATASTAGE), _BLOCO_REGRAS, _BLOCO_PROPOSTAS)))
 
 
 def _com_cursor(abrir_conn, fn):
@@ -1154,7 +1162,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
                     provedor_cfg: dict, identidade: str | None, campo_identidade: str | None,
                     ssh_max: int, acao_editar: bool = False, matricula: str | None = None,
                     validade_fatos_dias: int = 7, falhas_anteriores: set[str] | None = None,
-                    emit_status=None) -> dict:
+                    emit_status=None, dominio: str | None = None) -> dict:
     """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
     (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
     allowlist, e devolve a resposta final. Controla o orçamento de tempo
@@ -1165,6 +1173,9 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     da sessão (nunca do corpo da requisição) — sem ela, `isx_extrair`
     recusa e devolve o link da Governança. `matricula` vai no `extracted_by`
     da gravação, com o sufixo `agente:datastage` (rastreabilidade).
+
+    `dominio` (spec admin A1): o bloco de domínio da versão ativa do prompt,
+    lido pelo router a cada pergunta; `None` = padrão do código.
 
     Nunca levanta por conta do provedor/ferramenta: erro vira `status`
     nomeado com uma mensagem para o usuário, sempre 200 para quem chamou."""
@@ -1223,7 +1234,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             projeto_do_contexto = projeto
             usados.update({i["id"]: i["titulo"] for i in aprendizados})
         sistema = _prompt_sistema(projeto, af.projeto_tem_dsx(projeto) if projeto else False,
-                                  ap.formatar_contexto(aprendizados))
+                                  ap.formatar_contexto(aprendizados), dominio=dominio)
         await _status("Pensando na pergunta…" if rodada == 0 else "Analisando o que foi lido…")
         # O orçamento também vale por OPERAÇÃO, não só entre rodadas — sem
         # isto, uma única chamada ao gateway podia levar até TIMEOUT_S (60s)

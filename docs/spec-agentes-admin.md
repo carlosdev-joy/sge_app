@@ -134,13 +134,16 @@ CREATE TABLE dbo.etl_agente_prompt (
     regra **não** é o `redigir()`: ele casa `senha`, `token`, `secret` e `Encrypted` em qualquer lugar da linha e
     recusaria texto normal ("nunca peça a senha", "parâmetros Encrypted", o stage `TokenizerTransform`,
     "secretaria"). A regra nova (sem diferenciar maiúsculas) recusa só:
-    - **chave = valor:** `(?<![a-z0-9])(?:[a-z0-9]+_)*(senha|password|passwd|pwd|secret|token|api[_-]?key)(?![a-z])`
-      seguido de aspas opcionais, `:` ou `=` com espaços opcionais, aspas opcionais e um valor de **6 ou mais
+    - **chave = valor:** `(?<![a-z0-9])(senha|password|passwd|pwd|secret|token|api[_-]?key)(?![a-z])`
+      seguido de aspas opcionais, `:` ou `=` com espaços opcionais na mesma linha (inclusive o U+00A0 de
+      texto colado), aspas opcionais e um valor de **6 ou mais
       caracteres** sem espaço, aspas, `,`, `;` ou `}`, que **tenha dígito ou símbolo**.
-      - O prefixo `DB_`/`client_`/`access_` casa (`DB_PASSWORD=…`, `client_secret=…`), e o estilo JSON também
-        (`"senha": "…"`).
-      - **Não conta como segredo** um valor que seja referência ou marcador: `#PS_X.Y#`, `$PS_X.Y`, `<valor>`,
-        `****` ou o início de um JSON (`{…`, `[…`).
+      - Como `_` não é letra nem dígito, `DB_PASSWORD=…`, `client_secret=…` e `access_token=…` casam sem um grupo de
+        prefixo, e o estilo JSON também casa (`"senha": "…"`). A A1 tirou o grupo `(?:[a-z0-9]+_)*` do rascunho:
+        ele deixava a regex quadrática, com ~10 s de CPU para 20.000 caracteres.
+      - **Não conta como segredo** um valor que seja referência ou marcador, em forma estrita: `#PS_X.Y#` (com os
+        dois `#`), `$PS_X.Y`, `<valor>`, `****` ou o início de um JSON (`{…`, `[…`). `$enha123!` e `#abc123`
+        continuam recusados.
     - **formatos conhecidos:**
       - `(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}` (pega `sk-ant-api03-…` e `sk-proj-…`; "risk-" e "disk-" passam);
       - `Bearer` seguido de 20 ou mais caracteres de token;
@@ -375,3 +378,19 @@ PUT    /agentes/admin/agentes/{id}       → nome, descrição, acesso, perfis, 
 - Levar o DataStage para a tabela de agentes.
 - Excluir agente de verdade.
 - Comparar versões lado a lado (diff). Pode entrar depois, se o histórico pedir.
+
+## 8. Backlog
+
+- **BK-1 — Período de vigência de cada versão do prompt** (pedido do usuário em 23/09, durante a A1):
+  - ao versionar, guardar **início e fim** do período em que cada versão ficou ativa;
+  - mostrar **quanto tempo** ela ficou em uso.
+  - Para desenhar na hora de implementar:
+    - O **início** é o `criado_em` da versão. O **fim** é o `criado_em` da versão seguinte. A versão ativa não tem fim.
+      Dá para calcular sem mudar a tabela, mantendo a regra de nunca atualizar (T1). Se for preciso gravar o fim
+      numa coluna (`vigente_ate`), vale abrir uma exceção à T1: um único `UPDATE` de NULL para a data, na mesma
+      transação que grava a versão seguinte.
+    - A **versão 0** (padrão do código) vale desde o deploy até a 1ª versão gravada. O início dela não está no banco.
+    - **Uso real:** as respostas já gravam `prompt_versao` e `prompt_hash` em `artefatos_json` (A1). Isso permite
+      mostrar, por versão, **quantas respostas** ela deu e o **tempo médio** de resposta (`duracao_ms`), além do
+      tempo de calendário.
+    - Tela: colunas "vigente de … até …", "duração" e "respostas" no histórico de versões (A2).
