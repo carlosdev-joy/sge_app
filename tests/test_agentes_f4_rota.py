@@ -40,7 +40,11 @@ os.environ.setdefault("MSSQL_CONN_STR", "__mock__")
 from api.main import app as _app  # noqa: F401,E402
 
 from deps import get_current_user  # noqa: E402
-from services import agentes as svc  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from services import agentes as svc, ia_provedor  # noqa: E402
+
+RAIZ = Path(__file__).resolve().parents[1]
 
 
 class _Cur:
@@ -238,29 +242,68 @@ def test_agente_desconhecido_na_lista_da_404():
 
 # ═══════════ 4. só as últimas 12 rodadas vão ao gateway ══════════════════
 
+# Achado da revisão adversarial da F4: a 1ª versão deste teste fazia
+# `patch.object(svc, "conversar", ...)` e media o que o ROUTER passava — e
+# ficava VERDE enquanto o gateway recebia outra coisa, porque `conversar`
+# refazia o corte por MENSAGEM (`mensagens[-12:]`) e o de cá virava enfeite.
+# Chegavam 6 rodadas em vez de 12, começando numa RESPOSTA de assistente.
+# Agora o dublê é o `ia_provedor.chat_conversa` — a última fronteira antes
+# do gateway de verdade. É lá que a promessa da spec tem de valer.
 @pytest.mark.asyncio
-async def test_conversar_manda_no_maximo_12_rodadas_ao_gateway():
+async def test_o_gateway_recebe_ate_12_rodadas_comecando_numa_pergunta():
     msgs = []
-    for i in range(30):
+    for i in range(20):
         msgs.append(("user", f"p{i}", None, None, None))
         msgs.append(("assistant", f"r{i}", None, None, None))
     cur = _Cur(dono="DEV1", idade_dias=1, mensagens=msgs)
     visto: dict = {}
 
-    async def _conversar(_abrir, *, mensagens, **kw):
-        visto["n"] = len(mensagens)
-        visto["primeira"] = mensagens[0]
-        return {"status": "ok", "texto": "ok", "projeto": "P", "artefatos": []}
+    async def _chat(cfg, sistema, historico, **kw):
+        visto.setdefault("historico", list(historico))
+        return "pronto", "modelo-teste"
 
     with patch("routers.agentes.get_db_conn", return_value=_Conn(cur)), \
-         patch.object(svc, "conversar", new=_conversar):
-        r = _cliente(cur, perms=("tela_agentes",)).post(
-            "/agentes/datastage/conversar",
-            json={"mensagem": "nova", "conversa_id": "abcdefgh1234"})
-    assert r.status_code == 200
-    # 12 rodadas = 24 do histórico + a pergunta desta vez
-    assert visto["n"] == 25, visto
-    assert visto["primeira"]["role"] == "user"
+         patch.object(ia_provedor, "chat_conversa", new=_chat):
+        r = _cliente(cur).post("/agentes/datastage/conversar",
+                               json={"mensagem": "PERGUNTA_ATUAL", "conversa_id": "abcdefgh1234"})
+    assert r.status_code == 200, r.text
+    h = visto["historico"]
+    # 12 rodadas = 24 mensagens; com a pergunta atual (ímpar) a janela cai
+    # para 23 para não começar numa resposta.
+    assert len(h) <= svc.MAX_RODADAS_HISTORICO * 2, f"{len(h)} mensagens passaram do teto"
+    assert h[0]["role"] == "user", f"a janela começou em {h[0]['role']}: o modelo leria uma resposta sem a pergunta"
+    assert h[-1]["content"] == "PERGUNTA_ATUAL"
+    # E é MUITO mais que as 6 rodadas que chegavam antes da correção.
+    assert len(h) >= 20, f"só {len(h)} mensagens — o corte por MENSAGEM voltou?"
+
+
+@pytest.mark.asyncio
+async def test_conversa_curta_vai_inteira_ao_gateway():
+    msgs = [("user", "p0", None, None, None), ("assistant", "r0", None, None, None)]
+    cur = _Cur(dono="DEV1", idade_dias=1, mensagens=msgs)
+    visto: dict = {}
+
+    async def _chat(cfg, sistema, historico, **kw):
+        visto.setdefault("historico", list(historico))
+        return "pronto", "modelo-teste"
+
+    with patch("routers.agentes.get_db_conn", return_value=_Conn(cur)), \
+         patch.object(ia_provedor, "chat_conversa", new=_chat):
+        _cliente(cur).post("/agentes/datastage/conversar",
+                           json={"mensagem": "nova", "conversa_id": "abcdefgh1234"})
+    assert [m["content"] for m in visto["historico"]] == ["p0", "r0", "nova"]
+
+
+def test_o_corte_do_historico_vive_num_lugar_so():
+    """Dois cortes (um no router, um no serviço) foi o defeito: o de baixo
+    vencia em silêncio. O router passa o histórico completo."""
+    fonte = (RAIZ / "api" / "routers" / "agentes.py").read_text(encoding="utf-8")
+    assert "svc.ultimas_rodadas" not in fonte, \
+        "o router não corta — quem monta o prompt do gateway é svc.conversar"
+    servico = (RAIZ / "api" / "services" / "agentes.py").read_text(encoding="utf-8")
+    assert "historico = ultimas_rodadas(mensagens)" in servico
+    assert "MAX_HISTORICO" not in servico, \
+        "a constante que contava MENSAGENS foi a origem da confusão; só MAX_RODADAS_HISTORICO"
 
 
 # ═══════════ 5. título gravado no tamanho que a coluna aceita ════════════

@@ -40,7 +40,13 @@ export function HistoricoConversas({ agenteId, conversaAtual, onRetomar, onFecha
 
   return (
     <aside
-      className="w-full sm:w-72 shrink-0 flex flex-col gap-3 bg-panel border border-edge rounded-lg p-3 shadow-sm min-h-0"
+      // `shrink-0` só a partir de `sm`: abaixo disso o contêiner é
+      // flex-COLUNA, e um aside que não encolhe empurra o chat (que é
+      // `flex-1` com basis 0) para altura zero — some da tela. No empilhado
+      // ele ganha um teto próprio e rola por dentro. Achado da revisão
+      // adversarial da F4.
+      className="w-full sm:w-72 sm:shrink-0 max-h-56 sm:max-h-none flex flex-col gap-3
+                 bg-panel border border-edge rounded-lg p-3 shadow-sm min-h-0"
       aria-label="Histórico de conversas"
       data-agentes-historico
     >

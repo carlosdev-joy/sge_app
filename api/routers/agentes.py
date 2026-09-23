@@ -423,11 +423,11 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
             cur.execute(
                 "SELECT papel, conteudo FROM dbo.etl_agente_mensagem "
                 "WHERE conversa_id = ? ORDER BY id", [conversa_id])
-            # Só as últimas rodadas vão ao gateway: uma conversa longa não
-            # pode crescer sem teto no prompt (custo por token no gateway
-            # corporativo). O histórico COMPLETO continua no banco e na tela.
-            historico = svc.ultimas_rodadas(
-                [{"role": r[0], "content": r[1]} for r in cur.fetchall()])
+            # Histórico COMPLETO daqui — quem corta para as últimas rodadas
+            # é `svc.conversar`, que é quem monta o prompt do gateway.
+            # Cortar nos dois lugares foi o defeito que a revisão da F4
+            # pegou: o corte de lá vencia, e este virava enfeite.
+            historico = [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
         provedor_cfg = ia_provedor.load_config(cur)
         cadastro = None
         try:

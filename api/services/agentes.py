@@ -315,7 +315,6 @@ _RE_BLOCO_JSON = re.compile(r"```[ \t]*(?:json)?[ \t]*\n?(\{(?:(?!```).)*\})\s*`
 # para a resposta HTTP em si voltar antes do nginx desistir.
 ORCAMENTO_AGENTE_S = 240
 MAX_RODADAS_FERRAMENTA = 3
-MAX_HISTORICO = 12  # mesmo teto do Maestro (MAX_HISTORICO em maestro.py)
 
 
 def extrair_pedido_ferramenta(texto: str) -> tuple[str, dict | None]:
@@ -753,7 +752,14 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     def _resta() -> float:
         return ORCAMENTO_AGENTE_S - (time.monotonic() - t0)
 
-    historico = list(mensagens[-MAX_HISTORICO:])
+    # O corte do histórico vive AQUI, e só aqui: é esta função que monta o
+    # que vai ao gateway. Antes havia dois — este (`mensagens[-12:]`, por
+    # MENSAGEM) e um no router (por RODADA); o de baixo vencia, então
+    # chegavam 6 rodadas em vez de 12 e a janela começava numa RESPOSTA,
+    # sem a pergunta que a gerou. Achado da revisão adversarial da F4: o
+    # teste media a fronteira do router e ficava verde com o gateway
+    # recebendo outra coisa.
+    historico = ultimas_rodadas(mensagens)
     projeto = projeto_atual
     artefatos: list[dict] = []
     extracoes_isx = 0  # no máx. MAX_EXTRACOES_ISX por pergunta (spec F2b, item 5)

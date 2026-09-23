@@ -154,3 +154,53 @@ def test_historico_nao_usa_cor_fora_dos_tokens():
 def test_historico_nao_acrescenta_overflow_hidden():
     """Mesma lição do Caixa Seguro: o painel rola na própria caixa."""
     assert "overflow-hidden" not in codigo(HISTORICO)
+
+
+# ═══════════ 6. quem invalida o pedido limpa o estado do outro ═══════════
+#
+# Achado BLOQUEANTE da revisão adversarial da F4. `enviar`, `retomar` e
+# `novaConversa` compartilham o mesmo `pedidoRef`: incrementá-lo invalida a
+# resposta em voo dos outros — e o `finally` deles NÃO roda, porque checa
+# `pedidoRef.current === meuPedido`. Quem incrementa tem de limpar o estado
+# de quem invalidou, senão a flag fica presa:
+#   • retomar sem `setEnviando(false)` → `enviando` preso em `true`: o campo
+#     e o Enter param, a bolha "está consultando…" congela, e a conversa
+#     recém-retomada NUNCA pode ser continuada (a função central da F4);
+#   • enviar sem `setRetomando(false)` → `retomando` preso: todo clique
+#     futuro no histórico é descartado em silêncio (`if (retomando) return`).
+# `novaConversa` já fazia certo; `retomar` copiou o incremento e não a
+# compensação.
+
+def _bloco(fonte: str, inicio: str, fim: str) -> str:
+    return fonte.split(inicio)[1].split(fim)[0]
+
+
+def test_retomar_libera_o_envio_em_voo():
+    bloco = _bloco(codigo(PAGINA), "async function retomar(", "function novaConversa")
+    assert "++pedidoRef.current" in bloco
+    assert "setEnviando(false)" in bloco, \
+        "retomar invalida o enviar em voo — sem este reset o chat trava para sempre"
+
+
+def test_enviar_libera_a_retomada_em_voo():
+    bloco = _bloco(codigo(PAGINA), "async function enviar(", "async function retomar(")
+    assert "++pedidoRef.current" in bloco
+    assert "setRetomando(false)" in bloco, \
+        "enviar invalida a retomada em voo — sem este reset o histórico para de responder"
+
+
+def test_nova_conversa_continua_limpando_tudo():
+    """Não-regressão: era o único que já fazia certo."""
+    bloco = _bloco(codigo(PAGINA), "function novaConversa()", "const plotavel")
+    assert "++pedidoRef.current" in bloco or "pedidoRef.current++" in bloco
+    assert "setEnviando(false)" in bloco
+    assert "setRetomando(false)" in bloco or "setRetomando" not in codigo(PAGINA)
+
+
+def test_painel_nao_empurra_o_chat_em_tela_estreita():
+    """Abaixo de `sm` o contêiner é flex-COLUNA: um aside `shrink-0` sem
+    teto de altura empurra o chat (`flex-1`, basis 0) para altura zero."""
+    fonte = codigo(HISTORICO)
+    assert "sm:shrink-0" in fonte, "o shrink-0 não pode valer no empilhado"
+    assert re.search(r"max-h-\S+\s+sm:max-h-none", fonte), \
+        "no empilhado o painel precisa de teto próprio e rolar por dentro"

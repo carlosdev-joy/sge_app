@@ -111,7 +111,12 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   async function enviar(mensagemBruta?: string) {
     const conteudo = (mensagemBruta ?? texto).trim()
     if (!conteudo || enviando) return
+    // Assumir o pedido INVALIDA a retomada em voo — e quem invalida tem de
+    // limpar o estado dela, senão `retomando` fica preso em `true` e todo
+    // clique futuro no histórico é descartado em silêncio (`if (retomando)
+    // return`). Achado da revisão adversarial da F4.
     const meuPedido = ++pedidoRef.current
+    setRetomando(false)
     setMensagens(m => [...m, { id: novoId(), papel: 'user', texto: conteudo }])
     setTexto('')
     setEnviando(true)
@@ -145,7 +150,16 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
 
   async function retomar(id: string) {
     if (retomando) return
+    // Espelho do que `novaConversa` faz: incrementar `pedidoRef` invalida a
+    // resposta de um `enviar` em voo, e o `finally` dele NÃO vai rodar
+    // (`pedidoRef.current !== meuPedido`). Sem este `setEnviando(false)`,
+    // `enviando` fica `true` para sempre: o campo e o Enter param, a bolha
+    // "está consultando…" congela, e a conversa recém-retomada nunca pode
+    // ser continuada — justamente a função central da F4. Achado da revisão
+    // adversarial (o `novaConversa` já tinha a compensação; o `retomar`
+    // copiou o incremento e esqueceu dela).
     const meuPedido = ++pedidoRef.current
+    setEnviando(false)
     setRetomando(true)
     try {
       const d = await apiFetch<ConversaDetalhe>(`/agentes/conversas/${encodeURIComponent(id)}`)
@@ -180,6 +194,11 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   }
 
   function novaConversa() {
+    // Mesma regra de `enviar`/`retomar`: incrementar o pedido invalida o
+    // que estiver em voo, e o `finally` do outro não roda — então quem
+    // incrementa limpa as DUAS flags. Faltava `setRetomando(false)` aqui:
+    // clicar em "nova conversa" durante uma retomada deixava `retomando`
+    // preso e o histórico parava de responder.
     pedidoRef.current++
     setMensagens([])
     setProjeto(null)
@@ -187,6 +206,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
     setGrafoAberto(false)
     setStageSel(null)
     setEnviando(false)
+    setRetomando(false)
     try { localStorage.removeItem(chaveDaConversa(agente.id)) } catch { /* ignore */ }
   }
 
