@@ -18,6 +18,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { mensagemDeErro } from '../../lib/agentes'
+import { PromptAgente } from './PromptAgente'
 import { Button } from '../ui/Button'
 import { InfoBanner } from '../ui/InfoBanner'
 import { Input, Select } from '../ui/Input'
@@ -318,6 +319,9 @@ export function AgentesTab() {
           </section>
         )
       }))}
+
+      {/* Prompt do domínio, com versões (spec docs/spec-agentes-admin.md A2). */}
+      {agentes.map(ag => <PromptAgente key={`prompt-${ag.id}`} agente={ag} />)}
     </div>
   )
 }

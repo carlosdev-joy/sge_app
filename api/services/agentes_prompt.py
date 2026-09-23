@@ -18,6 +18,7 @@ O prompt é montado em `services/agentes._prompt_sistema`: contexto da conversa
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 
@@ -241,3 +242,71 @@ def gravar_versao(conn, cur, *, agente_id: str, texto: str, motivo: str, matricu
             raise PromptMudou(novo["versao"] if novo else n_atual) from e
         raise
     return versao_ativa(cur, agente_id)
+
+
+# ── vigência e uso de cada versão (BK-1 da spec admin, pedido do usuário) ───
+#
+# Início = `criado_em` da versão; fim = `criado_em` da versão SEGUINTE (o
+# momento exato em que se versionou). Os dois já estão gravados — derivar
+# mantém a tabela só-acrescenta (T1), sem UPDATE de "fim" na versão anterior.
+# A versão 0 (padrão do código) vale desde o deploy, que o banco não registra:
+# sem início. `agora` vem do BANCO (`GETDATE()`, BRT), o mesmo relógio do
+# `criado_em` — o relógio do container da API pode estar em outro fuso.
+
+def agora_do_banco(cur):
+    cur.execute("SELECT GETDATE()")
+    return cur.fetchone()[0]
+
+
+def vigencia(versoes: list[dict], agora) -> dict[int, dict]:
+    """`versoes`: as gravadas, em qualquer ordem. Devolve, por número de versão
+    (inclusive o 0): `vigente_de`, `vigente_ate` (None = é a ativa) e
+    `duracao_s` (até `agora` para a ativa; None sem início conhecido)."""
+    ordem = sorted(versoes, key=lambda v: v["versao"])
+    saida: dict[int, dict] = {}
+    inicios = [None] + [v["criado_em"] for v in ordem]          # v0 não tem início
+    numeros = [0] + [v["versao"] for v in ordem]
+    for i, n in enumerate(numeros):
+        de = inicios[i]
+        ate = inicios[i + 1] if i + 1 < len(inicios) else None
+        fim = ate if ate is not None else agora
+        dur = int((fim - de).total_seconds()) if de is not None and fim is not None else None
+        saida[n] = {"vigente_de": de, "vigente_ate": ate, "duracao_s": dur}
+    return saida
+
+
+def uso_por_versao(cur, agente_id: str) -> dict[int, dict]:
+    """Respostas dadas por cada versão e o tempo médio delas — lido do
+    rastreio que a A1 grava em `artefatos_json` (`prompt_versao` e
+    `duracao_ms`). Só enxerga as conversas ainda guardadas (retenção de
+    `RETENCAO_CONVERSAS_DIAS`). Agregado em Python, não com OPENJSON: não
+    depende do nível de compatibilidade do banco de produção."""
+    cur.execute(
+        "SELECT m.artefatos_json FROM dbo.etl_agente_mensagem m "
+        "JOIN dbo.etl_agente_conversa c ON c.conversa_id = m.conversa_id "
+        "WHERE c.agente = ? AND m.papel = 'assistant' AND m.artefatos_json LIKE ?",
+        [agente_id, '%"prompt_versao"%'])
+    soma: dict[int, list[int]] = {}
+    for (bruto,) in cur.fetchall():
+        try:
+            itens = json.loads(bruto or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(itens, list):
+            continue
+        versao = duracao = None
+        for a in itens:
+            if not isinstance(a, dict):
+                continue
+            if isinstance(a.get("prompt_versao"), int) and not isinstance(a.get("prompt_versao"), bool):
+                versao = a["prompt_versao"]
+            if isinstance(a.get("duracao_ms"), int) and not isinstance(a.get("duracao_ms"), bool):
+                duracao = a["duracao_ms"]
+        if versao is None:
+            continue
+        r = soma.setdefault(versao, [0, 0, 0])  # respostas, soma_ms, com_duracao
+        r[0] += 1
+        if duracao is not None:
+            r[1] += duracao
+            r[2] += 1
+    return {v: {"respostas": n, "duracao_media_ms": (ms // k if k else None)} for v, (n, ms, k) in soma.items()}

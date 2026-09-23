@@ -63,9 +63,9 @@ class _BancoPrompt(_BancoRota):
     def cursor(self):
         return _CursorPrompt(self)
 
-    def gravar(self, versao, texto, *, agente="datastage", motivo="m", por="ADM1", origem=None):
+    def gravar(self, versao, texto, *, agente="datastage", motivo="m", por="ADM1", origem=None, criado_em=None):
         self.prompts.append({"agente_id": agente, "versao": versao, "texto": texto, "motivo": motivo,
-                             "origem_versao": origem, "criado_em": None, "criado_por": por})
+                             "origem_versao": origem, "criado_em": criado_em or self.agora(), "criado_por": por})
         self._fixar()
 
 
@@ -74,6 +74,15 @@ class _CursorPrompt(_CursorRota):
         b = self.b
         p = list(params or ())
         s = " ".join(sql.lower().split())
+        if s == "select getdate()":
+            self._rows = [(b.agora(),)]
+            return
+        if s.startswith("select m.artefatos_json from dbo.etl_agente_mensagem m join"):
+            # o dublê só tem conversas do DataStage
+            self._rows = [] if p[0] != "datastage" else [
+                (m["artefatos"],) for msgs in b.mensagens.values() for m in msgs
+                if m["papel"] == "assistant" and m["artefatos"] and "prompt_versao" in m["artefatos"]]
+            return
         if "etl_agente_prompt" not in s:
             return super().execute(sql, params)
         b.execs.append((sql, tuple(p)))
@@ -102,7 +111,7 @@ class _CursorPrompt(_CursorRota):
             if any(r["agente_id"] == agente and r["versao"] == versao for r in b.prompts):
                 raise RuntimeError("Violation of UNIQUE KEY constraint 'UQ_etl_agente_prompt_versao'. (2627)")
             b.prompts.append({"agente_id": agente, "versao": versao, "texto": texto, "motivo": motivo,
-                              "origem_versao": origem, "criado_em": None, "criado_por": por})
+                              "origem_versao": origem, "criado_em": b.agora(), "criado_por": por})
         else:
             raise AssertionError(f"SQL inesperado em etl_agente_prompt: {sql}")
 
@@ -526,3 +535,56 @@ def test_versao_enorme_e_422_ou_404_sem_abrir_conexao(ambiente):
     r = cliente.put(URL, json={"texto": "Texto.", "motivo": "motivo", "versao_base": 10**30})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "versao_base_invalida"
     assert banco.aberturas == 0
+
+
+# ═══════════ BK-1: vigência e uso de cada versão ══════════════════════════
+
+def test_vigencia_pura_inicio_fim_e_duracao():
+    import datetime as dt
+    t = dt.datetime(2026, 9, 23, 10, 0, 0)
+    versoes = [{"versao": 2, "criado_em": t + dt.timedelta(hours=3)}, {"versao": 1, "criado_em": t}]
+    v = apr.vigencia(versoes, agora=t + dt.timedelta(hours=5))
+    assert v[0] == {"vigente_de": None, "vigente_ate": t, "duracao_s": None}   # padrão: desde o deploy
+    assert v[1] == {"vigente_de": t, "vigente_ate": t + dt.timedelta(hours=3), "duracao_s": 3 * 3600}
+    assert v[2] == {"vigente_de": t + dt.timedelta(hours=3), "vigente_ate": None, "duracao_s": 2 * 3600}
+
+
+def test_vigencia_sem_versao_gravada_so_tem_a_zero_ativa_sem_inicio():
+    assert apr.vigencia([], agora=object()) == {0: {"vigente_de": None, "vigente_ate": None, "duracao_s": None}}
+
+
+def test_listar_versoes_traz_vigencia_duracao_e_respostas(chat):
+    import datetime as dt
+    cliente, banco, _ = chat
+    t = dt.datetime(2026, 9, 23, 10, 0, 0)
+    banco.deslocamento = t - dt.datetime.now()          # "agora" do banco = 10:00
+    cliente.post("/agentes/datastage/conversar", json={"mensagem": "com o padrão"})      # v0
+    _put(cliente, texto="Um.")                                                           # v1 às 10:00
+    banco.deslocamento += dt.timedelta(hours=2)
+    cliente.post("/agentes/datastage/conversar", json={"mensagem": "com a v1"})          # v1
+    cliente.post("/agentes/datastage/conversar", json={"mensagem": "de novo com a v1"})  # v1
+    _put(cliente, texto="Dois.", versao_base=1)                                          # v2 às 12:00
+    banco.deslocamento += dt.timedelta(minutes=30)                                        # agora 12:30
+    r = cliente.get(URL + "/versoes").json()
+    por = {v["versao"]: v for v in r["versoes"]}
+    assert por[1]["vigente_de"] == "2026-09-23 10:00:00" and por[1]["vigente_ate"] == "2026-09-23 12:00:00"
+    assert por[1]["duracao_s"] == 2 * 3600 and por[1]["respostas"] == 2
+    assert por[2]["vigente_ate"] is None and por[2]["duracao_s"] == 30 * 60 and por[2]["respostas"] == 0
+    assert por[0]["vigente_de"] is None and por[0]["vigente_ate"] == "2026-09-23 10:00:00"
+    assert por[0]["respostas"] == 1 and por[0]["duracao_s"] is None
+    assert isinstance(por[1]["duracao_media_ms"], int)
+    assert r["agora"] == "2026-09-23 12:30:00" and r["retencao_dias"] == svc.RETENCAO_CONVERSAS_DIAS
+
+
+def test_uso_ignora_artefato_torto_e_conta_sem_duracao():
+    cur = MagicMock()
+    cur.fetchall.return_value = [
+        ('[{"prompt_versao": 1, "prompt_hash": "x"}, {"duracao_ms": 100}]',),
+        ('[{"prompt_versao": 1}, {"duracao_ms": 300}]',),
+        ('[{"prompt_versao": 1}]',),                    # sem duração: conta a resposta, não a média
+        ('não é json',), ('{"prompt_versao": 1}',), (None,),
+        ('[{"prompt_versao": true}, {"prompt_versao": "2"}]',),
+    ]
+    assert apr.uso_por_versao(cur, "datastage") == {1: {"respostas": 3, "duracao_media_ms": 200}}
+    sql, params = cur.execute.call_args[0]
+    assert "c.agente = ?" in sql and params == ["datastage", '%"prompt_versao"%']

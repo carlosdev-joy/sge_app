@@ -496,3 +496,77 @@ export function chaveDaConversa(agenteId: string, matricula: string): string {
   return `${PREFIXO_CONVERSA_AGENTE}${matricula.trim().toUpperCase()}_${agenteId}`
 }
 
+
+// ── Prompt do domínio: versões (spec docs/spec-agentes-admin.md A2 + BK-1) ──
+
+/** Uma versão do domínio do prompt (`/agentes/admin/agentes/{id}/prompt…`). */
+export interface VersaoPrompt {
+  versao: number
+  motivo: string
+  origem_versao: number | null
+  criado_em: string | null
+  criado_por: string | null
+  /** Versão 0 = padrão do código (vale desde o deploy; início não registrado). */
+  padrao: boolean
+  tamanho: number
+  hash: string
+  texto?: string
+  // BK-1 — só na listagem
+  vigente_de?: string | null
+  /** `null` = é a ativa. */
+  vigente_ate?: string | null
+  duracao_s?: number | null
+  respostas?: number
+  duracao_media_ms?: number | null
+}
+
+export interface PromptResposta {
+  agente: string
+  ativa: VersaoPrompt & { texto: string }
+  parte_fixa: { antes: string; depois: string }
+  limites: { texto_max: number; motivo_min: number; motivo_max: number }
+}
+
+export interface VersoesPromptResposta {
+  agente: string
+  ativa: number
+  versoes: VersaoPrompt[]
+  agora: string | null
+  retencao_dias: number
+}
+
+/**
+ * O motivo obrigatório de uma versão. O backend conta em unidades UTF-16 (o
+ * que o `NVARCHAR(200)` conta) — e `String.length` do JS já é UTF-16, então a
+ * mesma régua vale dos dois lados.
+ */
+export function motivoValido(motivo: string, min = 3, max = 200): boolean {
+  const n = motivo.trim().length
+  return n >= min && n <= max
+}
+
+/** Quanto tempo uma versão ficou (ou está) em uso: "3 h 20 min", "2 d 4 h". */
+export function duracaoDaVigencia(segundos: number | null | undefined): string {
+  if (typeof segundos !== 'number' || !Number.isFinite(segundos) || segundos < 0) return '—'
+  if (segundos < 60) return 'menos de 1 min'
+  const min = Math.floor(segundos / 60)
+  if (min < 60) return `${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 24) return min % 60 ? `${h} h ${min % 60} min` : `${h} h`
+  const d = Math.floor(h / 24)
+  return h % 24 ? `${d} d ${h % 24} h` : `${d} d`
+}
+
+/** Tempo médio de resposta: "850 ms", "12,4 s". */
+export function tempoMedio(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  return `${(ms / 1000).toFixed(1).replace('.', ',')} s`
+}
+
+/** "23/09/2026 14:02" — data e hora do BANCO, sem conversão de fuso. */
+export function dataHoraCurta(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(iso)
+  return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : '—'
+}

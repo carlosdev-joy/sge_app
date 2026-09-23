@@ -498,9 +498,22 @@ async def agentes_admin_prompt_versoes(agente_id: str, _admin: dict = Depends(ge
     agente_id = _agente_com_prompt(agente_id)
     with _conexao() as (_conn, cur):
         versoes = apr.listar_versoes(cur, agente_id)
-    lista = [_versao_para_api(v, com_texto=False) for v in versoes]
-    lista.append(_versao_para_api(apr.texto_da_versao(None, agente_id, 0), com_texto=False))
-    return {"agente": agente_id, "ativa": versoes[0]["versao"] if versoes else 0, "versoes": lista}
+        agora = apr.agora_do_banco(cur)
+        uso = apr.uso_por_versao(cur, agente_id)
+    # BK-1: de quando a quando cada versão valeu, quanto tempo, e quantas
+    # respostas deu (das conversas ainda guardadas).
+    vig = apr.vigencia(versoes, agora)
+    lista = []
+    for v in versoes + [apr.texto_da_versao(None, agente_id, 0)]:
+        item = _versao_para_api(v, com_texto=False)
+        periodo = vig.get(v["versao"], {})
+        u = uso.get(v["versao"], {})
+        item.update({"vigente_de": _iso(periodo.get("vigente_de")), "vigente_ate": _iso(periodo.get("vigente_ate")),
+                     "duracao_s": periodo.get("duracao_s"), "respostas": u.get("respostas", 0),
+                     "duracao_media_ms": u.get("duracao_media_ms")})
+        lista.append(item)
+    return {"agente": agente_id, "ativa": versoes[0]["versao"] if versoes else 0, "versoes": lista,
+            "agora": _iso(agora), "retencao_dias": svc.RETENCAO_CONVERSAS_DIAS}
 
 
 @router.get("/agentes/admin/agentes/{agente_id}/prompt/versoes/{versao}", tags=["agentes-admin"])
