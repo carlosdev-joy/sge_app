@@ -12,7 +12,7 @@ aprendizado do modelo):
     recusam a rodar — é a guarda central contra "consultas às cegas"
     (risco 28 da spec).
   • `base` — o que o Orquestra já sabe do job (`etl_ds_job_isx` +
-    `etl_job_lineage` `isx_auto`; `etl_agente_fato` só a partir da F5).
+    `etl_job_lineage` `isx_auto`) + os fatos vigentes de `etl_agente_fato` (F5).
     Sempre tentada ANTES de `dsjob`/`dsx_consulta` — é o "base primeiro".
   • `dsjob` — leitura ao vivo no servidor DataStage, só os 5 subcomandos
     read-only que não expõem valor de dado (`ljobs`, `lstages`, `lparams`,

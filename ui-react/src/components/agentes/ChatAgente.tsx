@@ -14,8 +14,9 @@
 // exceto o azul da marca, que já vem com par claro/escuro no projeto.
 import { useEffect, useRef } from 'react'
 import { Send } from 'lucide-react'
-import type { MensagemChat } from '../../lib/agentes'
+import type { DecisaoProposta, MensagemChat } from '../../lib/agentes'
 import { FERRAMENTAS, MAX_MENSAGEM, STATUS_RODADA, quando } from '../../lib/agentes'
+import { CartaoProposta } from './CartaoProposta'
 import { MarkdownAgente } from './MarkdownAgente'
 
 interface Props {
@@ -28,6 +29,10 @@ interface Props {
   bloqueado?: boolean
   motivoBloqueio?: string
   nomeAgente: string
+  /** F5: decidir uma proposta do agente. Sem ele, os cartões não aparecem. */
+  onDecidir?: (id: number, decisao: DecisaoProposta) => void
+  /** Ids com decisão em andamento (botões desabilitados). */
+  decidindo?: ReadonlySet<number>
 }
 
 function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['artefatos']> }) {
@@ -44,6 +49,7 @@ function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['
 
 export function ChatAgente({
   mensagens, valor, onValor, onEnviar, enviando, bloqueado, motivoBloqueio, nomeAgente,
+  onDecidir, decidindo,
 }: Props) {
   const rolagemRef = useRef<HTMLDivElement>(null)
   const campoRef = useRef<HTMLTextAreaElement>(null)
@@ -109,6 +115,23 @@ export function ChatAgente({
                   </p>
                 )}
               </div>
+              {onDecidir && m.propostas?.map(p => (
+                <CartaoProposta
+                  key={p.id}
+                  proposta={p}
+                  decidindo={decidindo?.has(p.id) ?? false}
+                  onDecidir={onDecidir}
+                />
+              ))}
+              {m.propostasRecusadas && m.propostasRecusadas.length > 0 && (
+                // Transparência: o modelo propôs, a régua descartou — o
+                // operador sabe que houve algo e por quê (nada some calado).
+                <p className="text-[11px] text-dim mt-1 px-1" data-agentes-propostas-recusadas>
+                  {m.propostasRecusadas.length === 1
+                    ? `1 proposta descartada: ${m.propostasRecusadas[0]}.`
+                    : `${m.propostasRecusadas.length} propostas descartadas: ${m.propostasRecusadas.join('; ')}.`}
+                </p>
+              )}
               {m.status && STATUS_RODADA[m.status] && (
                 <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-1 px-1"
                    data-agentes-status={m.status}>

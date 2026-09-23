@@ -16,10 +16,10 @@ import { useQuery } from '@tanstack/react-query'
 import { Bot } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import type {
-  AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, EstadoSonda,
-  MensagemChat, RespostaConversa, StatusAgentes,
+  AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, DecisaoProposta, EstadoSonda,
+  MensagemChat, PropostaAgente, RespostaConversa, StatusAgentes,
 } from '../lib/agentes'
-import { SONDA, chaveDaConversa, codigoDoErro, mensagemDeErro } from '../lib/agentes'
+import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, mensagemDeErro } from '../lib/agentes'
 import { HistoricoConversas } from '../components/agentes/HistoricoConversas'
 import { AvisoSonda } from '../components/agentes/AvisoSonda'
 import { ChatAgente } from '../components/agentes/ChatAgente'
@@ -101,6 +101,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   const [stageSel, setStageSel] = useState<string | null>(null)
   const [historicoAberto, setHistoricoAberto] = useState(false)
   const [retomando, setRetomando] = useState(false)
+  const [decidindo, setDecidindo] = useState<ReadonlySet<number>>(() => new Set())
   // Descarta resposta que chega DEPOIS de "nova conversa" — mesmo cuidado do
   // `pedidoRef` do MaestroChat.
   const pedidoRef = useRef(0)
@@ -134,6 +135,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         const novas = [...m, {
           id: novoId(), papel: 'assistant' as const, texto: r.texto,
           artefatos: r.artefatos, status: r.status,
+          propostas: r.propostas?.length ? r.propostas : undefined,
+          propostasRecusadas: r.propostas_recusadas?.length ? r.propostas_recusadas : undefined,
         }]
         guardar(agente.id, { conversa_id: r.conversa_id, projeto: r.projeto, mensagens: novas })
         return novas
@@ -173,6 +176,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         artefatos: m.papel === 'assistant' ? m.artefatos : undefined,
         status: m.status ?? undefined,
         em: m.papel === 'assistant' ? m.criada_em : undefined,
+        propostas: m.papel === 'assistant' && m.propostas?.length ? m.propostas : undefined,
       }))
       setMensagens(msgs)
       setConversaId(d.conversa_id)
@@ -190,6 +194,48 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         : mensagemDeErro(e, 'Não foi possível abrir a conversa.'))
     } finally {
       if (pedidoRef.current === meuPedido) setRetomando(false)
+    }
+  }
+
+  // F5: aprovar/recusar uma proposta. Independe de `pedidoRef` de propósito:
+  // a decisão é sobre UMA proposta que já está gravada no servidor, e vale
+  // mesmo que o usuário troque de conversa enquanto ela é salva — por isso
+  // `aplicarDecisao` procura a proposta pelo id em vez de assumir a conversa
+  // aberta (se ela não estiver mais na tela, nada muda aqui, e a conversa
+  // retomada depois já vem com o estado atual do servidor).
+  async function decidir(id: number, decisao: DecisaoProposta) {
+    if (decidindo.has(id)) return
+    setDecidindo(s => new Set(s).add(id))
+    const aplicar = (p: PropostaAgente) => setMensagens(m => {
+      const novas = aplicarDecisao(m, p)
+      if (novas === m) return m  // a proposta não está na conversa aberta agora
+      // `conversa_id`/`projeto` do que JÁ está guardado, não do fechamento
+      // desta função: eles podem ter mudado enquanto a decisão era salva, e
+      // o guardado é sempre o par das mensagens que estão na tela.
+      const atual = lerGuardada(agente.id)
+      if (atual) guardar(agente.id, { ...atual, mensagens: novas })
+      return novas
+    })
+    try {
+      const r = await apiFetch<{ proposta: PropostaAgente }>(`/agentes/propostas/${id}/decidir`, {
+        method: 'POST',
+        body: JSON.stringify({ decisao }),
+      })
+      aplicar(r.proposta)
+      toast.success(decisao === 'aprovar' ? 'Proposta aprovada e registrada.' : 'Proposta recusada.')
+    } catch (e) {
+      // 409 `proposta_ja_decidida` traz a proposta como está no servidor
+      // (outra aba decidiu antes): sincroniza o cartão em vez de deixá-lo
+      // pedindo uma decisão que já não cabe.
+      const detalhe = (e as { detail?: { proposta?: PropostaAgente } } | null)?.detail
+      if (codigoDoErro(e) === 'proposta_ja_decidida' && detalhe?.proposta) aplicar(detalhe.proposta)
+      toast.error(mensagemDeErro(e, 'Não foi possível registrar a decisão.'))
+    } finally {
+      setDecidindo(s => {
+        const n = new Set(s)
+        n.delete(id)
+        return n
+      })
     }
   }
 
@@ -289,6 +335,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           bloqueado={bloqueado}
           motivoBloqueio={infoSonda?.bloqueia ? infoSonda.titulo : undefined}
           nomeAgente={agente.nome}
+          onDecidir={(id, d) => { void decidir(id, d) }}
+          decidindo={decidindo}
         />
         </div>
       </div>

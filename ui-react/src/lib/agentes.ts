@@ -59,12 +59,43 @@ export interface ArtefatoFerramenta {
   args?: Record<string, unknown>
 }
 
+/** Estados de `etl_agente_proposta.estado` (F5). */
+export type EstadoProposta = 'pendente' | 'aprovada' | 'recusada' | 'expirada'
+
+/**
+ * Uma interpretação do agente que só vira fato se o usuário aprovar (F5).
+ * `evidencia` é um trecho LITERAL do que as ferramentas leram — o backend
+ * recusa a proposta se não achar o trecho lá — e o cartão a mostra ao lado
+ * do que será gravado (risco 15: aprovação sem leitura).
+ */
+export interface PropostaAgente {
+  id: number
+  ds_project: string
+  job_name: string
+  tipo: string
+  chave: string
+  valor: unknown
+  evidencia: string | null
+  motivo: string | null
+  estado: EstadoProposta
+  criada_em: string | null
+  decidida_por: string | null
+  decidida_em: string | null
+  fato_id: number | null
+}
+
+export type DecisaoProposta = 'aprovar' | 'recusar'
+
 export interface RespostaConversa {
   conversa_id: string
   status: StatusRodada
   texto: string
   projeto: string | null
   artefatos: ArtefatoFerramenta[]
+  /** Propostas desta resposta, já gravadas (`pendente`). */
+  propostas?: PropostaAgente[]
+  /** Por que as demais propostas do modelo não passaram pela régua. */
+  propostas_recusadas?: string[]
 }
 
 export interface MensagemChat {
@@ -82,6 +113,10 @@ export interface MensagemChat {
    * da rodada atual não precisa — acabou de acontecer.
    */
   em?: string | null
+  /** Só nas do assistente: as propostas daquela resposta (F5). */
+  propostas?: PropostaAgente[]
+  /** Só na resposta da rodada atual: quantas a régua descartou e por quê. */
+  propostasRecusadas?: string[]
 }
 
 /** `conversa_id` aceito pelo backend: 8 a 36 chars, `[A-Za-z0-9_-]`. */
@@ -218,7 +253,53 @@ export interface ConversaDetalhe extends ConversaResumo {
     status: StatusRodada | null
     artefatos: ArtefatoFerramenta[]
     criada_em: string | null
+    propostas?: PropostaAgente[]
   }[]
+}
+
+/** Rótulo de cada `tipo` de fato/proposta (`agentes_conhecimento.TIPOS_FATO`). */
+export const TIPOS_PROPOSTA: Record<string, string> = {
+  stage: 'stage',
+  parametro: 'parâmetro',
+  tabela: 'tabela',
+  campo: 'campo',
+  lineage: 'lineage',
+  descricao: 'descrição',
+}
+
+export const ESTADO_PROPOSTA: Record<EstadoProposta, string> = {
+  pendente: 'Aguardando sua decisão',
+  aprovada: 'Aprovada',
+  recusada: 'Recusada',
+  expirada: 'Expirada',
+}
+
+/** O valor proposto como texto: string direto, o resto como JSON legível. */
+export function valorDaProposta(valor: unknown): string {
+  if (typeof valor === 'string') return valor
+  try {
+    return JSON.stringify(valor, null, 2) ?? ''
+  } catch {
+    return String(valor)
+  }
+}
+
+/**
+ * Troca, em todas as mensagens, a proposta de mesmo `id` pela versão que o
+ * servidor devolveu depois da decisão. Função pura: a tela chama dentro do
+ * `setMensagens(m => ...)`, e o resultado vai também para o localStorage —
+ * senão, ao recarregar, o cartão voltaria a pedir uma decisão já tomada.
+ */
+export function aplicarDecisao(mensagens: MensagemChat[], proposta: PropostaAgente): MensagemChat[] {
+  // Mesma referência quando a proposta não está nestas mensagens (a conversa
+  // na tela mudou enquanto a decisão era salva): quem chama usa isso para
+  // NÃO regravar o localStorage com mensagens de outra conversa.
+  if (!mensagens.some(m => m.propostas?.some(p => p.id === proposta.id))) return mensagens
+  return mensagens.map(m => (
+    m.propostas?.some(p => p.id === proposta.id)
+      ? { ...m, propostas: m.propostas.map(p => (p.id === proposta.id ? proposta : p)) }
+      : m
+  ))
 }
 
 /** Dias que uma conversa fica disponível — espelha `RETENCAO_CONVERSAS_DIAS`. */
