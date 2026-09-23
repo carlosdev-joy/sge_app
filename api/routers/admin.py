@@ -25,6 +25,7 @@ from routers.airflow import get_airflow_client
 # direta com a credencial do app e fallback RPC pela DAG (BaseHook).
 from routers.copias import _consulta_direta, _introspect_via_dag, _server_da_conexao
 from services import agentes as svc_agentes
+from services import agentes_registro as reg_agentes
 from services import servicenow
 from services.conn_crypto import decrypt_password, encrypt_password
 
@@ -603,9 +604,12 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             # um perfil que require_agente rejeitaria seria dar ao usuário um
             # checkbox marcado que nunca funciona (risco 26 da spec).
             perfil_alvo = row_perfil[0]
+            # Código + agentes criados pela tela (spec admin B1): sem o
+            # registro, um `agente_<id>` do banco passaria sem checar perfil.
+            agentes_reg = reg_agentes.carregar(cur)
             for rec in permissoes:
-                ag = svc_agentes.agente_do_recurso(str(rec).strip())
-                if ag is not None and not svc_agentes.elegivel_por_perfil(ag["id"], perfil_alvo):
+                ag = svc_agentes.agente_do_recurso(str(rec).strip(), agentes_reg)
+                if ag is not None and not svc_agentes.elegivel_por_perfil(ag["id"], perfil_alvo, agentes_reg):
                     raise HTTPException(status_code=422, detail={
                         "code": "agente_perfil_nao_elegivel",
                         "message": (f"Perfil '{perfil_alvo}' não pode receber '{rec}' "
