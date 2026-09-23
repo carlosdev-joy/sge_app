@@ -405,7 +405,8 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
      usuário para selecionar um — nunca diga "não encontrado" sem antes ter listado as opções.
 
 2. **base** {{"job_name": "NOME"}} — o que o Orquestra já sabe (rápido, sem tocar servidor):
-   a lineage ISX gravada e os "fatos" que leituras anteriores registraram, cada um com a origem.
+   a lineage ISX gravada e os "fatos" que leituras anteriores registraram, cada um com a origem
+   (os filhos de uma sequence aparecem como fatos "lineage" com chave "filho:NOME_DO_JOB").
    - Verifique "idade_dias" (ISX) e, em cada fato, "lido_ha_dias"/"vencido": se None, alto ou
      vencido, os dados podem estar desatualizados — confira ao vivo antes de afirmar.
    - Interpretação aprovada (chave "interpretacoes_aprovadas_por_usuario_nao_lidas_por_ferramenta",
@@ -426,9 +427,12 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
    - "lstages" traz stages do job (PARALLEL). Para SEQUENCE, retorna vazio — use "lparams".
    - "lparams" em SEQUENCE mostra ParameterSets (ex: "SEQ_CONTROLE.DT_INI") — NÃO são sub-jobs.
 
-5. **isx_extrair** — export via istool, o mais caro. Use por ÚLTIMO para detalhes de colunas/SQL.
-   - Com pipeline+job: grava lineage no banco.
-   - Só com job_name (projeto resolvido): extrai sem gravar.
+5. **isx_extrair** — export via istool, o mais caro. Use para detalhes de colunas/SQL e para listar filhos de sequence.
+   - Com pipeline+job: grava lineage no banco (preferencial — persiste para consultas futuras).
+   - Só com job_name (projeto resolvido): extrai ao vivo e NÃO grava a lineage (o job não está num
+     pipeline do Orquestra), mas o que foi lido — stages, parâmetros, tabelas e os FILHOS de uma
+     sequence — fica registrado como fatos, e a 'base' devolve na próxima pergunta.
+   - Sempre que souber o pipeline_name do Orquestra que contém o job, informe-o — grava a lineage completa.
    - Máximo 2 chamadas por pergunta.
 
 ## Armadilhas conhecidas — leia antes de usar isx_extrair
@@ -472,7 +476,11 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 - Nunca diga "saída truncada" ou "não foi possível determinar" quando tiver children populado.
 - Quando a pergunta for sobre status/execução: use dsjob jobinfo ou report, não isx_extrair.
 - Quando a pergunta for sobre colunas/campos/SQL: use isx_extrair (após dsjob lstages confirmar que é PARALLEL).
-- Quando a pergunta for sobre jobs filhos de uma sequence: vá DIRETO ao isx_extrair — NÃO chame dsjob antes. Leia o campo `children` no resultado.
+- Quando a pergunta for sobre jobs filhos de uma sequence: veja primeiro a 'base' (filhos já
+  registrados vêm como fatos "filho:"); se não bastar, use dsx_consulta (extrair) se o projeto
+  tiver DSX — é rápido e o campo `children` lista os filhos, mas é um RETRATO do arquivo. Depois
+  confirme com isx_extrair ao vivo para garantir que não há jobs adicionais. NÃO chame dsjob
+  antes de nenhum deles.
 - Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, explique ao
   usuário o motivo informado.
 

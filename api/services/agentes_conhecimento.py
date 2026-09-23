@@ -166,6 +166,21 @@ def fatos_do_isx(resultado: dict | None) -> list[dict]:
     descricao = resultado.get("job_description")
     if descricao:
         fatos.append({"tipo": "descricao", "chave": "job", "valor": {"texto": str(descricao)[:1000]}})
+    return fatos + _fatos_de_filhos(resultado.get("children"))
+
+
+def _fatos_de_filhos(children) -> list[dict]:
+    """Filhos de uma SEQUENCE (ISX ou DSX): o `job_name` real de cada um (o
+    nome da atividade não — é o que confundia o modelo). Sem isto, a pergunta
+    seguinte sobre a mesma sequence fora de pipeline não tinha referência e
+    extraía tudo de novo (relato de produção de 23/09: "8 jobs
+    incompletos"). Como todo fato, é retrato: filho que saiu da sequence
+    fica obsoleto na próxima leitura da mesma origem."""
+    fatos = []
+    for c in children or []:
+        if isinstance(c, dict) and str(c.get("job_name") or "").strip():
+            fatos.append({"tipo": "lineage", "chave": f"filho:{str(c['job_name']).strip()}",
+                          "valor": {"relacao": "job filho desta sequence"}})
     return fatos
 
 
@@ -175,7 +190,7 @@ def fatos_do_dsx(resultado: dict | None) -> list[dict]:
     `etl_job_lineage` (B-22)."""
     if not resultado or not resultado.get("sucesso"):
         return []
-    return _fatos_de_stages(resultado.get("dados"))
+    return _fatos_de_stages(resultado.get("dados")) + _fatos_de_filhos(resultado.get("children"))
 
 
 def fatos_do_dsjob(comando: str, saida_redigida: str) -> tuple[str, list[dict]] | None:

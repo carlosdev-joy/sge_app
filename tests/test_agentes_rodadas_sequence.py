@@ -1,4 +1,4 @@
-"""Ajuste feito em produção em 23/09/2026 (commit 3bf0565 da branch
+"""Ajustes feitos em produção em 23/09/2026 (commits 3bf0565 e 4347a25 da branch
 `feat/agente-datastage-melhorias`), portado para o próximo deploy não o
 desfazer:
 
@@ -32,9 +32,11 @@ def test_quatro_rodadas_de_ferramenta_por_pergunta():
     assert svc.MAX_RODADAS_FERRAMENTA == 4
 
 
-def test_prompt_manda_ir_direto_ao_isx_para_filhos_de_sequence():
+def test_prompt_nao_manda_dsjob_antes_nos_filhos_de_sequence():
+    # 3bf0565 dizia "vá DIRETO ao isx_extrair"; 4347a25 trocou por "DSX
+    # primeiro, depois ISX" — o que se mantém é: nada de dsjob antes.
     p = svc._prompt_sistema("BI_PRESTAMISTA")
-    assert "vá DIRETO ao isx_extrair — NÃO chame dsjob antes" in p
+    assert "NÃO chame dsjob" in p
 
 
 @pytest.mark.asyncio
@@ -61,3 +63,90 @@ async def test_quarta_rodada_ainda_respeita_o_teto_de_tempo(monkeypatch):
                             provedor_cfg={}, identidade="x", campo_identidade=None, ssh_max=10)
     assert r["status"] == "tempo_esgotado"
     assert len(chamadas) < svc.MAX_RODADAS_FERRAMENTA + 1
+
+
+# ═══════════ 4347a25 (produção) + filhos de sequence como fatos ═══════════
+
+def test_prompt_manda_base_dsx_e_isx_para_os_filhos_sem_dsjob():
+    p = svc._prompt_sistema("BI_PRESTAMISTA")
+    assert "veja primeiro a 'base' (filhos já" in p
+    assert "use dsx_consulta (extrair) se o projeto" in p and "o campo `children` lista os filhos" in p
+    assert "confirme com isx_extrair" in p and "NÃO chame dsjob" in p
+    assert "informe-o — grava a lineage completa" in p
+
+
+def test_prompt_nao_diz_que_nada_persiste_sem_pipeline():
+    """Depois da F5, o ISX fora de pipeline grava FATOS (a `base` devolve) —
+    o texto de produção "NÃO persiste no banco" descrevia a F3."""
+    p = svc._prompt_sistema("BI_PRESTAMISTA")
+    assert "NÃO persiste no banco" not in p
+    assert 'os filhos de uma sequence aparecem como fatos "lineage" com chave "filho:NOME_DO_JOB"' in p
+
+
+def test_filhos_da_sequence_viram_fatos():
+    from services import agentes_conhecimento as ac
+    fatos = ac.fatos_do_isx({"children": [
+        {"job_name": "SsdPrs_Ods_00_ext", "activity": "AtividadeVisual"}, {"activity": "sem_job"}, "x",
+        {"job_name": "SsdPrs_Ods_01_ext"}]})
+    assert [(f["tipo"], f["chave"]) for f in fatos] == [
+        ("lineage", "filho:SsdPrs_Ods_00_ext"), ("lineage", "filho:SsdPrs_Ods_01_ext")]
+    assert "AtividadeVisual" not in json.dumps(fatos)  # o nome da atividade não vira fato
+
+
+def test_filho_que_sai_da_sequence_fica_obsoleto():
+    from services import agentes_conhecimento as ac
+    from tests._banco_agentes_f5 import BancoF5
+    banco = BancoF5()
+
+    def _gravar(filhos):
+        ac.gravar_fatos(banco, banco.cursor(), ds_project="BI_PRESTAMISTA", job_name="SeqSsdPrs", pipeline_name=None,
+                        origem="isx", fatos=ac.fatos_do_isx({"children": [{"job_name": f} for f in filhos]}),
+                        evidencia="isx", ds_last_modified="d", matricula="DEV1")
+    _gravar(["A", "B", "C"])
+    _gravar(["A", "C"])
+    assert sorted(f["chave"] for f in banco.vigentes()) == ["filho:A", "filho:C"]
+
+
+
+# ═══════════ o DSX lista os filhos de verdade (revisão do 4347a25) ═════════
+
+def _motor_real():
+    from pathlib import Path
+    raiz = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(raiz / "dags"))
+    from utils.dsx_engine import DSXEngine
+    m = DSXEngine()
+    m.diretorio_base = str(raiz / "dsx")
+    return m
+
+
+def test_dsx_real_lista_os_filhos_da_sequence():
+    """`dsx/seq_geral.dsx` (arquivo real do repo): a sequence chama 4 jobs.
+    O `DSXEngine.extrair` sozinho devolvia `dados=[]` para ela."""
+    m = _motor_real()
+    seq = next(j for j in m.listar_jobs("seq_geral")["jobs"] if j.startswith("Seq_"))
+    assert af.filhos_de_sequence_no_dsx(m, "seq_geral", seq) == [
+        "BiCvp_BaseCobranca_00_ext_Parcelas_Pagas", "BiCvp_BaseCobranca_01_ins_Parcelas_Pagas",
+        "BiCvp_BaseCobranca_02_ext_Parcelas_Clientes", "BiCvp_BaseCobranca_03_ins_Parcelas_Clientes"]
+
+
+@pytest.mark.parametrize("projeto,job", [("seq_geral", "BiCvp_BaseCobranca_00_ext_Parcelas_Pagas"),
+                                         ("seq_geral", "Nao_Existe"), ("arquivo_ausente", "X")])
+def test_sem_filhos_devolve_vazio_sem_levantar(projeto, job):
+    assert af.filhos_de_sequence_no_dsx(_motor_real(), projeto, job) == []
+
+
+@pytest.mark.asyncio
+async def test_dsx_consulta_extrair_devolve_children(monkeypatch):
+    m = _motor_real()
+    seq = next(j for j in m.listar_jobs("seq_geral")["jobs"] if j.startswith("Seq_"))
+    monkeypatch.setattr(af, "_dsx_engine_cls", lambda: (lambda: m))
+    r = await af.ferramenta_dsx_consulta("seq_geral", "extrair", {"job_name": seq})
+    assert r["sucesso"] and len(r["children"]) == 4
+    assert r["dsx_arquivo"] == "seq_geral.dsx" and r["dsx_data"]
+
+
+def test_filhos_do_dsx_viram_fatos():
+    from services import agentes_conhecimento as ac
+    fatos = ac.fatos_do_dsx({"sucesso": True, "dados": [], "children": [{"job_name": "A"}, {"job_name": "B"}]})
+    assert [(f["tipo"], f["chave"]) for f in fatos] == [("lineage", "filho:A"), ("lineage", "filho:B")]
