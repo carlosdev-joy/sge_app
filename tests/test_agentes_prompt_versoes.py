@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -82,6 +83,9 @@ class _CursorPrompt(_CursorRota):
             self._rows = [] if p[0] != "datastage" else [
                 (m["artefatos"],) for msgs in b.mensagens.values() for m in msgs
                 if m["papel"] == "assistant" and m["artefatos"] and "prompt_versao" in m["artefatos"]]
+            return
+        if re.search(r"\bfrom dbo\.etl_agente\b(?!_)", s):  # cadastro (B1): nenhum agente criado pela tela
+            self._rows = []
             return
         if "etl_agente_prompt" not in s:
             return super().execute(sql, params)
@@ -233,11 +237,19 @@ def test_nao_admin_e_403_em_todos(ambiente):
     assert banco.prompts == []
 
 
-def test_agente_desconhecido_e_404_sem_tocar_o_banco(ambiente):
+def test_agente_desconhecido_e_404_sem_ler_nem_gravar_prompt(ambiente):
+    """Desde a B1 um id que não é do código pode ser um agente criado pela
+    tela — a existência custa um SELECT por chave em `etl_agente`. Prompt
+    nenhum é lido nem gravado; e um id fora do formato nem abre conexão."""
     cliente, banco, _ = ambiente
     for r in _todas(cliente, "nao_existe"):
         assert r.status_code == 404 and r.json()["detail"]["code"] == "agente_desconhecido"
-    assert banco.aberturas == 0
+    assert not [q for q, _ in banco.execs if "etl_agente_prompt" in q.lower()]
+    assert banco.prompts == []
+    antes = banco.aberturas
+    for r in _todas(cliente, "Nao-Existe"):
+        assert r.status_code == 404
+    assert banco.aberturas == antes
 
 
 # ═══════════ leitura ══════════════════════════════════════════════════════

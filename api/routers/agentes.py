@@ -41,6 +41,7 @@ from services import agentes_aprendizado as ap
 from services import agentes_conhecimento as ac
 from services import agentes_ferramentas as af
 from services import agentes_prompt as apr
+from services import agentes_registro as reg
 from services import ia_provedor
 
 router = APIRouter()
@@ -191,6 +192,28 @@ def _conexao():
         _fechar(conn, cur)
 
 
+def _agente_existe(agente_id: str) -> bool:
+    """Do código: sem abrir conexão (o `/agentes/status` do DataStage tem o
+    contrato de um acerto de cache não tocar o banco). Criado pela tela: um
+    SELECT por chave."""
+    if svc.agente(agente_id) is not None:
+        return True
+    if not reg.RE_ID.match(agente_id):
+        return False
+    with _conexao() as (_conn, cur):
+        try:
+            return reg.um(cur, agente_id) is not None
+        except Exception as e:  # noqa: BLE001
+            # Sem a 121 (tabela inexistente), só existem os do código. Qualquer
+            # OUTRO erro (deadlock, timeout) sobe como erro — não vira um 404
+            # "agente desconhecido" que mente sobre o que houve. Pelo SQLSTATE
+            # (42S02) ou pelo texto — nunca pelo número "208", que também
+            # aparece como "Process ID 208" numa mensagem de deadlock.
+            if (e.args and e.args[0] == "42S02") or "Invalid object name" in str(e):
+                return False
+            raise
+
+
 @router.get("/agentes/catalogo", tags=["agentes"])
 async def agentes_catalogo(user: dict = Depends(_require_tela)):
     """Agentes que ESTE usuário pode abrir: no catálogo, elegível (perfil e
@@ -199,6 +222,7 @@ async def agentes_catalogo(user: dict = Depends(_require_tela)):
     ainda', o estado normal antes de o admin conceder o primeiro."""
     with _conexao() as (_conn, cur):
         cfg = svc.carregar_config(cur)
+        agentes = reg.carregar(cur)  # código + criados pela tela (spec admin B1)
     # `cadastro_texto` viaja AQUI, e não no `/agentes/status`, por dois
     # motivos: o catálogo já lê a config (custo zero) e o status tem um
     # contrato que não pode mudar — `test_status_cache_hit_nao_toca_banco_nem_sonda`
@@ -209,7 +233,7 @@ async def agentes_catalogo(user: dict = Depends(_require_tela)):
     # MOSTRAR é a tela, e só no estado `sem_cadastro` (`AvisoSonda`, preso
     # por tests/test_agentes_f3_front.py). Não é segredo — é o aviso que o
     # admin escreveu justamente para ser lido por quem precisa se cadastrar.
-    return {"agentes": svc.catalogo_do_usuario(user, cfg),
+    return {"agentes": svc.catalogo_do_usuario(user, cfg, agentes),
             "cadastro_texto": cfg.get("agentes_cadastro_texto") or None}
 
 
@@ -220,7 +244,7 @@ async def agentes_status(agente: str | None = Query(default=None),
     config). `agente` é aceito por simetria com o catálogo mas a sonda é
     sobre o CADASTRO da matrícula — agente-agnóstica; um id desconhecido dá
     404 antes de qualquer chamada de rede."""
-    if agente is not None and svc.agente(agente) is None:
+    if agente is not None and not _agente_existe(agente):
         raise HTTPException(status_code=404, detail={
             "code": "agente_desconhecido", "message": f"Agente '{agente}' não existe"})
     matricula = (user.get("matricula") or "").strip()
@@ -257,7 +281,7 @@ async def agentes_conversas(q: str | None = Query(default=None, max_length=200),
     matricula = (user.get("matricula") or "").strip()
     if not matricula:
         return {"conversas": []}
-    if agente is not None and svc.agente(agente) is None:
+    if agente is not None and not _agente_existe(agente):
         raise HTTPException(status_code=404, detail={
             "code": "agente_desconhecido", "message": f"Agente '{agente}' não existe"})
 
@@ -429,10 +453,22 @@ _EXEMPLO_PROJETO = "<projeto da conversa>"
 
 
 def _agente_com_prompt(agente_id: str) -> str:
-    if svc.agente(agente_id) is None or not apr.tem_padrao(agente_id):
-        raise HTTPException(status_code=404, detail={
-            "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
-    return agente_id
+    """Do código com prompt padrão (sem banco), ou criado pela tela (o prompt
+    dele nasce na versão 1, na criação)."""
+    if (svc.agente(agente_id) is not None and apr.tem_padrao(agente_id)) or \
+            (svc.agente(agente_id) is None and _agente_existe(agente_id)):
+        return agente_id
+    raise HTTPException(status_code=404, detail={
+        "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
+
+
+def _ferramentas_do(agente_id: str) -> tuple[str, ...]:
+    ag = svc.agente(agente_id)
+    if ag is not None:
+        return tuple(ag.get("ferramentas", svc.FERRAMENTAS_DATASTAGE))
+    with _conexao() as (_conn, cur):
+        ag = reg.um(cur, agente_id)
+    return tuple(ag["ferramentas"]) if ag else ()
 
 
 def _422(e: apr.PromptInvalido) -> HTTPException:
@@ -456,6 +492,11 @@ def _versao_para_api(v: dict, *, com_texto: bool) -> dict:
 
 def _ativa(cur, agente_id: str) -> dict:
     v = apr.versao_ativa(cur, agente_id)
+    if v is None and not apr.tem_padrao(agente_id):
+        # Agente da tela sem nenhuma versão: não deveria existir (a criação
+        # grava a 1ª na mesma transação). Não há padrão para onde cair.
+        raise HTTPException(status_code=503, detail={
+            "code": "agente_prompt_indisponivel", "message": "o agente não tem prompt gravado"})
     return _versao_para_api(v or apr.texto_da_versao(cur, agente_id, 0), com_texto=True)
 
 
@@ -466,7 +507,7 @@ async def agentes_admin_prompt_get(agente_id: str, _admin: dict = Depends(get_ad
     agente_id = _agente_com_prompt(agente_id)
     with _conexao() as (_conn, cur):
         ativa = _ativa(cur, agente_id)
-    antes, depois = svc.partes_fixas(_EXEMPLO_PROJETO)
+    antes, depois = svc.partes_fixas(_EXEMPLO_PROJETO, False, _ferramentas_do(agente_id))
     return {"agente": agente_id, "ativa": ativa, "parte_fixa": {"antes": antes, "depois": depois},
             "limites": {"texto_max": apr.TEXTO_MAX, "motivo_min": apr.MOTIVO_MIN, "motivo_max": apr.MOTIVO_MAX}}
 
@@ -504,7 +545,9 @@ async def agentes_admin_prompt_versoes(agente_id: str, _admin: dict = Depends(ge
     # respostas deu (das conversas ainda guardadas).
     vig = apr.vigencia(versoes, agora)
     lista = []
-    for v in versoes + [apr.texto_da_versao(None, agente_id, 0)]:
+    # A "versão 0" (padrão do código) só existe para agente do código.
+    padrao = [apr.texto_da_versao(None, agente_id, 0)] if apr.tem_padrao(agente_id) else []
+    for v in versoes + padrao:
         item = _versao_para_api(v, com_texto=False)
         periodo = vig.get(v["versao"], {})
         u = uso.get(v["versao"], {})
@@ -733,6 +776,78 @@ async def _rodar_e_gravar_interno(ctx: dict, emit_status=None) -> dict:
             "aprendizados_usados": list(resultado.get("aprendizados_usados") or []),
             "aprendizados_sugeridos": list(resultado.get("aprendizados_sugeridos") or []),
             "duracao_ms": duracao_ms}
+
+
+# ── Cadastro de agentes pela tela (spec docs/spec-agentes-admin.md §4.4, B1) ─
+#
+# Só admin. O DataStage aparece na lista (origem "codigo") mas não se altera
+# por aqui — os interruptores dele continuam em /agentes/admin/config. Os
+# criados pela tela nascem DESATIVADOS; ativar é um PUT {"ativo": true}.
+
+def _agente_para_admin(ag: dict, cfg: dict[str, str]) -> dict:
+    return {"id": ag["id"], "nome": ag["nome"], "descricao": ag["descricao"],
+            "origem": ag.get("origem", "codigo"), "acesso": ag.get("acesso", "manual"),
+            "perfis": list(ag["perfis_elegiveis"]), "ferramentas": list(ag.get("ferramentas", ())),
+            "ativo": (cfg.get(ag["config_enabled"]) == "1") if ag.get("config_enabled") else bool(ag.get("ativo")),
+            "recurso": ag["recurso"], "recurso_curador": ag.get("recurso_curador"),
+            "criado_em": _iso(ag.get("criado_em")), "criado_por": ag.get("criado_por"),
+            "atualizado_em": _iso(ag.get("atualizado_em")), "atualizado_por": ag.get("atualizado_por")}
+
+
+def _422_agente(e: reg.AgenteInvalido) -> HTTPException:
+    return HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message})
+
+
+@router.get("/agentes/admin/agentes", tags=["agentes-admin"])
+async def agentes_admin_lista(_admin: dict = Depends(get_admin_user)):
+    with _conexao() as (_conn, cur):
+        cfg = svc.carregar_config(cur)
+        agentes = reg.carregar(cur)
+    return {"agentes": [_agente_para_admin(ag, cfg) for ag in agentes.values()],
+            "ferramentas": list(svc.FERRAMENTAS_DATASTAGE),
+            "ferramentas_servidor": list(svc.FERRAMENTAS_SERVIDOR),
+            "perfis_proibidos": sorted(svc.PERFIS_PROIBIDOS)}
+
+
+@router.post("/agentes/admin/agentes", tags=["agentes-admin"])
+async def agentes_admin_criar(body: dict = Body(default={}), admin: dict = Depends(get_admin_user)):
+    """Cria o agente DESATIVADO, com a versão 1 do prompt na mesma transação."""
+    try:
+        with _conexao() as (conn, cur):
+            campos = reg.validar_criacao(body, reg.perfis_existentes(cur))
+            reg.criar(conn, cur, campos, admin["matricula"])
+            cfg = svc.carregar_config(cur)
+            ag = reg.um(cur, campos["id"])
+    except reg.AgenteInvalido as e:
+        raise _422_agente(e) from None
+    return {"sucesso": True, "agente": _agente_para_admin(ag, cfg)}
+
+
+@router.put("/agentes/admin/agentes/{agente_id}", tags=["agentes-admin"])
+async def agentes_admin_alterar(agente_id: str, body: dict = Body(default={}),
+                                admin: dict = Depends(get_admin_user)):
+    """Alteração parcial; a combinação final é validada inteira. O agente do
+    código não se altera aqui (409)."""
+    if svc.agente(agente_id) is not None:
+        raise HTTPException(status_code=409, detail={
+            "code": "agente_do_codigo",
+            "message": "este agente é do código — liga/desliga em Interruptores; o prompt, na seção Prompt"})
+    if not reg.RE_ID.match(agente_id):
+        raise HTTPException(status_code=404, detail={
+            "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
+    try:
+        with _conexao() as (conn, cur):
+            atual = reg.um(cur, agente_id)
+            if atual is None:
+                raise HTTPException(status_code=404, detail={
+                    "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
+            novo = reg.validar_alteracao(atual, body, reg.perfis_existentes(cur))
+            reg.alterar(conn, cur, agente_id, novo, admin["matricula"])
+            cfg = svc.carregar_config(cur)
+            ag = reg.um(cur, agente_id)
+    except reg.AgenteInvalido as e:
+        raise _422_agente(e) from None
+    return {"sucesso": True, "agente": _agente_para_admin(ag, cfg)}
 
 
 # Teto de rodadas EM ANDAMENTO por usuário (por processo da API). Sem ele,

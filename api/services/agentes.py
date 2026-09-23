@@ -50,8 +50,24 @@ from services.ssh_datastage import DsConsoleError
 log = logging.getLogger(__name__)
 
 # ── Catálogo (código, não tabela) ───────────────────────────────────────────
+#
+# Os agentes do CÓDIGO ficam aqui; os criados pela tela (spec
+# docs/spec-agentes-admin.md, Fase B) vêm de `dbo.etl_agente` pelo registro
+# (`services/agentes_registro.carregar`), no MESMO formato. As funções de
+# catálogo/acesso abaixo recebem esse registro em `agentes=`; sem ele, olham só
+# o `CATALOGO` — é exatamente o comportamento de antes da Fase B.
 
 AGENTE_DATASTAGE = "datastage"
+
+# As ferramentas que `_executar_ferramenta_interna` sabe despachar. Um agente
+# criado pela tela escolhe um SUBCONJUNTO desta tupla — nunca amplia.
+FERRAMENTAS_DATASTAGE = ("resolver_projeto", "base", "dsx_consulta", "dsjob", "isx_extrair")
+# As que tocam o SERVIDOR (SSH/istool/arquivo .dsx). Agente com qualquer uma
+# delas é só por concessão manual, como o DataStage (D3 da spec admin).
+FERRAMENTAS_SERVIDOR = ("dsx_consulta", "dsjob", "isx_extrair")
+# Perfis que NUNCA recebem agente: `consulta` é o perfil de quem entra sem
+# cadastro (deps.py) — acesso por perfil a ele seria acesso a qualquer login.
+PERFIS_PROIBIDOS = frozenset({"consulta"})
 
 CATALOGO: dict[str, dict] = {
     AGENTE_DATASTAGE: {
@@ -69,12 +85,15 @@ CATALOGO: dict[str, dict] = {
         "config_enabled": "agente_datastage_enabled",
         "perfis_elegiveis": ("desenvolvedor",),
         "concessao": "manual_por_usuario",
+        "origem": "codigo",
+        "acesso": "manual",
+        "ferramentas": FERRAMENTAS_DATASTAGE,
     },
 }
 
 
-def agente(agente_id: str) -> dict | None:
-    return CATALOGO.get(agente_id)
+def agente(agente_id: str, agentes: dict[str, dict] | None = None) -> dict | None:
+    return (CATALOGO if agentes is None else agentes).get(agente_id)
 
 
 # ── RBAC por agente ──────────────────────────────────────────────────────────
@@ -91,72 +110,115 @@ def require_agente(agente_id: str, curador: bool = False):
     ag = CATALOGO.get(agente_id)
     if ag is None:
         raise ValueError(f"agente desconhecido no catálogo: {agente_id!r}")
-    recurso = ag["recurso_curador"] if curador else ag["recurso"]
 
     async def _dep(user: dict = Depends(get_current_user)) -> dict:
-        if PERM_ADMIN in user.get("permissoes", []):
-            return user
-        if user.get("perfil") not in ag["perfis_elegiveis"]:
-            raise HTTPException(status_code=403, detail={
-                "code": "agente_nao_elegivel",
-                "message": f"Perfil '{user.get('perfil')}' não pode usar este agente"})
-        if recurso not in user.get("permissoes_extra", []):
-            raise HTTPException(status_code=403, detail={
-                "code": "agente_nao_liberado",
-                "message": "Agente não liberado para este usuário — peça ao administrador"})
+        motivo = motivo_sem_acesso(user, ag, curador=curador)
+        if motivo is not None:
+            raise HTTPException(status_code=403, detail={"code": motivo[0], "message": motivo[1]})
         return user
 
     return _dep
 
 
-def elegivel_por_perfil(agente_id: str, perfil: str) -> bool:
+def elegivel_por_perfil(agente_id: str, perfil: str, agentes: dict[str, dict] | None = None) -> bool:
     """Só a elegibilidade de PERFIL — sem olhar grant nenhum. Usada pelo
     Admin (`user_perm_set`) para recusar (422) conceder `agente_*` a um
     perfil que nunca poderia usá-lo — a mesma régua de `require_agente`, do
     lado de quem concede. `perfil == 'admin'` é sempre elegível (ele já usa
-    o agente por `acao_admin`; recusar o grant explícito seria só atrito)."""
-    ag = CATALOGO.get(agente_id)
+    o agente por `acao_admin`; recusar o grant explícito seria só atrito).
+    `consulta` nunca é (D3 da spec admin), nem que esteja na lista."""
+    ag = agente(agente_id, agentes)
     if ag is None:
         return False
-    return perfil == "admin" or perfil in ag["perfis_elegiveis"]
+    if perfil == "admin":
+        return True
+    return perfil not in PERFIS_PROIBIDOS and perfil in ag["perfis_elegiveis"]
 
 
-def agente_do_recurso(recurso: str) -> dict | None:
-    """`agente_datastage`/`agente_curador` → o agente dono do recurso, ou
-    None se `recurso` não é um recurso de agente (ex.: `tela_jobs`)."""
-    for ag in CATALOGO.values():
-        if recurso in (ag["recurso"], ag["recurso_curador"]):
-            return ag
+def mapa_de_recursos(agentes: dict[str, dict] | None = None) -> dict[str, tuple[dict, str]]:
+    """Recurso → (agente, papel 'uso'|'curador'), EXATO. Um recurso repetido
+    é erro de carga (ValueError), nunca "o primeiro que achar": seria um
+    grant dando dois papéis (a spec admin reserva `curador`/`*_curador` como
+    id justamente para isso não acontecer)."""
+    mapa: dict[str, tuple[dict, str]] = {}
+    for ag in (CATALOGO if agentes is None else agentes).values():
+        for papel, rec in (("uso", ag["recurso"]), ("curador", ag.get("recurso_curador"))):
+            if not rec:
+                continue
+            if rec in mapa:
+                raise ValueError(f"recurso de agente repetido: {rec!r}")
+            mapa[rec] = (ag, papel)
+    return mapa
+
+
+def agente_do_recurso(recurso: str, agentes: dict[str, dict] | None = None) -> dict | None:
+    """`agente_datastage`/`agente_curador`/`agente_<slug>`/`agente_<slug>_curador`
+    → o agente dono do recurso, ou None se `recurso` não é um recurso de
+    agente (ex.: `tela_jobs`)."""
+    par = mapa_de_recursos(agentes).get(recurso)
+    return par[0] if par else None
+
+
+def agente_ligado(config: dict[str, str], agente_id: str, agentes: dict[str, dict] | None = None) -> bool:
+    """O geral (`agentes_enabled`, o kill switch da F3) E o do agente — a
+    chave própria em `etl_app_config` para os do código, o `ativo` da
+    tabela para os criados pela tela. Uma regra só — catálogo, chat e
+    curadoria."""
+    ag = agente(agente_id, agentes)
+    if ag is None or (config.get("agentes_enabled") or "0") != "1":
+        return False
+    if ag.get("config_enabled"):
+        return (config.get(ag["config_enabled"]) or "0") == "1"
+    return bool(ag.get("ativo"))
+
+
+def motivo_sem_acesso(user: dict, ag: dict, *, curador: bool = False) -> tuple[str, str] | None:
+    """Por que `user` NÃO pode usar (ou curar) `ag` — `(code, message)` —, ou
+    None se pode. A mesma régua no catálogo, nas dependências de rota e na
+    tela, para as três nunca discordarem.
+
+    Admin passa sempre. Os demais:
+      • agente do BANCO exige a `tela_agentes` do usuário (com acesso por
+        perfil, sem isto a API ficaria aberta ao perfil inteiro mesmo sem o
+        menu — spec admin §4.2);
+      • perfil elegível, e nunca `consulta`;
+      • acesso MANUAL (e curadoria, sempre): o recurso em `permissoes_extra`
+        — nunca o que vem só do perfil (risco 26 da spec DataStage);
+      • acesso POR PERFIL (só uso): o perfil elegível basta."""
+    if PERM_ADMIN in user.get("permissoes", []):
+        return None
+    if ag.get("origem") == "banco" and "tela_agentes" not in user.get("permissoes", []):
+        return ("agente_sem_tela", "Sem acesso à tela de Agentes — peça ao administrador")
+    perfil = user.get("perfil")
+    if perfil in PERFIS_PROIBIDOS or perfil not in ag["perfis_elegiveis"]:
+        return ("agente_nao_elegivel", f"Perfil '{perfil}' não pode usar este agente")
+    if curador:
+        rec = ag.get("recurso_curador")
+        if not rec or rec not in user.get("permissoes_extra", []):
+            return ("agente_nao_liberado", "Curadoria não liberada para este usuário — peça ao administrador")
+        return None
+    if ag.get("acesso") == "perfil":
+        return None
+    if ag["recurso"] not in user.get("permissoes_extra", []):
+        return ("agente_nao_liberado", "Agente não liberado para este usuário — peça ao administrador")
     return None
 
 
-def agente_ligado(config: dict[str, str], agente_id: str) -> bool:
-    """Os DOIS interruptores ligados: o geral (`agentes_enabled`, o kill
-    switch da F3) e o do agente. Uma regra só — antes repetida no catálogo,
-    no chat e na curadoria."""
-    ag = CATALOGO.get(agente_id)
-    return (ag is not None and (config.get("agentes_enabled") or "0") == "1"
-            and (config.get(ag["config_enabled"]) or "0") == "1")
-
-
-def catalogo_do_usuario(user: dict, config: dict[str, str]) -> list[dict]:
-    """Agentes que `user` pode abrir: no catálogo, elegível (perfil+grant,
-    admin sempre), e com os DOIS interruptores ligados (`agentes_enabled`
-    geral e o do próprio agente). `config` é `{config_key: config_value}` já
-    lido de etl_app_config (mesmas chaves que `_carregar_config` devolve)."""
+def catalogo_do_usuario(user: dict, config: dict[str, str], agentes: dict[str, dict] | None = None) -> list[dict]:
+    """Agentes que `user` pode abrir: elegível (`motivo_sem_acesso`), e com
+    os interruptores ligados (`agente_ligado`). `config` é `{config_key:
+    config_value}` já lido de etl_app_config (mesmas chaves que
+    `carregar_config` devolve)."""
     # Geral desligado: ninguém vê nada, nem o admin (padrão maestro_enabled).
     saida = []
-    is_admin = PERM_ADMIN in user.get("permissoes", [])
-    extras = set(user.get("permissoes_extra", []))
-    for ag in CATALOGO.values():
-        if not agente_ligado(config, ag["id"]):
+    for ag in (CATALOGO if agentes is None else agentes).values():
+        if not agente_ligado(config, ag["id"], agentes):
             continue
-        liberado = is_admin or (
-            user.get("perfil") in ag["perfis_elegiveis"] and ag["recurso"] in extras)
-        if not liberado:
+        if motivo_sem_acesso(user, ag) is not None:
             continue
         saida.append({"id": ag["id"], "nome": ag["nome"], "descricao": ag["descricao"],
-                      "curador": is_admin or ag["recurso_curador"] in extras})
+                      "curador": bool(ag.get("recurso_curador")) and motivo_sem_acesso(user, ag, curador=True) is None,
+                      "ferramentas": list(ag.get("ferramentas", ()))})
     return saida
 
 
@@ -372,10 +434,6 @@ def extrair_pedido_ferramenta(texto: str) -> tuple[str, dict | None]:
 # domínio é `PROMPT_DOMINIO_PADRAO` — o texto que veio da sessão de mapeamento
 # em produção de 22/09/2026 (portado da branch `feat/agente-datastage-melhorias`).
 
-# As ferramentas que `_executar_ferramenta_interna` sabe despachar. A Fase B
-# da spec admin escolhe SUBCONJUNTOS desta tupla — nunca amplia.
-FERRAMENTAS_DATASTAGE = ("resolver_projeto", "base", "dsx_consulta", "dsjob", "isx_extrair")
-
 PROMPT_DOMINIO_PADRAO: dict[str, str] = {AGENTE_DATASTAGE: """Você é o agente de mapeamento de processos DataStage do Orquestra.
 
 Sua função: explicar fluxos DataStage existentes — jobs, tabelas, campos, parâmetros,
@@ -482,14 +540,32 @@ status de execução e lineage.
 """}
 
 
-def _bloco_contexto(projeto: str | None, projeto_tem_dsx: bool) -> str:
+# As ferramentas que dependem do projeto resolvido e as que LEEM um job (as
+# únicas cuja saída serve de evidência de proposta), na ordem em que o texto
+# as cita — com o conjunto inteiro, o texto sai idêntico ao do DataStage.
+_FERRAMENTAS_DE_PROJETO = ("base", "dsjob", "dsx_consulta", "isx_extrair")
+_FERRAMENTAS_QUE_LEEM_JOB = ("dsjob", "isx_extrair", "dsx_consulta")
+
+
+def _lista_ou(itens: list[str]) -> str:
+    """'a' / 'a' ou 'b' / 'a', 'b' ou 'c' — com as aspas simples do texto."""
+    q = [f"'{i}'" for i in itens]
+    return q[0] if len(q) == 1 else ", ".join(q[:-1]) + " ou " + q[-1]
+
+
+def _bloco_contexto(projeto: str | None, projeto_tem_dsx: bool,
+                    ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE) -> str:
+    de_projeto = [f for f in _FERRAMENTAS_DE_PROJETO if f in ferramentas]
+    if not de_projeto:
+        return ""  # nenhuma ferramenta depende de projeto: não há o que resolver
     if projeto:
-        extra_dsx = " (tem arquivo .dsx disponível — dsx_consulta pode ser usada)" if projeto_tem_dsx else ""
+        extra_dsx = (" (tem arquivo .dsx disponível — dsx_consulta pode ser usada)"
+                     if projeto_tem_dsx and "dsx_consulta" in ferramentas else "")
         texto = f"O projeto DataStage desta conversa já está resolvido: {projeto}{extra_dsx}."
     else:
         texto = (
             "Esta conversa AINDA NÃO tem um projeto DataStage resolvido. Antes de usar "
-            "'base', 'dsjob', 'dsx_consulta' ou 'isx_extrair', pergunte ao usuário qual é "
+            f"{_lista_ou(de_projeto)}, pergunte ao usuário qual é "
             "o projeto ou o nome de um pipeline/job do Orquestra, e chame 'resolver_projeto' "
             "assim que tiver um nome candidato — o backend recusa essas ferramentas sem projeto.")
     return f"## Contexto desta conversa\n\n{texto}"
@@ -517,6 +593,26 @@ _BLOCO_REGRAS = """## Regras que valem sempre
 - Você NUNCA altera o DataStage: não importa, não compila, não executa, não para nem apaga nada.
 - Nunca invente informação que não veio de uma ferramenta."""
 
+# Agente com ferramentas mas SEM o bloco de propostas (nenhuma que lê job):
+# a proibição de credencial, que no DataStage mora nas propostas, vem aqui.
+_LINHA_CREDENCIAL = "- Nunca peça, repita nem proponha senha, token ou credencial."
+
+# Agente SÓ DE CONVERSA (spec admin §3.1, variante genérica do bloco 4): não
+# fala em DataStage nem em ferramenta — ele não tem nenhuma.
+_BLOCO_REGRAS_CONVERSA = """## Regras que valem sempre
+
+- Você não tem ferramentas nem acesso a sistemas: responda com o que sabe e com o que o usuário informar.
+- Nunca invente o que não sabe — diga claramente quando não tiver a informação ou o acesso ao dado.
+- Nunca peça, repita nem proponha senha, token ou credencial."""
+
+
+def _bloco_propostas(ferramentas: tuple[str, ...]) -> str:
+    leem = [f for f in _FERRAMENTAS_QUE_LEEM_JOB if f in ferramentas]
+    if not leem:
+        return ""  # sem leitura de job não há evidência — nem proposta, nem aprendizado de uso
+    quem = leem[0] if len(leem) == 1 else ", ".join(leem[:-1]) + " ou " + leem[-1]
+    return _BLOCO_PROPOSTAS.replace("{quem_le}", quem)
+
 
 _BLOCO_PROPOSTAS = """## Propostas e aprendizados (opcional, no bloco final)
 
@@ -529,7 +625,7 @@ propor, na resposta FINAL (a que não pede ferramenta), termine com UM bloco:
   "chave": "o que está sendo descrito", "valor": "a conclusão", "motivo": "por que",
   "evidencia": "trecho COPIADO LITERALMENTE da saída de uma ferramenta desta pergunta"}]}
 ```
-No máximo 3 propostas. O job_name precisa ser um job que dsjob, isx_extrair ou dsx_consulta
+No máximo 3 propostas. O job_name precisa ser um job que {quem_le}
 LERAM nesta pergunta, e a evidência precisa aparecer, igual, no que ESSA leitura devolveu —
 senão a proposta é descartada (o que a 'base' devolve não serve de evidência). Nunca proponha
 senha, token ou valor de parâmetro. Só proponha o que for útil para quem vier depois; na dúvida,
@@ -544,27 +640,41 @@ Ele só passa a valer depois que um curador validar."""
 
 
 def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False, contexto_aprendizados: str = "",
-                    dominio: str | None = None) -> str:
+                    dominio: str | None = None, ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE) -> str:
     """Contexto da conversa + domínio (editável; `None` = padrão do código) +
     blocos fixos, NESSA ordem. O contexto vem PRIMEIRO, como no texto único de
     antes: o domínio manda "resolver_projeto primeiro" e o modelo precisa já
     saber que o projeto está resolvido para não gastar uma rodada à toa
     (revisão adversarial da A0). É um fato da conversa, não uma regra — não há
     o que o domínio sobrescrever nele. Os aprendizados validados vão por
-    último, como antes."""
+    último, como antes.
+
+    `ferramentas` (spec admin Fase B): o conjunto do agente. Com o conjunto
+    inteiro (o DataStage), o texto é o de sempre."""
     if dominio is None:
         dominio = PROMPT_DOMINIO_PADRAO[AGENTE_DATASTAGE]
-    antes, depois = partes_fixas(projeto, projeto_tem_dsx)
+    antes, depois = partes_fixas(projeto, projeto_tem_dsx, ferramentas)
     blocos = [antes, dominio.strip(), depois]
     return "\n\n".join(b for b in blocos if b) + "\n" + (f"\n{contexto_aprendizados}\n" if contexto_aprendizados else "")
 
 
-def partes_fixas(projeto: str | None, projeto_tem_dsx: bool = False) -> tuple[str, str]:
+def partes_fixas(projeto: str | None, projeto_tem_dsx: bool = False,
+                 ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE) -> tuple[str, str]:
     """O que o código monta em volta do domínio: (antes, depois). A tela do
     admin mostra as duas partes só para leitura (spec admin §3.3) — são
-    exatamente as que `_prompt_sistema` usa, não uma cópia."""
-    return (_bloco_contexto(projeto, projeto_tem_dsx),
-            "\n\n".join((_bloco_protocolo(FERRAMENTAS_DATASTAGE), _BLOCO_REGRAS, _BLOCO_PROPOSTAS)))
+    exatamente as que `_prompt_sistema` usa, não uma cópia.
+
+    Segue o conjunto de ferramentas do agente (spec admin §4.3): o contexto só
+    existe se alguma ferramenta depende de projeto e só cita essas; as
+    propostas só entram se alguma lê job; sem ferramenta nenhuma, só a
+    variante genérica das regras."""
+    ferramentas = tuple(f for f in FERRAMENTAS_DATASTAGE if f in ferramentas)  # ordem canônica
+    if not ferramentas:
+        return "", _BLOCO_REGRAS_CONVERSA
+    propostas = _bloco_propostas(ferramentas)
+    regras = _BLOCO_REGRAS if propostas else _BLOCO_REGRAS + "\n" + _LINHA_CREDENCIAL
+    return (_bloco_contexto(projeto, projeto_tem_dsx, ferramentas),
+            "\n\n".join(b for b in (_bloco_protocolo(ferramentas), regras, propostas) if b))
 
 
 def _com_cursor(abrir_conn, fn):
