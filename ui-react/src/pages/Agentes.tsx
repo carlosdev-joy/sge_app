@@ -16,10 +16,11 @@ import { useQuery } from '@tanstack/react-query'
 import { Bot } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import type {
-  AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, EstadoSonda, MensagemChat,
-  RespostaConversa, StatusAgentes,
+  AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, EstadoSonda,
+  MensagemChat, RespostaConversa, StatusAgentes,
 } from '../lib/agentes'
-import { SONDA, chaveDaConversa, mensagemDeErro } from '../lib/agentes'
+import { SONDA, chaveDaConversa, codigoDoErro, mensagemDeErro } from '../lib/agentes'
+import { HistoricoConversas } from '../components/agentes/HistoricoConversas'
 import { AvisoSonda } from '../components/agentes/AvisoSonda'
 import { ChatAgente } from '../components/agentes/ChatAgente'
 import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
@@ -98,6 +99,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   const [enviando, setEnviando] = useState(false)
   const [grafoAberto, setGrafoAberto] = useState(false)
   const [stageSel, setStageSel] = useState<string | null>(null)
+  const [historicoAberto, setHistoricoAberto] = useState(false)
+  const [retomando, setRetomando] = useState(false)
   // Descarta resposta que chega DEPOIS de "nova conversa" — mesmo cuidado do
   // `pedidoRef` do MaestroChat.
   const pedidoRef = useRef(0)
@@ -108,7 +111,12 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   async function enviar(mensagemBruta?: string) {
     const conteudo = (mensagemBruta ?? texto).trim()
     if (!conteudo || enviando) return
+    // Assumir o pedido INVALIDA a retomada em voo — e quem invalida tem de
+    // limpar o estado dela, senão `retomando` fica preso em `true` e todo
+    // clique futuro no histórico é descartado em silêncio (`if (retomando)
+    // return`). Achado da revisão adversarial da F4.
     const meuPedido = ++pedidoRef.current
+    setRetomando(false)
     setMensagens(m => [...m, { id: novoId(), papel: 'user', texto: conteudo }])
     setTexto('')
     setEnviando(true)
@@ -140,7 +148,57 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
     }
   }
 
+  async function retomar(id: string) {
+    if (retomando) return
+    // Espelho do que `novaConversa` faz: incrementar `pedidoRef` invalida a
+    // resposta de um `enviar` em voo, e o `finally` dele NÃO vai rodar
+    // (`pedidoRef.current !== meuPedido`). Sem este `setEnviando(false)`,
+    // `enviando` fica `true` para sempre: o campo e o Enter param, a bolha
+    // "está consultando…" congela, e a conversa recém-retomada nunca pode
+    // ser continuada — justamente a função central da F4. Achado da revisão
+    // adversarial (o `novaConversa` já tinha a compensação; o `retomar`
+    // copiou o incremento e esqueceu dela).
+    const meuPedido = ++pedidoRef.current
+    setEnviando(false)
+    setRetomando(true)
+    try {
+      const d = await apiFetch<ConversaDetalhe>(`/agentes/conversas/${encodeURIComponent(id)}`)
+      if (pedidoRef.current !== meuPedido) return
+      // `em` só nas do ASSISTENTE: é a resposta que pode ter envelhecido —
+      // a pergunta do usuário não "vence" (critério 3 da F4).
+      const msgs: MensagemChat[] = d.mensagens.map((m, i) => ({
+        id: `${id}_${i}`,
+        papel: m.papel,
+        texto: m.conteudo,
+        artefatos: m.papel === 'assistant' ? m.artefatos : undefined,
+        status: m.status ?? undefined,
+        em: m.papel === 'assistant' ? m.criada_em : undefined,
+      }))
+      setMensagens(msgs)
+      setConversaId(d.conversa_id)
+      setProjeto(d.projeto)
+      setGrafoAberto(false)
+      setStageSel(null)
+      guardar(agente.id, { conversa_id: d.conversa_id, projeto: d.projeto, mensagens: msgs })
+    } catch (e) {
+      if (pedidoRef.current !== meuPedido) return
+      // `conversa_expirada` é o caso NORMAL de quem guardou um link de mais
+      // de 30 dias — merece a explicação, não "erro ao carregar".
+      const expirou = codigoDoErro(e) === 'conversa_expirada'
+      toast.error(expirou
+        ? 'Essa conversa passou dos 30 dias e não está mais disponível.'
+        : mensagemDeErro(e, 'Não foi possível abrir a conversa.'))
+    } finally {
+      if (pedidoRef.current === meuPedido) setRetomando(false)
+    }
+  }
+
   function novaConversa() {
+    // Mesma regra de `enviar`/`retomar`: incrementar o pedido invalida o
+    // que estiver em voo, e o `finally` do outro não roda — então quem
+    // incrementa limpa as DUAS flags. Faltava `setRetomando(false)` aqui:
+    // clicar em "nova conversa" durante uma retomada deixava `retomando`
+    // preso e o histórico parava de responder.
     pedidoRef.current++
     setMensagens([])
     setProjeto(null)
@@ -148,6 +206,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
     setGrafoAberto(false)
     setStageSel(null)
     setEnviando(false)
+    setRetomando(false)
     try { localStorage.removeItem(chaveDaConversa(agente.id)) } catch { /* ignore */ }
   }
 
@@ -155,8 +214,16 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
 
   return (
     <>
-      {mensagens.length > 0 && (
-        <div className="flex justify-end -mt-2">
+      <div className="flex justify-end gap-3 -mt-2">
+        <button
+          type="button"
+          onClick={() => setHistoricoAberto(v => !v)}
+          aria-expanded={historicoAberto}
+          className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
+        >
+          {historicoAberto ? 'ocultar histórico' : 'histórico'}
+        </button>
+        {mensagens.length > 0 && (
           <button
             type="button"
             onClick={novaConversa}
@@ -164,8 +231,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           >
             nova conversa
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {sonda && (
         <AvisoSonda
@@ -203,7 +270,16 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         />
       )}
 
-      <div className="flex-1 min-h-0 bg-canvas rounded-lg">
+      <div className="flex-1 min-h-0 flex flex-col sm:flex-row gap-3">
+        {historicoAberto && (
+          <HistoricoConversas
+            agenteId={agente.id}
+            conversaAtual={conversaId}
+            onRetomar={id => { void retomar(id) }}
+            onFechar={() => setHistoricoAberto(false)}
+          />
+        )}
+        <div className="flex-1 min-w-0 min-h-0 bg-canvas rounded-lg">
         <ChatAgente
           mensagens={mensagens}
           valor={texto}
@@ -214,6 +290,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           motivoBloqueio={infoSonda?.bloqueia ? infoSonda.titulo : undefined}
           nomeAgente={agente.nome}
         />
+        </div>
       </div>
     </>
   )

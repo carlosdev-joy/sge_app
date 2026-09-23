@@ -187,8 +187,15 @@ já configurado em Admin › IA (hoje ainda "Caixa Seguro IA"; renomeada na F0);
 
 ## 4. Modelo de dados
 
-Migration `117_agentes.sql` — **idempotente** (`IF OBJECT_ID(...) IS NULL` / `IF NOT EXISTS`, roda 2×), aplicada na
-**etapa 6c** do `scripts/deploy.sh` (responder **s**). Sem migration: a tela avisa e nada quebra (padrão da 110).
+Migrations `117_agentes.sql` (F1) e `118_agentes_titulo_redigido.sql` (F4) — **idempotentes**
+(`IF OBJECT_ID(...) IS NULL` / `IF NOT EXISTS`, rodam 2×), aplicadas na **etapa 6c** do `scripts/deploy.sh`
+(responder **s**). Sem migration: a tela avisa e nada quebra (padrão da 110).
+
+⚠️ **A 118 zera o `titulo` de toda conversa existente no momento em que roda** — é a limpeza dos títulos gravados
+antes da redação (F4). Ela tem de ir na 6c do MESMO deploy que sobe a F4: adiada para um deploy posterior, zeraria
+também os títulos já redigidos que a API nova tiver gravado no intervalo (perda cosmética, mas evitável).
+Pós-deploy: `SELECT COUNT(*) FROM dbo.etl_agente_conversa WHERE titulo IS NOT NULL` (esperado 0 logo após) e
+`SELECT config_value FROM dbo.etl_app_config WHERE config_key = 'agentes_titulo_redigido_em'` (a marca de corte).
 Larguras seguem a origem: `matricula VARCHAR(20)` (= `etl_usuario.matricula`), `ds_project NVARCHAR(50)`,
 `job_name`/`pipeline_name NVARCHAR(200)`. `NVARCHAR(n)` conta UTF-16: cortar com `cortar_utf16`.
 

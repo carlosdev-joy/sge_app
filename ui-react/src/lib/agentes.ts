@@ -75,6 +75,13 @@ export interface MensagemChat {
   artefatos?: ArtefatoFerramenta[]
   /** Só nas do assistente: destaca resposta que não terminou em `ok`. */
   status?: StatusRodada
+  /**
+   * Quando a mensagem foi gravada (ISO do servidor). Só vem nas RETOMADAS:
+   * o que o agente disse há três semanas pode ter envelhecido, e o
+   * operador precisa ver a data antes de agir (critério 3 da F4). Mensagem
+   * da rodada atual não precisa — acabou de acontecer.
+   */
+  em?: string | null
 }
 
 /** `conversa_id` aceito pelo backend: 8 a 36 chars, `[A-Za-z0-9_-]`. */
@@ -191,6 +198,47 @@ export function codigoDoErro(e: unknown): string | null {
     if (typeof code === 'string' && code) return code
   }
   return null
+}
+
+/** Uma conversa na lista do histórico (`GET /agentes/conversas`). */
+export interface ConversaResumo {
+  conversa_id: string
+  agente: string
+  titulo: string | null
+  projeto: string | null
+  criada_em: string | null
+  ultima_msg_em: string | null
+}
+
+/** Uma conversa retomada (`GET /agentes/conversas/{id}`). */
+export interface ConversaDetalhe extends ConversaResumo {
+  mensagens: {
+    papel: 'user' | 'assistant'
+    conteudo: string
+    status: StatusRodada | null
+    artefatos: ArtefatoFerramenta[]
+    criada_em: string | null
+  }[]
+}
+
+/** Dias que uma conversa fica disponível — espelha `RETENCAO_CONVERSAS_DIAS`. */
+export const RETENCAO_CONVERSAS_DIAS = 30
+
+/**
+ * "hoje", "ontem", "há 3 dias" ou a data — para a lista do histórico e para
+ * a data de cada resposta retomada (critério 3 da F4: o operador precisa
+ * saber QUANDO o agente disse aquilo, porque o dado pode ter envelhecido).
+ */
+export function quando(iso: string | null | undefined, agora: Date = new Date()): string {
+  if (!iso) return ''
+  // `T` no lugar do espaço: sem isso o Safari devolve Invalid Date.
+  const d = new Date(iso.replace(' ', 'T'))
+  if (Number.isNaN(d.getTime())) return ''
+  const dias = Math.floor((agora.getTime() - d.getTime()) / 86_400_000)
+  if (dias <= 0) return `hoje ${d.toTimeString().slice(0, 5)}`
+  if (dias === 1) return 'ontem'
+  if (dias < 7) return `há ${dias} dias`
+  return d.toLocaleDateString('pt-BR')
 }
 
 /** Chave de storage da conversa aberta, por agente (mesma ideia de `lib/maestro.ts`). */

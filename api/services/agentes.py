@@ -41,6 +41,7 @@ from fastapi import Depends, HTTPException
 from deps import PERM_ADMIN, get_current_user
 from services import agentes_ferramentas as af
 from services import ia_provedor
+from services.ssh_arquivos import cortar_utf16
 from services.ssh_datastage import DsConsoleError
 
 # ── Catálogo (código, não tabela) ───────────────────────────────────────────
@@ -214,6 +215,70 @@ _TTL_POR_ESTADO_S = {"ok": 600, "sem_cadastro": 60}
 _sonda_cache: dict[str, tuple[str, float]] = {}
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Histórico de conversas (F4) — 30 dias, por usuário
+# ══════════════════════════════════════════════════════════════════════════
+
+# A retenção é aplicada na LEITURA, não só pela purga noturna: uma conversa
+# de 31 dias some da lista assim que vence, mesmo que a DAG não tenha
+# rodado (ou que a 117 tenha sido aplicada sem a DAG nova). Purga e filtro
+# concordam no prazo, mas nenhum dos dois depende do outro para estar certo.
+RETENCAO_CONVERSAS_DIAS = 30
+
+# Quantas RODADAS (par pergunta+resposta) do histórico voltam ao gateway ao
+# retomar. Uma conversa longa não pode crescer sem teto: o custo por token
+# é do gateway corporativo, e o prompt do agente já carrega as ferramentas.
+# 12 rodadas = 24 mensagens.
+MAX_RODADAS_HISTORICO = 12
+
+TITULO_MAX = 200  # largura de etl_agente_conversa.titulo (NVARCHAR(200))
+
+
+def escapar_like(termo: str) -> str:
+    r"""Escapa `%`, `_` e `[` para um LIKE com `ESCAPE '\'`.
+
+    Sem isso, buscar por `100%` ou `job_x` no histórico casaria com muito
+    mais do que o usuário pediu — `_` é curinga de UM caractere e `%` de
+    qualquer sequência. O `\` precisa vir primeiro, senão escaparíamos os
+    escapes que acabamos de inserir.
+    """
+    return (termo.replace("\\", "\\\\")
+                 .replace("%", "\\%")
+                 .replace("_", "\\_")
+                 .replace("[", "\\["))
+
+
+def titulo_da_conversa(mensagem: str) -> str:
+    """A 1ª pergunta vira o título, cortada em `TITULO_MAX` **unidades
+    UTF-16** — a largura real de um NVARCHAR no SQL Server.
+
+    `mensagem[:200]` (fatia de Python) conta CARACTERES: um emoji é 1
+    caractere em Python e 2 unidades UTF-16 no banco, então 200 caracteres
+    podem virar até 400 unidades e estourar a coluna. `cortar_utf16` também
+    não parte um par substituto ao meio (não deixa meio emoji gravado).
+    """
+    return cortar_utf16((mensagem or "").strip(), TITULO_MAX)
+
+
+def ultimas_rodadas(historico: list[dict], max_rodadas: int = MAX_RODADAS_HISTORICO) -> list[dict]:
+    """As últimas `max_rodadas` rodadas do histórico, para mandar ao gateway.
+
+    Corta por MENSAGEM (2 por rodada) mas garante que a janela comece numa
+    pergunta do usuário: começar por uma resposta de assistente deixaria o
+    modelo lendo uma resposta sem a pergunta que a gerou — pior que não ter
+    o contexto. Histórico curto volta inteiro.
+    """
+    if max_rodadas <= 0:
+        return []
+    limite = max_rodadas * 2
+    if len(historico) <= limite:
+        return list(historico)
+    janela = historico[-limite:]
+    if janela and janela[0].get("role") != "user":
+        janela = janela[1:]
+    return janela
+
+
 def sonda_cacheada(matricula: str) -> str | None:
     item = _sonda_cache.get(matricula)
     if item is None:
@@ -250,7 +315,6 @@ _RE_BLOCO_JSON = re.compile(r"```[ \t]*(?:json)?[ \t]*\n?(\{(?:(?!```).)*\})\s*`
 # para a resposta HTTP em si voltar antes do nginx desistir.
 ORCAMENTO_AGENTE_S = 240
 MAX_RODADAS_FERRAMENTA = 3
-MAX_HISTORICO = 12  # mesmo teto do Maestro (MAX_HISTORICO em maestro.py)
 
 
 def extrair_pedido_ferramenta(texto: str) -> tuple[str, dict | None]:
@@ -688,7 +752,14 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     def _resta() -> float:
         return ORCAMENTO_AGENTE_S - (time.monotonic() - t0)
 
-    historico = list(mensagens[-MAX_HISTORICO:])
+    # O corte do histórico vive AQUI, e só aqui: é esta função que monta o
+    # que vai ao gateway. Antes havia dois — este (`mensagens[-12:]`, por
+    # MENSAGEM) e um no router (por RODADA); o de baixo vencia, então
+    # chegavam 6 rodadas em vez de 12 e a janela começava numa RESPOSTA,
+    # sem a pergunta que a gerou. Achado da revisão adversarial da F4: o
+    # teste media a fronteira do router e ficava verde com o gateway
+    # recebendo outra coisa.
+    historico = ultimas_rodadas(mensagens)
     projeto = projeto_atual
     artefatos: list[dict] = []
     extracoes_isx = 0  # no máx. MAX_EXTRACOES_ISX por pergunta (spec F2b, item 5)

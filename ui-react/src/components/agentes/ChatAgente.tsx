@@ -15,7 +15,7 @@
 import { useEffect, useRef } from 'react'
 import { Send } from 'lucide-react'
 import type { MensagemChat } from '../../lib/agentes'
-import { FERRAMENTAS, MAX_MENSAGEM, STATUS_RODADA } from '../../lib/agentes'
+import { FERRAMENTAS, MAX_MENSAGEM, STATUS_RODADA, quando } from '../../lib/agentes'
 import { MarkdownAgente } from './MarkdownAgente'
 
 interface Props {
@@ -101,6 +101,13 @@ export function ChatAgente({
               <div className="rounded-lg rounded-bl-sm px-3 py-2 bg-panel border border-edge text-ink shadow-sm">
                 <MarkdownAgente texto={m.texto} />
                 {m.artefatos && <LinhaFerramentas artefatos={m.artefatos} />}
+                {m.em && (
+                  // Conversa retomada: QUANDO o agente disse isso. O dado
+                  // pode ter envelhecido desde então (critério 3 da F4).
+                  <p className="text-[11px] text-dim mt-1" data-agentes-quando>
+                    {quando(m.em)}
+                  </p>
+                )}
               </div>
               {m.status && STATUS_RODADA[m.status] && (
                 <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-1 px-1"
