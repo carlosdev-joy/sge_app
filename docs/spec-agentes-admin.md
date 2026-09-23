@@ -1,264 +1,358 @@
-# Spec: Tela Admin — Gerenciamento de Agentes
+# Spec: Agentes pela tela de Admin — prompt editável e criação de agentes
 
-**Data:** 2026-09-23  
-**Contexto:** Hoje qualquer ajuste de prompt requer editar código + docker cp + restart do container.
-A tela de Admin deve permitir criar agentes, configurar acesso e editar o prompt sem deploy.  
-**Prioridade:** Alta — elimina ciclo deploy/restart para evolução contínua dos agentes
-
----
-
-> **📋 RASCUNHO — trazido para o repo em 23/09/2026** (commit `c7cff0f` da branch `feat/agente-datastage-melhorias`).
-> Nada disto está implementado. Antes de implementar, decidir os pontos em que esta spec conflita com o que as
-> F1–F6 de `docs/spec-agentes-datastage.md` já decidiram e entregaram:
->
-> 1. **Acesso `tela_padrao` / `perfil`** — o agente **DataStage** é, por decisão do usuário (21/09, 3ª–5ª rodadas),
->    **só por concessão manual, usuário a usuário, e só para o perfil `desenvolvedor`**; `require_agente` ignora de
->    propósito o recurso vindo de perfil (risco 26). Os modos novos só podem valer para **agentes futuros** — o
->    catálogo/migração inicial não pode abrir o `datastage` por perfil ou para a tela inteira.
-> 2. **"Nova seção Admin › Agentes"** — a seção **já existe** (F3/F6: interruptores, gateway, limites, "Quem pode
->    usar" e "Curadores"). A tela proposta deve **estender** a `AgentesTab.tsx`, não criar outra.
-> 3. **`prompt_sistema` editável substituindo o do código** — o prompt carrega as regras das F5/F6 (propostas com
->    evidência literal, aprendizados, blocos `<ferramenta>`/`<aprendizados>` delimitados, projeto antes de consultar).
->    O backend continua impondo as travas (allowlist, projeto validado, régua de proposta), mas um prompt editado sem
->    essas seções quebraria propostas/aprendizados em silêncio. Separar a parte **editável** (instruções do domínio)
->    da parte **fixa** montada pelo código — inclusive a lista de comandos do `dsjob` (`{comandos}`), gerada da
->    allowlist (anti-drift).
-> 4. **Ferramentas por agente (`ferramentas_json`)** — a allowlist é **em código** e "ferramenta nova só por PR"
->    (B-02, risco 24); a config pode só **restringir** o conjunto, nunca ampliar.
-> 5. **Migration `XXXX`** — a próxima livre é a **120** (116–119 já usadas pelos agentes); T-SQL idempotente.
-> 6. **Interruptores duplicados** — `enabled` por agente como "nível adicional" daria três chaves para o DataStage
->    (`agentes_enabled`, `agente_datastage_enabled`, `enabled`); o kill switch da F3 e o 503 `agente_desligado` (chat e
->    curadoria) só olham as antigas. Decidir qual manda ou migrar. Idem `curador_enabled`: `require_agente(curador=True)`
->    e a curadoria exigem o grant `agente_curador` e não conhecem esse flag.
-> 7. **Agente criado pelo banco não funciona sozinho** — o `CATALOGO` e as dependências `require_agente(...)` (montadas
->    no carregamento do módulo), `agente_do_recurso`/`elegivel_por_perfil` (validação do grant em `user_perm_set`), a rota
->    `/agentes/datastage/conversar` e a orquestração (ferramentas, projeto, prompt) são por código e específicos do
->    DataStage; o `RBAC_RECURSOS` do `Admin.tsx` é a 2ª lista à mão; permissão nova exige relogin. Um agente só no banco
->    apareceria no catálogo sem endpoint, sem ferramentas e sem recurso concedível — a spec precisa dizer como ele conversa.
-> 8. **Histórico das versões do prompt** — o prompt carrega regras de segurança ("nunca proponha senha",
->    anti-alucinação); a tabela proposta guarda só `atualizado_por`. Guardar cada versão (quem, quando, o texto)
->    para auditoria e para voltar atrás (apontado na auditoria de segurança final da F7).
-> 9. **Cache de 60 s por processo** — com mais de um worker da API, cada um invalida o próprio cache; o `PUT` só
->    limpa o do worker que o atendeu (os outros levam até 60 s).
-
-## Problema
-
-O catálogo de agentes e os prompts estão hardcoded em `api/services/agentes.py`. Cada ajuste exige:
-1. Editar o arquivo Python
-2. `docker cp` para o container
-3. `docker restart orquestra-api`
-4. Verificar que o container voltou
-
-Isso é impraticável para evolução contínua — prompts precisam de ajuste fino frequente, e novos
-agentes deveriam poder ser criados sem envolver o time de dev a cada iteração.
+**Data:** 2026-09-23 (rascunho `c7cff0f` da equipe, revisado com as decisões do usuário no mesmo dia)
+**Status:** 📋 PROPOSTA — aguardando aprovação para implementar
+**Base:** `docs/spec-agentes-datastage.md` (F0–F7 entregues, PRs #419–#431)
+**Prioridade:** Alta — hoje cada ajuste de prompt exige editar código, `docker cp` e restart da API
 
 ---
 
-## O que muda
+## 1. Problema
 
-### Modelo de dados
+O prompt do agente DataStage e o catálogo de agentes estão em código (`api/services/agentes.py`). Hoje, para ajustar
+uma frase do prompt, é preciso:
 
-**Nova tabela `etl_agente_config`:**
+1. editar o arquivo;
+2. copiar para o container;
+3. reiniciar a API.
+
+Foi assim que a equipe passou a corrigir o prompt direto em produção (22–23/09), e cada correção teve de ser
+portada à mão para o repo. Criar um agente novo exige uma entrega de desenvolvimento inteira.
+
+## 2. Decisões (usuário, 23/09/2026)
+
+| # | Decisão |
+|---|---|
+| D1 | **Duas fases na mesma spec.** **A:** editar o prompt do DataStage pela tela, com versões e sem deploy (resolve a dor principal). **B:** criar agentes novos. |
+| D2 | **Um agente novo pode fazer as duas coisas.** Na criação, o admin escolhe entre **só conversa** (sem ferramenta) e **um subconjunto das ferramentas que já existem**. Ferramenta nova continua **só por PR**: a configuração só restringe a allowlist do código, nunca amplia. |
+| D3 | **Acesso dos agentes novos: manual ou por perfil.** Manual = concessão usuário a usuário, como hoje. Por perfil = todo usuário do perfil escolhido. O modo `tela_padrao` do rascunho sai. O **DataStage continua só manual e só para `desenvolvedor`**, como decidido em 21/09. Restrição da revisão de segurança (**a confirmar pelo usuário**): o acesso **por perfil só vale para agente sem ferramenta que toque servidor** (`dsjob`, `isx_extrair`, `dsx_consulta`) e **nunca** para o perfil `consulta`, que é o perfil dado a quem entra sem cadastro. Agente com essas ferramentas é só manual, pelo mesmo motivo do DataStage (§4.2). |
+| D4 | **O admin edita só a parte do domínio do prompt**: instruções, ordem de uso, armadilhas e tom. O **protocolo** é montado pelo código e aparece na tela **só para leitura**. Protocolo = bloco de ferramenta, catálogo e allowlist, trava de projeto, formato de propostas e aprendizados, e regras de segurança. |
+
+Decisões técnicas tomadas junto (resolvem os pontos 5, 6, 8 e 9 do rascunho):
+
+- **T1 — Versões, nunca edição por cima.** Cada gravação cria uma versão nova, com texto, quem gravou, quando e o
+  motivo. Restaurar também cria uma versão nova, com o texto antigo. Nada é apagado nem atualizado no lugar.
+- **T2 — Sem cache.** O prompt é lido do banco **a cada pergunta**, na mesma conexão curta que já lê a config. Uma
+  leitura por índice custa quase nada perto dos segundos da IA, e acaba o problema do cache de 60 s *por processo*:
+  a API roda com 2 workers, e o `PUT` só limparia o cache de um deles.
+- **T3 — O DataStage não vai para a tabela de agentes.** Ele continua no `CATALOGO` do código, com os interruptores
+  que já tem (`agentes_enabled` + `agente_datastage_enabled`). Os agentes do banco têm um `ativo` próprio. Assim
+  nenhum agente tem três interruptores (ponto 6 do rascunho), e o kill switch geral `agentes_enabled` continua
+  derrubando **todos**.
+- **T4 — Migrations 120 (Fase A) e 121 (Fase B)**, idempotentes: toda migration pode rodar 2×.
+- **T5 — Tudo entra na `AgentesTab.tsx`** que já existe (interruptores, gateway, limites, "Quem pode usar",
+  "Curadores"). Não nasce outra tela.
+
+---
+
+## 3. Fase A — prompt do domínio editável
+
+### 3.1 Separar domínio e protocolo (A0, sem mudança de comportamento)
+
+Hoje `_prompt_sistema()` é um texto único. Ele passa a ser **montado em blocos**:
+
+| Bloco | Origem | Editável |
+|---|---|---|
+| 1. Contexto da conversa: projeto resolvido ou "pergunte o projeto antes" | código | não |
+| 2. Domínio: quem é o agente, ordem de custo, armadilhas, como ler SEQUENCE/PARALLEL, como responder | versão ativa do banco; sem versão, o **padrão do código** (`PROMPT_DOMINIO_PADRAO["datastage"]`) | **sim** |
+| 3. Protocolo de ferramentas: formato do bloco JSON, ferramentas do agente com args obrigatórios, **comandos do `dsjob` gerados da allowlist** (anti-drift) | código | não |
+| 4. Segurança: o agente nunca altera o DataStage, nunca inventa o que não veio de ferramenta | código | não |
+| 5. Propostas e aprendizados: formato, limites, regra da evidência literal, nunca propor senha/token/valor de parâmetro | código | não |
+| 6. Aprendizados validados, anexados como hoje | banco (curadoria) | não |
+
+- Os blocos 4 e 5 são os do DataStage. Um agente só-conversa (Fase B) recebe a **variante genérica** do bloco 4:
+  - nunca inventar o que não sabe;
+  - nunca pedir, repetir nem propor senha, token ou credencial;
+  - dizer claramente quando não tem acesso ao dado.
+
+  Ele não recebe os blocos 3 e 5. O formato de resposta ("como responder") é do domínio em todos os agentes.
+- O padrão do código é **o texto de hoje** dividido nesses blocos. As únicas mudanças no texto:
+  - saem do domínio a linha `Comandos disponíveis: {comandos}` e a seção "Como usar as ferramentas";
+  - vão para os blocos fixos as frases de segurança.
+- Ordem de montagem: **1 → 6**, na ordem da tabela.
+  - O contexto (1) vem antes do domínio, como no texto único de antes. O domínio manda "resolver_projeto primeiro",
+    e o modelo precisa já saber que o projeto está resolvido para não gastar uma rodada à toa (revisão da A0). Ele é
+    um fato da conversa, não uma regra, então o domínio não tem o que sobrescrever nele.
+  - Os blocos 3–6 vêm **depois** do domínio. Assim, o que o admin escrever não passa por cima do protocolo.
+- Como a ordem das seções muda, a A0 é validada **em produção logo depois do deploy** com as perguntas reais da
+  sessão de 22/09. O DEV não tem o gateway de IA nem o DataStage. Se alguma resposta piorar, basta reverter a PR.
+  As perguntas:
+  1. filhos de uma sequence;
+  2. colunas de um job PARALLEL;
+  3. status da última execução;
+  4. job com prefixo `SsdPrs_*` sem projeto.
+
+### 3.2 Modelo de dados — migration 120
 
 ```sql
-CREATE TABLE dbo.etl_agente_config (
-    id               INT IDENTITY PRIMARY KEY,
-    agente_id        VARCHAR(50)  NOT NULL UNIQUE,  -- ex: 'datastage', 'qualidade'
-    nome             VARCHAR(100) NOT NULL,
-    descricao        VARCHAR(500) NOT NULL,
-
-    -- Controle de acesso
-    acesso           VARCHAR(20)  NOT NULL DEFAULT 'manual_por_usuario',
-    -- 'manual_por_usuario': só quem o admin liberar individualmente (modelo atual)
-    -- 'tela_padrao': qualquer usuário com acesso à tela de Agentes
-    -- 'perfil': qualquer usuário com o perfil listado em perfis_elegiveis
-
-    perfis_elegiveis VARCHAR(200) NULL,
-    -- JSON array de perfis, ex: '["desenvolvedor"]'
-    -- Usado apenas quando acesso = 'perfil'
-
-    -- Flags de habilitação (espelham etl_app_config, mas por agente)
-    enabled          BIT          NOT NULL DEFAULT 0,
-    curador_enabled  BIT          NOT NULL DEFAULT 0,
-
-    -- Prompt e ferramentas
-    prompt_sistema   NVARCHAR(MAX) NULL,
-    -- Quando NULL: o backend usa o prompt hardcoded (compatibilidade)
-    -- Quando preenchido: substitui o hardcoded
-
-    ferramentas_json NVARCHAR(MAX) NULL,
-    -- JSON array das ferramentas disponíveis para o agente
-    -- NULL = todas as ferramentas da allowlist padrão
-
-    -- Auditoria
-    criado_em        DATETIME     NOT NULL DEFAULT GETDATE(),
-    criado_por       VARCHAR(20)  NULL,
-    atualizado_em    DATETIME     NOT NULL DEFAULT GETDATE(),
-    atualizado_por   VARCHAR(20)  NULL,
+IF OBJECT_ID('dbo.etl_agente_prompt', 'U') IS NULL
+CREATE TABLE dbo.etl_agente_prompt (
+    id            INT IDENTITY PRIMARY KEY,
+    agente_id     VARCHAR(40)    NOT NULL,
+    versao        INT            NOT NULL,          -- 1, 2, 3… por agente; a ativa é a MAIOR
+    texto         NVARCHAR(MAX)  NOT NULL,          -- só o bloco de domínio
+    motivo        NVARCHAR(200)  NOT NULL,          -- obrigatório: "por que mudou"
+    origem_versao INT            NULL,              -- preenchido quando é uma restauração
+    criado_em     DATETIME2(0)   NOT NULL DEFAULT GETDATE(),   -- BRT, como a 117
+    criado_por    VARCHAR(20)    NOT NULL,
+    CONSTRAINT uq_agente_prompt_versao UNIQUE (agente_id, versao)
 )
 ```
 
-**Migração inicial:** popular com o agente `datastage` existente (prompt atual como valor padrão).
+- **Sem linha = versão 0 = padrão do código.** Não se grava semente: o padrão continua vivendo no código e acompanha
+  as PRs. Restaurar a versão 0 grava o padrão atual como versão nova.
+- O `UNIQUE` barra duas gravações simultâneas com o mesmo número. Quem perde recebe 409.
+
+### 3.3 Backend
+
+- **Leitura por pergunta:** `_preparar_conversa` lê a versão ativa (`SELECT TOP 1 … ORDER BY versao DESC`) na
+  mesma conexão da config.
+  - Se a leitura falhar (tabela ainda sem a 120, erro de driver), o **DataStage** usa o padrão do código e registra
+    log `warning`, e o chat não cai. Um **agente do banco** não tem padrão no código: nesse caso responde 503
+    `agente_prompt_indisponivel`.
+- **Rastreio:** a resposta grava `{"prompt_versao": n, "prompt_hash": "<12 hex>"}` em `artefatos_json`, ao lado de
+  `duracao_ms`. O hash (sha256 do domínio usado) diferencia os "padrão do código" de deploys diferentes, que
+  compartilham a versão 0. O `_separar_artefatos` ignora chaves que não conhece.
+- **Endpoints** (admin, no mesmo router, sob `/agentes/admin/`):
+
+  ```
+  GET  /agentes/admin/agentes/{id}/prompt             → versão ativa, texto, "é o padrão?", parte fixa montada (leitura), limites
+  PUT  /agentes/admin/agentes/{id}/prompt             → {texto, motivo, versao_base} → cria a versão seguinte
+  GET  /agentes/admin/agentes/{id}/prompt/versoes     → lista (versão, quando, quem, motivo, tamanho, origem)
+  GET  /agentes/admin/agentes/{id}/prompt/versoes/{v} → texto de uma versão (v=0: padrão do código)
+  POST /agentes/admin/agentes/{id}/prompt/restaurar   → {versao, motivo, versao_base} → cria versão nova com aquele texto
+  ```
+
+- **Validação ao gravar** (422 com `code`):
+  - `prompt_vazio` / `prompt_grande`: texto entre 1 e 20.000 caracteres depois do `strip`;
+  - `motivo_obrigatorio`: motivo com 3 a 200 **unidades UTF-16** (`utf16_len`, porque é o que o `NVARCHAR` conta; o
+    mesmo vale para nome, descrição e perfis na Fase B);
+  - `prompt_com_marcador`: o texto contém marcadores reservados do protocolo (`<ferramenta`, `</ferramenta`,
+    `<aprendizados`, `"ferramenta":`, `"propostas":`, `"aprendizados":`). O domínio não pode imitar o protocolo;
+  - `prompt_com_segredo`: **valor** com cara de credencial. O prompt vai para o gateway de IA a cada pergunta. A
+    regra **não** é o `redigir()`: ele casa `senha`, `token`, `secret` e `Encrypted` em qualquer lugar da linha e
+    recusaria texto normal ("nunca peça a senha", "parâmetros Encrypted", o stage `TokenizerTransform`,
+    "secretaria"). A regra nova só recusa:
+    - uma palavra-chave **inteira** (`\b(senha|password|pwd|token|secret|api_key)\b`) seguida de `:` ou `=` e de
+      um valor de **6 ou mais caracteres sem espaço que tenha dígito ou símbolo**. "Senha: nunca peça" passa;
+      `senha=Abc123` não passa;
+    - ou formatos conhecidos de chave/token:
+      - `Bearer ` seguido de 20 ou mais caracteres de token;
+      - `\bsk-[A-Za-z0-9]{20,}` ("risk-" e "disk-" passam);
+      - blocos `-----BEGIN … KEY-----`.
+
+    Um teste prende que essas frases normais passam e que `senha=Abc123` e `Bearer eyJ…` são recusados;
+  - `agente_desconhecido` (404): id fora do catálogo.
+- **Concorrência:** `versao_base` diferente da versão ativa → **409 `prompt_mudou`**, com a versão atual no corpo. A
+  tela avisa "outro admin gravou antes de você".
+- **Parte fixa na tela:** o `GET` devolve os blocos 1 e 3–5 montados com um projeto de exemplo, só para leitura. O admin
+  vê exatamente o que vai junto com o texto dele.
+
+### 3.4 Front (A2)
+
+Na `AgentesTab.tsx`, a seção **"Prompt — {nome do agente}"**:
+
+- Editor monospace de ~20 linhas, com contador de caracteres, campo **Motivo** (obrigatório) e botão **Salvar
+  versão**.
+- Indicação da versão ativa ("versão 4, por 123456 em 23/09 14:02", ou "padrão do código").
+- Aviso: "vale a partir da próxima pergunta, sem reiniciar nada".
+- **Parte fixa (montada pelo Orquestra)** recolhida, só leitura.
+- **Histórico de versões**: lista com quem, quando e o motivo; "ver texto"; **Restaurar** (pede motivo). Mostra a
+  "versão 0 — padrão do código".
+- 409 `prompt_mudou`: mensagem e botão para recarregar a versão nova **sem perder** o texto digitado, que fica
+  copiável.
+
+### 3.5 Critérios de aceite da Fase A
+
+1. Sem nenhuma versão gravada, o prompt montado tem **todos os trechos obrigatórios** de hoje, cada um no bloco
+   certo: regras de sequence, eco tardio, `pipeline_name`, inferência de projeto, formato de propostas e
+   aprendizados. Os testes verificam trechos, como `test_agentes_rodadas_sequence.py` já faz, e não uma foto do texto.
+2. Gravar uma versão muda a resposta **da próxima pergunta**, nos dois workers, sem restart.
+3. Restaurar cria versão nova. Nenhuma linha de `etl_agente_prompt` é apagada nem alterada.
+4. Um texto com marcador reservado ou cara de credencial é recusado com 422 e **não** grava.
+5. Duas gravações com a mesma `versao_base`: a segunda recebe 409.
+6. Com a tabela ausente ou com erro de leitura, o chat funciona com o padrão do código.
+7. Só admin lê ou grava (`get_admin_user`). Não-admin recebe 403.
+8. Cada resposta registra a `prompt_versao` usada.
 
 ---
 
-### Backend (`api/`)
+## 4. Fase B — criar agentes
 
-#### Carregamento do prompt com cache
+### 4.1 Modelo de dados — migration 121
 
-Em `agentes.py`, `_prompt_sistema()` passa a ler do banco com cache de 60s:
-
-```python
-_prompt_cache: dict[str, tuple[str, float]] = {}  # agente_id → (prompt, expira_em)
-_PROMPT_CACHE_TTL = 60  # segundos
-
-def _prompt_sistema(agente_id: str, projeto: str | None, ...) -> str:
-    agora = time.monotonic()
-    if agente_id in _prompt_cache:
-        prompt_db, expira = _prompt_cache[agente_id]
-        if agora < expira:
-            return _montar_prompt(prompt_db, projeto, ...)
-    # cache miss ou expirado — lê do banco
-    try:
-        prompt_db = _com_cursor(abrir_conn, lambda cur: _ler_prompt_db(cur, agente_id))
-    except Exception:
-        prompt_db = None  # fallback para hardcoded
-    _prompt_cache[agente_id] = (prompt_db, agora + _PROMPT_CACHE_TTL)
-    return _montar_prompt(prompt_db, projeto, ...)
+```sql
+IF OBJECT_ID('dbo.etl_agente', 'U') IS NULL
+CREATE TABLE dbo.etl_agente (
+    agente_id        VARCHAR(30)   NOT NULL PRIMARY KEY,  -- slug ^[a-z][a-z0-9_]{2,29}$; nunca reaproveitado
+    nome             NVARCHAR(100) NOT NULL,
+    descricao        NVARCHAR(500) NOT NULL,
+    acesso           VARCHAR(10)   NOT NULL
+        CONSTRAINT ck_etl_agente_acesso CHECK (acesso IN ('manual', 'perfil')),
+    perfis_json      NVARCHAR(200) NOT NULL,              -- ex.: '["desenvolvedor"]' (nunca vazio)
+    ferramentas_json NVARCHAR(400) NOT NULL,              -- '[]' = só conversa; senão subconjunto da allowlist
+    ativo            BIT           NOT NULL DEFAULT 0,
+    criado_em        DATETIME2(0)  NOT NULL DEFAULT GETDATE(),
+    criado_por       VARCHAR(20)   NOT NULL,
+    atualizado_em    DATETIME2(0)  NOT NULL DEFAULT GETDATE(),
+    atualizado_por   VARCHAR(20)   NOT NULL
+)
 ```
 
-O `_montar_prompt()` injeta as seções dinâmicas (projeto resolvido, aprendizados, ferramentas
-disponíveis) no prompt base lido do banco — ou usa o hardcoded se `prompt_db` for `None`.
+- O slug tem no máximo **30** caracteres. Assim `agente_<slug>_curador` (45) cabe no `recurso VARCHAR(50)` e
+  mantém o prefixo `agente_`, que o `Admin.tsx` já tira da matriz de perfis.
 
-#### Novos endpoints (`api/routers/admin_agentes.py`)
+- **Ids reservados**, recusados na criação:
+  - os do `CATALOGO` do código (`datastage`);
+  - as palavras das rotas (`admin`, `catalogo`, `status`, `conversas`, `propostas`, `aprendizados`);
+  - **`curador` e qualquer id terminado em `_curador`**. Sem isso, o uso do agente `curador` seria o
+    `agente_curador` (a curadoria do DataStage), e o uso de `foo_curador` seria igual ao curador de `foo`: um único
+    grant daria dois papéis.
+  - O `agente_do_recurso` passa a resolver por um mapa **exato** recurso → (agente, papel), montado com todos os
+    agentes. Um recurso que aparecer duas vezes é erro de carga, nunca "o primeiro que achar".
+- O prompt do agente novo usa a mesma `etl_agente_prompt` da Fase A. Criar exige o texto inicial, que vira a
+  versão 1. Agente do banco não tem "padrão do código".
+- **Desativar = `ativo = 0`.** Não existe exclusão: conversas, propostas e aprendizados ficam, e o slug não volta a
+  ser usado.
+
+### 4.2 Acesso
+
+- Recurso de uso: **`agente_<slug>`**. Recurso de curador: **`agente_<slug>_curador`**, só para agente com
+  ferramentas (só agente com ferramentas gera aprendizados). O DataStage mantém o `agente_curador`.
+  - Hoje o `agente_do_recurso("agente_curador")` sempre devolve o DataStage. A B1 passa a resolver os dois recursos
+    de cada agente, e os perfis elegíveis ao curador são os mesmos do uso.
+- **Propostas e curadoria passam a ser por agente.** Hoje as rotas são do DataStage: `POST
+  /agentes/propostas/{id}/decidir` exige `agente_datastage`, e `/agentes/aprendizados` lê e decide só a fila do
+  DataStage, sem receber o agente.
+  - Rotas novas: `POST /agentes/{agente_id}/propostas/{id}/decidir`, `GET /agentes/{agente_id}/aprendizados` e
+    `POST /agentes/{agente_id}/aprendizados/{id}/decidir`, com acesso de uso e de curador daquele agente.
+  - A proposta e o aprendizado precisam pertencer ao agente da rota; senão, 404.
+  - As rotas antigas continuam como apelido do DataStage.
+  - A tela chama as rotas com o agente selecionado.
+- **Manual:** o admin concede `agente_<slug>` em "Quem pode usar", que já é montado a partir do catálogo. O
+  `user_perm_set` só aceita o grant para os perfis de `perfis_json`. Para isso, `agente_do_recurso` e
+  `elegivel_por_perfil` passam a enxergar o banco.
+- **Por perfil:** quem tem um perfil de `perfis_json` usa o agente sem grant individual. Para ver o menu, o perfil
+  também precisa da **`tela_agentes`**. O formulário avisa quando o perfil escolhido não tem a tela, e não a
+  concede sozinho.
+- **Catálogo híbrido:** todas as funções que hoje leem só o `CATALOGO` passam a enxergar o banco:
+  `svc.agente()`, `catalogo_do_usuario`, `agente_do_recurso`, `elegivel_por_perfil`, `agente_ligado` e o catálogo
+  do admin. Sem isso, `/agentes/conversas?agente=<slug>` e `/agentes/status` respondem 404 `agente_desconhecido`.
+- A checagem de acesso (`require_agente`) vira dinâmica para as rotas com `{agente_id}`: procura o agente no código
+  e, se não achar, no banco (um `SELECT` por chave). O DataStage continua com a checagem fixa de hoje.
+- **Por perfil só sem ferramenta de servidor e nunca `consulta`** (D3). O `POST`/`PUT` recusa com 422
+  `acesso_perfil_com_servidor` / `perfil_nao_permitido`.
+  - O `require_agente` dinâmico também exige a **`tela_agentes`** do usuário. Hoje as rotas de conversa só olham o
+    recurso do agente, e com acesso por perfil a API ficaria aberta a todo o perfil, mesmo sem o menu.
+- Interruptor: `agente_ligado(cfg, agente)` passa a aceitar o agente do banco. Ele exige `agentes_enabled = "1"`
+  **e** `ativo = 1`. Desligado → 503 `agente_desligado`, como hoje.
+- Continua valendo o gotcha: **concessão manual nova exige novo login**. O modo por perfil vale na próxima
+  requisição.
+
+### 4.3 Execução
+
+- **Rotas genéricas:**
+  - `POST /agentes/{agente_id}/conversar` e `…/conversar/stream`, declaradas **depois** das do DataStage, que
+    continuam exatamente como estão;
+  - o front já chama `/agentes/${agente.id}/conversar`.
+- O `conversar()` recebe a **configuração de execução** do agente: domínio do prompt e conjunto de ferramentas.
+- **Só conversa** (`ferramentas = []`):
+  - o prompt leva **só o domínio (2) + a variante genérica do bloco 4**. Não leva o bloco 1 (contexto de projeto
+    DataStage, que mandaria "pergunte o projeto"), nem o 3, o 5 ou o 6. O formato de resposta é do domínio;
+  - uma rodada só;
+  - um bloco de ferramenta, proposta ou aprendizado que venha na resposta é **ignorado**: não executa e não grava;
+  - não há projeto (o indicador de projeto, o grafo e a curadoria somem da tela desse agente).
+- **Com ferramentas:**
+  - o conjunto é um subconjunto de `resolver_projeto`, `base`, `dsx_consulta`, `dsjob` e `isx_extrair`;
+  - qualquer ferramenta que precise de projeto **inclui `resolver_projeto` sozinha**;
+  - o backend recusa, **antes** da allowlist, uma ferramenta fora do conjunto do agente. Ela entra como ferramenta
+    falha, e o modelo é informado;
+  - trava de projeto, guarda de reexecução, propostas, aprendizados, orçamento de 240 s, `MAX_RODADAS_FERRAMENTA`,
+    teto de 2 rodadas por usuário, gateway e sonda: **tudo igual ao DataStage**, gravado com `agente = <slug>`.
+- A identidade no gateway é a mesma do usuário, e a sonda é compartilhada entre os agentes.
+- **A conversa é presa ao agente.** O `_preparar_conversa` passa a comparar `etl_agente_conversa.agente` com o agente
+  da rota. Conversa de outro agente → 404 `conversa_nao_encontrada`, igual a conversa de outro usuário. Sem isso, a
+  conversa herdaria projeto, histórico e falhas de outro agente.
+- **Pontos com `AGENTE_DATASTAGE` fixo** que a B2 troca pelo agente da rota:
+  - `agente_ligado(…)` e o INSERT da conversa em `_preparar_conversa`;
+  - o INSERT das propostas em `_rodar_e_gravar_interno`;
+  - `_registrar_seguro`, `_erro_conhecido_seguro`, `_recuperar_seguro` e `_rascunhos_pendentes_seguro`.
+- **Fatos compartilhados, de propósito.** Os fatos lidos por ferramenta (`etl_agente_fato`) descrevem **jobs**, não
+  agentes. O que um agente leu serve a todos, que é o objetivo da base.
+  - A interpretação aprovada **mantém `origem = 'interpretacao_aprovada'`**. `origem` é `VARCHAR(30)`, e o código
+    compara esse valor exato em `agentes_conhecimento.py` para mostrá-la como indício e não como fato lido.
+  - O agente que a propôs vai numa coluna nova, `etl_agente_fato.agente VARCHAR(40) NULL`, que a migration 121
+    acrescenta de forma idempotente. Ela é preenchida só na interpretação aprovada.
+
+### 4.4 Endpoints de administração
 
 ```
-GET    /admin/agentes                    → lista todos os agentes (catálogo)
-POST   /admin/agentes                    → cria novo agente
-GET    /admin/agentes/{agente_id}        → detalhes + prompt atual
-PUT    /admin/agentes/{agente_id}        → atualiza nome, acesso, perfis, prompt, enabled
-DELETE /admin/agentes/{agente_id}        → desativa (soft delete — enabled=0, não apaga)
+GET    /agentes/admin/agentes            → código (só leitura, exceto o prompt) + banco
+POST   /agentes/admin/agentes            → cria (slug, nome, descrição, acesso, perfis, ferramentas, prompt inicial, motivo)
+PUT    /agentes/admin/agentes/{id}       → nome, descrição, acesso, perfis, ferramentas, ativo   (409 para agente do código)
 ```
 
-Todos os endpoints exigem `acao_admin`. O `PUT` invalida o cache do prompt imediatamente
-(remove a entrada de `_prompt_cache`) para que a próxima rodada já use o novo prompt — sem
-restart.
+- Validações: slug (formato, não reservado, não existente → 409 `agente_existe`); `acesso` ∈ {manual, perfil};
+  perfis existentes e não vazios; ferramentas ⊆ allowlist; nome e descrição sem marcador de protocolo.
+- O `RBAC_RECURSOS` do `Admin.tsx` é a segunda lista escrita à mão. Os rótulos `agente_<slug>` do editor de
+  permissões passam a vir do catálogo da API, e não da lista.
 
-**Payload `PUT /admin/agentes/{agente_id}`:**
-```json
-{
-  "nome": "Mapeamento DataStage",
-  "descricao": "Explica fluxos DataStage...",
-  "acesso": "manual_por_usuario",
-  "perfis_elegiveis": ["desenvolvedor"],
-  "enabled": true,
-  "curador_enabled": false,
-  "prompt_sistema": "Você é o agente de mapeamento...",
-  "ferramentas_json": null
-}
-```
+### 4.5 Front (B3)
 
-#### Catálogo híbrido
+- `AgentesTab.tsx`:
+  - **lista de agentes** (nome, id, origem código/tela, acesso, ferramentas ou "só conversa", ativo);
+  - **+ Novo agente**: formulário com nome, id (só na criação), descrição, acesso (manual/perfil + perfis),
+    ferramentas ("Nenhuma — só conversa" ou checkboxes) e prompt inicial com motivo;
+  - editar e desativar;
+  - a seção de prompt da Fase A vale para todos.
+- `/agentes`: o seletor já lista o catálogo do usuário. Para agentes só de conversa, somem o indicador de projeto, o
+  grafo e a aba Curadoria.
 
-O catálogo em `CATALOGO` (hardcoded) continua existindo como **fallback** para agentes que ainda
-não migraram para o banco. Na inicialização, `catalogo_do_usuario()` mescla os dois:
-banco tem prioridade sobre hardcoded quando `agente_id` coincide.
+### 4.6 Critérios de aceite da Fase B
+
+1. Um agente criado e ativado aparece no seletor de quem tem acesso **sem deploy**. Desativado, some para todos e a
+   rota responde 503.
+2. `agentes_enabled = 0` derruba o DataStage **e** os agentes do banco.
+3. **Manual:** sem grant, 403; com grant de perfil não elegível, `user_perm_set` recusa. **Por perfil:** só os perfis
+   listados usam, e só com a `tela_agentes`. Criar agente por perfil com `dsjob`/`isx_extrair`/`dsx_consulta`, ou com
+   o perfil `consulta`, é recusado.
+4. **Só conversa:** nenhuma ferramenta executa e nenhuma proposta ou aprendizado grava, mesmo que o modelo mande o
+   bloco.
+5. **Com subconjunto:** pedir uma ferramenta fora do conjunto falha antes de tocar o servidor.
+6. O DataStage não muda nada: rotas, acesso manual, curadoria e interruptores. A suíte F0–F7 continua verde.
+7. Id reservado ou repetido na criação: 422/409.
+8. Conversa, proposta ou aprendizado de outro agente, pela rota de um agente → 404.
+9. O curador de um agente não decide a fila de outro.
 
 ---
 
-### Frontend (tela Admin)
+## 5. Riscos
 
-Nova seção **Admin › Agentes** com duas sub-telas:
-
-#### Lista de agentes
-
-| Campo | Descrição |
+| Risco | Mitigação |
 |---|---|
-| Nome | Nome exibido na tela de Agentes |
-| ID | Identificador interno (slug) |
-| Acesso | `Manual`, `Tela padrão` ou `Por perfil` |
-| Habilitado | Toggle liga/desliga |
-| Ações | Editar / Desativar |
+| Prompt ruim publicado piora as respostas | histórico + restaurar em um clique; `prompt_versao` em cada resposta mostra quando piorou |
+| Admin apaga uma regra de segurança do texto | as regras de segurança ficam nos blocos fixos (D4), e o backend continua impondo allowlist, projeto e régua de proposta |
+| Domínio imitando o protocolo ou com segredo | 422 `prompt_com_marcador` / `prompt_com_segredo` |
+| Reordenar o prompt na A0 muda o comportamento do DataStage | contexto do projeto mantido no topo; validação em produção logo depois do deploy, com as perguntas reais; reverter a PR se piorar (§3.1) |
+| Agente com ferramentas dá acesso a SSH/ISX para mais gente | ferramentas só do código, subconjunto escolhido por admin, mesmos limites e travas; acesso por perfil exige ação explícita do admin |
+| Correções direto no container voltarem | com o prompt no banco, ajuste de texto deixa de precisar de container; mudança de código continua por PR |
 
-Botão **+ Novo Agente** abre o formulário de criação.
+## 6. Entregas (uma PR cada, QA adversarial antes de abrir)
 
-#### Formulário de criação / edição
+| Fase | Entrega | Deploy |
+|---|---|---|
+| **A0** | separar domínio e protocolo em `_prompt_sistema`; teste do prompt montado; validação em produção depois do deploy | API |
+| **A1** | migration 120 + leitura por pergunta + endpoints + validações + `prompt_versao` | 6c `s` (120) + API |
+| **A2** | editor, parte fixa e histórico/restaurar na `AgentesTab` | `dist/` |
+| **B1** | migration 121 + CRUD admin + catálogo híbrido (todas as funções da §4.2) + acesso manual/perfil + checagem dinâmica com `tela_agentes` | 6c `s` (121) + API |
+| **B2** | rotas genéricas (conversa, propostas, curadoria) + conversa presa ao agente + execução só-conversa / subconjunto | API |
+| **B3** | admin: lista/criar/editar/desativar; `/agentes` adaptada; rótulos RBAC vindos da API | `dist/` |
+| **B4** | manual (§3.12/§4.11), release notes, `smoke_agentes.py` estendido | — |
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ Nome do agente          [________________________]       │
-│ ID (slug)               [________________________]       │  ← somente na criação
-│ Descrição               [________________________]       │
-│                                                         │
-│ Controle de acesso                                      │
-│  ○ Manual por usuário  (admin libera um a um)           │
-│  ○ Tela padrão         (qualquer usuário com a tela)    │
-│  ○ Por perfil          [desenvolvedor ▼]                │
-│                                                         │
-│ Habilitado   [●]    Curador habilitado   [○]            │
-│                                                         │
-│ Prompt do sistema                                       │
-│ ┌─────────────────────────────────────────────────────┐ │
-│ │ Você é o agente de mapeamento de processos...       │ │
-│ │                                                     │ │
-│ │ (textarea editável, fonte monospace, ~20 linhas)    │ │
-│ └─────────────────────────────────────────────────────┘ │
-│ ℹ️ Alterações no prompt têm efeito imediato (sem restart)│
-│                                                         │
-│ Ferramentas disponíveis                                 │
-│  ☑ resolver_projeto  ☑ base  ☑ dsx_consulta            │
-│  ☑ dsjob             ☑ isx_extrair                     │
-│                                                         │
-│              [Cancelar]  [Salvar alterações]            │
-└─────────────────────────────────────────────────────────┘
-```
+## 7. Fora do escopo
 
-O botão **Salvar** chama `PUT /admin/agentes/{id}` e exibe confirmação inline.
-Não requer reload da página.
-
----
-
-## Regras de acesso ao novo agente criado via Admin
-
-Quando `acesso = 'tela_padrao'`: qualquer usuário que tenha `tela_agentes` na sua permissão
-de tela já vê e usa o agente — sem grant individual.
-
-Quando `acesso = 'perfil'`: qualquer usuário com o perfil listado em `perfis_elegiveis` vê e usa
-— sem grant individual.
-
-Quando `acesso = 'manual_por_usuario'` (padrão): segue o fluxo atual — admin libera
-usuário a usuário pela tela de permissões.
-
----
-
-## O que NÃO muda
-
-- Autenticação e RBAC por agente: `require_agente()` continua funcionando
-- Endpoints existentes de conversa (`POST /agentes/datastage/conversar`) — inalterados
-- Agentes hardcoded continuam funcionando enquanto não forem migrados para o banco
-- Tabela `etl_app_config`: `agentes_enabled` e `agente_datastage_enabled` continuam
-  existindo como interruptores globais; a nova `enabled` por agente é um nível adicional
-
----
-
-## Arquivos a criar / alterar
-
-| Arquivo | O que muda |
-|---|---|
-| `migrations/XXXX_etl_agente_config.sql` | DDL da nova tabela + INSERT do agente datastage |
-| `api/routers/admin_agentes.py` | Novos endpoints CRUD de agentes |
-| `api/services/agentes.py` | `_prompt_sistema()` lê do banco com cache; catálogo híbrido; invalidação de cache no PUT |
-| `api/main.py` | Registra o novo router |
-| Frontend (Admin › Agentes) | Lista + formulário de criação/edição |
-
----
-
-## Ordem de implementação sugerida
-
-1. Migration SQL + popular com agente datastage existente
-2. Endpoints de leitura (`GET /admin/agentes` e `GET /admin/agentes/{id}`) — sem ainda alterar o catálogo
-3. `_prompt_sistema()` com leitura do banco + cache (com fallback hardcoded)
-4. Endpoint `PUT` + invalidação de cache — neste ponto já é possível editar o prompt pela API sem restart
-5. Endpoint `POST` (criação de novo agente) + catálogo híbrido
-6. Frontend: lista → formulário → toggle enabled
-7. Endpoint `DELETE` (soft delete)
+- Ferramenta nova pela tela: continua só por PR.
+- Acesso `tela_padrao` (qualquer um com a tela).
+- Levar o DataStage para a tabela de agentes.
+- Excluir agente de verdade.
+- Comparar versões lado a lado (diff). Pode entrar depois, se o histórico pedir.
