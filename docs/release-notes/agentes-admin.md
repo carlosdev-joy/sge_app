@@ -198,10 +198,11 @@ não se exclui.
 ## ⚠️ Dúvidas ainda abertas e limites conhecidos
 
 - **Grant que volta a valer.** Quando o admin tira um perfil de um agente, o grant de um
-  usuário desse perfil continua gravado (sem dar acesso). Se o perfil voltar a ser
-  elegível, **o acesso volta sozinho**, e o modal de permissões mostra o checkbox marcado
-  sem indicar que hoje ele não vale. Opções em aberto: manter, sinalizar "sem efeito" ou
-  apagar o grant quando o perfil sai do agente.
+  usuário desse perfil continua gravado (sem dar acesso) e volta a valer se o perfil voltar
+  a ser elegível. **Decisão (23/09): sinalizar.** O modal de permissões extras mostra
+  *(sem efeito — o perfil X não pode usar Y)* ao lado do grant, e o admin desmarca se
+  quiser; um grant que o perfil não pode receber aparece desabilitado, com *(perfil não
+  elegível)*.
 - **Validação da A0** só em produção (acima).
 - **Cadastro sem controle de versão.** Dois admins editando o **mesmo agente** ao mesmo
   tempo: vale o último. (O prompt tem controle de versão; o cadastro não.)
@@ -213,6 +214,5 @@ não se exclui.
 
 ## 🧭 Próximos passos (backlog)
 
-- Decisão sobre o grant que volta a valer (acima).
 - Comparar versões do prompt lado a lado (diff), se o histórico pedir.
 - Ler o que entra e sai das conversas para gerar funcionalidades (B-07, exige política).

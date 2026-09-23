@@ -15,7 +15,7 @@ import { renderMarkdown } from '../lib/markdown'
 import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
 import { UtilitariosTab } from '../components/admin/UtilitariosTab'
 import { AgentesTab } from '../components/admin/AgentesTab'
-import { Q_AGENTES_ADMIN, mensagemDeErro } from '../lib/agentes'
+import { Q_AGENTES_ADMIN, agenteInelegivel, mensagemDeErro } from '../lib/agentes'
 import { MaestroTab } from '../components/admin/MaestroTab'
 import { EmailTab } from '../components/admin/EmailTab'
 import {
@@ -63,6 +63,31 @@ const RBAC_RECURSOS: [string, string][] = [
   ['acao_editar', 'Cadastrar/Editar'],
   ['acao_admin', 'Administração'],
 ]
+
+/**
+ * Sinal ao lado de um grant de agente no modal de permissões extras quando o
+ * perfil do usuário não pode usar aquele agente: MARCADO = sem efeito (continua
+ * gravado, mas a régua de uso recusa — e volta a valer se o perfil voltar a ser
+ * elegível); DESMARCADO = não dá para conceder (a API recusaria com 422).
+ */
+function SinalGrantAgente({ agente, perfil, marcado, ehAdmin }: {
+  agente: string | null; perfil: string; marcado: boolean
+  /** Tem `acao_admin` (pelo perfil ou nas extras): usa todo agente, grant ou não. */
+  ehAdmin: boolean
+}) {
+  if (agente === null) return null
+  // Com `acao_admin` ele USA o agente (a régua libera admin antes do perfil): o
+  // grant marcado não acrescenta nada, mas "não pode usar" seria falso.
+  if (marcado && ehAdmin) return null
+  return marcado ? (
+    <span className="text-[10px] text-amber-700 dark:text-amber-400" data-perm-sem-efeito
+          title={`Volta a valer se o perfil ${perfil} voltar a poder usar ${agente}. Desmarque para remover.`}>
+      {`(sem efeito — o perfil ${perfil} não pode usar ${agente})`}
+    </span>
+  ) : (
+    <span className="text-[10px] text-dim" data-perm-nao-elegivel>(perfil não elegível)</span>
+  )
+}
 
 // Só os recursos que fazem sentido conceder a um PERFIL inteiro — usada na
 // matriz "Perfis e Permissões". `agente_*` nunca aparece aqui: conceder
@@ -856,9 +881,13 @@ function UsuariosTab() {
   // Recursos dos agentes criados pela tela (spec admin B3) — vêm da API, não
   // de uma 2ª lista à mão. Só quando o modal abre; sem a lista, o modal segue
   // com os fixos (o `permDraft` reenvia os grants que não aparecem).
-  const agentesDaTela = useQuery<{ agentes: { origem: string; nome: string; recurso: string; recurso_curador: string | null }[] }>({
+  const agentesDaTela = useQuery<{ agentes: { origem: string; nome: string; recurso: string; recurso_curador: string | null; perfis: string[] }[] }>({
     queryKey: Q_AGENTES_ADMIN, queryFn: () => apiFetch('/agentes/admin/agentes'), enabled: permUser !== null,
   })
+  // Grant de agente para um perfil que não pode usá-lo: marcado, está SEM EFEITO
+  // (a régua de uso confere o perfil a cada pergunta — e ele volta a valer se o
+  // perfil voltar a ser elegível); desmarcado, não se concede (a API recusaria).
+  const inelegivel = (rec: string) => permUser ? agenteInelegivel(rec, permUser.perfil, agentesDaTela.data?.agentes ?? []) : null
   const recursosDeAgentes: [string, string][] = (agentesDaTela.data?.agentes ?? [])
     .filter(a => a.origem === 'banco')
     .flatMap(a => [
@@ -1070,6 +1099,8 @@ function UsuariosTab() {
 
       {permUser && (() => {
         const doPerfil = new Set(perfilOpts.find(p => p.perfil_nome === permUser.perfil)?.permissoes ?? [])
+        // Com `acao_admin` (pelo perfil ou nas extras) ele usa todo agente — ver SinalGrantAgente.
+        const ehAdmin = doPerfil.has('acao_admin') || permDraft.has('acao_admin')
         return (
           <Modal open onClose={() => setPermUser(null)} title={`Permissões extras — ${permUser.matricula}`} size="sm">
             <div className="flex flex-col gap-4">
@@ -1095,11 +1126,13 @@ function UsuariosTab() {
               <div className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">
                 {RBAC_RECURSOS.map(([rec, lbl]) => {
                   const herdado = doPerfil.has(rec)
+                  const agenteFora = inelegivel(rec)
+                  const travado = herdado || (agenteFora !== null && !permDraft.has(rec))
                   return (
-                    <label key={rec} className={`flex items-center gap-2 text-xs ${herdado ? 'text-dim' : 'text-ink cursor-pointer'}`}>
+                    <label key={rec} className={`flex items-center gap-2 text-xs ${travado ? 'text-dim' : 'text-ink cursor-pointer'}`}>
                       <input
                         type="checkbox"
-                        disabled={herdado}
+                        disabled={travado}
                         checked={herdado || permDraft.has(rec)}
                         onChange={() => setPermDraft(prev => {
                           const n = new Set(prev)
@@ -1109,6 +1142,7 @@ function UsuariosTab() {
                       />
                       {lbl}
                       {herdado && <span className="text-[10px] text-dim">(do perfil)</span>}
+                      {!herdado && <SinalGrantAgente agente={agenteFora} perfil={permUser.perfil} marcado={permDraft.has(rec)} ehAdmin={ehAdmin} />}
                     </label>
                   )
                 })}
@@ -1116,9 +1150,10 @@ function UsuariosTab() {
                   <p className="text-[11px] font-semibold text-dim pt-2" data-perm-agentes-da-tela>Agentes criados na tela</p>
                 )}
                 {recursosDeAgentes.map(([rec, lbl]) => (
-                  <label key={rec} className="flex items-center gap-2 text-xs text-ink cursor-pointer">
+                  <label key={rec} className={`flex items-center gap-2 text-xs ${inelegivel(rec) !== null && !permDraft.has(rec) ? 'text-dim' : 'text-ink cursor-pointer'}`}>
                     <input
                       type="checkbox"
+                      disabled={inelegivel(rec) !== null && !permDraft.has(rec)}
                       checked={permDraft.has(rec)}
                       onChange={() => setPermDraft(prev => {
                         const n = new Set(prev)
@@ -1128,6 +1163,7 @@ function UsuariosTab() {
                       })}
                     />
                     {lbl}
+                    <SinalGrantAgente agente={inelegivel(rec)} perfil={permUser.perfil} marcado={permDraft.has(rec)} ehAdmin={ehAdmin} />
                   </label>
                 ))}
               </div>

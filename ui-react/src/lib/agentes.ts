@@ -694,3 +694,21 @@ export function problemasDoAgente(r: RascunhoAgente, opcoes: {
   }
   return erros
 }
+
+/**
+ * O agente dono de `recurso` (uso ou curador) quando o `perfil` NÃO pode usá-lo —
+ * o nome dele —, ou `null` (pode, não é recurso de agente, ou a lista ainda não
+ * carregou). No modal de permissões extras: um grant MARCADO nessa situação está
+ * "sem efeito" (a régua de uso confere o perfil a cada pergunta); um grant
+ * DESMARCADO não pode ser concedido (a API recusaria com 422). Admin usa tudo.
+ */
+export function agenteInelegivel(
+  recurso: string,
+  perfil: string,
+  agentes: readonly Pick<AgenteAdminItem, 'nome' | 'recurso' | 'recurso_curador' | 'perfis'>[],
+): string | null {
+  if (perfil === 'admin') return null
+  const ag = agentes.find(a => a.recurso === recurso || a.recurso_curador === recurso)
+  if (!ag || ag.perfis.includes(perfil)) return null
+  return ag.nome
+}
