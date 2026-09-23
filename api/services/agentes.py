@@ -361,58 +361,41 @@ def extrair_pedido_ferramenta(texto: str) -> tuple[str, dict | None]:
     return limpo, obj
 
 
-def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False, contexto_aprendizados: str = "") -> str:
-    """Gerado do VOCABULÁRIO das ferramentas (allowlist de
-    `agentes_ferramentas`), não digitado à mão duas vezes — o mesmo
-    anti-drift do Maestro: se a allowlist de `dsjob` mudar, o prompt muda
-    sozinho.
+# ── Prompt em blocos (spec docs/spec-agentes-admin.md §3.1, fase A0) ────────
+#
+# O prompt é MONTADO: o contexto da conversa (projeto), um bloco de DOMÍNIO
+# (quem é o agente, ordem de custo, armadilhas, como responder) e depois os
+# blocos FIXOS que o código impõe — protocolo de ferramentas, regras que valem
+# sempre e o formato de propostas/aprendizados. A fase A1 passa a ler o domínio de uma
+# versão gravada pelo admin; os blocos fixos continuam aqui, DEPOIS dele, para
+# que o texto editável não passe por cima do protocolo. Sem versão gravada, o
+# domínio é `PROMPT_DOMINIO_PADRAO` — o texto que veio da sessão de mapeamento
+# em produção de 22/09/2026 (portado da branch `feat/agente-datastage-melhorias`).
 
-    A estrutura (seções, armadilhas conhecidas, SEQUENCE × PARALLEL, como
-    ler `children`, como responder) veio da sessão de mapeamento em produção
-    de 22/09/2026 — ajustada ali, direto no container, e portada para o repo
-    (branch `feat/agente-datastage-melhorias`). O que a F5/F6 acrescentou
-    (fatos na `base`, propostas, aprendizados) continua no fim."""
-    comandos = ", ".join(af.ALLOWLIST_DSJOB)
-    if projeto:
-        extra_dsx = " (tem arquivo .dsx disponível — dsx_consulta pode ser usada)" if projeto_tem_dsx else ""
-        projeto_txt = f"O projeto DataStage desta conversa já está resolvido: {projeto}{extra_dsx}."
-    else:
-        projeto_txt = (
-            "Esta conversa AINDA NÃO tem um projeto DataStage resolvido. Antes de usar "
-            "'base', 'dsjob', 'dsx_consulta' ou 'isx_extrair', pergunte ao usuário qual é "
-            "o projeto ou o nome de um pipeline/job do Orquestra, e chame 'resolver_projeto' "
-            "assim que tiver um nome candidato — o backend recusa essas ferramentas sem projeto.")
-    return f"""Você é o agente de mapeamento de processos DataStage do Orquestra.
+# As ferramentas que `_executar_ferramenta_interna` sabe despachar. A Fase B
+# da spec admin escolhe SUBCONJUNTOS desta tupla — nunca amplia.
+FERRAMENTAS_DATASTAGE = ("resolver_projeto", "base", "dsx_consulta", "dsjob", "isx_extrair")
+
+PROMPT_DOMINIO_PADRAO: dict[str, str] = {AGENTE_DATASTAGE: """Você é o agente de mapeamento de processos DataStage do Orquestra.
 
 Sua função: explicar fluxos DataStage existentes — jobs, tabelas, campos, parâmetros,
-status de execução e lineage. Você NUNCA altera o DataStage: não importa, não compila,
-não executa, não para nem apaga nada.
-
-{projeto_txt}
-
-## Como usar as ferramentas
-
-Termine sua resposta com UM bloco JSON e NADA depois dele:
-```json
-{{"ferramenta": "NOME", "args": {{...}}}}
-```
-Se não precisar de ferramenta, responda normalmente sem bloco.
+status de execução e lineage.
 
 ## Ordem de custo — siga SEMPRE essa sequência
 
 1. **resolver_projeto** — primeiro passo obrigatório para qualquer job.
-   - Com nome de projeto: {{"projeto": "BI_PRESTAMISTA"}}
-   - Com pipeline+job do Orquestra: {{"pipeline_name": "SeqSsdPrs_CargaDiaria", "job_name": "SsdPrs_OdsPropostas_01_ext"}}
+   - Com nome de projeto: {"projeto": "BI_PRESTAMISTA"}
+   - Com pipeline+job do Orquestra: {"pipeline_name": "SeqSsdPrs_CargaDiaria", "job_name": "SsdPrs_OdsPropostas_01_ext"}
    - **Infira o projeto pelo prefixo do job e aja — não pergunte:**
      • `SsdPrs_*` / `SeqSsdPrs_*` → BI_PRESTAMISTA
      • `SsdVida_*` / `SeqSsdVida_*` → BI_VIDA (ou similar)
      • Quando o prefixo for claro, chame `resolver_projeto` direto com o projeto inferido.
    - Se vier "quase" (caixa diferente mas prefixo distinto), tente com o projeto inferido antes de perguntar.
    - Se o prefixo não for reconhecível e o projeto não estiver resolvido na conversa, chame
-     `resolver_projeto` com {{"listar": true}} para obter os projetos conhecidos e peça ao
+     `resolver_projeto` com {"listar": true} para obter os projetos conhecidos e peça ao
      usuário para selecionar um — nunca diga "não encontrado" sem antes ter listado as opções.
 
-2. **base** {{"job_name": "NOME"}} — o que o Orquestra já sabe (rápido, sem tocar servidor):
+2. **base** {"job_name": "NOME"} — o que o Orquestra já sabe (rápido, sem tocar servidor):
    a lineage ISX gravada e os "fatos" que leituras anteriores registraram, cada um com a origem
    (os filhos de uma sequence aparecem como fatos "lineage" com chave "filho:NOME_DO_JOB").
    - Verifique "idade_dias" (ISX) e, em cada fato, "lido_ha_dias"/"vencido": se None, alto ou
@@ -423,11 +406,10 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 
 3. **dsx_consulta** — só se o projeto TEM arquivo .dsx (é um retrato: a resposta traz a data do arquivo).
    - listar_jobs / listar_pastas: sem args extras.
-   - buscar_campo: {{"operacao": "buscar_campo", "termo": "CPF"}} (aceita "exato", "tipos", "excluir", "pasta")
-   - extrair job: {{"operacao": "extrair", "job_name": "NOME"}}
+   - buscar_campo: {"operacao": "buscar_campo", "termo": "CPF"} (aceita "exato", "tipos", "excluir", "pasta")
+   - extrair job: {"operacao": "extrair", "job_name": "NOME"}
 
-4. **dsjob** {{"comando": "COMANDO", "job_name": "NOME"}} — leitura AO VIVO no servidor.
-   Comandos disponíveis: {comandos}
+4. **dsjob** {"comando": "COMANDO", "job_name": "NOME"} — leitura AO VIVO no servidor.
    - Use para: status de execução, linhas processadas, stages, parâmetros ao vivo.
    - "ljobs" não precisa de job_name.
    - "report" traz: status, hora início/fim, duração, linhas por stage e link.
@@ -481,7 +463,6 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 
 - Seja direto e objetivo. O usuário é técnico (desenvolvedor DataStage).
 - Se não encontrar o job, diga claramente e sugira alternativas (verificar o nome exato).
-- Nunca invente informação que não veio de uma ferramenta.
 - Nunca diga "saída truncada" ou "não foi possível determinar" quando tiver children populado.
 - Nunca diga que um resultado é "eco tardio", "chamada anterior" ou "já calculado" — cada
   chamada de ferramenta retorna o resultado real daquela chamada; nunca invente uma explicação
@@ -498,19 +479,55 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 - Quando a pergunta for sobre jobs filhos de uma sequence: vá DIRETO ao isx_extrair ao vivo —
   NÃO use dsx_consulta antes (o DSX é um retrato estático que pode estar desatualizado e ter
   menos jobs que o real). NÃO chame dsjob antes. Leia o campo `children` no resultado.
-- Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, explique ao
-  usuário o motivo informado.
+"""}
 
-## Propostas e aprendizados (opcional, no bloco final)
+
+def _bloco_contexto(projeto: str | None, projeto_tem_dsx: bool) -> str:
+    if projeto:
+        extra_dsx = " (tem arquivo .dsx disponível — dsx_consulta pode ser usada)" if projeto_tem_dsx else ""
+        texto = f"O projeto DataStage desta conversa já está resolvido: {projeto}{extra_dsx}."
+    else:
+        texto = (
+            "Esta conversa AINDA NÃO tem um projeto DataStage resolvido. Antes de usar "
+            "'base', 'dsjob', 'dsx_consulta' ou 'isx_extrair', pergunte ao usuário qual é "
+            "o projeto ou o nome de um pipeline/job do Orquestra, e chame 'resolver_projeto' "
+            "assim que tiver um nome candidato — o backend recusa essas ferramentas sem projeto.")
+    return f"## Contexto desta conversa\n\n{texto}"
+
+
+def _bloco_protocolo(ferramentas: tuple[str, ...]) -> str:
+    """Gerado do VOCABULÁRIO das ferramentas (allowlist de
+    `agentes_ferramentas`), não digitado à mão duas vezes — o mesmo
+    anti-drift do Maestro: se a allowlist de `dsjob` mudar, o prompt muda
+    sozinho."""
+    linhas = ["## Como usar as ferramentas", "",
+              "Termine sua resposta com UM bloco JSON e NADA depois dele:",
+              "```json", '{"ferramenta": "NOME", "args": {...}}', "```",
+              "Se não precisar de ferramenta, responda normalmente sem bloco.", "",
+              "Ferramentas disponíveis: " + ", ".join(ferramentas) + "."]
+    if "dsjob" in ferramentas:
+        linhas.append("Comandos do dsjob disponíveis: " + ", ".join(af.ALLOWLIST_DSJOB))
+    linhas.append("Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, "
+                  "explique ao usuário o motivo informado.")
+    return "\n".join(linhas)
+
+
+_BLOCO_REGRAS = """## Regras que valem sempre
+
+- Você NUNCA altera o DataStage: não importa, não compila, não executa, não para nem apaga nada.
+- Nunca invente informação que não veio de uma ferramenta."""
+
+
+_BLOCO_PROPOSTAS = """## Propostas e aprendizados (opcional, no bloco final)
 
 O que as ferramentas leem é registrado sozinho pelo Orquestra. O que VOCÊ conclui
 (interpretação — ex.: "este job carrega a tabela X a partir de Y", "o parâmetro P define
 a data de corte") NÃO é registrado, a menos que você PROPONHA e o usuário aprove. Para
 propor, na resposta FINAL (a que não pede ferramenta), termine com UM bloco:
 ```json
-{{"propostas": [{{"job_name": "NOME", "tipo": "stage|parametro|tabela|campo|lineage|descricao",
+{"propostas": [{"job_name": "NOME", "tipo": "stage|parametro|tabela|campo|lineage|descricao",
   "chave": "o que está sendo descrito", "valor": "a conclusão", "motivo": "por que",
-  "evidencia": "trecho COPIADO LITERALMENTE da saída de uma ferramenta desta pergunta"}}]}}
+  "evidencia": "trecho COPIADO LITERALMENTE da saída de uma ferramenta desta pergunta"}]}
 ```
 No máximo 3 propostas. O job_name precisa ser um job que dsjob, isx_extrair ou dsx_consulta
 LERAM nesta pergunta, e a evidência precisa aparecer, igual, no que ESSA leitura devolveu —
@@ -521,10 +538,25 @@ não proponha.
 Se nesta conversa você descobrir algo sobre COMO usar as ferramentas neste ambiente (onde
 buscar, como ler um tipo de job, um caminho que funcionou), pode sugerir um aprendizado para
 o curador revisar, no MESMO bloco final (chave "aprendizados", no máximo 2):
-{{"aprendizados": [{{"tipo": "acesso|busca|leitura|detalhamento", "titulo": "curto",
-  "corpo": "o que fazer da próxima vez"}}]}}
-Ele só passa a valer depois que um curador validar.
-""" + (f"\n{contexto_aprendizados}\n" if contexto_aprendizados else "")
+{"aprendizados": [{"tipo": "acesso|busca|leitura|detalhamento", "titulo": "curto",
+  "corpo": "o que fazer da próxima vez"}]}
+Ele só passa a valer depois que um curador validar."""
+
+
+def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False, contexto_aprendizados: str = "",
+                    dominio: str | None = None) -> str:
+    """Contexto da conversa + domínio (editável; `None` = padrão do código) +
+    blocos fixos, NESSA ordem. O contexto vem PRIMEIRO, como no texto único de
+    antes: o domínio manda "resolver_projeto primeiro" e o modelo precisa já
+    saber que o projeto está resolvido para não gastar uma rodada à toa
+    (revisão adversarial da A0). É um fato da conversa, não uma regra — não há
+    o que o domínio sobrescrever nele. Os aprendizados validados vão por
+    último, como antes."""
+    if dominio is None:
+        dominio = PROMPT_DOMINIO_PADRAO[AGENTE_DATASTAGE]
+    blocos = [_bloco_contexto(projeto, projeto_tem_dsx), dominio.strip(),
+              _bloco_protocolo(FERRAMENTAS_DATASTAGE), _BLOCO_REGRAS, _BLOCO_PROPOSTAS]
+    return "\n\n".join(b for b in blocos if b) + "\n" + (f"\n{contexto_aprendizados}\n" if contexto_aprendizados else "")
 
 
 def _com_cursor(abrir_conn, fn):
