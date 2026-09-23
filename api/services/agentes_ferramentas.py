@@ -720,6 +720,39 @@ def _dsx_data_arquivo(diretorio_base: str, projeto: str) -> str | None:
         return None
 
 
+_RE_JOB_ACTIVITY = re.compile(r'OLEType "CJSJobActivity"')
+_RE_JOBNAME = re.compile(r'^\s*Jobname "([^"\n]{1,200})"', re.M)
+
+
+def filhos_de_sequence_no_dsx(motor, projeto: str, job_name: str) -> list[str]:
+    """Os jobs que uma SEQUENCE chama, lidos do `.dsx` — o `job_name` real de
+    cada atividade (`OLEType "CJSJobActivity"` → `Jobname "…"`).
+
+    O `DSXEngine.extrair` só lê STAGES (`CStage`/`CCustomStage`) e descarta
+    as atividades de job: uma sequence voltava com `dados=[]`, e o prompt de
+    produção de 23/09 ("DSX primeiro — já lista os filhos") prometia o que o
+    código não fazia (achado da revisão adversarial). A leitura fica aqui,
+    do lado do agente, sem mexer no motor que a DAG de lineage também usa —
+    reaproveitando o recorte de bloco e de registros dele. Nunca levanta:
+    formato inesperado devolve lista vazia (o ISX confirma depois)."""
+    try:
+        with open(os.path.join(motor.diretorio_base, f"{projeto}.dsx"), "r",
+                  encoding="utf-8", errors="ignore") as fh:
+            bloco = motor._extract_job_block(fh.read(), job_name)  # noqa: SLF001
+        if not bloco:
+            return []
+        filhos: list[str] = []
+        for registro in motor._split_records(bloco):  # noqa: SLF001
+            if not _RE_JOB_ACTIVITY.search(registro):
+                continue
+            m = _RE_JOBNAME.search(registro)
+            if m and m.group(1).strip() and m.group(1).strip() not in filhos:
+                filhos.append(m.group(1).strip())
+        return filhos
+    except Exception:  # noqa: BLE001
+        return []
+
+
 async def ferramenta_dsx_consulta(projeto: str, operacao: str, args: dict) -> dict:
     """Só leitura dos `.dsx` já existentes em `DSX_BASE_DIR` — NUNCA toca o
     servidor DataStage (critério 7 da F2b: sem SSH, sem `dsjob`, sem criar
@@ -749,7 +782,12 @@ async def ferramenta_dsx_consulta(projeto: str, operacao: str, args: dict) -> di
                 projeto, termo, exato=bool(args.get("exato")), tipos=tipos,
                 excluir=bool(args.get("excluir")), pasta=str(args.get("pasta") or ""))
         job_name = str(args.get("job_name") or "").strip()
-        return motor.extrair(projeto, job_name)
+        r = motor.extrair(projeto, job_name)
+        if isinstance(r, dict) and r.get("sucesso"):
+            filhos = filhos_de_sequence_no_dsx(motor, projeto, job_name)
+            if filhos:
+                r = {**r, "children": [{"job_name": f} for f in filhos]}
+        return r
 
     resultado = await asyncio.wait_for(asyncio.to_thread(_rodar), timeout=DSX_TETO_S)
     resultado = dict(resultado or {})

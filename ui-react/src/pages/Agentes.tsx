@@ -144,6 +144,20 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   const [stageSel, setStageSel] = useState<string | null>(null)
   const [historicoAberto, setHistoricoAberto] = useState(false)
   const [curadoriaAberta, setCuradoriaAberta] = useState(false)
+  // Curadoria e histórico se EXCLUEM: a curadoria ocupa o lugar do chat E do
+  // histórico, então os dois "ligados" deixavam o histórico destacado na
+  // barra e escondido atrás da curadoria (relato de produção de 23/09).
+  // Abrir um fecha o outro — o botão destacado é sempre o painel na tela.
+  function alternarCuradoria() {
+    const abrir = !curadoriaAberta
+    setCuradoriaAberta(abrir)
+    if (abrir) setHistoricoAberto(false)
+  }
+  function alternarHistorico() {
+    const abrir = !historicoAberto
+    setHistoricoAberto(abrir)
+    if (abrir) setCuradoriaAberta(false)
+  }
   const [retomando, setRetomando] = useState(false)
   const [decidindo, setDecidindo] = useState<ReadonlySet<number>>(() => new Set())
   // Descarta resposta que chega DEPOIS de "nova conversa" — mesmo cuidado do
@@ -331,7 +345,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
             icone={<ClipboardCheck className="w-4 h-4" aria-hidden="true" />}
             rotulo="Curadoria"
             ativo={curadoriaAberta}
-            onClick={() => setCuradoriaAberta(v => !v)}
+            onClick={alternarCuradoria}
             dados="curadoria"
           />
         )}
@@ -339,7 +353,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           icone={<History className="w-4 h-4" aria-hidden="true" />}
           rotulo="Histórico"
           ativo={historicoAberto}
-          onClick={() => setHistoricoAberto(v => !v)}
+          onClick={alternarHistorico}
           dados="historico"
         />
         <BotaoBarra
