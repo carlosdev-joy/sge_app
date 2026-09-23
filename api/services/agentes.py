@@ -319,7 +319,7 @@ _RE_BLOCO_JSON = re.compile(r"```[ \t]*(?:json)?[ \t]*\n?(\{(?:(?!```).)*\})\s*`
 # Abaixo do proxy_read_timeout (300 s na rota /orquestra/, D-14 ✅) — margem
 # para a resposta HTTP em si voltar antes do nginx desistir.
 ORCAMENTO_AGENTE_S = 240
-MAX_RODADAS_FERRAMENTA = 3
+MAX_RODADAS_FERRAMENTA = 4
 
 
 _RE_FECHA_FERRAMENTA = re.compile(r"</(\s*ferramenta)", re.I)
@@ -472,7 +472,7 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 - Nunca diga "saída truncada" ou "não foi possível determinar" quando tiver children populado.
 - Quando a pergunta for sobre status/execução: use dsjob jobinfo ou report, não isx_extrair.
 - Quando a pergunta for sobre colunas/campos/SQL: use isx_extrair (após dsjob lstages confirmar que é PARALLEL).
-- Quando a pergunta for sobre jobs filhos de uma sequence: use isx_extrair e leia o campo `children`.
+- Quando a pergunta for sobre jobs filhos de uma sequence: vá DIRETO ao isx_extrair — NÃO chame dsjob antes. Leia o campo `children` no resultado.
 - Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, explique ao
   usuário o motivo informado.
 

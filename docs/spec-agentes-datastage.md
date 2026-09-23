@@ -117,7 +117,7 @@ Cada usuário é identificado no gateway de IA da Caixa por `cvp-<matrícula>`, 
 - **Sem tool-calling nativo.** O gateway recebe **uma única mensagem `user`** (`_corpo_gateway`; o histórico vai
   transcrito por `transcrever`), então o "agente" é **orquestrado pelo backend**: o modelo pede uma ferramenta num
   bloco ` ```json ` (mesmo padrão do Maestro), o backend **valida contra a allowlist**, executa, e devolve o
-  resultado ao modelo como **dado delimitado**. No máximo 3 rodadas de ferramenta por pergunta e um **orçamento
+  resultado ao modelo como **dado delimitado**. No máximo 4 rodadas de ferramenta por pergunta (eram 3; ajuste de produção de 23/09/2026 — o fluxo resolver_projeto → isx_extrair → resposta precisava de espaço para uma ferramenta intermediária) e um **orçamento
   de tempo** (não só de quantidade — lição da triagem de chamados): **teto de 240 s** (`ORCAMENTO_AGENTE_S`), abaixo do
   `proxy_read_timeout 300s` da rota `/orquestra/` (D-14 ✅). É um **teto**, não uma meta: o backend controla o prazo por
   relógio (cada chamada ao gateway pode levar até 60 s e cada `dsjob` até 60 s) e o front mostra o andamento.
@@ -508,7 +508,7 @@ multi-agente antes da PR** (`qa-adversarial`; `security-review` nas F1, F2, F5 e
 | 7 | **Purga de 30 dias apaga o que precisa durar** | Perde aprovação, fato ou aprendizado | Sem FK das derivadas; evidência autocontida; teste na F4 |
 | 8 | **Segredo digitado no chat ou lido pelo `dsjob`** (ex.: valor de parâmetro Encrypted) | Vazamento em conversa/log/aprendizado por 30 dias | `redigir()` antes de qualquer gravação e antes de ir ao modelo; canários nos testes; **D-07** mostra o que o `dsjob` realmente devolve |
 | 9 | **Sobrecarga do servidor DataStage** (SSH por requisição, compartilhado com Console, Utilitários, lineage e DAGs) | Derrubar o acesso dos outros | Base primeiro; semáforo `agentes_ssh_max`; espera limitada; **D-09** dimensiona o teto |
-| 10 | **Timeout de requisição** (D-14 ✅: a rota `/orquestra/` tem `proxy_read_timeout 300 s`, igual no repo e em produção; os 120 s são da `/api/v1/`, do Airflow) | 504 em pergunta com 3 rodadas de ferramenta; espera longa sem retorno | Teto de 240 s controlado por relógio no backend; resposta nomeada; front com indicação de andamento; se houver balanceador/proxy corporativo antes do nginx, o limite efetivo pode ser menor (não verificado) |
+| 10 | **Timeout de requisição** (D-14 ✅: a rota `/orquestra/` tem `proxy_read_timeout 300 s`, igual no repo e em produção; os 120 s são da `/api/v1/`, do Airflow) | 504 em pergunta com 4 rodadas de ferramenta; espera longa sem retorno | Teto de 240 s controlado por relógio no backend; resposta nomeada; front com indicação de andamento; se houver balanceador/proxy corporativo antes do nginx, o limite efetivo pode ser menor (não verificado) |
 | 11 | **Identidade errada:** matrícula gravada em MAIÚSCULAS (`auth.py:38`) × `cvp-…` minúsculo; ou fallback para `cvp-orquestra` | Falha de cadastro falsa, ou autorização anulada | Normalização fixa + teste; **proibido** fallback (teste que falha se existir); **D-01** confirma a caixa |
 | 12 | **Permissão nova exige relogin** e `RBAC_RECURSOS` é uma 2ª lista à mão | "Concedi e o agente não aparece" | Recursos na lista do Admin na F1; smoke b) exige o relogin; mensagem no modal de grants |
 | 13 | **`dist/` invisível ou em conflito** | PR que "não aparece" em produção | Rebuild em toda fase de UI; UI em sequência |
