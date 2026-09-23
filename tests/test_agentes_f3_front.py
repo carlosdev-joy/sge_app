@@ -145,20 +145,28 @@ def test_campo_e_botao_do_chat_tem_rotulo_acessivel():
     assert 'aria-label="Enviar pergunta"' in fonte
 
 
-# Cor de superfície fora dos tokens: `bg-`/`text-`/`border-` com uma cor
-# nomeada do Tailwind e SEM par `dark:` logo em seguida. O azul da marca
-# (#1A5FA8) é exceção conhecida do projeto e sempre aparece com par dark.
-_COR_UTIL = re.compile(r"\b(bg|text|border)-(slate|gray|zinc|neutral|stone|white|black)"
-                       r"(-\d{2,3})?\b")
+# Cor de SUPERFÍCIE fora dos tokens. A 1ª versão deste teste só olhava a
+# família cinza (`slate|gray|zinc|neutral|stone|white|black`) — a revisão
+# adversarial da F3 apontou, com razão, que ele prometia mais do que
+# verificava. Agora cobre a paleta inteira do Tailwind; as cores de TOM
+# (amber/red/emerald nos avisos) continuam permitidas, mas só com par
+# `dark:`, o que `test_acentos_de_tom_do_aviso_tem_par_claro_escuro` checa.
+_FAMILIAS = ("slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|"
+             "teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|white|black")
+_COR_UTIL = re.compile(rf"(?<!dark:)\b(bg|text|border|border-l|ring|fill)-(?:{_FAMILIAS})"
+                       r"(?:-\d{2,3})?\b")
+# Superfície = fundo/borda/texto do corpo da tela. Tom de aviso e o texto
+# sobre a bolha azul da marca são exceções nomeadas, não um vale-tudo.
+_TOM_PERMITIDO = re.compile(r"\b(bg|text|border|border-l)-(amber|red|emerald)-\d{3}\b")
 
 
 def test_tela_nao_usa_cor_de_superficie_fora_dos_tokens():
-    for arq in ARQUIVOS_DA_TELA:
+    for arq in ARQUIVOS_DA_TELA + [ADMIN_TAB]:
         fonte = codigo(arq)
-        # `text-white` é aceito DENTRO da bolha azul da marca (contraste sobre
-        # #1A5FA8); qualquer outra cor de superfície tem de ser token.
         achados = [m.group(0) for m in _COR_UTIL.finditer(fonte)
-                   if m.group(0) != "text-white"]
+                   # `text-white` é aceito DENTRO da bolha azul da marca
+                   # (contraste sobre #1A5FA8); tom de aviso tem regra própria.
+                   if m.group(0) != "text-white" and not _TOM_PERMITIDO.fullmatch(m.group(0))]
         assert not achados, f"{arq.name}: cor fora dos tokens: {sorted(set(achados))}"
 
 
@@ -177,22 +185,31 @@ def test_acentos_de_tom_do_aviso_tem_par_claro_escuro():
 
 def test_sem_overflow_hidden_na_tela_do_agente():
     """`overflow-hidden` em ancestral mata `position: sticky` em silêncio —
-    o chat rola numa caixa própria (`overflow-y-auto`), e nenhum container
-    acima dela pode esconder o overflow."""
+    o chat rola numa caixa própria (`overflow-y-auto`), e nada dentro da
+    fase pode esconder o overflow.
+
+    Fica nos arquivos da FASE de propósito: o shell (`AppShellV2`) tem um
+    `overflow-hidden` pré-existente e o scroller é o `<main>` — mudar isso
+    seria mexer no leiaute de todas as telas. O que este teste prende é que
+    a tela nova não ACRESCENTA outro."""
     for arq in ARQUIVOS_DA_TELA:
         fonte = codigo(arq)
         assert "overflow-hidden" not in fonte, \
             f"{arq.name}: overflow-hidden pode matar o sticky do cabeçalho"
 
 
-def test_sem_fim_de_comentario_css_dentro_de_comentario():
-    """`*/` dentro de um comentário CSS quebra o lightningcss no build."""
-    for arq in ARQUIVOS_DA_TELA + [ADMIN_TAB, LIB]:
-        fonte = ler(arq)
-        for linha in fonte.splitlines():
-            if linha.strip().startswith("//"):
-                continue
-            assert linha.count("*/") <= 1, f"{arq.name}: '*/' repetido em {linha.strip()[:60]}"
+def test_fase_nao_introduz_css_proprio():
+    """O perigo do `*/` dentro de comentário CSS (que quebra o lightningcss
+    no build) só existe em arquivo `.css`. A 1ª versão deste teste varria
+    `.tsx`, onde o lightningcss nem passa — era tautológico, e a revisão
+    adversarial da F3 apontou. O que de fato protege a fase é ela NÃO ter
+    CSS próprio: tudo sai de classes utilitárias e dos tokens.
+
+    Se um `.css` entrar na pasta da fase um dia, este teste falha e obriga
+    a checagem de verdade, em vez de dar um verde vazio."""
+    pasta = FRONT / "components" / "agentes"
+    css = sorted(p.name for p in pasta.glob("*.css"))
+    assert css == [], f"a fase passou a ter CSS próprio ({css}) — checar '*/' em comentário"
 
 
 # ═══════════ 5. a armadilha do user_perm_set ═════════════════════════════
@@ -200,11 +217,35 @@ def test_sem_fim_de_comentario_css_dentro_de_comentario():
 def test_admin_le_as_permissoes_atuais_antes_de_conceder():
     """`user_perm_set` substitui a lista inteira: conceder um agente mandando
     só `[recurso]` apagaria as outras permissões extras do usuário."""
-    fonte = ler(ADMIN_TAB)
-    assert "perms.data?.permissoes?.[matricula]" in fonte, \
+    fonte = codigo(ADMIN_TAB)
+    assert "perms.data.permissoes[matricula]" in fonte, \
         "a aba precisa ler as permissões ATUAIS antes de reenviar"
     assert re.search(r"adminPost\('user_perm_set',\s*\{\s*matricula,\s*permissoes:\s*\[\.\.\.atuais\]",
                      fonte), "user_perm_set deve receber o conjunto completo, não só o recurso novo"
+
+
+def test_conceder_recusa_enquanto_as_permissoes_nao_carregaram():
+    """Achado da revisão adversarial da F3: a 1ª versão lia
+    `perms.data?.permissoes?.[matricula] ?? []` — e com a query ainda
+    carregando (ou falhada: o queryClient tem `retry: 1`, então 2 erros
+    bastam) o "conjunto completo" virava `[recurso]`, e o DELETE + INSERT
+    apagava TODAS as outras permissões extras do usuário, sem erro na tela.
+
+    Duas travas, e o teste exige as duas: a mutation recusa sem a lista, e
+    a UI não deixa chegar lá (botão e select desabilitados)."""
+    fonte = codigo(ADMIN_TAB)
+    # 1. a mutation não monta o conjunto sem a lista carregada
+    assert re.search(r"if\s*\(!perms\.data\?\.permissoes\)\s*\{", fonte), \
+        "trocarAcesso precisa recusar quando as permissões não carregaram"
+    # O `?? []` DEPOIS da guarda é legítimo (quem não tem permissão extra
+    # nenhuma não está no mapa). O perigoso era o encadeamento opcional em
+    # `perms.data?.permissoes?.[...]`, que transformava "não carregou" em
+    # "não tem nada" — e o DELETE + INSERT apagava o resto.
+    assert "perms.data?.permissoes?.[matricula]" not in fonte, \
+        "ler com `perms.data?.` confunde 'não carregou' com 'não tem nada'"
+    # 2. a UI bloqueia antes disso
+    assert "const acessoPronto =" in fonte
+    assert "|| !acessoPronto}" in fonte, "Conceder/Remover precisam exigir acessoPronto"
 
 
 def test_admin_so_oferece_perfis_elegiveis_vindos_do_backend():
@@ -228,3 +269,59 @@ def test_grafo_reaproveita_o_componente_da_governanca():
     # `key` no GrafoIsx: sem ele o fitView não roda de novo ao trocar de job.
     assert re.search(r"<GrafoIsx\s+key=", fonte), \
         "GrafoIsx precisa de key por job, senão herda o zoom do job anterior"
+
+
+# ═══════════ 7. achados da revisão adversarial da F3 ═════════════════════
+
+def test_interruptores_mandam_boolean_nunca_string():
+    """Achado BLOQUEANTE: a aba mandava `'1'`/`'0'` como STRING, e o backend
+    testava a veracidade do valor — `bool("0")` é `True` em Python, então
+    desligar pela tela LIGAVA no banco. O backend passou a entender "0"
+    (`_verdadeiro`), mas o cliente manda o tipo certo, como `MaestroTab`."""
+    fonte = codigo(ADMIN_TAB)
+    assert "e.target.checked ? '1' : '0'" not in fonte, \
+        "interruptor não pode mandar '1'/'0' como string"
+    assert re.search(r"salvar\.mutate\(\{\s*agentes_enabled:\s*e\.target\.checked\s*\}\)", fonte), \
+        "o interruptor geral deve mandar o boolean cru"
+    assert re.search(r"salvar\.mutate\(\{\s*\[ag\.config_enabled\]:\s*e\.target\.checked\s*\}\)", fonte), \
+        "o interruptor por agente deve mandar o boolean cru"
+
+
+def test_salvar_alteracoes_nao_reenvia_os_interruptores():
+    """A outra metade do mesmo achado: o rascunho partia de `{...cfg}`, então
+    "Salvar alterações" reenviava `agentes_enabled` junto — e, com o bug do
+    '0', RELIGAVA os agentes ao salvar qualquer campo de texto. O rascunho
+    agora guarda só o que o formulário edita."""
+    fonte = codigo(ADMIN_TAB)
+    assert "setRascunho({ ...cfg, [k]: v })" not in fonte, \
+        "o rascunho não pode partir da config inteira"
+    assert "setRascunho({ ...(rascunho ?? {}), [k]: v })" in fonte
+
+
+def test_link_da_governanca_leva_ao_job():
+    """Critério 5 da F3. A 1ª versão montava `?tab=isx&pipeline=…&job=…` e a
+    Governança NÃO lia query param nenhum — o link recarregava a tela na aba
+    Lineage, com o campo vazio, e o operador redigitava tudo à mão."""
+    fonte = codigo(GRAFO)
+    assert re.search(r"/governanca\?tab=isx&pipeline=\$\{[^}]+\}&job=\$\{", fonte), \
+        "o link precisa carregar aba, pipeline e job"
+
+    gov = codigo(FRONT / "pages" / "Governanca.tsx")
+    assert "useSearchParams" in gov, "Governanca.tsx precisa ler os query params do link"
+    assert re.search(r"useState\(\(\)\s*=>\s*params\.get\('tab'\)", gov), \
+        "a aba inicial deve vir da URL (inicializador preguiçoso, não effect)"
+    assert re.search(r"useState\(\(\)\s*=>\s*params\.get\('pipeline'\)", gov)
+    assert re.search(r"useState\(\(\)\s*=>\s*params\.get\('job'\)", gov)
+    assert "jobInicial={jobInicial}" in gov, "o job da URL precisa chegar ao PainelJobIsx"
+
+    painel = codigo(FRONT / "components" / "governanca" / "isx" / "PainelJobIsx.tsx")
+    assert "useState(jobInicial ?? '')" in painel, \
+        "o painel precisa começar com o job que veio por link"
+
+
+def test_governanca_sem_query_continua_no_padrao():
+    """A leitura da URL não pode mudar quem abre a tela pelo menu: sem query,
+    aba 'lineage' e pipeline vazio, como antes."""
+    gov = codigo(FRONT / "pages" / "Governanca.tsx")
+    assert "params.get('tab') || 'lineage'" in gov
+    assert "params.get('pipeline') || ''" in gov

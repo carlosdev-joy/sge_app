@@ -42,6 +42,28 @@ _RE_CONVERSA_ID = re.compile(r"^[A-Za-z0-9_-]{8,36}$")
 _MAX_MENSAGEM = 4000  # mesmo teto do Maestro (MAX_MENSAGEM em maestro.py)
 
 
+_FALSOS = {"0", "false", "no", "nao", "não", "off", ""}
+
+
+def _verdadeiro(valor) -> bool:
+    """Liga/desliga tolerante ao tipo que chegou no corpo.
+
+    `bool(valor)` sozinho é uma armadilha aqui: a string `"0"` é VERDADEIRA
+    em Python, então um cliente que mandasse `{"agentes_enabled": "0"}` —
+    exatamente o que a aba do Admin mandava — DESLIGAVA pela tela e LIGAVA
+    no banco. E como o "salvar" manda o rascunho inteiro, editar qualquer
+    outro campo com os agentes desligados os religava sozinhos. Achado real
+    da revisão adversarial da F3 (o interruptor geral é o kill switch de uma
+    feature que fala com o gateway de IA — precisa desligar de verdade).
+
+    Booleano continua valendo; string só é verdadeira quando não é uma das
+    formas explícitas de "não".
+    """
+    if isinstance(valor, str):
+        return valor.strip().lower() not in _FALSOS
+    return bool(valor)
+
+
 def _abrir():
     conn = get_db_conn()
     return conn, conn.cursor()
@@ -154,7 +176,7 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
 
     for chave in ("agentes_enabled", "agente_datastage_enabled"):
         if chave in body:
-            valores[chave] = "1" if body.get(chave) else "0"
+            valores[chave] = "1" if _verdadeiro(body.get(chave)) else "0"
 
     if "agentes_gateway_campo_usuario" in body:
         v = str(body.get("agentes_gateway_campo_usuario") or "").strip()

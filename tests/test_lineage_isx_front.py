@@ -166,7 +166,14 @@ def test_painel_do_stage_sql_colunas_expressoes_apt_e_parametro(cen):
 def test_aba_nos_dois_lugares_da_governanca():
     fonte = GOVERNANCA.read_text(encoding="utf-8")
     assert "{ id: 'isx', label: 'Job DataStage' }" in fonte
-    assert "{tab === 'isx' && <PainelJobIsx pipeline={pipeline} setPipeline={setPipeline} />}" in fonte
+    # Regex, não string exata: o que importa é que a aba `isx` monta o
+    # `PainelJobIsx` recebendo `pipeline`/`setPipeline`. Prop NOVA não deve
+    # quebrar este anti-drift — a F3 dos agentes acrescentou `jobInicial`
+    # (link direto `/governanca?tab=isx&pipeline=…&job=…`) e o assert de
+    # string literal reprovou uma mudança legítima.
+    assert re.search(
+        r"\{tab === 'isx' && <PainelJobIsx\s+pipeline=\{pipeline\}\s+setPipeline=\{setPipeline\}",
+        fonte), "a aba isx precisa montar o PainelJobIsx com pipeline/setPipeline"
     assert "import { PainelJobIsx } from '../components/governanca/isx/PainelJobIsx'" in fonte
 
 

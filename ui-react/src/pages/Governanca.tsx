@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
@@ -1278,8 +1279,15 @@ function XmlPreviewTab() {
 }
 
 export default function Governanca() {
-  const [tab, setTab] = useState('lineage')
-  const [pipeline, setPipeline] = useState('')
+  // Link direto (`/governanca?tab=isx&pipeline=…&job=…`) — é como a tela
+  // `/agentes` manda o operador para o job que o agente acabou de explicar.
+  // Inicializador PREGUIÇOSO, lido uma vez na montagem: quem abre a tela
+  // pelo menu, sem query, continua caindo em 'lineage' com pipeline vazio,
+  // e navegar dentro da tela não passa a mexer na URL.
+  const [params] = useSearchParams()
+  const [tab, setTab] = useState(() => params.get('tab') || 'lineage')
+  const [pipeline, setPipeline] = useState(() => params.get('pipeline') || '')
+  const [jobInicial] = useState(() => params.get('job') || '')
 
   const goLineage = (p: string) => { setPipeline(p); setTab('lineage') }
 
@@ -1309,7 +1317,7 @@ export default function Governanca() {
       />
       <div>
         {tab === 'lineage' && <LineageTab pipeline={pipeline} setPipeline={setPipeline} />}
-        {tab === 'isx' && <PainelJobIsx pipeline={pipeline} setPipeline={setPipeline} />}
+        {tab === 'isx' && <PainelJobIsx pipeline={pipeline} setPipeline={setPipeline} jobInicial={jobInicial} />}
         {tab === 'catalogo' && <CatalogoTab onGoLineage={goLineage} />}
         {tab === 'catalogo-pipelines' && <CatalogoPipelines />}
         {tab === 'xmlpreview' && <XmlPreviewTab />}

@@ -71,7 +71,8 @@ export function AgentesTab() {
   const [rascunho, setRascunho] = useState<Record<string, string> | null>(null)
   const [aIncluir, setAIncluir] = useState<Record<string, string>>({})
 
-  const cfg = rascunho ?? config.data?.config ?? {}
+  // Base do servidor + o que está sendo editado (o rascunho é parcial).
+  const cfg = { ...(config.data?.config ?? {}), ...(rascunho ?? {}) }
   const agentes = config.data?.agentes ?? []
 
   async function invalidar() {
@@ -85,8 +86,13 @@ export function AgentesTab() {
     ])
   }
 
+  // `boolean` nos interruptores (nunca '1'/'0' como string): o backend
+  // testa a veracidade do valor, e a string "0" é VERDADEIRA em Python —
+  // desligar pela tela ligava no banco (achado da revisão adversarial da
+  // F3). O backend também passou a entender "0"/"false", mas o cliente
+  // manda o tipo certo: é o padrão de `MaestroTab`.
   const salvar = useMutation({
-    mutationFn: (valores: Record<string, string>) =>
+    mutationFn: (valores: Record<string, string | boolean>) =>
       apiFetch<{ sucesso: boolean }>('/agentes/admin/config', {
         method: 'POST', body: JSON.stringify(valores),
       }),
@@ -103,7 +109,17 @@ export function AgentesTab() {
       { matricula: string; recurso: string; conceder: boolean }) => {
       // Lê as permissões ATUAIS e reenvia o conjunto inteiro: `user_perm_set`
       // substitui tudo (ver comentário no topo do arquivo).
-      const atuais = new Set(perms.data?.permissoes?.[matricula] ?? [])
+      //
+      // SEM a lista carregada não dá para montar esse conjunto: um
+      // `?? []` aqui viraria "a pessoa só tem este recurso" e o DELETE +
+      // INSERT apagaria TODAS as outras permissões extras dela, sem erro
+      // na tela. A UI já bloqueia o botão, mas a guarda fica aqui também —
+      // é o último ponto antes do efeito destrutivo (achado da revisão
+      // adversarial da F3).
+      if (!perms.data?.permissoes) {
+        throw new Error('A lista de permissões ainda não carregou — recarregue a página e tente de novo.')
+      }
+      const atuais = new Set(perms.data.permissoes[matricula] ?? [])
       if (conceder) atuais.add(recurso)
       else atuais.delete(recurso)
       return adminPost('user_perm_set', { matricula, permissoes: [...atuais] })
@@ -136,8 +152,16 @@ export function AgentesTab() {
     )
   }
 
-  const editar = (k: string, v: string) => setRascunho({ ...cfg, [k]: v })
+  // O rascunho guarda SÓ o que o formulário edita. Antes ele partia de
+  // `{...cfg}`, então "Salvar alterações" reenviava `agentes_enabled` junto
+  // — e, com o bug do '0', RELIGAVA os agentes ao salvar qualquer campo.
+  // Os interruptores têm caminho próprio (`salvar.mutate` no onChange).
+  const editar = (k: string, v: string) => setRascunho({ ...(rascunho ?? {}), [k]: v })
   const ligado = (k: string) => cfg[k] === '1'
+  // Conceder/remover exige a lista de permissões carregada — ver a guarda
+  // em `trocarAcesso`. Sem ela a seção mostra o motivo e não deixa clicar,
+  // em vez de parecer que "ninguém tem acesso".
+  const acessoPronto = !!perms.data?.permissoes && !!usuarios.data?.usuarios
 
   return (
     <div className="flex flex-col gap-6" data-agentes-admin>
@@ -147,7 +171,7 @@ export function AgentesTab() {
           label={ligado('agentes_enabled') ? 'Agentes ligados' : 'Agentes desligados'}
           checked={ligado('agentes_enabled')}
           disabled={salvar.isPending}
-          onChange={e => salvar.mutate({ agentes_enabled: e.target.checked ? '1' : '0' })}
+          onChange={e => salvar.mutate({ agentes_enabled: e.target.checked })}
           hint="Interruptor geral. Desligado, ninguém vê agente nenhum — nem o administrador."
           data-agentes-interruptor-geral
         />
@@ -157,7 +181,7 @@ export function AgentesTab() {
             label={ligado(ag.config_enabled) ? `${ag.nome}: ligado` : `${ag.nome}: desligado`}
             checked={ligado(ag.config_enabled)}
             disabled={salvar.isPending || !ligado('agentes_enabled')}
-            onChange={e => salvar.mutate({ [ag.config_enabled]: e.target.checked ? '1' : '0' })}
+            onChange={e => salvar.mutate({ [ag.config_enabled]: e.target.checked })}
             hint={`Só vale com o interruptor geral ligado. Elegível a: ${ag.perfis_elegiveis.join(', ')}.`}
           />
         ))}
@@ -224,7 +248,13 @@ export function AgentesTab() {
               </p>
             </div>
 
-            {comAcesso.length === 0 ? (
+            {!acessoPronto ? (
+              <p className="text-sm text-dim" data-agentes-acesso-indisponivel>
+                {perms.isError || usuarios.isError
+                  ? `Não foi possível carregar quem tem acesso: ${mensagemDeErro(perms.error ?? usuarios.error, 'erro desconhecido')}. Recarregue a página.`
+                  : 'Carregando quem tem acesso…'}
+              </p>
+            ) : comAcesso.length === 0 ? (
               <p className="text-sm text-dim">Ninguém além dos administradores.</p>
             ) : (
               <ul className="flex flex-col divide-y divide-edge">
@@ -235,7 +265,7 @@ export function AgentesTab() {
                     </span>
                     <Button
                       variant="ghost" size="sm"
-                      disabled={trocarAcesso.isPending}
+                      disabled={trocarAcesso.isPending || !acessoPronto}
                       onClick={() => trocarAcesso.mutate(
                         { matricula: u.matricula, recurso: ag.recurso, conceder: false })}
                     >
@@ -250,6 +280,7 @@ export function AgentesTab() {
               <Select
                 label="Incluir usuário"
                 value={aIncluir[ag.id] ?? ''}
+                disabled={!acessoPronto}
                 onChange={e => setAIncluir({ ...aIncluir, [ag.id]: e.target.value })}
               >
                 <option value="">Selecione…</option>
@@ -260,7 +291,7 @@ export function AgentesTab() {
                 ))}
               </Select>
               <Button
-                disabled={!aIncluir[ag.id] || trocarAcesso.isPending}
+                disabled={!aIncluir[ag.id] || trocarAcesso.isPending || !acessoPronto}
                 loading={trocarAcesso.isPending}
                 onClick={() => {
                   const mat = aIncluir[ag.id]
@@ -271,7 +302,7 @@ export function AgentesTab() {
               >
                 Conceder
               </Button>
-              {elegiveis.length === 0 && (
+              {acessoPronto && elegiveis.length === 0 && (
                 <p className="text-xs text-dim pb-2">
                   Nenhum usuário ativo com perfil elegível fora da lista.
                 </p>

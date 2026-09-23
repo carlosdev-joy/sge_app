@@ -24,11 +24,17 @@ const inputCls = 'border border-edge bg-canvas text-ink text-sm rounded-md px-2.
 const enc = encodeURIComponent
 const cat = <T,>(body: object) => apiFetch<T>('/catalogo', { method: 'POST', body: JSON.stringify(body) })
 
-interface Props { pipeline: string; setPipeline: (p: string) => void }
+interface Props {
+  pipeline: string
+  setPipeline: (p: string) => void
+  /** Job já escolhido ao montar — usado por quem chega por link direto
+      (ex.: "abrir na Governança" da tela `/agentes`). */
+  jobInicial?: string
+}
 
-export function PainelJobIsx({ pipeline, setPipeline }: Props) {
+export function PainelJobIsx({ pipeline, setPipeline, jobInicial }: Props) {
   const [input, setInput] = useState(pipeline)
-  const [jobEscolhido, setJobEscolhido] = useState('')
+  const [jobEscolhido, setJobEscolhido] = useState(jobInicial ?? '')
   const [stageSel, setStageSel] = useState<string | null>(null)
   const [extraindo, setExtraindo] = useState<string | null>(null)
   const [ultimo, setUltimo] = useState<{ job: string; cacheHit: boolean } | null>(null)

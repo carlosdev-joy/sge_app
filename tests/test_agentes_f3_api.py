@@ -55,10 +55,17 @@ class _Cur:
     def __init__(self, config_agentes):
         self.config_agentes = config_agentes
         self._rows: list = []
+        self.gravados: dict[str, str] = {}
 
     def execute(self, sql, params=None):
         params = tuple(params or ())
         s = sql.lower()
+        if "merge" in s and "etl_app_config" in s:
+            # `(config_key, config_value)` — é o que o POST grava.
+            if len(params) >= 2:
+                self.gravados[str(params[0])] = str(params[1])
+            self._rows = []
+            return
         if "select identidade_gateway from dbo.etl_usuario" in s:
             self._rows = [(None,)]
         elif "from dbo.etl_app_config" in s:
@@ -102,6 +109,14 @@ class _Conn:
         pass
 
 
+_CURSOR_ATUAL: list = []
+
+
+def _cur_do(_cliente):
+    """O `_Cur` que o ambiente montou — onde os MERGE ficam registrados."""
+    return _CURSOR_ATUAL[-1]
+
+
 @pytest.fixture
 def ambiente():
     estado = {"perms": ["tela_agentes"], "extras": ["agente_datastage"]}
@@ -111,9 +126,11 @@ def ambiente():
     cur = _Cur({"agentes_enabled": "1", "agente_datastage_enabled": "1",
                 "agentes_gateway_campo_usuario": "header:X-User",
                 "agentes_cadastro_texto": TEXTO_ADMIN})
+    _CURSOR_ATUAL.append(cur)
     svc_agentes._sonda_cache.clear()
     with patch("routers.agentes.get_db_conn", return_value=_Conn(cur)):
         yield TestClient(_app), estado
+    _CURSOR_ATUAL.pop()
     _app.dependency_overrides.pop(get_current_user, None)
     svc_agentes._sonda_cache.clear()
 
@@ -212,3 +229,57 @@ def _sonda(valor):
     async def _coro(*_a, **_k):
         return valor
     return _coro
+
+
+# ═══════════ 3. interruptores: "0" TEM de desligar ═══════════════════════
+#
+# Achado BLOQUEANTE da revisão adversarial da F3: o handler fazia
+# `"1" if body.get(chave) else "0"`, e em Python a string "0" é VERDADEIRA
+# — quem mandasse `{"agentes_enabled": "0"}` (exatamente o que a aba do
+# Admin mandava) DESLIGAVA na tela e LIGAVA no banco. Como o botão "Salvar
+# alterações" reenviava o rascunho inteiro, editar qualquer outro campo com
+# os agentes desligados os RELIGAVA para todo mundo com grant.
+#
+# O interruptor geral é o kill switch de uma feature que fala com o gateway
+# de IA: tem de desligar de verdade, e por qualquer cliente da API.
+
+@pytest.mark.parametrize("enviado", [False, "0", "false", "False", "no", "off", "", None, 0])
+def test_valor_falso_desliga_de_verdade(ambiente, enviado):
+    cliente, estado = ambiente
+    estado["perms"] = ["tela_agentes", PERM_ADMIN]
+    cur = _cur_do(cliente)
+    r = cliente.post("/agentes/admin/config", json={"agentes_enabled": enviado})
+    assert r.status_code == 200, r.text
+    assert cur.gravados.get("agentes_enabled") == "0", \
+        f"{enviado!r} devia DESLIGAR, gravou {cur.gravados.get('agentes_enabled')!r}"
+
+
+@pytest.mark.parametrize("enviado", [True, "1", "true", "sim", "on", 1])
+def test_valor_verdadeiro_liga(ambiente, enviado):
+    cliente, estado = ambiente
+    estado["perms"] = ["tela_agentes", PERM_ADMIN]
+    cur = _cur_do(cliente)
+    r = cliente.post("/agentes/admin/config", json={"agentes_enabled": enviado})
+    assert r.status_code == 200, r.text
+    assert cur.gravados.get("agentes_enabled") == "1"
+
+
+def test_salvar_outro_campo_nao_mexe_nos_interruptores(ambiente):
+    """A outra metade do achado: gravar só o que veio no corpo. Um POST que
+    não cita `agentes_enabled` não pode ligá-lo nem desligá-lo."""
+    cliente, estado = ambiente
+    estado["perms"] = ["tela_agentes", PERM_ADMIN]
+    cur = _cur_do(cliente)
+    r = cliente.post("/agentes/admin/config", json={"agentes_ssh_max": 7})
+    assert r.status_code == 200, r.text
+    assert cur.gravados.get("agentes_ssh_max") == "7"
+    assert "agentes_enabled" not in cur.gravados
+    assert "agente_datastage_enabled" not in cur.gravados
+
+
+def test_desligar_o_agente_especifico_tambem_funciona(ambiente):
+    cliente, estado = ambiente
+    estado["perms"] = ["tela_agentes", PERM_ADMIN]
+    cur = _cur_do(cliente)
+    cliente.post("/agentes/admin/config", json={"agente_datastage_enabled": "0"})
+    assert cur.gravados.get("agente_datastage_enabled") == "0"
