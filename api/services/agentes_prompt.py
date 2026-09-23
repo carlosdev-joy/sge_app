@@ -182,6 +182,10 @@ def dominio_em_uso(cur, agente_id: str) -> dict:
                        exc_info=True)
         v = None
     if v is None:
+        if not tem_padrao(agente_id):
+            # Agente criado pela tela sem versão (não deveria existir: a 1ª é
+            # gravada na criação). Sem padrão no código, não há o que usar.
+            raise LookupError(f"agente {agente_id!r} sem prompt gravado")
         texto, versao = padrao(agente_id), 0
     else:
         texto, versao = v["texto"], v["versao"]

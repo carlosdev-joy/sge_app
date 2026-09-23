@@ -35,7 +35,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from db import get_db_conn
-from deps import PERM_ADMIN, PERM_EDITAR, get_admin_user, require_perm
+from deps import PERM_ADMIN, PERM_EDITAR, get_admin_user, get_current_user, require_perm
 from services import agentes as svc
 from services import agentes_aprendizado as ap
 from services import agentes_conhecimento as ac
@@ -192,26 +192,71 @@ def _conexao():
         _fechar(conn, cur)
 
 
-def _agente_existe(agente_id: str) -> bool:
-    """Do código: sem abrir conexão (o `/agentes/status` do DataStage tem o
-    contrato de um acerto de cache não tocar o banco). Criado pela tela: um
-    SELECT por chave."""
-    if svc.agente(agente_id) is not None:
-        return True
+def _tabela_ausente(e: Exception) -> bool:
+    """`dbo.etl_agente` ainda não existe (antes da 121). Pelo SQLSTATE (42S02)
+    ou pelo texto — nunca pelo número "208", que também aparece como
+    "Process ID 208" numa mensagem de deadlock (revisão da B1)."""
+    return bool(e.args and e.args[0] == "42S02") or "Invalid object name" in str(e)
+
+
+def _um_ou_none(agente_id: str) -> dict | None:
+    """O agente pelo id: do código sem abrir conexão (o `/agentes/status` do
+    DataStage tem o contrato de um acerto de cache não tocar o banco);
+    criado pela tela, um SELECT por chave. Id fora do formato nem abre
+    conexão. Sem a 121 só existem os do código; QUALQUER outro erro (deadlock,
+    timeout) sobe — não vira um 404 que mente sobre o que houve."""
+    ag = svc.agente(agente_id)
+    if ag is not None:
+        return ag
     if not reg.RE_ID.match(agente_id):
-        return False
+        return None
     with _conexao() as (_conn, cur):
         try:
-            return reg.um(cur, agente_id) is not None
+            return reg.um(cur, agente_id)
         except Exception as e:  # noqa: BLE001
-            # Sem a 121 (tabela inexistente), só existem os do código. Qualquer
-            # OUTRO erro (deadlock, timeout) sobe como erro — não vira um 404
-            # "agente desconhecido" que mente sobre o que houve. Pelo SQLSTATE
-            # (42S02) ou pelo texto — nunca pelo número "208", que também
-            # aparece como "Process ID 208" numa mensagem de deadlock.
-            if (e.args and e.args[0] == "42S02") or "Invalid object name" in str(e):
-                return False
+            if _tabela_ausente(e):
+                return None
             raise
+
+
+def _agente_existe(agente_id: str) -> bool:
+    return _um_ou_none(agente_id) is not None
+
+
+def _carregar_agente(agente_id: str) -> dict:
+    ag = _um_ou_none(agente_id)
+    if ag is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
+    return ag
+
+
+async def _agente_para_uso(agente_id: str, user: dict = Depends(get_current_user)) -> dict:
+    """Rotas `/agentes/{agente_id}/…` (spec admin B2): o agente da ROTA e a
+    mesma régua de acesso do catálogo (`svc.motivo_sem_acesso` — manual ×
+    perfil, `tela_agentes` para os criados pela tela, admin passa)."""
+    ag = _carregar_agente(agente_id)
+    motivo = svc.motivo_sem_acesso(user, ag)
+    if motivo is not None:
+        raise HTTPException(status_code=403, detail={"code": motivo[0], "message": motivo[1]})
+    return {"user": user, "agente": ag}
+
+
+async def _agente_para_curadoria(agente_id: str, user: dict = Depends(get_current_user)) -> dict:
+    """Curador DAQUELE agente e também com o acesso de uso (a API não pode
+    ser atalho para a fila e as evidências — auditoria da F6). Agente sem
+    ferramentas não tem curadoria: nunca gera aprendizado."""
+    ag = _carregar_agente(agente_id)
+    if not ag.get("recurso_curador"):
+        raise HTTPException(status_code=404, detail={
+            "code": "agente_sem_curadoria", "message": "este agente não tem curadoria (não usa ferramentas)"})
+    motivo = svc.motivo_sem_acesso(user, ag, curador=True)
+    if motivo is None and svc.motivo_sem_acesso(user, ag) is not None:
+        motivo = ("agente_nao_liberado",
+                  "O curador também precisa ter o agente liberado para uso — peça ao administrador")
+    if motivo is not None:
+        raise HTTPException(status_code=403, detail={"code": motivo[0], "message": motivo[1]})
+    return {"user": user, "agente": ag}
 
 
 @router.get("/agentes/catalogo", tags=["agentes"])
@@ -608,12 +653,19 @@ async def agentes_admin_prompt_restaurar(agente_id: str, body: dict = Body(defau
     return {"sucesso": True, "ativa": ativa}
 
 
-def _preparar_conversa(body: dict, user: dict) -> dict:
+def _preparar_conversa(body: dict, user: dict, ag: dict | None = None) -> dict:
     """Tudo o que vem ANTES da rodada com o modelo: validação do corpo,
     interruptores, dono e validade da conversa, histórico, config e
     identidade. Levanta `HTTPException` — no endpoint de stream isso ainda
     sai como resposta HTTP normal, ANTES de o `text/event-stream` abrir (a
-    tela trata 4xx/503 do mesmo jeito nos dois endpoints)."""
+    tela trata 4xx/503 do mesmo jeito nos dois endpoints).
+
+    `ag` (spec admin B2): o agente da rota — `None` é o DataStage. A conversa
+    fica PRESA ao agente: um `conversa_id` de outro agente é 404, igual a uma
+    conversa de outro usuário (senão herdaria projeto, histórico e falhas)."""
+    if ag is None:
+        ag = svc.CATALOGO[svc.AGENTE_DATASTAGE]
+    agente_id = ag["id"]
     t0 = time.monotonic()
     mensagem = str(body.get("mensagem") or "").strip()
     if not mensagem:
@@ -646,19 +698,26 @@ def _preparar_conversa(body: dict, user: dict) -> dict:
     # try/except/else antigo vazava a conexão nesse caso (achado da F2).
     with _conexao() as (conn, cur):
         agentes_cfg = svc.carregar_config(cur)
-        if not svc.agente_ligado(agentes_cfg, svc.AGENTE_DATASTAGE):
+        if not svc.agente_ligado(agentes_cfg, agente_id, {agente_id: ag}):
             raise HTTPException(status_code=503, detail={
-                "code": "agente_desligado", "message": "Agente DataStage desligado"})
+                "code": "agente_desligado", "message": f"Agente {ag['nome']} desligado"})
         # O domínio do prompt é lido A CADA PERGUNTA, sem cache (spec admin
         # A1, T2): a versão que o admin gravar vale na próxima pergunta, nos
         # dois workers. Antes de qualquer gravação desta conversa — se a
-        # leitura falhar, o DataStage cai no padrão do código sem erro.
-        dominio = apr.dominio_em_uso(cur, svc.AGENTE_DATASTAGE)
+        # leitura falhar, o DataStage cai no padrão do código sem erro; um
+        # agente criado pela tela não tem padrão, e a pergunta não segue.
+        try:
+            dominio = apr.dominio_em_uso(cur, agente_id)
+        except Exception:  # noqa: BLE001
+            log.warning("agentes: prompt de %s indisponível", agente_id, exc_info=True)
+            raise HTTPException(status_code=503, detail={
+                "code": "agente_prompt_indisponivel",
+                "message": "O prompt deste agente não pôde ser lido — tente de novo em instantes"}) from None
         cur.execute(
-            "SELECT projeto, matricula, DATEDIFF(day, ultima_msg_em, GETDATE()) "
+            "SELECT projeto, matricula, DATEDIFF(day, ultima_msg_em, GETDATE()), agente "
             "FROM dbo.etl_agente_conversa WHERE conversa_id = ?", [conversa_id])
         row = cur.fetchone()
-        if row is not None and row[1] != matricula:
+        if row is not None and (row[1] != matricula or row[3] != agente_id):
             # 404, não 403: uma conversa alheia não deve nem confirmar que existe.
             raise HTTPException(status_code=404, detail={
                 "code": "conversa_nao_encontrada", "message": "conversa não encontrada"})
@@ -677,7 +736,7 @@ def _preparar_conversa(body: dict, user: dict) -> dict:
                 # `titulo_da_conversa` corta em unidades UTF-16, a largura real
                 # do NVARCHAR(200) — `mensagem[:200]` conta CARACTERES, e 200
                 # caracteres com emoji passam de 200 unidades no banco.
-                [conversa_id, svc.AGENTE_DATASTAGE, matricula,
+                [conversa_id, agente_id, matricula,
                  svc.titulo_da_conversa(mensagem_redigida)])
             projeto_atual = None
             historico: list[dict] = []
@@ -707,13 +766,13 @@ def _preparar_conversa(body: dict, user: dict) -> dict:
     # `acao_editar` é SEMPRE da sessão (F2b, isx_extrair) — nunca do corpo,
     # mesma régua da identidade (critério 6 da F2, estendido).
     acao_editar = PERM_EDITAR in user.get("permissoes", [])
-    return {"t0": t0, "conversa_id": conversa_id, "matricula": matricula,
+    return {"t0": t0, "conversa_id": conversa_id, "matricula": matricula, "agente": agente_id,
             "mensagem_redigida": mensagem_redigida,
             # Rastreio: qual domínio respondeu. O hash separa os "padrão do
             # código" de deploys diferentes, que dividem a versão 0.
             "prompt": {"prompt_versao": dominio["versao"], "prompt_hash": dominio["hash"]},
             "kwargs": dict(
-                dominio=dominio["texto"],
+                dominio=dominio["texto"], agente=agente_id, ferramentas=tuple(ag.get("ferramentas", ())),
                 mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
                 projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
                 identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
@@ -755,7 +814,7 @@ async def _rodar_e_gravar_interno(ctx: dict, emit_status=None) -> dict:
             # Na MESMA transação das mensagens: ou a resposta e os cartões
             # dela ficam juntos, ou nenhum dos dois.
             propostas = ac.inserir_propostas(
-                cur, conversa_id=conversa_id, agente=svc.AGENTE_DATASTAGE, matricula=matricula,
+                cur, conversa_id=conversa_id, agente=ctx.get("agente", svc.AGENTE_DATASTAGE), matricula=matricula,
                 propostas=resultado["propostas"])
         cur.execute(
             "INSERT INTO dbo.etl_agente_mensagem "
@@ -876,14 +935,14 @@ def _liberar_vaga(matricula: str) -> None:
         _RODADAS_POR_USUARIO.pop(matricula, None)
 
 
-def _preparar_com_vaga(body: dict, user: dict) -> dict:
+def _preparar_com_vaga(body: dict, user: dict, ag: dict | None = None) -> dict:
     """Ocupa a vaga ANTES de preparar (que já grava a conversa nova — sem
     vaga, nada é gravado) e a devolve se a preparação falhar. Quem recebe o
     contexto é dono da vaga: `_rodar_e_gravar` a libera no fim."""
     matricula = str(user.get("matricula") or "").strip()
     _ocupar_vaga(matricula)
     try:
-        return {**_preparar_conversa(body, user), "vaga": True}
+        return {**_preparar_conversa(body, user, ag), "vaga": True}
     except BaseException:
         _liberar_vaga(matricula)
         raise
@@ -927,7 +986,11 @@ async def agentes_datastage_conversar_stream(body: dict = Body(default={}),
     Gate, validação e 4xx/503 acontecem ANTES do stream (resposta HTTP
     normal). `X-Accel-Buffering: no` desliga o buffer do nginx só para esta
     resposta — o `nginx.conf` de produção não precisa mudar."""
-    ctx = _preparar_com_vaga(body, user)
+    return _responder_stream(_preparar_com_vaga(body, user))
+
+
+def _responder_stream(ctx: dict) -> StreamingResponse:
+    """O corpo do stream, o mesmo para o DataStage e para as rotas genéricas."""
     fila: asyncio.Queue = asyncio.Queue()
 
     async def _emitir(texto: str) -> None:
@@ -972,6 +1035,19 @@ async def agentes_datastage_conversar_stream(body: dict = Body(default={}),
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.post("/agentes/{agente_id}/conversar", tags=["agentes"])
+async def agentes_conversar(body: dict = Body(default={}), acesso: dict = Depends(_agente_para_uso)):
+    """Uma rodada com um agente criado pela tela (spec admin B2) — o mesmo
+    caminho do DataStage, com o prompt e as ferramentas DAQUELE agente. As
+    rotas do DataStage vêm antes e continuam exatamente como estão."""
+    return await _rodar_e_gravar(_preparar_com_vaga(body, acesso["user"], acesso["agente"]))
+
+
+@router.post("/agentes/{agente_id}/conversar/stream", tags=["agentes"])
+async def agentes_conversar_stream(body: dict = Body(default={}), acesso: dict = Depends(_agente_para_uso)):
+    return _responder_stream(_preparar_com_vaga(body, acesso["user"], acesso["agente"]))
+
+
 _RE_DECISAO = re.compile(r"^(aprovar|recusar)$")
 
 
@@ -982,7 +1058,20 @@ async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={
     a matrícula vem da sessão e a de outro usuário dá **404 igual** à de uma
     proposta inexistente (critério 3; sem oráculo de ids). Aprovar grava o
     fato `interpretacao_aprovada` com quem aprovou e quando; recusar não grava
-    nada. Repetir a mesma decisão é inofensivo (devolve o estado atual)."""
+    nada. Repetir a mesma decisão é inofensivo (devolve o estado atual).
+
+    Desde a B2 da spec admin é o apelido do DataStage: proposta de outro
+    agente é 404 aqui — ela se decide pela rota do agente dela."""
+    return _decidir_proposta(proposta_id, body, user, svc.AGENTE_DATASTAGE)
+
+
+@router.post("/agentes/{agente_id}/propostas/{proposta_id}/decidir", tags=["agentes"])
+async def agentes_proposta_decidir_do_agente(proposta_id: int, body: dict = Body(default={}),
+                                             acesso: dict = Depends(_agente_para_uso)):
+    return _decidir_proposta(proposta_id, body, acesso["user"], acesso["agente"]["id"])
+
+
+def _decidir_proposta(proposta_id: int, body: dict, user: dict, agente_id: str) -> dict:
     decisao = str(body.get("decisao") or "").strip().lower()
     if not _RE_DECISAO.match(decisao):
         raise HTTPException(status_code=422, detail={
@@ -994,7 +1083,8 @@ async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={
     try:
         with _conexao() as (conn, cur):
             proposta = ac.decidir_proposta(conn, cur, proposta_id=proposta_id, matricula=matricula,
-                                           decisao=decisao, retencao_dias=svc.RETENCAO_CONVERSAS_DIAS)
+                                           decisao=decisao, retencao_dias=svc.RETENCAO_CONVERSAS_DIAS,
+                                           agente=agente_id)
     except ac.PropostaNaoEncontrada:
         raise HTTPException(status_code=404, detail={
             "code": "proposta_nao_encontrada", "message": "proposta não encontrada"})
@@ -1028,11 +1118,12 @@ async def _require_curadoria(user: dict = Depends(_require_curador)) -> dict:
     return user
 
 
-def _curadoria_ligada(cur) -> None:
+def _curadoria_ligada(cur, ag: dict | None = None) -> None:
     """Agente DESLIGADO → 503, como o chat."""
-    if not svc.agente_ligado(svc.carregar_config(cur), svc.AGENTE_DATASTAGE):
+    ag = ag or svc.CATALOGO[svc.AGENTE_DATASTAGE]
+    if not svc.agente_ligado(svc.carregar_config(cur), ag["id"], {ag["id"]: ag}):
         raise HTTPException(status_code=503, detail={
-            "code": "agente_desligado", "message": "Agente DataStage desligado"})
+            "code": "agente_desligado", "message": f"Agente {ag['nome']} desligado"})
 
 
 @router.get("/agentes/aprendizados", tags=["agentes"])
@@ -1041,27 +1132,47 @@ async def agentes_aprendizados(estado: str = Query(default="rascunho"),
     """A fila do curador: rascunhos (sugestões do agente e a semente) para
     validar ou rejeitar, e os validados para marcar como obsoletos. A
     evidência vem junto — é o que o curador lê para decidir; o modelo nunca
-    a recebe."""
+    a recebe. Apelido do DataStage desde a B2 da spec admin."""
+    return _listar_aprendizados(estado, svc.CATALOGO[svc.AGENTE_DATASTAGE])
+
+
+@router.get("/agentes/{agente_id}/aprendizados", tags=["agentes"])
+async def agentes_aprendizados_do_agente(estado: str = Query(default="rascunho"),
+                                         acesso: dict = Depends(_agente_para_curadoria)):
+    return _listar_aprendizados(estado, acesso["agente"])
+
+
+def _listar_aprendizados(estado: str, ag: dict) -> dict:
     if estado not in ap.ESTADOS:
         raise HTTPException(status_code=422, detail={
             "code": "estado_invalido", "message": f"estado deve ser um de: {', '.join(ap.ESTADOS)}"})
     with _conexao() as (_conn, cur):
-        _curadoria_ligada(cur)
-        itens = ap.listar(cur, agente=svc.AGENTE_DATASTAGE, estado=estado)
+        _curadoria_ligada(cur, ag)
+        itens = ap.listar(cur, agente=ag["id"], estado=estado)
     return {"aprendizados": itens}
 
 
 @router.post("/agentes/aprendizados/{aprendizado_id}/decidir", tags=["agentes"])
 async def agentes_aprendizado_decidir(aprendizado_id: int, body: dict = Body(default={}),
                                       user: dict = Depends(_require_curadoria)):
+    return _decidir_aprendizado(aprendizado_id, body, user, svc.CATALOGO[svc.AGENTE_DATASTAGE])
+
+
+@router.post("/agentes/{agente_id}/aprendizados/{aprendizado_id}/decidir", tags=["agentes"])
+async def agentes_aprendizado_decidir_do_agente(aprendizado_id: int, body: dict = Body(default={}),
+                                                acesso: dict = Depends(_agente_para_curadoria)):
+    return _decidir_aprendizado(aprendizado_id, body, acesso["user"], acesso["agente"])
+
+
+def _decidir_aprendizado(aprendizado_id: int, body: dict, user: dict, ag: dict) -> dict:
     acao = str(body.get("acao") or "").strip().lower()
     if acao not in ap.TRANSICOES:
         raise HTTPException(status_code=422, detail={
             "code": "acao_invalida", "message": "acao deve ser 'validar', 'rejeitar' ou 'obsoletar'"})
     try:
         with _conexao() as (conn, cur):
-            _curadoria_ligada(cur)
-            item = ap.decidir(conn, cur, aprendizado_id=aprendizado_id, agente=svc.AGENTE_DATASTAGE,
+            _curadoria_ligada(cur, ag)
+            item = ap.decidir(conn, cur, aprendizado_id=aprendizado_id, agente=ag["id"],
                               acao=acao, matricula=user["matricula"])
     except ap.AprendizadoNaoEncontrado:
         raise HTTPException(status_code=404, detail={

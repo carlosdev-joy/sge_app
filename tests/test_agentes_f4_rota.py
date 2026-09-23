@@ -70,7 +70,7 @@ class _Cur:
                 if "select agente" not in s else
                 ("datastage", "titulo", "PIPE", None, None, self.dono, self.idade_dias)]
             if "select projeto, matricula" in s:
-                self._rows = [] if self.dono is None else [("BI_CVP", self.dono, self.idade_dias)]
+                self._rows = [] if self.dono is None else [("BI_CVP", self.dono, self.idade_dias, "datastage")]
         elif "from dbo.etl_agente_conversa" in s:
             self._rows = list(self.conversas)
         elif "from dbo.etl_agente_mensagem" in s:

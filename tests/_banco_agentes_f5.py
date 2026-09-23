@@ -22,6 +22,7 @@ class BancoF5:
         self.commits = 0
         self.rollbacks = 0
         self.execs: list[tuple[str, tuple]] = []
+        self.migracao_121 = True  # False simula a API nova num banco sem a 121
         self._fixar()
 
     # ── transação ────────────────────────────────────────────────────────
@@ -119,10 +120,18 @@ class _Cursor:
                 if (f["ds_project"], f["job_name"], f["tipo"], f["chave"], f["origem"]) == (
                         proj, job, tipo, chave, origem) and f["obsoleto_em"] is None:
                     f["obsoleto_em"] = agora
+        elif "col_length('dbo.etl_agente_fato', 'agente')" in s:
+            self._rows = [(40 if b.migracao_121 else None,)]
         elif s.startswith("insert into dbo.etl_agente_fato"):
             b._seq_fato += 1
+            agente_fato = None
             if "aprovado_por" in s:
-                proj, job, tipo, chave, valor, origem, evid, lido_por, aprovado_por = p
+                # B2 da spec admin: a interpretação aprovada guarda quem propôs
+                # (só com a migration 121 — sem ela, o INSERT não leva a coluna)
+                if "agente)" in s:
+                    proj, job, tipo, chave, valor, origem, evid, lido_por, aprovado_por, agente_fato = p
+                else:
+                    proj, job, tipo, chave, valor, origem, evid, lido_por, aprovado_por = p
                 pipeline, lm, aprovado_em = None, None, agora
             else:
                 proj, job, pipeline, tipo, chave, valor, origem, evid, lm, lido_por = p
@@ -131,7 +140,7 @@ class _Cursor:
                             "tipo": tipo, "chave": chave, "valor_json": valor, "origem": origem,
                             "evidencia": evid, "ds_last_modified": lm, "lido_em": agora,
                             "lido_por": lido_por, "aprovado_por": aprovado_por,
-                            "aprovado_em": aprovado_em, "obsoleto_em": None})
+                            "aprovado_em": aprovado_em, "obsoleto_em": None, "agente": agente_fato})
             if "output inserted.id" in s:
                 self._rows = [(b._seq_fato,)]
         elif s.startswith("select top (?) tipo, chave, valor_json, origem"):
@@ -155,8 +164,8 @@ class _Cursor:
             self._rows = [(b._seq_prop, agora)]
         elif "from dbo.etl_agente_proposta with (updlock, holdlock) where id" in s:
             prop = b.propostas.get(p[0])
-            self._rows = [self._linha_prop(prop, (prop["matricula"], (agora - prop["criada_em"]).days))] \
-                if prop else []
+            self._rows = [self._linha_prop(prop, (prop["matricula"], (agora - prop["criada_em"]).days,
+                                                  prop.get("agente", "datastage")))] if prop else []
         elif s.startswith("update dbo.etl_agente_proposta set estado = 'expirada'"):
             prop = b.propostas.get(p[0])
             if prop and prop["estado"] == "pendente":

@@ -57,12 +57,12 @@ class _CursorRota(_Cursor):
             self._rows = [(None,)]
         elif "from dbo.etl_agente_conversa" in s and "select projeto, matricula" in s:
             c = b.conversas.get(p[0])
-            self._rows = [(c["projeto"], c["matricula"], 0)] if c else []
+            self._rows = [(c["projeto"], c["matricula"], 0, c.get("agente", "datastage"))] if c else []
         elif "from dbo.etl_agente_conversa" in s and "select agente" in s:
             c = b.conversas.get(p[0])
             self._rows = [("datastage", "t", c["projeto"], None, None, c["matricula"], 0)] if c else []
         elif s.startswith("insert into dbo.etl_agente_conversa"):
-            b.conversas[p[0]] = {"projeto": None, "matricula": p[2]}
+            b.conversas[p[0]] = {"projeto": None, "matricula": p[2], "agente": p[1]}
         elif s.startswith("update dbo.etl_agente_conversa"):
             b.conversas[p[1]]["projeto"] = p[0]
         elif s.startswith("insert into dbo.etl_agente_mensagem"):

@@ -720,7 +720,8 @@ def _com_conexao(abrir_conn, fn):
 async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: str | None,
                                ssh_max: int, espera_max_s: float, acao_editar: bool,
                                matricula: str | None, extracoes_isx: int,
-                               resta_agora, validade_dias: int = 7) -> tuple[dict, str | None]:
+                               resta_agora, validade_dias: int = 7,
+                               agente: str = AGENTE_DATASTAGE) -> tuple[dict, str | None]:
     """Executa UMA ferramenta pedida pelo modelo, sempre pela allowlist —
     NUNCA deixa `base`/`dsjob`/`dsx_consulta`/`isx_extrair` rodar sem
     `projeto` resolvido (a guarda do risco 28). `abrir_conn` é uma fábrica
@@ -743,7 +744,7 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
         return await _executar_ferramenta_interna(
             abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s,
             acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx,
-            resta_agora=resta_agora, validade_dias=validade_dias)
+            resta_agora=resta_agora, validade_dias=validade_dias, agente=agente)
     except af.ServidorOcupado as e:
         return {"texto": af.redigir(str(e))}, None  # passageiro: pode tentar de novo
     except DsConsoleError as e:
@@ -759,7 +760,8 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
 async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, projeto: str | None,
                                        ssh_max: int, espera_max_s: float, acao_editar: bool,
                                        matricula: str | None, extracoes_isx: int,
-                                       resta_agora, validade_dias: int = 7) -> tuple[dict, str | None]:
+                                       resta_agora, validade_dias: int = 7,
+                                       agente: str = AGENTE_DATASTAGE) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
     if nome == "resolver_projeto" and _pede_listagem(args):
@@ -789,7 +791,7 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
             # quando o prefixo do job confirma o projeto, o modelo pode seguir
             # sem perguntar; na dúvida, confirma com o usuário.
             # F6: a grafia canônica é fato da base — vira aprendizado de busca.
-            _registrar_seguro(abrir_conn, ap.aprendizado_de_busca(candidato or "", r["sugerido"] or ""))
+            _registrar_seguro(abrir_conn, ap.aprendizado_de_busca(candidato or "", r["sugerido"] or ""), agente)
             return ({"texto": f"'{candidato}' é parecido com '{r['sugerido']}' (o DataStage é "
                               f"sensível a maiúsculas/minúsculas). Se o prefixo do job confirma "
                               f"esse projeto, chame resolver_projeto de novo com \"{r['sugerido']}\" "
@@ -805,7 +807,8 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
 
     if nome == "isx_extrair":
         return await _isx_extrair(abrir_conn, args, projeto=projeto, acao_editar=acao_editar,
-                                  matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=resta_agora)
+                                  matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=resta_agora,
+                                  agente=agente)
 
     if nome == "dsx_consulta":
         return await _dsx_consulta(abrir_conn, args, projeto=projeto, matricula=matricula)
@@ -906,40 +909,42 @@ def _gravar_fatos_seguro(abrir_conn, *, matricula: str | None, **kw) -> None:
                     exc_info=True)
 
 
-def _registrar_seguro(abrir_conn, aprendizado: dict | None) -> None:
+def _registrar_seguro(abrir_conn, aprendizado: dict | None, agente: str = AGENTE_DATASTAGE) -> None:
     """Grava um aprendizado numa conexão curta própria. Como os fatos: nunca
     derruba a rodada (o aprendizado é efeito colateral, não a resposta)."""
     if not aprendizado:
         return
     try:
-        _com_conexao(abrir_conn, lambda conn, cur: ap.registrar(conn, cur, agente=AGENTE_DATASTAGE, a=aprendizado))
+        _com_conexao(abrir_conn, lambda conn, cur: ap.registrar(conn, cur, agente=agente, a=aprendizado))
     except Exception:  # noqa: BLE001
         log.warning("agentes: falha ao registrar aprendizado %s", aprendizado.get("tipo"), exc_info=True)
 
 
-def _erro_conhecido_seguro(abrir_conn, nome: str, args: dict, projeto: str | None) -> dict | None:
+def _erro_conhecido_seguro(abrir_conn, nome: str, args: dict, projeto: str | None,
+                           agente: str = AGENTE_DATASTAGE) -> dict | None:
     if nome not in ap.FERRAMENTAS_COM_GUARDA:
         return None
     try:
         return _com_cursor(abrir_conn, lambda cur: ap.erro_conhecido(
-            cur, agente=AGENTE_DATASTAGE, ferramenta=nome, args=args, projeto=projeto))
+            cur, agente=agente, ferramenta=nome, args=args, projeto=projeto))
     except Exception:  # noqa: BLE001 — sem a tabela, a guarda só não bloqueia
         return None
 
 
-def _rascunhos_pendentes_seguro(abrir_conn) -> int:
+def _rascunhos_pendentes_seguro(abrir_conn, agente: str = AGENTE_DATASTAGE) -> int:
     """Sem conseguir contar, trata a fila como CHEIA: melhor perder uma
     sugestão do que encher sem limite a fila do curador."""
     try:
-        return _com_cursor(abrir_conn, lambda cur: ap.rascunhos_pendentes(cur, agente=AGENTE_DATASTAGE))
+        return _com_cursor(abrir_conn, lambda cur: ap.rascunhos_pendentes(cur, agente=agente))
     except Exception:  # noqa: BLE001
         return ap.MAX_RASCUNHOS_PENDENTES
 
 
-def _recuperar_seguro(abrir_conn, pergunta: str, projeto: str | None) -> list[dict]:
+def _recuperar_seguro(abrir_conn, pergunta: str, projeto: str | None,
+                      agente: str = AGENTE_DATASTAGE) -> list[dict]:
     try:
         def _fn(cur):
-            itens = ap.recuperar(cur, agente=AGENTE_DATASTAGE, pergunta=pergunta, projeto=projeto)
+            itens = ap.recuperar(cur, agente=agente, pergunta=pergunta, projeto=projeto)
             if itens:
                 ap.marcar_uso(cur, [i["id"] for i in itens])
             return itens
@@ -1046,7 +1051,8 @@ def _texto_isx(abrir_conn, payload: dict) -> tuple[str, str]:
 
 
 async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_editar: bool,
-                       matricula: str | None, extracoes_isx: int, resta_agora) -> tuple[dict, str | None]:
+                       matricula: str | None, extracoes_isx: int, resta_agora,
+                       agente: str = AGENTE_DATASTAGE) -> tuple[dict, str | None]:
     """`isx_extrair` (F2b): export via `istool` + parse + gravação, com a
     MESMA régua do botão `POST /lineage/isx/extrair` — mesmas funções,
     mesmo executor. Duas portas de entrada:
@@ -1150,7 +1156,10 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
         texto, evidencia = _texto_isx(abrir_conn, payload)
         return {"texto": texto, "texto_evidencia": evidencia, "lido": job_canon}, None
 
-    usuario_registro = f"{matricula or '?'} ({af.ORIGEM_AGENTE})"
+    # `agente:datastage` para o DataStage (como sempre); `agente:<id>` para um
+    # criado pela tela — a Governança sabe QUAL agente extraiu.
+    origem = af.ORIGEM_AGENTE if agente == AGENTE_DATASTAGE else f"agente:{agente}"
+    usuario_registro = f"{matricula or '?'} ({origem})"
     if not cache_hit:
         try:
             _com_conexao(abrir_conn, lambda conn, cur: af.lineage_isx.gravar(
@@ -1268,11 +1277,47 @@ def texto_de_progresso(ferramenta: str, args: dict, projeto: str | None, *, repe
     return "Consultando…"
 
 
+async def _conversar_sem_ferramentas(historico: list[dict], *, provedor_cfg: dict, identidade: str | None,
+                                     campo_identidade: str | None, dominio: str | None, resta, status,
+                                     texto_esgotado: dict) -> dict:
+    """Agente SÓ DE CONVERSA (spec admin §4.3): uma chamada ao gateway, com o
+    domínio e a variante genérica das regras — sem projeto, sem ferramenta,
+    sem propostas nem aprendizados. Um bloco de ferramenta/proposta/
+    aprendizado que o modelo mande mesmo assim é TIRADO do texto e
+    descartado: nada executa, nada é gravado."""
+    sistema = _prompt_sistema(None, False, "", dominio=dominio, ferramentas=())
+    await status("Pensando na pergunta…")
+    tempo = resta()
+    if tempo <= 5:
+        return {**texto_esgotado, "artefatos": []}
+    try:
+        resposta, modelo = await asyncio.wait_for(
+            ia_provedor.chat_conversa(provedor_cfg, sistema, historico,
+                                      identidade=identidade, campo_identidade=campo_identidade),
+            timeout=max(1.0, tempo - 2))
+    except (asyncio.TimeoutError, TimeoutError):
+        return {**texto_esgotado, "artefatos": []}
+    except ia_provedor.GatewayRecusou:
+        return {"status": "gateway_recusou", "projeto": None, "artefatos": [],
+                "texto": "O gateway de IA recusou esta conversa — confira seu cadastro em Agentes."}
+    except HTTPException as e:
+        return {"status": "erro_provedor", "projeto": None, "artefatos": [],
+                "texto": f"O provedor de IA não respondeu ({e.detail})."}
+    texto, _pedido = extrair_pedido_ferramenta(resposta)
+    texto, _ap = ap.extrair_sugestoes(texto or "")
+    texto, _prop = ac.extrair_propostas(texto)
+    historico.append({"role": "assistant", "content": resposta})
+    return {"status": "ok", "projeto": None, "artefatos": [], "modelo": modelo, "historico": historico,
+            "texto": (texto or "").strip() or "Não tenho mais nada a acrescentar.",
+            "propostas": [], "propostas_recusadas": [], "aprendizados_usados": [], "aprendizados_sugeridos": []}
+
+
 async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | None,
                     provedor_cfg: dict, identidade: str | None, campo_identidade: str | None,
                     ssh_max: int, acao_editar: bool = False, matricula: str | None = None,
                     validade_fatos_dias: int = 7, falhas_anteriores: set[str] | None = None,
-                    emit_status=None, dominio: str | None = None) -> dict:
+                    emit_status=None, dominio: str | None = None, agente: str = AGENTE_DATASTAGE,
+                    ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE) -> dict:
     """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
     (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
     allowlist, e devolve a resposta final. Controla o orçamento de tempo
@@ -1287,9 +1332,16 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     `dominio` (spec admin A1): o bloco de domínio da versão ativa do prompt,
     lido pelo router a cada pergunta; `None` = padrão do código.
 
+    `agente`/`ferramentas` (spec admin B2): de quem é a rodada — os
+    aprendizados, a guarda de reexecução e a fila do curador são por agente
+    — e o que ele pode chamar. Uma ferramenta FORA do conjunto é recusada
+    antes de tocar o servidor (e antes da allowlist); sem ferramenta nenhuma,
+    a rodada é só de conversa (`_conversar_sem_ferramentas`).
+
     Nunca levanta por conta do provedor/ferramenta: erro vira `status`
     nomeado com uma mensagem para o usuário, sempre 200 para quem chamou."""
     t0 = time.monotonic()
+    ferramentas = tuple(f for f in FERRAMENTAS_DATASTAGE if f in ferramentas)  # ordem canônica, só a allowlist
 
     def _resta() -> float:
         return ORCAMENTO_AGENTE_S - (time.monotonic() - t0)
@@ -1331,6 +1383,11 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     texto_esgotado = {"status": "tempo_esgotado", "projeto": None, "artefatos": None,
                       "texto": "O tempo desta pergunta esgotou — tente de novo, ou peça algo mais direto."}
 
+    if not ferramentas:
+        return await _conversar_sem_ferramentas(
+            historico, provedor_cfg=provedor_cfg, identidade=identidade, campo_identidade=campo_identidade,
+            dominio=dominio, resta=_resta, status=_status, texto_esgotado=texto_esgotado)
+
     for rodada in range(MAX_RODADAS_FERRAMENTA + 1):
         resta = _resta()
         if resta <= 5:
@@ -1340,11 +1397,11 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         if projeto != projeto_do_contexto:
             # Recuperação por relevância (F6): na 1ª rodada e quando o projeto
             # muda — o projeto é o termo que mais separa um aprendizado útil.
-            aprendizados = _recuperar_seguro(abrir_conn, pergunta, projeto)
+            aprendizados = _recuperar_seguro(abrir_conn, pergunta, projeto, agente)
             projeto_do_contexto = projeto
             usados.update({i["id"]: i["titulo"] for i in aprendizados})
         sistema = _prompt_sistema(projeto, af.projeto_tem_dsx(projeto) if projeto else False,
-                                  ap.formatar_contexto(aprendizados), dominio=dominio)
+                                  ap.formatar_contexto(aprendizados), dominio=dominio, ferramentas=ferramentas)
         await _status("Pensando na pergunta…" if rodada == 0 else "Analisando o que foi lido…")
         # O orçamento também vale por OPERAÇÃO, não só entre rodadas — sem
         # isto, uma única chamada ao gateway podia levar até TIMEOUT_S (60s)
@@ -1378,13 +1435,13 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             evidencia_sug = "\n".join(s["texto"] for s in saidas)[:1500] or "(sem leitura de ferramenta nesta pergunta)"
             sugestoes, recusadas_ap = ap.filtrar_sugestoes(brutas_ap, evidencia=f"Leituras da pergunta:\n{evidencia_sug}")
             if sugestoes:
-                vagas = ap.MAX_RASCUNHOS_PENDENTES - _rascunhos_pendentes_seguro(abrir_conn)
+                vagas = ap.MAX_RASCUNHOS_PENDENTES - _rascunhos_pendentes_seguro(abrir_conn, agente)
                 if vagas < len(sugestoes):
                     recusadas_ap += ["aprendizado: a fila do curador está cheia — sugira de novo depois da revisão"
                                      ] * (len(sugestoes) - max(vagas, 0))
                     sugestoes = sugestoes[:max(vagas, 0)]
             for sug in sugestoes:
-                _registrar_seguro(abrir_conn, sug)
+                _registrar_seguro(abrir_conn, sug, agente)
             if not texto:
                 texto = ("Deixei as propostas abaixo para você decidir." if propostas
                          else "Não tenho mais nada a acrescentar.")
@@ -1402,6 +1459,17 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         nome_ferramenta = str(pedido.get("ferramenta") or "").strip()
         args = pedido.get("args") if isinstance(pedido.get("args"), dict) else {}
         historico.append({"role": "assistant", "content": resposta})
+        if nome_ferramenta in FERRAMENTAS_DATASTAGE and nome_ferramenta not in ferramentas:
+            # Fora do conjunto DESTE agente (spec admin B2): recusada aqui,
+            # antes da allowlist e sem tocar o servidor. O modelo é informado
+            # e segue; nada de aprendizado (não é erro do ambiente).
+            artefatos.append({"ferramenta": nome_ferramenta, "args": af.redigir_estrutura(args),
+                              "recusada": "fora_do_agente"})
+            historico.append({"role": "user",
+                              "content": f'<ferramenta nome="{nome_ferramenta}">\n'
+                                         f'A ferramenta {nome_ferramenta} não está disponível para este agente. '
+                                         f'Use só: {", ".join(ferramentas)}.\n</ferramenta>'})
+            continue
         if nome_ferramenta == "isx_extrair":
             extracoes_isx += 1  # conta a TENTATIVA (mesmo que recusada/falhe) — trava o loop
 
@@ -1413,7 +1481,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         # Hash da chamada (nada cru sai do servidor; ver `ap.chave_da_chamada`).
         chave = ap.chave_da_chamada(nome_ferramenta, args, projeto_da_chamada)
         conhecido = None if chave in falhas else _erro_conhecido_seguro(
-            abrir_conn, nome_ferramenta, args, projeto_da_chamada)
+            abrir_conn, nome_ferramenta, args, projeto_da_chamada, agente)
         await _status(texto_de_progresso(nome_ferramenta, args, projeto_da_chamada,
                                          repetida=chave in falhas or conhecido is not None))
         if chave in falhas:
@@ -1433,7 +1501,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
                     _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
                                          ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
                                          matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=_resta,
-                                         validade_dias=validade_fatos_dias),
+                                         validade_dias=validade_fatos_dias, agente=agente),
                     timeout=max(1.0, resta - 2))
             except (asyncio.TimeoutError, TimeoutError):
                 return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
@@ -1459,7 +1527,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             artefato["falhou"] = falha.categoria
             artefato["chamada"] = chave
             _registrar_seguro(abrir_conn, ap.aprendizado_de_falha(
-                nome_ferramenta, args, projeto_da_chamada, falha))
+                nome_ferramenta, args, projeto_da_chamada, falha), agente)
         artefatos.append(artefato)
         if nome_ferramenta == "isx_extrair" and dado.get("lido"):
             await _status("Analisando stages e colunas…")

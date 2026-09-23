@@ -594,7 +594,7 @@ DECISOES = {"aprovar": "aprovada", "recusar": "recusada"}
 
 
 def decidir_proposta(conn, cur, *, proposta_id: int, matricula: str, decisao: str,
-                     retencao_dias: int) -> dict:
+                     retencao_dias: int, agente: str | None = None) -> dict:
     """Aprovar ou recusar, idempotente (critério 3):
 
       • o `UPDATE ... WHERE estado = 'pendente'` só vale para UMA chamada —
@@ -606,16 +606,20 @@ def decidir_proposta(conn, cur, *, proposta_id: int, matricula: str, decisao: st
         anterior para a mesma chave (a nova a substitui);
       • recusar não grava fato nenhum;
       • pendente há mais que a retenção das conversas vira `expirada`: a
-        conversa que dava contexto a ela já foi purgada."""
+        conversa que dava contexto a ela já foi purgada;
+      • `agente` (spec admin B2): proposta de OUTRO agente é 404, igual à de
+        outro usuário — a rota de um agente não decide a fila de outro. O
+        fato aprovado guarda quem propôs em `etl_agente_fato.agente` (a
+        `origem` continua `interpretacao_aprovada`, comparada por igualdade)."""
     novo_estado = DECISOES.get(decisao)
     if novo_estado is None:
         raise ValueError("decisão deve ser 'aprovar' ou 'recusar'")
     try:
         cur.execute(
-            f"SELECT {_COLS_PROPOSTA}, matricula, DATEDIFF(day, criada_em, GETDATE()) "
+            f"SELECT {_COLS_PROPOSTA}, matricula, DATEDIFF(day, criada_em, GETDATE()), agente "
             "FROM dbo.etl_agente_proposta WITH (UPDLOCK, HOLDLOCK) WHERE id = ?", [proposta_id])
         row = cur.fetchone()
-        if row is None or row[13] != matricula:
+        if row is None or row[13] != matricula or (agente is not None and row[15] != agente):
             raise PropostaNaoEncontrada()
         atual = proposta_para_api(row)
         if atual["estado"] != "pendente":
@@ -658,12 +662,17 @@ def decidir_proposta(conn, cur, *, proposta_id: int, matricula: str, decisao: st
                 "WHERE ds_project = ? AND job_name = ? AND tipo = ? AND chave = ? "
                 "AND origem = ? AND obsoleto_em IS NULL",
                 [atual["ds_project"], atual["job_name"], atual["tipo"], atual["chave"], ORIGEM_INTERPRETACAO])
+            # `etl_agente_fato.agente` vem da migration 121 (spec admin B1). Sem
+            # ela, aprovar continua funcionando — só não registra quem propôs
+            # (antes da B2 este caminho não dependia da 121; revisão da B2).
+            cur.execute("SELECT COL_LENGTH('dbo.etl_agente_fato', 'agente')")
+            com_agente = (cur.fetchone() or [None])[0] is not None
             cur.execute(
                 "INSERT INTO dbo.etl_agente_fato (ds_project, job_name, tipo, chave, valor_json, origem, "
-                "evidencia, lido_por, aprovado_por, aprovado_em) "
-                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())",
+                "evidencia, lido_por, aprovado_por, aprovado_em" + (", agente" if com_agente else "") + ") "
+                "OUTPUT INSERTED.id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()" + (", ?" if com_agente else "") + ")",
                 [atual["ds_project"], atual["job_name"], atual["tipo"], atual["chave"], row[5],
-                 ORIGEM_INTERPRETACAO, row[6], matricula, matricula])
+                 ORIGEM_INTERPRETACAO, row[6], matricula, matricula] + ([row[15]] if com_agente else []))
             fato_id = int(cur.fetchone()[0])
             cur.execute("UPDATE dbo.etl_agente_proposta SET fato_id = ? WHERE id = ?", [fato_id, proposta_id])
         cur.execute(f"SELECT {_COLS_PROPOSTA} FROM dbo.etl_agente_proposta WHERE id = ?", [proposta_id])
