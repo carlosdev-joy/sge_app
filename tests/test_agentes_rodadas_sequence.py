@@ -1,4 +1,4 @@
-"""Ajustes feitos em produção em 23/09/2026 (commits 3bf0565 e 4347a25 da branch
+"""Ajustes feitos em produção em 23/09/2026 (commits 3bf0565, 4347a25, e69b367 e 951b399 da branch
 `feat/agente-datastage-melhorias`), portado para o próximo deploy não o
 desfazer:
 
@@ -67,12 +67,25 @@ async def test_quarta_rodada_ainda_respeita_o_teto_de_tempo(monkeypatch):
 
 # ═══════════ 4347a25 (produção) + filhos de sequence como fatos ═══════════
 
-def test_prompt_manda_base_dsx_e_isx_para_os_filhos_sem_dsjob():
+def test_prompt_filhos_de_sequence_direto_no_isx_ao_vivo():
+    """Decisão de produção (e69b367, revertendo o 4347a25): o DSX é retrato e
+    pode ter menos jobs — para os filhos, sempre o ISX ao vivo."""
     p = svc._prompt_sistema("BI_PRESTAMISTA")
-    assert "veja primeiro a 'base' (filhos já" in p
-    assert "use dsx_consulta (extrair) se o projeto" in p and "o campo `children` lista os filhos" in p
-    assert "confirme com isx_extrair" in p and "NÃO chame dsjob" in p
+    assert "vá DIRETO ao isx_extrair ao vivo" in p and "NÃO use dsx_consulta antes" in p
+    assert "NÃO chame dsjob" in p
     assert "informe-o — grava a lineage completa" in p
+
+
+def test_prompt_proibe_sequence_como_pipeline_name():
+    """951b399: pipeline_name=<a própria sequence> dava 404."""
+    assert "NUNCA use a própria sequence como pipeline_name" in svc._prompt_sistema("BI_PRESTAMISTA")
+
+
+def test_prompt_proibe_inventar_eco_tardio():
+    """951b399: o modelo inventava que um resultado era de "chamada anterior"."""
+    p = svc._prompt_sistema("BI_PRESTAMISTA")
+    assert 'Nunca diga que um resultado é "eco tardio"' in p
+    assert "diga quantos itens\n  a ferramenta retornou agora" in p
 
 
 def test_prompt_nao_diz_que_nada_persiste_sem_pipeline():
@@ -150,3 +163,12 @@ def test_filhos_do_dsx_viram_fatos():
     from services import agentes_conhecimento as ac
     fatos = ac.fatos_do_dsx({"sucesso": True, "dados": [], "children": [{"job_name": "A"}, {"job_name": "B"}]})
     assert [(f["tipo"], f["chave"]) for f in fatos] == [("lineage", "filho:A"), ("lineage", "filho:B")]
+
+
+
+def test_eco_tardio_admite_so_o_que_a_ferramenta_informou():
+    """Revisão: "nunca diga já calculado" contradizia `cache_hit: true` e a
+    guarda de reexecução ("não repeti") — a exceção é só o que a ferramenta
+    disse, nunca uma explicação inventada."""
+    p = svc._prompt_sistema("BI_PRESTAMISTA")
+    assert '"cache_hit": true (a extração veio do cache)' in p and '"não\n  repeti"' in p
