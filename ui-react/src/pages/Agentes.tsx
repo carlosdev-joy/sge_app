@@ -13,7 +13,8 @@
 import { useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Bot } from 'lucide-react'
+import { Bot, ClipboardCheck, History, MessageSquarePlus } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { apiFetch } from '../lib/api'
 import type {
   AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, DecisaoProposta, EstadoSonda,
@@ -73,6 +74,44 @@ function jobPlotavel(mensagens: MensagemChat[]): { pipeline: string; job: string
     }
   }
   return null
+}
+
+/**
+ * Botão da barra do topo (curadoria, histórico, nova conversa): mesmo tamanho,
+ * ícone + rótulo FIXO — o estado não troca o texto (antes: "histórico" ↔
+ * "ocultar histórico"), ele aparece no destaque e em `aria-pressed`, que o
+ * leitor de tela anuncia. Botão sem `ativo` (nova conversa) é ação simples,
+ * sem `aria-pressed`. Só tokens do tema + o azul da marca com par escuro.
+ */
+function BotaoBarra({ icone, rotulo, ativo, onClick, desabilitado, dica, dados }: {
+  icone: ReactNode
+  rotulo: string
+  ativo?: boolean
+  onClick: () => void
+  desabilitado?: boolean
+  dica?: string
+  dados: string
+}) {
+  const alternavel = ativo !== undefined
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={desabilitado}
+      aria-pressed={alternavel ? ativo : undefined}
+      title={dica}
+      data-agentes-botao={dados}
+      className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-md border text-[13px] font-medium
+                  transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1A5FA8]
+                  disabled:opacity-50 disabled:cursor-not-allowed
+                  ${ativo
+                    ? 'border-[#1A5FA8] bg-[#1A5FA8]/10 text-[#1A5FA8] dark:border-blue-400 dark:bg-blue-400/15 dark:text-blue-300'
+                    : 'border-edge bg-panel text-ink hover:bg-canvas'}`}
+    >
+      {icone}
+      {rotulo}
+    </button>
+  )
 }
 
 let seq = 0
@@ -283,37 +322,35 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
 
   return (
     <>
-      <div className="flex justify-end gap-3 -mt-2">
+      <div role="group" aria-label="Ações da conversa" className="flex flex-wrap justify-end gap-2 -mt-1"
+           data-agentes-barra>
         {agente.curador && (
           // Só para quem tem `agente_curador` (o catálogo diz); a API recusa
           // os demais com 403 de qualquer jeito (critério 4 da F6).
-          <button
-            type="button"
+          <BotaoBarra
+            icone={<ClipboardCheck className="w-4 h-4" aria-hidden="true" />}
+            rotulo="Curadoria"
+            ativo={curadoriaAberta}
             onClick={() => setCuradoriaAberta(v => !v)}
-            aria-expanded={curadoriaAberta}
-            className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
-            data-agentes-abrir-curadoria
-          >
-            {curadoriaAberta ? 'voltar à conversa' : 'curadoria'}
-          </button>
+            dados="curadoria"
+          />
         )}
-        <button
-          type="button"
+        <BotaoBarra
+          icone={<History className="w-4 h-4" aria-hidden="true" />}
+          rotulo="Histórico"
+          ativo={historicoAberto}
           onClick={() => setHistoricoAberto(v => !v)}
-          aria-expanded={historicoAberto}
-          className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
-        >
-          {historicoAberto ? 'ocultar histórico' : 'histórico'}
-        </button>
-        {mensagens.length > 0 && (
-          <button
-            type="button"
-            onClick={novaConversa}
-            className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
-          >
-            nova conversa
-          </button>
-        )}
+          dados="historico"
+        />
+        <BotaoBarra
+          icone={<MessageSquarePlus className="w-4 h-4" aria-hidden="true" />}
+          rotulo="Nova conversa"
+          onClick={novaConversa}
+          // Sempre na barra (a largura não pula); sem mensagens não há o que recomeçar.
+          desabilitado={mensagens.length === 0}
+          dica={mensagens.length === 0 ? 'A conversa ainda está vazia' : 'Começar uma conversa do zero'}
+          dados="nova"
+        />
       </div>
 
       {sonda && (

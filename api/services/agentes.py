@@ -395,7 +395,14 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 1. **resolver_projeto** — primeiro passo obrigatório para qualquer job.
    - Com nome de projeto: {{"projeto": "BI_PRESTAMISTA"}}
    - Com pipeline+job do Orquestra: {{"pipeline_name": "SeqSsdPrs_CargaDiaria", "job_name": "SsdPrs_OdsPropostas_01_ext"}}
-   - Se vier "quase" (caixa diferente), confirme com o usuário antes de chamar de novo.
+   - **Infira o projeto pelo prefixo do job e aja — não pergunte:**
+     • `SsdPrs_*` / `SeqSsdPrs_*` → BI_PRESTAMISTA
+     • `SsdVida_*` / `SeqSsdVida_*` → BI_VIDA (ou similar)
+     • Quando o prefixo for claro, chame `resolver_projeto` direto com o projeto inferido.
+   - Se vier "quase" (caixa diferente mas prefixo distinto), tente com o projeto inferido antes de perguntar.
+   - Se o prefixo não for reconhecível e o projeto não estiver resolvido na conversa, chame
+     `resolver_projeto` com {{"listar": true}} para obter os projetos conhecidos e peça ao
+     usuário para selecionar um — nunca diga "não encontrado" sem antes ter listado as opções.
 
 2. **base** {{"job_name": "NOME"}} — o que o Orquestra já sabe (rápido, sem tocar servidor):
    a lineage ISX gravada e os "fatos" que leituras anteriores registraram, cada um com a origem.
@@ -580,6 +587,17 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
                                        resta_agora, validade_dias: int = 7) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
+    if nome == "resolver_projeto" and _pede_listagem(args):
+        # O prefixo do job não diz o projeto: lista as opções para o usuário
+        # escolher (ajuste de produção de 23/09/2026 — nunca "não encontrado"
+        # sem mostrar as opções).
+        projetos = _com_cursor(abrir_conn, af.projetos_conhecidos)
+        if not projetos:
+            return {"texto": "O Orquestra ainda não conhece nenhum projeto DataStage (base e DSX vazios)."}, None
+        lista = ", ".join(p["projeto"] + (" (tem .dsx)" if p["tem_dsx"] else "") for p in projetos)
+        return ({"texto": f"Projetos DataStage conhecidos pelo Orquestra: {lista}. "
+                          "Peça ao usuário para escolher um e chame resolver_projeto com ele."}, None)
+
     if nome == "resolver_projeto":
         candidato = str(args.get("projeto") or "").strip() or None
         pipeline_name = str(args.get("pipeline_name") or "").strip() or None
@@ -590,16 +608,23 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
             extra = " (tem arquivo .dsx disponível)" if r["tem_dsx"] else ""
             return {"texto": f"Projeto resolvido: {r['projeto']}{extra}."}, r["projeto"]
         if r["estado"] == "quase":
-            # SÓ sugestão — nunca resolve sozinho aqui (critério 11 da F2).
-            # O modelo confirma com o usuário e chama de novo com a grafia exata.
+            # SÓ sugestão — nunca resolve sozinho aqui (critério 11 da F2): o
+            # modelo precisa chamar DE NOVO com a grafia exata, que só resolve
+            # se o nome existir na base/DSX. Ajuste de produção de 23/09/2026:
+            # quando o prefixo do job confirma o projeto, o modelo pode seguir
+            # sem perguntar; na dúvida, confirma com o usuário.
             # F6: a grafia canônica é fato da base — vira aprendizado de busca.
             _registrar_seguro(abrir_conn, ap.aprendizado_de_busca(candidato or "", r["sugerido"] or ""))
             return ({"texto": f"'{candidato}' é parecido com '{r['sugerido']}' (o DataStage é "
-                              f"sensível a maiúsculas/minúsculas). Confirme com o usuário e, se for "
-                              f"esse mesmo, peça resolver_projeto de novo com \"{r['sugerido']}\" "
-                              f"exatamente assim."}, None)
+                              f"sensível a maiúsculas/minúsculas). Se o prefixo do job confirma "
+                              f"esse projeto, chame resolver_projeto de novo com \"{r['sugerido']}\" "
+                              f"exatamente assim; se houver dúvida, confirme com o usuário."}, None)
         sugestoes = ", ".join(r["sugestoes"]) or "nenhuma sugestão disponível"
-        alvo = candidato or f"{pipeline_name}/{job_name_pipeline}" if pipeline_name else "(nenhum)"
+        # Parênteses explícitos: sem eles o Python lia `(candidato or …) if
+        # pipeline_name else "(nenhum)"`, e um nome de projeto digitado sem
+        # pipeline saía como "(nenhum)" na mensagem (bug da F2, achado no
+        # ajuste de 23/09).
+        alvo = candidato or (f"{pipeline_name}/{job_name_pipeline}" if pipeline_name else "(nenhum)")
         return ({"texto": f"Não reconheço o projeto '{alvo}'. "
                           f"Projetos conhecidos: {sugestoes}."}, None)
 
@@ -1025,6 +1050,13 @@ async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None,
 # cancela na hora, e a fase protegida cancela sozinha por dentro.
 
 
+def _pede_listagem(args: dict) -> bool:
+    """`resolver_projeto {"listar": true}` — aceita o booleano e o texto
+    "true" (o modelo às vezes manda como string)."""
+    v = (args or {}).get("listar")
+    return v is True or (isinstance(v, str) and v.strip().lower() == "true")
+
+
 _RE_NOME_STATUS = re.compile(r"^[A-Za-z0-9_.$#-]{1,80}$")
 
 
@@ -1038,6 +1070,8 @@ def texto_de_progresso(ferramenta: str, args: dict, projeto: str | None, *, repe
     job = job if _RE_NOME_STATUS.match(job) else ""
     proj = str((args or {}).get("projeto") or projeto or "").strip()
     proj = proj if _RE_NOME_STATUS.match(proj) else ""
+    if ferramenta == "resolver_projeto" and _pede_listagem(args):
+        return "Listando os projetos conhecidos…"
     if ferramenta == "resolver_projeto":
         return f"Verificando o projeto {proj}…" if proj else "Verificando o projeto…"
     if ferramenta == "base":
