@@ -65,13 +65,16 @@ class _Cur:
                 self._rows = list(self.config_provedor.items())
             else:
                 self._rows = list(self.config_agentes.items())
-        elif "select projeto, matricula from dbo.etl_agente_conversa" in s:
+        elif "select projeto, matricula" in s and "etl_agente_conversa" in s:
+            # A F4 acrescentou a idade em dias (DATEDIFF) a este SELECT — o
+            # router recusa conversa vencida. `idade_dias` default 0 = conversa
+            # de hoje, que é o caso de todos os testes deste arquivo.
             conversa_id = params[0]
             c = self.conversas.get(conversa_id)
-            self._rows = [(c["projeto"], c["matricula"])] if c else []
+            self._rows = [(c["projeto"], c["matricula"], c.get("idade_dias", 0))] if c else []
         elif "insert into dbo.etl_agente_conversa" in s:
             conversa_id, _agente, matricula, _titulo = params
-            self.conversas[conversa_id] = {"projeto": None, "matricula": matricula}
+            self.conversas[conversa_id] = {"projeto": None, "matricula": matricula, "idade_dias": 0}
             self.mensagens.setdefault(conversa_id, [])
         elif "select papel, conteudo from dbo.etl_agente_mensagem" in s:
             conversa_id = params[0]
@@ -127,7 +130,8 @@ class _CurQueExplode(_Cur):
         super().__init__(config_agentes={"agentes_enabled": "1", "agente_datastage_enabled": "1"})
 
     def execute(self, sql, params=None):
-        if "select projeto, matricula from dbo.etl_agente_conversa" in sql.lower():
+        s = " ".join(sql.lower().split())
+        if "select projeto, matricula" in s and "etl_agente_conversa" in s:
             raise RuntimeError("falha de driver simulada")
         return super().execute(sql, params)
 

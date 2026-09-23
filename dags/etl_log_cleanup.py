@@ -5,8 +5,11 @@ vazios que sobram. Mantém 10 dias de histórico — suficiente para
 depurar qualquer falha recente sem acumular gigabytes.
 
 Também apaga as conversas do Maestro (dbo.etl_maestro_conversa, migration
-110) com mais de 180 dias — spec docs/spec-maestro-parametros.md, F3. Tarefa
-separada: falha no banco não impede a limpeza dos logs, e vice-versa.
+110) com mais de 180 dias — spec docs/spec-maestro-parametros.md, F3 — e as
+conversas dos AGENTES (dbo.etl_agente_conversa, migration 117) com mais de
+30 dias — spec docs/spec-agentes-datastage.md, F4. Uma tarefa por assunto:
+falha no banco não impede a limpeza dos logs, e a falha de uma purga não
+impede a outra.
 """
 from __future__ import annotations
 
@@ -25,6 +28,18 @@ RETENCAO_CONVERSAS_MAESTRO_DIAS = 180
 _SQL_APAGAR_CONVERSAS = ("DELETE FROM dbo.etl_maestro_conversa "
                          "WHERE criado_em < DATEADD(day, -%s, GETDATE())")
 
+# Espelha services/agentes.RETENCAO_CONVERSAS_DIAS. O mesmo prazo é aplicado
+# na LEITURA pela API — a purga só recupera espaço; quem garante que uma
+# conversa vencida não aparece é o filtro do endpoint, não esta DAG.
+RETENCAO_CONVERSAS_AGENTES_DIAS = 30
+# `ultima_msg_em`, não `criada_em`: uma conversa retomada continua viva. Só
+# a tabela de CONVERSA é apagada — `etl_agente_mensagem` tem FK com
+# ON DELETE CASCADE (migration 117), e `etl_agente_fato`/`_proposta`/
+# `_aprendizado` NÃO têm FK para ela de propósito: o que o agente aprendeu
+# sobre um job sobrevive à conversa que o descobriu.
+_SQL_APAGAR_CONVERSAS_AGENTES = ("DELETE FROM dbo.etl_agente_conversa "
+                                 "WHERE ultima_msg_em < DATEADD(day, -%s, GETDATE())")
+
 
 def apagar_conversas_antigas(conn, dias: int = RETENCAO_CONVERSAS_MAESTRO_DIAS) -> dict:
     """DELETE das conversas do Maestro mais velhas que `dias`. Sem a tabela
@@ -37,6 +52,27 @@ def apagar_conversas_antigas(conn, dias: int = RETENCAO_CONVERSAS_MAESTRO_DIAS) 
         if not row or row[0] is None:
             return {"tabela": "ausente (migration 110 pendente)", "apagadas": 0, "retencao_dias": dias}
         cur.execute(_SQL_APAGAR_CONVERSAS, (int(dias),))
+        apagadas = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+        conn.commit()
+        return {"tabela": "ok", "apagadas": int(apagadas), "retencao_dias": dias}
+    finally:
+        try:
+            cur.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def apagar_conversas_agentes_antigas(conn, dias: int = RETENCAO_CONVERSAS_AGENTES_DIAS) -> dict:
+    """DELETE das conversas de agente mais velhas que `dias` (por
+    `ultima_msg_em`). Sem a tabela (migration 117 pendente) não faz nada e
+    diz isso — nunca quebra a DAG. Cursor pymssql: placeholders `%s`."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT OBJECT_ID('dbo.etl_agente_conversa', 'U')")
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return {"tabela": "ausente (migration 117 pendente)", "apagadas": 0, "retencao_dias": dias}
+        cur.execute(_SQL_APAGAR_CONVERSAS_AGENTES, (int(dias),))
         apagadas = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
         conn.commit()
         return {"tabela": "ok", "apagadas": int(apagadas), "retencao_dias": dias}
@@ -88,8 +124,21 @@ def etl_log_cleanup():
             except Exception:  # noqa: BLE001
                 pass
 
+    @task
+    def limpar_conversas_agentes() -> dict:
+        from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
+        conn = MsSqlHook(mssql_conn_id=MSSQL_CONN_ID).get_conn()
+        try:
+            return apagar_conversas_agentes_antigas(conn)
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
     limpar_logs()
     limpar_conversas_maestro()
+    limpar_conversas_agentes()
 
 
 etl_log_cleanup()

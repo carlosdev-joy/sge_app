@@ -64,6 +64,31 @@ def _verdadeiro(valor) -> bool:
     return bool(valor)
 
 
+def _iso(valor) -> str | None:
+    """`DATETIME2` do driver → ISO 8601, ou `None`. A tela mostra a data de
+    cada resposta antiga (critério 3 da F4), e string pronta evita que cada
+    consumidor invente o seu formato."""
+    if valor is None:
+        return None
+    try:
+        return valor.isoformat(sep=" ", timespec="seconds")
+    except AttributeError:  # já veio string do driver
+        return str(valor)
+
+
+def _json_lista(bruto) -> list:
+    """`artefatos_json` → lista. Conteúdo inválido (ou de uma versão
+    anterior do formato) vira lista vazia: o histórico continua legível,
+    só sem a trilha de ferramentas daquela resposta."""
+    if not bruto:
+        return []
+    try:
+        dado = json.loads(bruto)
+    except (ValueError, TypeError):
+        return []
+    return dado if isinstance(dado, list) else []
+
+
 def _abrir():
     conn = get_db_conn()
     return conn, conn.cursor()
@@ -146,6 +171,101 @@ async def agentes_status(agente: str | None = Query(default=None),
     if matricula:
         svc.guardar_sonda(matricula, estado)
     return {"estado": estado, "cache": False}
+
+
+@router.get("/agentes/conversas", tags=["agentes"])
+async def agentes_conversas(q: str | None = Query(default=None, max_length=200),
+                            agente: str | None = Query(default=None),
+                            user: dict = Depends(_require_tela)):
+    """As conversas DESTE usuário nos últimos `RETENCAO_CONVERSAS_DIAS`.
+
+    Três coisas que este endpoint NÃO faz, de propósito:
+      • não vê conversa de outro usuário — o `WHERE matricula = ?` é da
+        SESSÃO, nunca de parâmetro;
+      • não devolve conversa vencida, mesmo que a purga noturna não tenha
+        rodado — o prazo vale na leitura (critério 2 da F4);
+      • não trata `q` como padrão de LIKE: `%` e `_` digitados pelo
+        usuário são escapados (`svc.escapar_like`), senão buscar "100%"
+        traria tudo.
+    """
+    matricula = (user.get("matricula") or "").strip()
+    if not matricula:
+        return {"conversas": []}
+    if agente is not None and svc.agente(agente) is None:
+        raise HTTPException(status_code=404, detail={
+            "code": "agente_desconhecido", "message": f"Agente '{agente}' não existe"})
+
+    sql = ["SELECT conversa_id, agente, titulo, projeto, criada_em, ultima_msg_em",
+           "FROM dbo.etl_agente_conversa",
+           "WHERE matricula = ? AND ultima_msg_em >= DATEADD(day, -?, GETDATE())"]
+    params: list = [matricula, svc.RETENCAO_CONVERSAS_DIAS]
+    if agente:
+        sql.append("AND agente = ?")
+        params.append(agente)
+    termo = (q or "").strip()
+    if termo:
+        # O título é a 1ª pergunta; buscar nele é o que o operador espera
+        # ("aquela conversa sobre o job X").
+        sql.append("AND titulo LIKE ? ESCAPE '\\'")
+        params.append(f"%{svc.escapar_like(termo)}%")
+    sql.append("ORDER BY ultima_msg_em DESC")
+    sql.append("OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY")
+
+    conn, cur = _abrir()
+    try:
+        cur.execute(" ".join(sql), params)
+        linhas = cur.fetchall()
+    finally:
+        _fechar(conn, cur)
+    return {"conversas": [
+        {"conversa_id": r[0], "agente": r[1], "titulo": r[2], "projeto": r[3],
+         "criada_em": _iso(r[4]), "ultima_msg_em": _iso(r[5])}
+        for r in linhas]}
+
+
+@router.get("/agentes/conversas/{conversa_id}", tags=["agentes"])
+async def agentes_conversa(conversa_id: str, user: dict = Depends(_require_tela)):
+    """As mensagens de UMA conversa, para retomar de onde parou.
+
+    Conversa de outro usuário, inexistente ou vencida → **404 igual**, sem
+    distinguir: um 403 só para a alheia diria "existe, mas não é sua", e
+    isso é um oráculo de ids (critério 1 da F4). A vencida devolve um
+    `code` próprio porque é informação sobre a PRÓPRIA conversa do usuário
+    — a tela usa isso para dizer "expirou" em vez de "não existe".
+    """
+    if not _RE_CONVERSA_ID.match(conversa_id or ""):
+        raise HTTPException(status_code=404, detail={
+            "code": "conversa_nao_encontrada", "message": "conversa não encontrada"})
+    matricula = (user.get("matricula") or "").strip()
+    conn, cur = _abrir()
+    try:
+        cur.execute(
+            "SELECT agente, titulo, projeto, criada_em, ultima_msg_em, matricula, "
+            "       DATEDIFF(day, ultima_msg_em, GETDATE()) "
+            "FROM dbo.etl_agente_conversa WHERE conversa_id = ?", [conversa_id])
+        cab = cur.fetchone()
+        if cab is None or not matricula or cab[5] != matricula:
+            raise HTTPException(status_code=404, detail={
+                "code": "conversa_nao_encontrada", "message": "conversa não encontrada"})
+        if cab[6] is not None and int(cab[6]) > svc.RETENCAO_CONVERSAS_DIAS:
+            raise HTTPException(status_code=404, detail={
+                "code": "conversa_expirada",
+                "message": f"conversa com mais de {svc.RETENCAO_CONVERSAS_DIAS} dias"})
+        cur.execute(
+            "SELECT papel, conteudo, status, artefatos_json, criada_em "
+            "FROM dbo.etl_agente_mensagem WHERE conversa_id = ? ORDER BY id", [conversa_id])
+        msgs = cur.fetchall()
+    finally:
+        _fechar(conn, cur)
+    return {
+        "conversa_id": conversa_id, "agente": cab[0], "titulo": cab[1], "projeto": cab[2],
+        "criada_em": _iso(cab[3]), "ultima_msg_em": _iso(cab[4]),
+        "mensagens": [
+            {"papel": m[0], "conteudo": m[1], "status": m[2],
+             # O artefato é gravado como JSON; a tela quer a lista, não a string.
+             "artefatos": _json_lista(m[3]), "criada_em": _iso(m[4])}
+            for m in msgs],
+    }
 
 
 @router.get("/agentes/admin/config", tags=["agentes-admin"])
@@ -253,6 +373,14 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
             "message": "conversa_id inválido (8 a 36 caracteres: letras, números, - e _)"})
     if not conversa_id:
         conversa_id = str(uuid.uuid4())
+    # Redigida AQUI, antes de qualquer gravação — inclusive a do TÍTULO.
+    # Achado do teste do critério 5 da F4: o título saía de `mensagem` CRUA
+    # enquanto a redação só acontecia depois, então um segredo digitado na
+    # primeira pergunta ia em claro para `etl_agente_conversa.titulo`. Passou
+    # despercebido até a F4 porque, até então, o título não aparecia em lugar
+    # nenhum — agora ele é o rótulo da conversa na LISTA do histórico e o
+    # campo em que a busca procura.
+    mensagem_redigida = af.redigir(mensagem)
     # A identidade é SEMPRE a da sessão — nunca um valor do corpo. Uma
     # `matricula` forjada no corpo é simplesmente ignorada (critério 6 da F2).
     matricula = user["matricula"]
@@ -263,18 +391,31 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
         if agentes_cfg.get("agentes_enabled") != "1" or agentes_cfg.get("agente_datastage_enabled") != "1":
             raise HTTPException(status_code=503, detail={
                 "code": "agente_desligado", "message": "Agente DataStage desligado"})
-        cur.execute("SELECT projeto, matricula FROM dbo.etl_agente_conversa WHERE conversa_id = ?",
-                    [conversa_id])
+        cur.execute(
+            "SELECT projeto, matricula, DATEDIFF(day, ultima_msg_em, GETDATE()) "
+            "FROM dbo.etl_agente_conversa WHERE conversa_id = ?", [conversa_id])
         row = cur.fetchone()
         if row is not None and row[1] != matricula:
             # 404, não 403: uma conversa alheia não deve nem confirmar que existe.
             raise HTTPException(status_code=404, detail={
                 "code": "conversa_nao_encontrada", "message": "conversa não encontrada"})
+        if row is not None and row[2] is not None and int(row[2]) > svc.RETENCAO_CONVERSAS_DIAS:
+            # Vencida: não se retoma nem se escreve em cima. O mesmo prazo da
+            # lista vale aqui — senão um `conversa_id` guardado no navegador
+            # ressuscitaria uma conversa que a tela já não mostra (e que a
+            # purga vai apagar na próxima madrugada).
+            raise HTTPException(status_code=404, detail={
+                "code": "conversa_expirada",
+                "message": f"conversa com mais de {svc.RETENCAO_CONVERSAS_DIAS} dias — comece uma nova"})
         if row is None:
             cur.execute(
                 "INSERT INTO dbo.etl_agente_conversa (conversa_id, agente, matricula, titulo) "
                 "VALUES (?, ?, ?, ?)",
-                [conversa_id, svc.AGENTE_DATASTAGE, matricula, mensagem[:200]])
+                # `titulo_da_conversa` corta em unidades UTF-16, a largura real
+                # do NVARCHAR(200) — `mensagem[:200]` conta CARACTERES, e 200
+                # caracteres com emoji passam de 200 unidades no banco.
+                [conversa_id, svc.AGENTE_DATASTAGE, matricula,
+                 svc.titulo_da_conversa(mensagem_redigida)])
             projeto_atual = None
             historico: list[dict] = []
         else:
@@ -282,7 +423,11 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
             cur.execute(
                 "SELECT papel, conteudo FROM dbo.etl_agente_mensagem "
                 "WHERE conversa_id = ? ORDER BY id", [conversa_id])
-            historico = [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
+            # Só as últimas rodadas vão ao gateway: uma conversa longa não
+            # pode crescer sem teto no prompt (custo por token no gateway
+            # corporativo). O histórico COMPLETO continua no banco e na tela.
+            historico = svc.ultimas_rodadas(
+                [{"role": r[0], "content": r[1]} for r in cur.fetchall()])
         provedor_cfg = ia_provedor.load_config(cur)
         cadastro = None
         try:
@@ -310,9 +455,6 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
     except (TypeError, ValueError):
         ssh_max = 10
 
-    # Redigida ANTES de entrar no histórico que vai ao modelo e ANTES de
-    # qualquer gravação — um segredo digitado no chat não chega a nenhum dos dois.
-    mensagem_redigida = af.redigir(mensagem)
     # `acao_editar` é SEMPRE da sessão (F2b, isx_extrair) — nunca do corpo,
     # mesma régua da identidade (critério 6 da F2, estendido).
     acao_editar = PERM_EDITAR in user.get("permissoes", [])
