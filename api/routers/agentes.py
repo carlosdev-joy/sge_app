@@ -30,7 +30,7 @@ import uuid
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from db import get_db_conn
-from deps import PERM_EDITAR, get_admin_user, require_perm
+from deps import PERM_ADMIN, PERM_EDITAR, get_admin_user, require_perm
 from services import agentes as svc
 from services import agentes_aprendizado as ap
 from services import agentes_conhecimento as ac
@@ -607,9 +607,26 @@ async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={
 # Curadoria dos aprendizados (F6) — só quem tem `agente_curador` (admin passa)
 # ══════════════════════════════════════════════════════════════════════════
 
+def _checar_curadoria(user: dict, cfg: dict) -> None:
+    """A curadoria segue as mesmas portas da tela (achado da auditoria de
+    segurança da F6): agente DESLIGADO → 503, como o chat; e o curador
+    também precisa do acesso de USO — sem ele o agente nem aparece no
+    seletor, e a API não pode ser um atalho para a fila e as evidências.
+    `require_agente(curador=True)` já garantiu perfil elegível + recurso de
+    curador (admin passa sempre)."""
+    if cfg.get("agentes_enabled") != "1" or cfg.get("agente_datastage_enabled") != "1":
+        raise HTTPException(status_code=503, detail={
+            "code": "agente_desligado", "message": "Agente DataStage desligado"})
+    ag = svc.agente(svc.AGENTE_DATASTAGE)
+    if PERM_ADMIN not in user.get("permissoes", []) and ag["recurso"] not in user.get("permissoes_extra", []):
+        raise HTTPException(status_code=403, detail={
+            "code": "agente_nao_liberado",
+            "message": "O curador também precisa ter o agente liberado para uso — peça ao administrador"})
+
+
 @router.get("/agentes/aprendizados", tags=["agentes"])
 async def agentes_aprendizados(estado: str = Query(default="rascunho"),
-                               _user: dict = Depends(_require_curador)):
+                               user: dict = Depends(_require_curador)):
     """A fila do curador: rascunhos (sugestões do agente e a semente) para
     validar ou rejeitar, e os validados para marcar como obsoletos. A
     evidência vem junto — é o que o curador lê para decidir; o modelo nunca
@@ -619,6 +636,7 @@ async def agentes_aprendizados(estado: str = Query(default="rascunho"),
             "code": "estado_invalido", "message": f"estado deve ser um de: {', '.join(ap.ESTADOS)}"})
     conn, cur = _abrir()
     try:
+        _checar_curadoria(user, svc.carregar_config(cur))
         itens = ap.listar(cur, agente=svc.AGENTE_DATASTAGE, estado=estado)
     finally:
         _fechar(conn, cur)
@@ -634,6 +652,7 @@ async def agentes_aprendizado_decidir(aprendizado_id: int, body: dict = Body(def
             "code": "acao_invalida", "message": "acao deve ser 'validar', 'rejeitar' ou 'obsoletar'"})
     conn, cur = _abrir()
     try:
+        _checar_curadoria(user, svc.carregar_config(cur))
         item = ap.decidir(conn, cur, aprendizado_id=aprendizado_id, agente=svc.AGENTE_DATASTAGE,
                           acao=acao, matricula=user["matricula"])
     except ap.AprendizadoNaoEncontrado:

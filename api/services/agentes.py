@@ -672,6 +672,15 @@ def _erro_conhecido_seguro(abrir_conn, nome: str, args: dict, projeto: str | Non
         return None
 
 
+def _rascunhos_pendentes_seguro(abrir_conn) -> int:
+    """Sem conseguir contar, trata a fila como CHEIA: melhor perder uma
+    sugestão do que encher sem limite a fila do curador."""
+    try:
+        return _com_cursor(abrir_conn, lambda cur: ap.rascunhos_pendentes(cur, agente=AGENTE_DATASTAGE))
+    except Exception:  # noqa: BLE001
+        return ap.MAX_RASCUNHOS_PENDENTES
+
+
 def _recuperar_seguro(abrir_conn, pergunta: str, projeto: str | None) -> list[dict]:
     try:
         def _fn(cur):
@@ -996,6 +1005,12 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             propostas, recusadas = ac.filtrar_propostas(brutas, projeto=projeto, saidas=saidas)
             evidencia_sug = "\n".join(s["texto"] for s in saidas)[:1500] or "(sem leitura de ferramenta nesta pergunta)"
             sugestoes, recusadas_ap = ap.filtrar_sugestoes(brutas_ap, evidencia=f"Leituras da pergunta:\n{evidencia_sug}")
+            if sugestoes:
+                vagas = ap.MAX_RASCUNHOS_PENDENTES - _rascunhos_pendentes_seguro(abrir_conn)
+                if vagas < len(sugestoes):
+                    recusadas_ap += ["aprendizado: a fila do curador está cheia — sugira de novo depois da revisão"
+                                     ] * (len(sugestoes) - max(vagas, 0))
+                    sugestoes = sugestoes[:max(vagas, 0)]
             for sug in sugestoes:
                 _registrar_seguro(abrir_conn, sug)
             if not texto:

@@ -112,6 +112,9 @@ class _CursorF6(_Cursor):
                    and not (a["tipo"] == "erro" and a["origem"] == "ferramenta")]
             vig.sort(key=lambda a: (a["usos"], a["id"]), reverse=True)
             self._rows = [(a["id"], a["tipo"], a["titulo"], a["corpo"], a["origem"], a["usos"]) for a in vig][:limite]
+        elif s.startswith("select count(*) from dbo.etl_agente_aprendizado"):
+            self._rows = [(sum(1 for a in b.aprendizados.values() if a["agente"] == p[0]
+                               and a["estado"] == "rascunho" and a["origem"] == "interpretacao"),)]
         elif s.startswith("update dbo.etl_agente_aprendizado set ultimo_uso_em"):
             b.aprendizados[p[0]]["ultimo_uso_em"] = agora
         elif s.startswith("select top (200)"):

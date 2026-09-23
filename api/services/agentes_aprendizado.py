@@ -49,6 +49,11 @@ MAX_EVIDENCIA = 2000
 MAX_CONTEXTO_ITENS = 5
 MAX_CONTEXTO_CHARS = 2000
 MAX_SUGESTOES_POR_RESPOSTA = 2
+# Teto GLOBAL de sugestões do agente esperando o curador. A tabela não guarda
+# quem sugeriu (um teto por usuário exigiria migration de estrutura), e o que
+# importa é a fila: acima disto a tela do curador (200 por estado) deixaria
+# itens legítimos fora de vista. Cheia, a sugestão nova é recusada com motivo.
+MAX_RASCUNHOS_PENDENTES = 100
 MAX_CANDIDATOS = 300
 
 # Ferramentas que custam (servidor DataStage ou disco) — só elas passam pela
@@ -477,6 +482,14 @@ def validar_sugestao(bruta, *, evidencia: str) -> tuple[dict | None, str | None]
     return {"tipo": tipo, "assinatura": assinatura("interpretacao", tipo, " ".join(titulo.lower().split())),
             "titulo": titulo, "corpo": corpo, "evidencia": _evidencia(evidencia),
             "origem": "interpretacao", "estado": "rascunho", "revalidar_dias": None}, None
+
+
+def rascunhos_pendentes(cur, *, agente: str) -> int:
+    cur.execute(
+        "SELECT COUNT(*) FROM dbo.etl_agente_aprendizado "
+        "WHERE agente = ? AND estado = 'rascunho' AND origem = 'interpretacao'", [agente])
+    row = cur.fetchone()
+    return int(row[0] or 0) if row else 0
 
 
 def filtrar_sugestoes(brutas: list, *, evidencia: str) -> tuple[list[dict], list[str]]:

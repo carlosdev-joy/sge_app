@@ -293,3 +293,42 @@ async def test_proposta_e_aprendizado_no_mesmo_bloco_ambos_valem(banco, monkeypa
                                            f"Pronto.\n```json\n{bloco}\n```"]), monkeypatch)
     assert len(r["propostas"]) == 1 and r["aprendizados_sugeridos"] == ["lstages basta"]
     assert r["texto"] == "Pronto."
+
+
+
+# ═══════════ follow-up: teto da fila do curador ═══════════════════════════
+
+def _final_com_sugestoes(n):
+    bloco = json.dumps({"aprendizados": [{"tipo": "leitura", "titulo": f"dica nova {i}", "corpo": "c"}
+                                         for i in range(n)]})
+    return f"Pronto.\n```json\n{bloco}\n```"
+
+
+@pytest.mark.asyncio
+async def test_fila_cheia_recusa_a_sugestao_com_motivo(banco, monkeypatch):
+    for i in range(ap.MAX_RASCUNHOS_PENDENTES):
+        banco.novo_aprendizado(estado="rascunho", origem="interpretacao", titulo=f"r{i}")
+    r = await _conversar(banco, _Provedor([_final_com_sugestoes(1)]), monkeypatch)
+    assert r["aprendizados_sugeridos"] == []
+    assert any("fila do curador está cheia" in m for m in r["propostas_recusadas"])
+    assert len(banco.aprendizados) == ap.MAX_RASCUNHOS_PENDENTES
+
+
+@pytest.mark.asyncio
+async def test_fila_quase_cheia_aceita_so_o_que_cabe(banco, monkeypatch):
+    for i in range(ap.MAX_RASCUNHOS_PENDENTES - 1):
+        banco.novo_aprendizado(estado="rascunho", origem="interpretacao", titulo=f"r{i}")
+    # semente e rascunho validado não contam para o teto
+    banco.novo_aprendizado(estado="rascunho", origem="semente", titulo="semente")
+    r = await _conversar(banco, _Provedor([_final_com_sugestoes(2)]), monkeypatch)
+    assert r["aprendizados_sugeridos"] == ["dica nova 0"]
+    assert sum("fila do curador" in m for m in r["propostas_recusadas"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_sem_conseguir_contar_a_fila_e_tratada_como_cheia(banco, monkeypatch):
+    def _explode(*a, **k):
+        raise RuntimeError("banco fora")
+    monkeypatch.setattr(ap, "rascunhos_pendentes", _explode)
+    r = await _conversar(banco, _Provedor([_final_com_sugestoes(1)]), monkeypatch)
+    assert r["aprendizados_sugeridos"] == [] and banco.aprendizados == {}

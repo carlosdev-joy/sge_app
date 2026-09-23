@@ -32,6 +32,7 @@ class _BancoRota(BancoF6):
     def __init__(self):
         self.conversas: dict[str, dict] = {}
         self.mensagens: dict[str, list] = {}
+        self.config = {"agentes_enabled": "1", "agente_datastage_enabled": "1"}
         super().__init__()
 
     def cursor(self):
@@ -45,8 +46,7 @@ class _CursorRota(_CursorF6):
         s = " ".join(sql.lower().split())
         self._rows, self.rowcount = [], -1
         if "from dbo.etl_app_config" in s:
-            self._rows = [] if any(str(x).startswith("ia_") for x in p) else [
-                ("agentes_enabled", "1"), ("agente_datastage_enabled", "1")]
+            self._rows = [] if any(str(x).startswith("ia_") for x in p) else list(b.config.items())
         elif "select identidade_gateway from dbo.etl_usuario" in s:
             self._rows = [(None,)]
         elif "from dbo.etl_agente_conversa" in s and "select projeto, matricula" in s:
@@ -190,3 +190,28 @@ def test_artefato_invalido_na_conversa_nao_derruba(ambiente, monkeypatch):
     monkeypatch.setattr(svc, "conversar", _fake)
     r = cliente.post("/agentes/datastage/conversar", json={"mensagem": "oi", "conversa_id": "conversa-quebrada-1"})
     assert r.status_code == 200 and recebido == [set()]
+
+
+
+# ═══════════ 4. follow-up: a curadoria segue as portas da tela ════════════
+
+@pytest.mark.parametrize("chave", ["agentes_enabled", "agente_datastage_enabled"])
+def test_curadoria_com_agente_desligado_e_503(ambiente, chave):
+    cliente, banco, _ = ambiente
+    banco.config[chave] = "0"
+    i = banco.novo_aprendizado(estado="rascunho")
+    r1 = cliente.get("/agentes/aprendizados")
+    r2 = cliente.post(f"/agentes/aprendizados/{i}/decidir", json={"acao": "validar"})
+    assert r1.status_code == r2.status_code == 503
+    assert r1.json()["detail"]["code"] == "agente_desligado"
+    assert banco.aprendizados[i]["estado"] == "rascunho"
+
+
+def test_curador_sem_o_acesso_de_uso_e_403(ambiente):
+    cliente, banco, estado = ambiente
+    estado["extras"] = ["agente_curador"]
+    i = banco.novo_aprendizado(estado="rascunho")
+    r = cliente.post(f"/agentes/aprendizados/{i}/decidir", json={"acao": "validar"})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "agente_nao_liberado"
+    assert cliente.get("/agentes/aprendizados").status_code == 403
+    assert banco.aprendizados[i]["estado"] == "rascunho"
