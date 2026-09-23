@@ -43,6 +43,24 @@ exports.apiFetchBruto = (...a) => proximo(...a)`)
     assert.equal(lib.formatarDuracao(undefined), '')
     assert.equal(lib.formatarDuracao(-5), '')
 
+    // ── histórico: grupos por DIA de calendário e hora/dia ──
+    const agora = new Date(2026, 8, 23, 8, 0)  // 23/09 08:00 (hora local)
+    const iso = (d, h, m = 0) => {
+      const x = new Date(2026, 8, d, h, m)
+      const p = n => String(n).padStart(2, '0')
+      return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}:00`
+    }
+    assert.equal(lib.grupoDaConversa(iso(23, 1, 8), agora), 'Hoje')
+    assert.equal(lib.grupoDaConversa(iso(22, 23, 49), agora), 'Ontem', 'ontem 23h, hoje 8h: é Ontem, não "há 9 horas"')
+    assert.equal(lib.grupoDaConversa(iso(19, 10), agora), 'Últimos 7 dias')
+    assert.equal(lib.grupoDaConversa(iso(10, 10), agora), 'Mais antigas')
+    assert.equal(lib.grupoDaConversa(null, agora), 'Mais antigas')
+    assert.equal(lib.grupoDaConversa('lixo', agora), 'Mais antigas')
+    assert.equal(lib.horaOuDia(iso(23, 1, 8), agora), '01:08')
+    assert.equal(lib.horaOuDia(iso(19, 10), agora), '19/09')
+    assert.equal(lib.horaOuDia(undefined, agora), '')
+    assert.deepEqual([...lib.GRUPOS_HISTORICO], ['Hoje', 'Ontem', 'Últimos 7 dias', 'Mais antigas'])
+
     // ── conversarPorStream ──
     const enc = new TextEncoder()
     const servir = (pedacos) => api.definir(async () => ({

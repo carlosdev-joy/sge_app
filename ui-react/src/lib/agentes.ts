@@ -452,6 +452,37 @@ export function dataCurta(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR')
 }
 
+/** Grupos do histórico, na ordem em que aparecem. */
+export const GRUPOS_HISTORICO = ['Hoje', 'Ontem', 'Últimos 7 dias', 'Mais antigas'] as const
+export type GrupoHistorico = typeof GRUPOS_HISTORICO[number]
+
+function dataLocal(iso: string | null | undefined): Date | null {
+  if (!iso) return null
+  const d = new Date(iso.replace(' ', 'T'))
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** Em que grupo do histórico a conversa cai — por DIA de calendário, não por 24 h
+ *  (uma conversa de ontem às 23h é "Ontem" mesmo às 8h de hoje). Sem data → "Mais antigas". */
+export function grupoDaConversa(iso: string | null | undefined, agora: Date = new Date()): GrupoHistorico {
+  const d = dataLocal(iso)
+  if (!d) return 'Mais antigas'
+  const dia = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const dias = Math.round((dia(agora) - dia(d)) / 86_400_000)
+  if (dias <= 0) return 'Hoje'
+  if (dias === 1) return 'Ontem'
+  if (dias < 7) return 'Últimos 7 dias'
+  return 'Mais antigas'
+}
+
+/** Hora (HH:MM) se for de hoje; senão a data curta (dd/mm). O grupo já diz o dia. */
+export function horaOuDia(iso: string | null | undefined, agora: Date = new Date()): string {
+  const d = dataLocal(iso)
+  if (!d) return ''
+  if (grupoDaConversa(iso, agora) === 'Hoje') return d.toTimeString().slice(0, 5)
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+}
+
 /** Chave de storage da conversa aberta, por agente (mesma ideia de `lib/maestro.ts`). */
 export function chaveDaConversa(agenteId: string): string {
   return `orquestra_agente_conversa_${agenteId}`
