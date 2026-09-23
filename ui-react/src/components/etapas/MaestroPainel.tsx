@@ -5,11 +5,11 @@
 //
 // Visual nativo: tokens panel/edge/ink/canvas (claro+escuro), Button da casa.
 // A resposta do Maestro é markdown desenhado por blocos (parser puro de
-// caixa/lib/markdown.ts) — nunca HTML por string: o texto vem de um LLM.
+// lib/markdownLlm.ts) — nunca HTML por string: o texto vem de um LLM.
 import { useMemo } from 'react'
 import { ArrowLeft, Check, History, RotateCcw, Send, X } from 'lucide-react'
 import { Button } from '../ui/Button'
-import { parseMarkdown, type BlocoMd, type PedacoInline } from '../../caixa/lib/markdown'
+import { parseMarkdown, type BlocoMd, type PedacoInline } from '../../lib/markdownLlm'
 import {
   MAESTRO_MAX_MENSAGEM, MAESTRO_NOME, alvoDoSalvar, descricaoDaLinha,
   type MaestroHistoricoConversa, type MaestroMensagem, type MaestroNivel,

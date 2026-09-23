@@ -70,7 +70,18 @@ async def agentes_catalogo(user: dict = Depends(_require_tela)):
         cfg = svc.carregar_config(cur)
     finally:
         _fechar(conn, cur)
-    return {"agentes": svc.catalogo_do_usuario(user, cfg)}
+    # `cadastro_texto` viaja AQUI, e não no `/agentes/status`, por dois
+    # motivos: o catálogo já lê a config (custo zero) e o status tem um
+    # contrato que não pode mudar — `test_status_cache_hit_nao_toca_banco_nem_sonda`
+    # prende que um acerto de cache não abre conexão nenhuma, e buscar o
+    # texto ali obrigaria a abrir. É o mesmo dado, no lugar que já o tinha.
+    #
+    # Ele vem sempre, não só quando o usuário está sem cadastro: quem decide
+    # MOSTRAR é a tela, e só no estado `sem_cadastro` (`AvisoSonda`, preso
+    # por tests/test_agentes_f3_front.py). Não é segredo — é o aviso que o
+    # admin escreveu justamente para ser lido por quem precisa se cadastrar.
+    return {"agentes": svc.catalogo_do_usuario(user, cfg),
+            "cadastro_texto": cfg.get("agentes_cadastro_texto") or None}
 
 
 @router.get("/agentes/status", tags=["agentes"])
@@ -122,7 +133,17 @@ async def agentes_admin_config_get(_admin: dict = Depends(get_admin_user)):
         cfg = svc.carregar_config(cur)
     finally:
         _fechar(conn, cur)
-    return {"sucesso": True, "config": cfg}
+    # O catálogo vai junto com `recurso`/`perfis_elegiveis` porque a aba
+    # Admin › Agentes precisa saber A QUEM pode oferecer cada agente. Sem
+    # isso o front teria de repetir essa regra à mão — e uma 2ª lista de
+    # RBAC fora de sincronia é exatamente o defeito que `RBAC_RECURSOS` já
+    # custou uma vez (tests/test_rbac_recursos_admin.py existe por isso).
+    catalogo = [{"id": ag["id"], "nome": ag["nome"], "recurso": ag["recurso"],
+                 "recurso_curador": ag["recurso_curador"],
+                 "config_enabled": ag["config_enabled"],
+                 "perfis_elegiveis": list(ag["perfis_elegiveis"])}
+                for ag in svc.CATALOGO.values()]
+    return {"sucesso": True, "config": cfg, "agentes": catalogo}
 
 
 @router.post("/agentes/admin/config", tags=["agentes-admin"])

@@ -6,12 +6,12 @@
 // Quando a lógica vivia dentro do onClick, o único jeito de conferir era
 // clicar no botão e abrir o arquivo.
 //
-// O que este módulo desenha são os BLOCOS de markdown.ts — os mesmos que a
+// O que este módulo desenha são os BLOCOS de lib/markdownLlm.ts — os mesmos que a
 // bolha desenha em JSX. Antes daqui o PDF recebia o texto cru e saía com
 // `## Status`, `**Emitida**` e as tabelas em canos.
 import type jsPDF from "jspdf";
 import { parseMarkdown, textoDe, textoParaPdf,
-         type BlocoMd, type PedacoInline } from "./markdown";
+         type BlocoMd, type PedacoInline } from "../../lib/markdownLlm";
 
 export interface MensagemPdf {
   text: string;

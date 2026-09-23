@@ -1,0 +1,165 @@
+// O chat do agente: bolhas, envio, e o que ele consultou em cada resposta.
+//
+// Apresentação pura — quem fala com a API é `pages/Agentes.tsx`. É o mesmo
+// corte de `MaestroChat`/`MaestroPainel` (container = estado/rede, painel =
+// render), e é o que deixa o componente testável sem servidor.
+//
+// Acessibilidade (critério 4 da F3):
+//   • a lista de mensagens é `aria-live="polite"` — o leitor de tela anuncia
+//     a resposta quando ela chega, sem roubar o foco de quem está digitando;
+//   • depois de enviar, o foco VOLTA para o campo (quem conversa não precisa
+//     pegar o mouse entre uma pergunta e outra);
+//   • o "digitando" tem texto, não só animação.
+// Sem cor fixa: tudo em tokens (`panel`, `canvas`, `edge`, `ink`, `dim`),
+// exceto o azul da marca, que já vem com par claro/escuro no projeto.
+import { useEffect, useRef } from 'react'
+import { Send } from 'lucide-react'
+import type { MensagemChat } from '../../lib/agentes'
+import { FERRAMENTAS, MAX_MENSAGEM, STATUS_RODADA } from '../../lib/agentes'
+import { MarkdownAgente } from './MarkdownAgente'
+
+interface Props {
+  mensagens: MensagemChat[]
+  valor: string
+  onValor: (v: string) => void
+  onEnviar: () => void
+  enviando: boolean
+  /** Bloqueia o campo (sonda impeditiva, agente desligado). */
+  bloqueado?: boolean
+  motivoBloqueio?: string
+  nomeAgente: string
+}
+
+function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['artefatos']> }) {
+  if (!artefatos.length) return null
+  // Só os nomes, na ordem em que rodaram — é a trilha que o operador usa para
+  // saber SE a resposta veio da base ou do DataStage ao vivo.
+  const nomes = artefatos.map(a => FERRAMENTAS[a.ferramenta] ?? a.ferramenta)
+  return (
+    <p className="text-[11px] text-dim mt-1.5" data-agentes-ferramentas>
+      Consultei: {nomes.join(' › ')}
+    </p>
+  )
+}
+
+export function ChatAgente({
+  mensagens, valor, onValor, onEnviar, enviando, bloqueado, motivoBloqueio, nomeAgente,
+}: Props) {
+  const rolagemRef = useRef<HTMLDivElement>(null)
+  const campoRef = useRef<HTMLTextAreaElement>(null)
+  const enviandoAntes = useRef(enviando)
+
+  useEffect(() => {
+    const el = rolagemRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [mensagens, enviando])
+
+  // Devolve o foco ao campo quando a resposta chega (enviando: true → false).
+  useEffect(() => {
+    if (enviandoAntes.current && !enviando && !bloqueado) campoRef.current?.focus()
+    enviandoAntes.current = enviando
+  }, [enviando, bloqueado])
+
+  const podeEnviar = !enviando && !bloqueado && valor.trim().length > 0 && valor.length <= MAX_MENSAGEM
+
+  function aoTeclar(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Enter envia, Shift+Enter quebra linha — o mesmo do Maestro.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      if (podeEnviar) onEnviar()
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full min-h-0" data-agentes-chat>
+      <div
+        ref={rolagemRef}
+        // `overflow-y-auto` só AQUI: nenhum ancestral tem overflow-hidden, para
+        // não matar o `sticky` do cabeçalho da página (lição do Caixa Seguro).
+        className="flex-1 min-h-0 overflow-y-auto px-1 py-2 flex flex-col gap-3"
+        aria-live="polite"
+        aria-busy={enviando}
+        aria-label={`Conversa com ${nomeAgente}`}
+      >
+        {mensagens.length === 0 && (
+          <p className="text-sm text-dim px-2 py-6 text-center">
+            Pergunte sobre um job, um fluxo ou uma tabela do DataStage.
+            <br />
+            Ex.: <span className="text-ink">“o que o job BiCvp_Carga_Clientes faz?”</span>
+          </p>
+        )}
+
+        {mensagens.map(m => (
+          m.papel === 'user' ? (
+            <div key={m.id} className="self-end max-w-[85%]">
+              <div className="rounded-lg rounded-br-sm px-3 py-2 bg-[#1A5FA8] text-white text-sm whitespace-pre-wrap break-words">
+                {m.texto}
+              </div>
+            </div>
+          ) : (
+            <div key={m.id} className="self-start max-w-[92%]">
+              <div className="rounded-lg rounded-bl-sm px-3 py-2 bg-panel border border-edge text-ink shadow-sm">
+                <MarkdownAgente texto={m.texto} />
+                {m.artefatos && <LinhaFerramentas artefatos={m.artefatos} />}
+              </div>
+              {m.status && STATUS_RODADA[m.status] && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300 mt-1 px-1"
+                   data-agentes-status={m.status}>
+                  {STATUS_RODADA[m.status]}
+                </p>
+              )}
+            </div>
+          )
+        ))}
+
+        {enviando && (
+          <div className="self-start">
+            <div className="rounded-lg rounded-bl-sm px-3 py-2 bg-panel border border-edge text-dim text-sm flex items-center gap-2">
+              <span className="flex gap-1" aria-hidden="true">
+                <span className="w-1.5 h-1.5 rounded-full bg-dim animate-bounce" />
+                <span className="w-1.5 h-1.5 rounded-full bg-dim animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-dim animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
+              {nomeAgente} está consultando…
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-edge pt-3 mt-1">
+        {bloqueado && motivoBloqueio && (
+          <p className="text-xs text-dim mb-2">{motivoBloqueio}</p>
+        )}
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={campoRef}
+            value={valor}
+            onChange={e => onValor(e.target.value)}
+            onKeyDown={aoTeclar}
+            disabled={bloqueado}
+            rows={2}
+            maxLength={MAX_MENSAGEM}
+            aria-label="Sua pergunta"
+            placeholder={bloqueado ? 'Indisponível' : 'Pergunte sobre um job, fluxo ou tabela…'}
+            className="flex-1 resize-none rounded-lg border border-edge bg-panel text-ink placeholder:text-dim
+                       px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1A5FA8] disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={onEnviar}
+            disabled={!podeEnviar}
+            aria-label="Enviar pergunta"
+            className="shrink-0 rounded-lg px-3 py-2.5 bg-[#1A5FA8] text-white text-sm font-medium
+                       hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+          >
+            <Send className="w-4 h-4" aria-hidden="true" />
+            Enviar
+          </button>
+        </div>
+        {valor.length > MAX_MENSAGEM * 0.9 && (
+          <p className="text-[11px] text-dim mt-1">{valor.length} / {MAX_MENSAGEM} caracteres</p>
+        )}
+      </div>
+    </div>
+  )
+}
