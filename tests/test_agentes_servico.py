@@ -168,6 +168,23 @@ def test_agente_do_recurso_recurso_comum_e_none():
 _CFG_LIGADO = {"agentes_enabled": "1", "agente_datastage_enabled": "1"}
 
 
+@pytest.mark.parametrize("cfg, esperado", [
+    (_CFG_LIGADO, True),
+    ({"agentes_enabled": "0", "agente_datastage_enabled": "1"}, False),
+    ({"agentes_enabled": "1", "agente_datastage_enabled": "0"}, False),
+    ({"agentes_enabled": "1"}, False),   # chave ausente = desligado
+    ({"agentes_enabled": "1", "agente_datastage_enabled": None}, False),
+    ({}, False),
+])
+def test_agente_ligado_exige_os_dois_interruptores(cfg, esperado):
+    """A regra única usada pelo catálogo, pelo chat e pela curadoria."""
+    assert svc.agente_ligado(cfg, svc.AGENTE_DATASTAGE) is esperado
+
+
+def test_agente_ligado_agente_desconhecido_e_false():
+    assert svc.agente_ligado(_CFG_LIGADO, "nao_existe") is False
+
+
 def test_catalogo_geral_desligado_admin_tambem_nao_ve_nada():
     cfg = {"agentes_enabled": "0", "agente_datastage_enabled": "1"}
     assert svc.catalogo_do_usuario(_user("admin", admin=True), cfg) == []

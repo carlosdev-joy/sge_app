@@ -29,6 +29,7 @@ import logging
 import re
 import time
 import uuid
+from contextlib import contextmanager
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -100,12 +101,13 @@ def _json_lista(bruto) -> list:
     return dado if isinstance(dado, list) else []
 
 
-def _separar_artefatos(lista: list) -> tuple[list, list[int]]:
+def _separar_artefatos(lista: list) -> tuple[list, list[int], int | None]:
     """`artefatos_json` guarda, na mesma lista, as ferramentas que rodaram
-    (`{"ferramenta", "args"}`) e os ids das propostas daquela resposta
-    (`{"proposta_id"}`, F5). A tela recebe os dois SEPARADOS: a linha
-    "Consultei:" só conhece ferramenta, e o cartão só conhece proposta."""
-    ferramentas, ids = [], []
+    (`{"ferramenta", "args"}`), os ids das propostas daquela resposta
+    (`{"proposta_id"}`, F5) e quanto ela levou (`{"duracao_ms"}`). A tela
+    recebe os três SEPARADOS: a linha "Consultei:" só conhece ferramenta, o
+    cartão só conhece proposta — numa passada só pela lista."""
+    ferramentas, ids, duracao = [], [], None
     for a in lista:
         if not isinstance(a, dict):
             continue
@@ -116,15 +118,9 @@ def _separar_artefatos(lista: list) -> tuple[list, list[int]]:
                 pass
         elif "ferramenta" in a:
             ferramentas.append(a)
-    return ferramentas, ids
-
-
-def _duracao_de(lista: list) -> int | None:
-    """`{"duracao_ms"}` gravado junto com a resposta (quanto ela levou)."""
-    for a in lista:
-        if isinstance(a, dict) and isinstance(a.get("duracao_ms"), int):
-            return a["duracao_ms"]
-    return None
+        elif duracao is None and isinstance(a.get("duracao_ms"), int):
+            duracao = a["duracao_ms"]
+    return ferramentas, ids, duracao
 
 
 def _falhas_da_conversa(cur, conversa_id: str) -> set[str]:
@@ -154,21 +150,44 @@ def _validade_dias(cfg: dict) -> int:
         return 7
 
 
+def _identidade_cadastrada(cur, matricula: str) -> str | None:
+    """O identificador que o admin cadastrou para o usuário no gateway
+    (`etl_usuario.identidade_gateway`), ou None. A coluna só existe a partir
+    da 117 (F1): sem ela, "sem cadastro próprio" é a leitura correta (cai no
+    padrão `cvp-<matrícula>`) — diferente da ESCRITA (`user_identidade_set`,
+    admin.py), que dá 503 nomeado. Aqui degradar em silêncio é certo: usar o
+    padrão já é o comportamento de quem nunca configurou um cadastro."""
+    try:
+        cur.execute("SELECT identidade_gateway FROM dbo.etl_usuario WHERE matricula = ?", [matricula])
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _abrir():
     conn = get_db_conn()
     return conn, conn.cursor()
 
 
-def _fechar(conn, cur, commit: bool = False) -> None:
+def _fechar(conn, cur) -> None:
+    for x in (cur, conn):
+        try:
+            x.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@contextmanager
+def _conexao():
+    """Conexão CURTA que sempre fecha — em sucesso, `HTTPException` ou erro
+    do driver (o `finally` que a F2 aprendeu a exigir). Quem precisa gravar
+    chama `conn.commit()` dentro do bloco: sem commit, fechar desfaz."""
+    conn, cur = _abrir()
     try:
-        if commit:
-            conn.commit()
+        yield conn, cur
     finally:
-        for x in (cur, conn):
-            try:
-                x.close()
-            except Exception:  # noqa: BLE001
-                pass
+        _fechar(conn, cur)
 
 
 @router.get("/agentes/catalogo", tags=["agentes"])
@@ -177,11 +196,8 @@ async def agentes_catalogo(user: dict = Depends(_require_tela)):
     grant em `permissoes_extra` — admin sempre passa) e com os dois
     interruptores ligados. Vazio não é erro: é 'nenhum agente liberado
     ainda', o estado normal antes de o admin conceder o primeiro."""
-    conn, cur = _abrir()
-    try:
+    with _conexao() as (_conn, cur):
         cfg = svc.carregar_config(cur)
-    finally:
-        _fechar(conn, cur)
     # `cadastro_texto` viaja AQUI, e não no `/agentes/status`, por dois
     # motivos: o catálogo já lê a config (custo zero) e o status tem um
     # contrato que não pode mudar — `test_status_cache_hit_nao_toca_banco_nem_sonda`
@@ -210,26 +226,10 @@ async def agentes_status(agente: str | None = Query(default=None),
     cacheado = svc.sonda_cacheada(matricula) if matricula else None
     if cacheado is not None:
         return {"estado": cacheado, "cache": True}
-    conn, cur = _abrir()
-    try:
-        cadastro = None
-        if matricula:
-            # A coluna só existe a partir da 117 (F1). Sem ela, "sem cadastro
-            # próprio" é a leitura correta (cai no padrão cvp-<matrícula>) —
-            # diferente da ESCRITA (user_identidade_set, admin.py), que 503
-            # nomeado: aqui não há nada de errado em degradar em silêncio,
-            # porque o resultado (usar o padrão) já é o comportamento normal
-            # de quem nunca configurou um cadastro.
-            try:
-                cur.execute("SELECT identidade_gateway FROM dbo.etl_usuario WHERE matricula = ?", [matricula])
-                row = cur.fetchone()
-                cadastro = row[0] if row else None
-            except Exception:
-                cadastro = None
+    with _conexao() as (_conn, cur):
+        cadastro = _identidade_cadastrada(cur, matricula) if matricula else None
         provedor_cfg = ia_provedor.load_config(cur)
         agentes_cfg = svc.carregar_config(cur)
-    finally:
-        _fechar(conn, cur)
     identidade = svc.identidade_gateway(matricula, cadastro)
     campo = agentes_cfg.get("agentes_gateway_campo_usuario") or None
     estado = await ia_provedor.sondar_usuario(provedor_cfg, identidade, campo)
@@ -276,12 +276,9 @@ async def agentes_conversas(q: str | None = Query(default=None, max_length=200),
     sql.append("ORDER BY ultima_msg_em DESC")
     sql.append("OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY")
 
-    conn, cur = _abrir()
-    try:
+    with _conexao() as (_conn, cur):
         cur.execute(" ".join(sql), params)
         linhas = cur.fetchall()
-    finally:
-        _fechar(conn, cur)
     return {"conversas": [
         {"conversa_id": r[0], "agente": r[1], "titulo": r[2], "projeto": r[3],
          "criada_em": _iso(r[4]), "ultima_msg_em": _iso(r[5])}
@@ -302,8 +299,7 @@ async def agentes_conversa(conversa_id: str, user: dict = Depends(_require_tela)
         raise HTTPException(status_code=404, detail={
             "code": "conversa_nao_encontrada", "message": "conversa não encontrada"})
     matricula = (user.get("matricula") or "").strip()
-    conn, cur = _abrir()
-    try:
+    with _conexao() as (_conn, cur):
         cur.execute(
             "SELECT agente, titulo, projeto, criada_em, ultima_msg_em, matricula, "
             "       DATEDIFF(day, ultima_msg_em, GETDATE()) "
@@ -326,15 +322,12 @@ async def agentes_conversa(conversa_id: str, user: dict = Depends(_require_tela)
             propostas = {p["id"]: p for p in ac.propostas_da_conversa(cur, conversa_id, matricula)}
         except Exception:  # noqa: BLE001
             propostas = {}
-    finally:
-        _fechar(conn, cur)
     mensagens = []
     for m in msgs:
         # O artefato é gravado como JSON; a tela quer a lista, não a string.
-        ferramentas, ids = _separar_artefatos(_json_lista(m[3]))
+        ferramentas, ids, duracao = _separar_artefatos(_json_lista(m[3]))
         item = {"papel": m[0], "conteudo": m[1], "status": m[2],
                 "artefatos": ferramentas, "criada_em": _iso(m[4])}
-        duracao = _duracao_de(_json_lista(m[3]))
         if duracao is not None:
             item["duracao_ms"] = duracao
         if ids:
@@ -349,11 +342,8 @@ async def agentes_conversa(conversa_id: str, user: dict = Depends(_require_tela)
 
 @router.get("/agentes/admin/config", tags=["agentes-admin"])
 async def agentes_admin_config_get(_admin: dict = Depends(get_admin_user)):
-    conn, cur = _abrir()
-    try:
+    with _conexao() as (_conn, cur):
         cfg = svc.carregar_config(cur)
-    finally:
-        _fechar(conn, cur)
     # O catálogo vai junto com `recurso`/`perfis_elegiveis` porque a aba
     # Admin › Agentes precisa saber A QUEM pode oferecer cada agente. Sem
     # isso o front teria de repetir essa regra à mão — e uma 2ª lista de
@@ -415,8 +405,7 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
         raise HTTPException(status_code=422, detail={"code": "agentes_config_vazia",
                                                       "message": "nada para salvar"})
 
-    conn, cur = _abrir()
-    try:
+    with _conexao() as (conn, cur):
         for k, v in valores.items():
             cur.execute(
                 "MERGE dbo.etl_app_config AS t "
@@ -425,10 +414,7 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
                 "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
                 "  VALUES (s.k, ?, 'Tela Agentes', ?, GETDATE());",
                 [k, v, admin["matricula"], v, admin["matricula"]])
-        _fechar(conn, cur, commit=True)
-    except Exception:
-        _fechar(conn, cur)
-        raise
+        conn.commit()
     return {"sucesso": True, "mensagem": "Configuração de Agentes salva."}
 
 
@@ -465,10 +451,12 @@ def _preparar_conversa(body: dict, user: dict) -> dict:
     # `matricula` forjada no corpo é simplesmente ignorada (critério 6 da F2).
     matricula = user["matricula"]
 
-    conn, cur = _abrir()
-    try:
+    # `_conexao` fecha em qualquer saída — inclusive exceção do DRIVER
+    # (deadlock, timeout, conexão caindo), que não é HTTPException: o
+    # try/except/else antigo vazava a conexão nesse caso (achado da F2).
+    with _conexao() as (conn, cur):
         agentes_cfg = svc.carregar_config(cur)
-        if agentes_cfg.get("agentes_enabled") != "1" or agentes_cfg.get("agente_datastage_enabled") != "1":
+        if not svc.agente_ligado(agentes_cfg, svc.AGENTE_DATASTAGE):
             raise HTTPException(status_code=503, detail={
                 "code": "agente_desligado", "message": "Agente DataStage desligado"})
         cur.execute(
@@ -511,24 +499,8 @@ def _preparar_conversa(body: dict, user: dict) -> dict:
             historico = [{"role": r[0], "content": r[1]} for r in cur.fetchall()]
             falhas_anteriores = _falhas_da_conversa(cur, conversa_id)
         provedor_cfg = ia_provedor.load_config(cur)
-        cadastro = None
-        try:
-            cur.execute("SELECT identidade_gateway FROM dbo.etl_usuario WHERE matricula = ?", [matricula])
-            row_id = cur.fetchone()
-            cadastro = row_id[0] if row_id else None
-        except Exception:
-            cadastro = None  # coluna pode não existir ainda (migration 117) — cai no padrão
+        cadastro = _identidade_cadastrada(cur, matricula)
         conn.commit()
-    except HTTPException:
-        raise
-    finally:
-        # finally, não só except HTTPException/else: uma exceção do DRIVER
-        # (deadlock, timeout, conexão caindo — não é HTTPException) não caía
-        # em nenhum dos dois ramos antes e vazava a conexão (achado real da
-        # revisão adversarial da F2). Confirmado com reprodução isolada:
-        # try/except/else nunca roda o `except` de um tipo que não bate nem
-        # o `else` quando uma exceção se propaga.
-        _fechar(conn, cur)
 
     identidade = svc.identidade_gateway(matricula, cadastro)
     campo = agentes_cfg.get("agentes_gateway_campo_usuario") or None
@@ -576,8 +548,7 @@ async def _rodar_e_gravar_interno(ctx: dict, emit_status=None) -> dict:
     texto_redigido = af.redigir(resultado.get("texto") or "")
     artefatos = list(resultado.get("artefatos") or [])
     propostas: list[dict] = []
-    conn, cur = _abrir()
-    try:
+    with _conexao() as (conn, cur):
         cur.execute(
             "INSERT INTO dbo.etl_agente_mensagem (conversa_id, papel, conteudo) VALUES (?, ?, ?)",
             [conversa_id, "user", mensagem_redigida])
@@ -597,8 +568,6 @@ async def _rodar_e_gravar_interno(ctx: dict, emit_status=None) -> dict:
             "UPDATE dbo.etl_agente_conversa SET projeto = ?, ultima_msg_em = GETDATE() "
             "WHERE conversa_id = ?", [resultado.get("projeto"), conversa_id])
         conn.commit()
-    finally:
-        _fechar(conn, cur)
 
     return {"conversa_id": conversa_id, "status": resultado.get("status"),
             "texto": texto_redigido, "projeto": resultado.get("projeto"),
@@ -750,10 +719,10 @@ async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={
     if not matricula:
         raise HTTPException(status_code=404, detail={
             "code": "proposta_nao_encontrada", "message": "proposta não encontrada"})
-    conn, cur = _abrir()
     try:
-        proposta = ac.decidir_proposta(conn, cur, proposta_id=proposta_id, matricula=matricula,
-                                       decisao=decisao, retencao_dias=svc.RETENCAO_CONVERSAS_DIAS)
+        with _conexao() as (conn, cur):
+            proposta = ac.decidir_proposta(conn, cur, proposta_id=proposta_id, matricula=matricula,
+                                           decisao=decisao, retencao_dias=svc.RETENCAO_CONVERSAS_DIAS)
     except ac.PropostaNaoEncontrada:
         raise HTTPException(status_code=404, detail={
             "code": "proposta_nao_encontrada", "message": "proposta não encontrada"})
@@ -765,8 +734,6 @@ async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={
         raise HTTPException(status_code=409, detail={
             "code": "proposta_ja_decidida",
             "message": f"essa proposta já foi {e.proposta['estado']}", "proposta": e.proposta})
-    finally:
-        _fechar(conn, cur)
     return {"proposta": proposta}
 
 
@@ -774,26 +741,31 @@ async def agentes_proposta_decidir(proposta_id: int, body: dict = Body(default={
 # Curadoria dos aprendizados (F6) — só quem tem `agente_curador` (admin passa)
 # ══════════════════════════════════════════════════════════════════════════
 
-def _checar_curadoria(user: dict, cfg: dict) -> None:
-    """A curadoria segue as mesmas portas da tela (achado da auditoria de
-    segurança da F6): agente DESLIGADO → 503, como o chat; e o curador
-    também precisa do acesso de USO — sem ele o agente nem aparece no
-    seletor, e a API não pode ser um atalho para a fila e as evidências.
-    `require_agente(curador=True)` já garantiu perfil elegível + recurso de
-    curador (admin passa sempre)."""
-    if cfg.get("agentes_enabled") != "1" or cfg.get("agente_datastage_enabled") != "1":
-        raise HTTPException(status_code=503, detail={
-            "code": "agente_desligado", "message": "Agente DataStage desligado"})
+async def _require_curadoria(user: dict = Depends(_require_curador)) -> dict:
+    """O ACESSO à curadoria numa dependência só: `require_agente(curador=True)`
+    (perfil elegível + recurso de curador; admin passa) E o acesso de USO —
+    sem ele o agente nem aparece no seletor, e a API não pode ser um atalho
+    para a fila e as evidências (auditoria de segurança da F6). O
+    INTERRUPTOR fica no handler (`_curadoria_ligada`), depois da validação do
+    corpo: ele lê o banco, e um 422 não deve tocar o banco."""
     ag = svc.agente(svc.AGENTE_DATASTAGE)
     if PERM_ADMIN not in user.get("permissoes", []) and ag["recurso"] not in user.get("permissoes_extra", []):
         raise HTTPException(status_code=403, detail={
             "code": "agente_nao_liberado",
             "message": "O curador também precisa ter o agente liberado para uso — peça ao administrador"})
+    return user
+
+
+def _curadoria_ligada(cur) -> None:
+    """Agente DESLIGADO → 503, como o chat."""
+    if not svc.agente_ligado(svc.carregar_config(cur), svc.AGENTE_DATASTAGE):
+        raise HTTPException(status_code=503, detail={
+            "code": "agente_desligado", "message": "Agente DataStage desligado"})
 
 
 @router.get("/agentes/aprendizados", tags=["agentes"])
 async def agentes_aprendizados(estado: str = Query(default="rascunho"),
-                               user: dict = Depends(_require_curador)):
+                               _user: dict = Depends(_require_curadoria)):
     """A fila do curador: rascunhos (sugestões do agente e a semente) para
     validar ou rejeitar, e os validados para marcar como obsoletos. A
     evidência vem junto — é o que o curador lê para decidir; o modelo nunca
@@ -801,27 +773,24 @@ async def agentes_aprendizados(estado: str = Query(default="rascunho"),
     if estado not in ap.ESTADOS:
         raise HTTPException(status_code=422, detail={
             "code": "estado_invalido", "message": f"estado deve ser um de: {', '.join(ap.ESTADOS)}"})
-    conn, cur = _abrir()
-    try:
-        _checar_curadoria(user, svc.carregar_config(cur))
+    with _conexao() as (_conn, cur):
+        _curadoria_ligada(cur)
         itens = ap.listar(cur, agente=svc.AGENTE_DATASTAGE, estado=estado)
-    finally:
-        _fechar(conn, cur)
     return {"aprendizados": itens}
 
 
 @router.post("/agentes/aprendizados/{aprendizado_id}/decidir", tags=["agentes"])
 async def agentes_aprendizado_decidir(aprendizado_id: int, body: dict = Body(default={}),
-                                      user: dict = Depends(_require_curador)):
+                                      user: dict = Depends(_require_curadoria)):
     acao = str(body.get("acao") or "").strip().lower()
     if acao not in ap.TRANSICOES:
         raise HTTPException(status_code=422, detail={
             "code": "acao_invalida", "message": "acao deve ser 'validar', 'rejeitar' ou 'obsoletar'"})
-    conn, cur = _abrir()
     try:
-        _checar_curadoria(user, svc.carregar_config(cur))
-        item = ap.decidir(conn, cur, aprendizado_id=aprendizado_id, agente=svc.AGENTE_DATASTAGE,
-                          acao=acao, matricula=user["matricula"])
+        with _conexao() as (conn, cur):
+            _curadoria_ligada(cur)
+            item = ap.decidir(conn, cur, aprendizado_id=aprendizado_id, agente=svc.AGENTE_DATASTAGE,
+                              acao=acao, matricula=user["matricula"])
     except ap.AprendizadoNaoEncontrado:
         raise HTTPException(status_code=404, detail={
             "code": "aprendizado_nao_encontrado", "message": "aprendizado não encontrado"})
@@ -829,6 +798,4 @@ async def agentes_aprendizado_decidir(aprendizado_id: int, body: dict = Body(def
         raise HTTPException(status_code=409, detail={
             "code": "transicao_invalida",
             "message": f"não dá para {acao} um aprendizado {e.atual['estado']}", "aprendizado": e.atual})
-    finally:
-        _fechar(conn, cur)
     return {"aprendizado": item}

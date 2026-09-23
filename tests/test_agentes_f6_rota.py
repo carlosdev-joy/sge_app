@@ -215,3 +215,20 @@ def test_curador_sem_o_acesso_de_uso_e_403(ambiente):
     assert r.status_code == 403 and r.json()["detail"]["code"] == "agente_nao_liberado"
     assert cliente.get("/agentes/aprendizados").status_code == 403
     assert banco.aprendizados[i]["estado"] == "rascunho"
+
+
+def test_sem_acesso_de_uso_o_403_vem_antes_do_503_e_do_422(ambiente):
+    """O ACESSO é uma dependência (sem banco) e o INTERRUPTOR roda no handler:
+    quem não tem o acesso de uso recebe 403 mesmo com o agente desligado ou
+    com corpo inválido — não descobre o estado do interruptor nem a forma do
+    corpo. Ordem fixada na PR de limpeza (antes era 503 → 403)."""
+    cliente, banco, estado = ambiente
+    estado["extras"] = ["agente_curador"]
+    banco.config["agente_datastage_enabled"] = "0"
+    i = banco.novo_aprendizado(estado="rascunho")
+    for r in (cliente.get("/agentes/aprendizados"),
+              cliente.get("/agentes/aprendizados?estado=invalido"),
+              cliente.post(f"/agentes/aprendizados/{i}/decidir", json={"acao": "validar"}),
+              cliente.post(f"/agentes/aprendizados/{i}/decidir", json={"acao": "xpto"})):
+        assert r.status_code == 403 and r.json()["detail"]["code"] == "agente_nao_liberado"
+    assert banco.aprendizados[i]["estado"] == "rascunho"
