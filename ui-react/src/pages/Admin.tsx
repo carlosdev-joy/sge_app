@@ -14,6 +14,7 @@ import { senhaParaEnviar } from '../lib/servicenowConfig'
 import { renderMarkdown } from '../lib/markdown'
 import { DsSeqFlowGraph } from '../components/console/DsSeqFlowGraph'
 import { UtilitariosTab } from '../components/admin/UtilitariosTab'
+import { AgentesTab } from '../components/admin/AgentesTab'
 import { MaestroTab } from '../components/admin/MaestroTab'
 import { EmailTab } from '../components/admin/EmailTab'
 import {
@@ -3895,6 +3896,7 @@ const ADMIN_GROUPS = [
     { id: 'powerbi', label: 'Power BI — Acessos' },
     { id: 'ia', label: 'IA' },
     { id: 'maestro', label: 'Maestro' },
+    { id: 'agentes', label: 'Agentes' },
     { id: 'email', label: 'E-mail' },
   ] },
   { id: 'relatorios', label: 'Relatórios', tabs: [
@@ -4176,6 +4178,7 @@ export default function Admin() {
         {tab === 'powerbi' && <PowerBIAccessGuideTab />}
         {tab === 'ia' && <IATab />}
         {tab === 'maestro' && <MaestroTab />}
+        {tab === 'agentes' && <AgentesTab />}
         {tab === 'email' && <EmailTab />}
       </div>
     </div>

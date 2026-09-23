@@ -1,4 +1,9 @@
-// Markdown mínimo das respostas dos assistentes (Diego/Lari/Léo).
+// Markdown mínimo das respostas de um LLM — parser compartilhado.
+//
+// Mora em `lib/` (não em `caixa/`) porque três telas já dependem dele:
+// as bolhas do Caixa Seguro, o Maestro e o agente DataStage. O módulo
+// Caixa sai do repo em breve (requisito de desacoplar a IA do Caixa) e
+// levaria junto o parser de quem não tem nada a ver com ele.
 //
 // O modelo responde em Markdown por conta própria — o system prompt nem pede.
 // A bolha mostrava isso com `whitespace-pre-wrap`, então o operador lia

@@ -13,8 +13,8 @@
 // (`#e5e7eb`), apagando a diferença entre o traço do cabeçalho e o das
 // linhas. Conferido no CSS gerado, não no que a documentação promete.
 import { useMemo } from 'react'
-import type { BlocoMd, PedacoInline } from '../lib/markdown'
-import { parseMarkdown } from '../lib/markdown'
+import type { BlocoMd, PedacoInline } from '../../lib/markdownLlm'
+import { parseMarkdown } from '../../lib/markdownLlm'
 
 function Inline({ partes }: { partes: PedacoInline[] }) {
   return (
