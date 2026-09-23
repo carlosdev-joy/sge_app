@@ -172,3 +172,11 @@ def test_eco_tardio_admite_so_o_que_a_ferramenta_informou():
     disse, nunca uma explicação inventada."""
     p = svc._prompt_sistema("BI_PRESTAMISTA")
     assert '"cache_hit": true (a extração veio do cache)' in p and '"não\n  repeti"' in p
+
+
+
+def test_prompt_proibe_arvore_de_sub_sequences_sem_dados():
+    """5526de5 (produção): não descer recursivamente inventando a árvore."""
+    p = svc._prompt_sistema("BI_PRESTAMISTA")
+    assert "NUNCA monte árvore hierárquica de sub-sequences sem ter extraído cada nível" in p
+    assert "Inventar estrutura de árvore a partir de nomes é alucinação" in p
