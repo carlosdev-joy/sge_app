@@ -320,6 +320,14 @@ multi-agente antes da PR** (`qa-adversarial`; `security-review` nas F1, F2, F5 e
   12. O projeto é lembrado ao retomar a conversa; trocar de projeto zera o job em foco.
 - **Validação:** padrão. **PR:** `feat(agentes): ferramentas de leitura e orquestração do agente DataStage (F2)`.
 
+> **Ajuste de produção de 23/09/2026 (PR #428) — muda o critério 11 da F2.** Pedido do usuário: o agente
+> **infere o projeto pelo prefixo do job** (`SsdPrs_*`/`SeqSsdPrs_*` → BI_PRESTAMISTA) e segue **sem pedir
+> confirmação**; no caso "quase" (caixa diferente), quando o prefixo confirma, chama `resolver_projeto` de novo com a
+> grafia canônica sem perguntar. O que continua valendo: o backend **não resolve sozinho** — o nome inferido passa por
+> `resolver_projeto`, que só aceita o que existe na base/DSX (guarda do risco 28). Quando o prefixo não diz nada,
+> `resolver_projeto {"listar": true}` lista os projetos conhecidos (base ∪ DSX, até 50) e o agente pede ao usuário
+> para escolher — nunca "não encontrado" sem mostrar as opções.
+
 ### F2b — Extração ISX e consulta a DSX pelo agente, com a mesma régua do botão da Governança
 - **🏁 IMPLEMENTADA 22/09/2026** (branch `feat/agentes-f2b`): `isx_extrair` e `dsx_consulta` em
   `api/services/agentes_ferramentas.py`, reaproveitando 100% de `services.lineage_isx`

@@ -13,13 +13,15 @@
 import { useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Bot } from 'lucide-react'
+import { Bot, ClipboardCheck, History, MessageSquarePlus } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { apiFetch } from '../lib/api'
 import type {
   AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, DecisaoProposta, EstadoSonda,
   MensagemChat, PropostaAgente, RespostaConversa, StatusAgentes,
 } from '../lib/agentes'
 import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, mensagemDeErro } from '../lib/agentes'
+import { conversarPorStream, rotaStreamAusente } from '../lib/agentesStream'
 import { HistoricoConversas } from '../components/agentes/HistoricoConversas'
 import { AvisoSonda } from '../components/agentes/AvisoSonda'
 import { ChatAgente } from '../components/agentes/ChatAgente'
@@ -74,6 +76,44 @@ function jobPlotavel(mensagens: MensagemChat[]): { pipeline: string; job: string
   return null
 }
 
+/**
+ * Botão da barra do topo (curadoria, histórico, nova conversa): mesmo tamanho,
+ * ícone + rótulo FIXO — o estado não troca o texto (antes: "histórico" ↔
+ * "ocultar histórico"), ele aparece no destaque e em `aria-pressed`, que o
+ * leitor de tela anuncia. Botão sem `ativo` (nova conversa) é ação simples,
+ * sem `aria-pressed`. Só tokens do tema + o azul da marca com par escuro.
+ */
+function BotaoBarra({ icone, rotulo, ativo, onClick, desabilitado, dica, dados }: {
+  icone: ReactNode
+  rotulo: string
+  ativo?: boolean
+  onClick: () => void
+  desabilitado?: boolean
+  dica?: string
+  dados: string
+}) {
+  const alternavel = ativo !== undefined
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={desabilitado}
+      aria-pressed={alternavel ? ativo : undefined}
+      title={dica}
+      data-agentes-botao={dados}
+      className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-md border text-[13px] font-medium
+                  transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1A5FA8]
+                  disabled:opacity-50 disabled:cursor-not-allowed
+                  ${ativo
+                    ? 'border-[#1A5FA8] bg-[#1A5FA8]/10 text-[#1A5FA8] dark:border-blue-400 dark:bg-blue-400/15 dark:text-blue-300'
+                    : 'border-edge bg-panel text-ink hover:bg-canvas'}`}
+    >
+      {icone}
+      {rotulo}
+    </button>
+  )
+}
+
 let seq = 0
 const novoId = () => `m${Date.now()}_${seq++}`
 
@@ -98,6 +138,8 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   const [conversaId, setConversaId] = useState<string | null>(() => guardada?.conversa_id ?? null)
   const [texto, setTexto] = useState('')
   const [enviando, setEnviando] = useState(false)
+  // Frase de progresso da rodada em curso (evento `status` do stream).
+  const [statusTexto, setStatusTexto] = useState<string | null>(null)
   const [grafoAberto, setGrafoAberto] = useState(false)
   const [stageSel, setStageSel] = useState<string | null>(null)
   const [historicoAberto, setHistoricoAberto] = useState(false)
@@ -123,14 +165,23 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
     setMensagens(m => [...m, { id: novoId(), papel: 'user', texto: conteudo }])
     setTexto('')
     setEnviando(true)
+    setStatusTexto(null)
+    const corpo = JSON.stringify(conversaId
+      ? { mensagem: conteudo, conversa_id: conversaId }
+      : { mensagem: conteudo })
+    const abandonado = () => pedidoRef.current !== meuPedido
     try {
-      const r = await apiFetch<RespostaConversa>(`/agentes/${agente.id}/conversar`, {
-        method: 'POST',
-        body: JSON.stringify(conversaId
-          ? { mensagem: conteudo, conversa_id: conversaId }
-          : { mensagem: conteudo }),
-      })
-      if (pedidoRef.current !== meuPedido) return  // conversa trocou no meio
+      let r: RespostaConversa | null
+      try {
+        // Progresso em tempo real (spec de feedback). Se a API ainda não
+        // tem a rota de stream (a `dist/` subiu antes dela), cai no JSON.
+        r = await conversarPorStream(agente.id, corpo,
+          t => { if (!abandonado()) setStatusTexto(t) }, abandonado)
+      } catch (e) {
+        if (!rotaStreamAusente(e)) throw e
+        r = await apiFetch<RespostaConversa>(`/agentes/${agente.id}/conversar`, { method: 'POST', body: corpo })
+      }
+      if (r === null || abandonado()) return  // conversa trocou no meio
       setConversaId(r.conversa_id)
       setProjeto(r.projeto)
       setMensagens(m => {
@@ -141,6 +192,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           propostasRecusadas: r.propostas_recusadas?.length ? r.propostas_recusadas : undefined,
           aprendizadosUsados: r.aprendizados_usados?.length ? r.aprendizados_usados.map(a => a.titulo) : undefined,
           aprendizadosSugeridos: r.aprendizados_sugeridos?.length ? r.aprendizados_sugeridos : undefined,
+          duracaoMs: typeof r.duracao_ms === 'number' ? r.duracao_ms : undefined,
         }]
         guardar(agente.id, { conversa_id: r.conversa_id, projeto: r.projeto, mensagens: novas })
         return novas
@@ -151,7 +203,10 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
       toast.error(msg)
       setMensagens(m => [...m, { id: novoId(), papel: 'assistant', texto: msg }])
     } finally {
-      if (pedidoRef.current === meuPedido) setEnviando(false)
+      if (pedidoRef.current === meuPedido) {
+        setEnviando(false)
+        setStatusTexto(null)
+      }
     }
   }
 
@@ -167,6 +222,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
     // copiou o incremento e esqueceu dela).
     const meuPedido = ++pedidoRef.current
     setEnviando(false)
+    setStatusTexto(null)
     setRetomando(true)
     try {
       const d = await apiFetch<ConversaDetalhe>(`/agentes/conversas/${encodeURIComponent(id)}`)
@@ -181,6 +237,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
         status: m.status ?? undefined,
         em: m.papel === 'assistant' ? m.criada_em : undefined,
         propostas: m.papel === 'assistant' && m.propostas?.length ? m.propostas : undefined,
+        duracaoMs: m.papel === 'assistant' && typeof m.duracao_ms === 'number' ? m.duracao_ms : undefined,
       }))
       setMensagens(msgs)
       setConversaId(d.conversa_id)
@@ -256,6 +313,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
     setGrafoAberto(false)
     setStageSel(null)
     setEnviando(false)
+    setStatusTexto(null)
     setRetomando(false)
     try { localStorage.removeItem(chaveDaConversa(agente.id)) } catch { /* ignore */ }
   }
@@ -264,37 +322,35 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
 
   return (
     <>
-      <div className="flex justify-end gap-3 -mt-2">
+      <div role="group" aria-label="Ações da conversa" className="flex flex-wrap justify-end gap-2 -mt-1"
+           data-agentes-barra>
         {agente.curador && (
           // Só para quem tem `agente_curador` (o catálogo diz); a API recusa
           // os demais com 403 de qualquer jeito (critério 4 da F6).
-          <button
-            type="button"
+          <BotaoBarra
+            icone={<ClipboardCheck className="w-4 h-4" aria-hidden="true" />}
+            rotulo="Curadoria"
+            ativo={curadoriaAberta}
             onClick={() => setCuradoriaAberta(v => !v)}
-            aria-expanded={curadoriaAberta}
-            className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
-            data-agentes-abrir-curadoria
-          >
-            {curadoriaAberta ? 'voltar à conversa' : 'curadoria'}
-          </button>
+            dados="curadoria"
+          />
         )}
-        <button
-          type="button"
+        <BotaoBarra
+          icone={<History className="w-4 h-4" aria-hidden="true" />}
+          rotulo="Histórico"
+          ativo={historicoAberto}
           onClick={() => setHistoricoAberto(v => !v)}
-          aria-expanded={historicoAberto}
-          className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
-        >
-          {historicoAberto ? 'ocultar histórico' : 'histórico'}
-        </button>
-        {mensagens.length > 0 && (
-          <button
-            type="button"
-            onClick={novaConversa}
-            className="text-[13px] text-[#1A5FA8] dark:text-blue-400 hover:underline"
-          >
-            nova conversa
-          </button>
-        )}
+          dados="historico"
+        />
+        <BotaoBarra
+          icone={<MessageSquarePlus className="w-4 h-4" aria-hidden="true" />}
+          rotulo="Nova conversa"
+          onClick={novaConversa}
+          // Sempre na barra (a largura não pula); sem mensagens não há o que recomeçar.
+          desabilitado={mensagens.length === 0}
+          dica={mensagens.length === 0 ? 'A conversa ainda está vazia' : 'Começar uma conversa do zero'}
+          dados="nova"
+        />
       </div>
 
       {sonda && (
@@ -352,6 +408,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           onValor={setTexto}
           onEnviar={() => enviar()}
           enviando={enviando}
+          statusTexto={statusTexto}
           bloqueado={bloqueado}
           motivoBloqueio={infoSonda?.bloqueia ? infoSonda.titulo : undefined}
           nomeAgente={agente.nome}

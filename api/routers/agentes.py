@@ -23,11 +23,15 @@ da rodada), nunca durante.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
+import time
 import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from db import get_db_conn
 from deps import PERM_ADMIN, PERM_EDITAR, get_admin_user, require_perm
@@ -38,6 +42,7 @@ from services import agentes_ferramentas as af
 from services import ia_provedor
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 _require_tela = require_perm("tela_agentes")
 _require_datastage = svc.require_agente(svc.AGENTE_DATASTAGE)
@@ -112,6 +117,14 @@ def _separar_artefatos(lista: list) -> tuple[list, list[int]]:
         elif "ferramenta" in a:
             ferramentas.append(a)
     return ferramentas, ids
+
+
+def _duracao_de(lista: list) -> int | None:
+    """`{"duracao_ms"}` gravado junto com a resposta (quanto ela levou)."""
+    for a in lista:
+        if isinstance(a, dict) and isinstance(a.get("duracao_ms"), int):
+            return a["duracao_ms"]
+    return None
 
 
 def _falhas_da_conversa(cur, conversa_id: str) -> set[str]:
@@ -321,6 +334,9 @@ async def agentes_conversa(conversa_id: str, user: dict = Depends(_require_tela)
         ferramentas, ids = _separar_artefatos(_json_lista(m[3]))
         item = {"papel": m[0], "conteudo": m[1], "status": m[2],
                 "artefatos": ferramentas, "criada_em": _iso(m[4])}
+        duracao = _duracao_de(_json_lista(m[3]))
+        if duracao is not None:
+            item["duracao_ms"] = duracao
         if ids:
             item["propostas"] = [propostas[i] for i in ids if i in propostas]
         mensagens.append(item)
@@ -416,12 +432,13 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
     return {"sucesso": True, "mensagem": "Configuração de Agentes salva."}
 
 
-@router.post("/agentes/datastage/conversar", tags=["agentes"])
-async def agentes_datastage_conversar(body: dict = Body(default={}),
-                                      user: dict = Depends(_require_datastage)):
-    """Uma rodada com o agente DataStage. `require_agente` já garante:
-    admin passa sempre; não-admin exige perfil `desenvolvedor` e o grant em
-    `permissoes_extra` (nunca o que vier só do perfil)."""
+def _preparar_conversa(body: dict, user: dict) -> dict:
+    """Tudo o que vem ANTES da rodada com o modelo: validação do corpo,
+    interruptores, dono e validade da conversa, histórico, config e
+    identidade. Levanta `HTTPException` — no endpoint de stream isso ainda
+    sai como resposta HTTP normal, ANTES de o `text/event-stream` abrir (a
+    tela trata 4xx/503 do mesmo jeito nos dois endpoints)."""
+    t0 = time.monotonic()
     mensagem = str(body.get("mensagem") or "").strip()
     if not mensagem:
         raise HTTPException(status_code=422, detail={
@@ -523,12 +540,28 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
     # `acao_editar` é SEMPRE da sessão (F2b, isx_extrair) — nunca do corpo,
     # mesma régua da identidade (critério 6 da F2, estendido).
     acao_editar = PERM_EDITAR in user.get("permissoes", [])
-    resultado = await svc.conversar(
-        _abrir, mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
-        projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
-        identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
-        acao_editar=acao_editar, matricula=matricula,
-        validade_fatos_dias=_validade_dias(agentes_cfg), falhas_anteriores=falhas_anteriores)
+    return {"t0": t0, "conversa_id": conversa_id, "matricula": matricula,
+            "mensagem_redigida": mensagem_redigida,
+            "kwargs": dict(
+                mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
+                projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
+                identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
+                acao_editar=acao_editar, matricula=matricula,
+                validade_fatos_dias=_validade_dias(agentes_cfg), falhas_anteriores=falhas_anteriores)}
+
+
+async def _rodar_e_gravar(ctx: dict, emit_status=None) -> dict:
+    """A rodada com o modelo e a gravação da pergunta+resposta — o mesmo
+    caminho para os dois endpoints. `duracao_ms` conta do recebimento da
+    pergunta até a resposta pronta, e é gravado junto (em `artefatos_json`)
+    para a tela mostrar também ao retomar a conversa."""
+    conversa_id, matricula = ctx["conversa_id"], ctx["matricula"]
+    mensagem_redigida = ctx["mensagem_redigida"]
+    kwargs = dict(ctx["kwargs"])
+    if emit_status is not None:
+        kwargs["emit_status"] = emit_status
+    resultado = await svc.conversar(_abrir, **kwargs)
+    duracao_ms = int((time.monotonic() - ctx["t0"]) * 1000)
 
     texto_redigido = af.redigir(resultado.get("texto") or "")
     artefatos = list(resultado.get("artefatos") or [])
@@ -548,7 +581,8 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
             "INSERT INTO dbo.etl_agente_mensagem "
             "(conversa_id, papel, conteudo, status, artefatos_json) VALUES (?, ?, ?, ?, ?)",
             [conversa_id, "assistant", texto_redigido, resultado.get("status"),
-             json.dumps(artefatos + [{"proposta_id": p["id"]} for p in propostas], ensure_ascii=False)])
+             json.dumps(artefatos + [{"proposta_id": p["id"]} for p in propostas]
+                        + [{"duracao_ms": duracao_ms}], ensure_ascii=False)])
         cur.execute(
             "UPDATE dbo.etl_agente_conversa SET projeto = ?, ultima_msg_em = GETDATE() "
             "WHERE conversa_id = ?", [resultado.get("projeto"), conversa_id])
@@ -561,7 +595,91 @@ async def agentes_datastage_conversar(body: dict = Body(default={}),
             "artefatos": artefatos, "propostas": propostas,
             "propostas_recusadas": list(resultado.get("propostas_recusadas") or []),
             "aprendizados_usados": list(resultado.get("aprendizados_usados") or []),
-            "aprendizados_sugeridos": list(resultado.get("aprendizados_sugeridos") or [])}
+            "aprendizados_sugeridos": list(resultado.get("aprendizados_sugeridos") or []),
+            "duracao_ms": duracao_ms}
+
+
+@router.post("/agentes/datastage/conversar", tags=["agentes"])
+async def agentes_datastage_conversar(body: dict = Body(default={}),
+                                      user: dict = Depends(_require_datastage)):
+    """Uma rodada com o agente DataStage. `require_agente` já garante:
+    admin passa sempre; não-admin exige perfil `desenvolvedor` e o grant em
+    `permissoes_extra` (nunca o que vier só do perfil)."""
+    return await _rodar_e_gravar(_preparar_conversa(body, user))
+
+
+# Rodadas do stream em andamento. A rodada roda numa task PRÓPRIA, fora do
+# gerador: se o usuário fechar a aba no meio, o gerador é cancelado mas a
+# rodada termina e GRAVA a pergunta e a resposta (a conversa não perde a
+# volta). O conjunto só segura a referência até o fim — sem ela, o coletor
+# de lixo poderia descartar a task no meio.
+_RODADAS_STREAM: set = set()
+
+KEEPALIVE_S = 15  # comentário SSE periódico: o nginx corta a leitura em 300 s sem bytes
+
+
+def _evento(dado: dict) -> str:
+    return f"data: {json.dumps(dado, ensure_ascii=False, default=str)}\n\n"
+
+
+@router.post("/agentes/datastage/conversar/stream", tags=["agentes"])
+async def agentes_datastage_conversar_stream(body: dict = Body(default={}),
+                                             user: dict = Depends(_require_datastage)):
+    """A mesma rodada, com eventos de progresso em tempo real
+    (`text/event-stream`, spec docs/spec-agentes-feedback-progresso.md):
+
+      data: {"tipo": "status", "texto": "…"}      — a cada passo da rodada
+      data: {"tipo": "resposta", …, "duracao_ms"} — a resposta final (mesmo
+                                                     corpo do endpoint JSON)
+      data: {"tipo": "erro", "detail": {…}}       — falha DEPOIS de o stream abrir
+      : keep-alive                                — a cada 15 s sem evento
+
+    Gate, validação e 4xx/503 acontecem ANTES do stream (resposta HTTP
+    normal). `X-Accel-Buffering: no` desliga o buffer do nginx só para esta
+    resposta — o `nginx.conf` de produção não precisa mudar."""
+    ctx = _preparar_conversa(body, user)
+    fila: asyncio.Queue = asyncio.Queue()
+
+    async def _emitir(texto: str) -> None:
+        fila.put_nowait({"tipo": "status", "texto": texto})
+
+    rodada = asyncio.create_task(_rodar_e_gravar(ctx, _emitir))
+    _RODADAS_STREAM.add(rodada)
+    rodada.add_done_callback(_RODADAS_STREAM.discard)
+
+    async def _gerar():
+        yield _evento({"tipo": "status", "texto": "Pergunta recebida…"})
+        proximo = None
+        try:
+            while True:
+                if rodada.done() and fila.empty():
+                    break
+                proximo = asyncio.ensure_future(fila.get())
+                feitos, _ = await asyncio.wait({proximo, rodada}, timeout=KEEPALIVE_S,
+                                               return_when=asyncio.FIRST_COMPLETED)
+                if proximo in feitos:
+                    yield _evento(proximo.result())
+                    continue
+                proximo.cancel()
+                if not feitos:
+                    yield ": keep-alive\n\n"
+        finally:
+            # Cliente que desconecta no meio: a leitura pendente da fila é
+            # cancelada aqui (senão fica órfã e o coletor loga "Task was
+            # destroyed but it is pending"). A RODADA não é cancelada.
+            if proximo is not None and not proximo.done():
+                proximo.cancel()
+        try:
+            yield _evento({"tipo": "resposta", **rodada.result()})
+        except HTTPException as e:
+            yield _evento({"tipo": "erro", "detail": e.detail})
+        except Exception:  # noqa: BLE001 — banco caiu na gravação etc.
+            log.exception("agentes: falha na rodada do stream")
+            yield _evento({"tipo": "erro", "detail": {
+                "code": "erro_interno", "message": "Não foi possível concluir a resposta — tente de novo."}})
+
+    return StreamingResponse(_gerar(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 _RE_DECISAO = re.compile(r"^(aprovar|recusar)$")

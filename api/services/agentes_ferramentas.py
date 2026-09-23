@@ -464,6 +464,20 @@ def projeto_do_pipeline_job(cur, pipeline_name: str, job_name: str) -> str | Non
     return info["ds_project"] if info else None
 
 
+MAX_PROJETOS_LISTADOS = 50
+
+
+def projetos_conhecidos(cur) -> list[dict]:
+    """Todos os projetos DataStage que o Orquestra conhece — base ∪ arquivos
+    `.dsx` — com a marca de quem tem DSX. É o `resolver_projeto` com
+    `listar: true`: quando o prefixo do job não diz o projeto, o agente
+    mostra as opções em vez de dizer "não encontrado" (ajuste de produção de
+    23/09/2026). Não toca o servidor DataStage."""
+    dsx = set(_projetos_com_dsx())
+    todos = sorted(set(_projetos_da_base(cur)) | dsx, key=str.lower)
+    return [{"projeto": p, "tem_dsx": p in dsx} for p in todos[:MAX_PROJETOS_LISTADOS]]
+
+
 def resolver_projeto(cur, nome_informado: str | None = None,
                      pipeline_name: str | None = None, job_name: str | None = None) -> dict:
     """Valida um nome de projeto DataStage contra o que o Orquestra já
