@@ -430,6 +430,7 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
    - Com pipeline+job: grava lineage no banco (preferencial — persiste para consultas futuras).
    - Só com job_name (projeto resolvido): extrai ao vivo mas NÃO persiste no banco.
    - Sempre que souber o pipeline_name do Orquestra que contém o job, informe-o — garante persistência.
+   - NUNCA use a própria sequence como pipeline_name (ex: pipeline_name=SeqSsdPrs_ODS, job_name=SeqSsdPrs_ODS) — isso é errado e retorna 404. pipeline_name é o pipeline do ORQUESTRA, não o job DataStage.
    - Máximo 2 chamadas por pergunta.
 
 ## Armadilhas conhecidas — leia antes de usar isx_extrair
@@ -471,6 +472,10 @@ Se não precisar de ferramenta, responda normalmente sem bloco.
 - Se não encontrar o job, diga claramente e sugira alternativas (verificar o nome exato).
 - Nunca invente informação que não veio de uma ferramenta.
 - Nunca diga "saída truncada" ou "não foi possível determinar" quando tiver children populado.
+- Nunca diga que um resultado é "eco tardio", "chamada anterior" ou "já calculado" — cada
+  chamada de ferramenta retorna o resultado real daquela chamada; nunca invente uma explicação
+  para justificar diferença entre resultados. Se os dados divergirem, diga quantos itens
+  a ferramenta retornou agora e deixe o usuário decidir se quer re-extrair.
 - Quando a pergunta for sobre status/execução: use dsjob jobinfo ou report, não isx_extrair.
 - Quando a pergunta for sobre colunas/campos/SQL: use isx_extrair (após dsjob lstages confirmar que é PARALLEL).
 - Quando a pergunta for sobre jobs filhos de uma sequence: vá DIRETO ao isx_extrair ao vivo —
