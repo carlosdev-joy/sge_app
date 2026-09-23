@@ -15,7 +15,7 @@
 import { useEffect, useRef } from 'react'
 import { Send } from 'lucide-react'
 import type { DecisaoProposta, MensagemChat } from '../../lib/agentes'
-import { FERRAMENTAS, MAX_MENSAGEM, STATUS_RODADA, quando } from '../../lib/agentes'
+import { FERRAMENTAS, MAX_MENSAGEM, STATUS_RODADA, formatarDuracao, quando } from '../../lib/agentes'
 import { CartaoProposta } from './CartaoProposta'
 import { MarkdownAgente } from './MarkdownAgente'
 
@@ -25,6 +25,8 @@ interface Props {
   onValor: (v: string) => void
   onEnviar: () => void
   enviando: boolean
+  /** Frase de progresso da rodada em curso (stream) — some quando a resposta chega. */
+  statusTexto?: string | null
   /** Bloqueia o campo (sonda impeditiva, agente desligado). */
   bloqueado?: boolean
   motivoBloqueio?: string
@@ -55,7 +57,7 @@ function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['
 }
 
 export function ChatAgente({
-  mensagens, valor, onValor, onEnviar, enviando, bloqueado, motivoBloqueio, nomeAgente,
+  mensagens, valor, onValor, onEnviar, enviando, statusTexto, bloqueado, motivoBloqueio, nomeAgente,
   onDecidir, decidindo,
 }: Props) {
   const rolagemRef = useRef<HTMLDivElement>(null)
@@ -114,6 +116,13 @@ export function ChatAgente({
               <div className="rounded-lg rounded-bl-sm px-3 py-2 bg-panel border border-edge text-ink shadow-sm">
                 <MarkdownAgente texto={m.texto} />
                 {m.artefatos && <LinhaFerramentas artefatos={m.artefatos} />}
+                {typeof m.duracaoMs === 'number' && (
+                  // Quanto levou: o usuário calibra a expectativa da próxima
+                  // pergunta (uma extração ISX leva dezenas de segundos).
+                  <p className="text-[11px] text-dim mt-1" data-agentes-duracao>
+                    {formatarDuracao(m.duracaoMs)}
+                  </p>
+                )}
                 {m.em && (
                   // Conversa retomada: QUANDO o agente disse isso. O dado
                   // pode ter envelhecido desde então (critério 3 da F4).
@@ -170,7 +179,7 @@ export function ChatAgente({
                 <span className="w-1.5 h-1.5 rounded-full bg-dim animate-bounce" style={{ animationDelay: '150ms' }} />
                 <span className="w-1.5 h-1.5 rounded-full bg-dim animate-bounce" style={{ animationDelay: '300ms' }} />
               </span>
-              {nomeAgente} está consultando…
+              <span data-agentes-progresso>{statusTexto || `${nomeAgente} está consultando…`}</span>
             </div>
           </div>
         )}

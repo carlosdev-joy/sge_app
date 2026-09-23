@@ -104,6 +104,8 @@ export interface RespostaConversa {
   aprendizados_usados?: { id: number; titulo: string }[]
   /** F6: aprendizados que o agente sugeriu (rascunho, vão para a curadoria). */
   aprendizados_sugeridos?: string[]
+  /** Quanto a resposta levou, do recebimento da pergunta até pronta. */
+  duracao_ms?: number
 }
 
 export interface MensagemChat {
@@ -129,6 +131,8 @@ export interface MensagemChat {
   aprendizadosUsados?: string[]
   /** Só na resposta da rodada atual (F6): o que foi sugerido à curadoria. */
   aprendizadosSugeridos?: string[]
+  /** Só nas do assistente: quanto a resposta levou (também nas retomadas). */
+  duracaoMs?: number
 }
 
 /** `conversa_id` aceito pelo backend: 8 a 36 chars, `[A-Za-z0-9_-]`. */
@@ -266,6 +270,7 @@ export interface ConversaDetalhe extends ConversaResumo {
     artefatos: ArtefatoFerramenta[]
     criada_em: string | null
     propostas?: PropostaAgente[]
+    duracao_ms?: number
   }[]
 }
 
@@ -391,6 +396,53 @@ export function quando(iso: string | null | undefined, agora: Date = new Date())
   if (dias === 1) return 'ontem'
   if (dias < 7) return `há ${dias} dias`
   return d.toLocaleDateString('pt-BR')
+}
+
+// ── Progresso em tempo real (SSE) e duração — spec docs/spec-agentes-feedback-progresso.md ──
+
+/** Um evento do `POST /agentes/datastage/conversar/stream`. */
+export type EventoConversa =
+  | { tipo: 'status'; texto: string }
+  | ({ tipo: 'resposta' } & RespostaConversa)
+  | { tipo: 'erro'; detail: unknown }
+
+/**
+ * Separa, do que já chegou pela rede, os eventos SSE COMPLETOS e devolve o
+ * resto (um evento pela metade) para juntar com o próximo pedaço.
+ *
+ * O `reader.read()` entrega pedaços arbitrários: um evento pode chegar
+ * partido em dois, ou dois eventos no mesmo pedaço. Separar cada pedaço por
+ * `\n` e dar `JSON.parse` na linha (o exemplo da spec) quebra no primeiro
+ * evento partido. Aqui só sai o que terminou em linha em branco; comentário
+ * (`: keep-alive`) é ignorado; JSON inválido é descartado sem derrubar a
+ * leitura. `\r\n` também vale como fim de linha (o padrão SSE permite).
+ */
+export function lerEventosSSE(acumulado: string): { eventos: EventoConversa[]; resto: string } {
+  const texto = acumulado.replace(/\r\n/g, '\n')
+  const blocos = texto.split('\n\n')
+  const resto = blocos.pop() ?? ''
+  const eventos: EventoConversa[] = []
+  for (const bloco of blocos) {
+    const dados = bloco.split('\n')
+      .filter(l => l.startsWith('data:'))
+      .map(l => l.slice(5).replace(/^ /, ''))
+    if (!dados.length) continue
+    try {
+      const ev = JSON.parse(dados.join('\n'))
+      if (ev && typeof ev === 'object' && typeof ev.tipo === 'string') eventos.push(ev as EventoConversa)
+    } catch {
+      /* evento corrompido: ignora e segue lendo */
+    }
+  }
+  return { eventos, resto }
+}
+
+/** "respondido em 4s" / "respondido em 42s" / "respondido em 2min 15s". */
+export function formatarDuracao(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return ''
+  const s = Math.max(1, Math.round(ms / 1000))
+  if (s < 120) return `respondido em ${s}s`
+  return `respondido em ${Math.floor(s / 60)}min ${s % 60}s`
 }
 
 /** Data curta (dd/mm/aaaa) — para datas FUTURAS, que `quando` não trata. */

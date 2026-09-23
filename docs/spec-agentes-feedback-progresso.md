@@ -6,6 +6,18 @@
 
 ---
 
+> **✅ Itens A e D IMPLEMENTADOS em 23/09/2026** (branch `feat/agentes-progresso-sse`). Diferenças em relação ao
+> texto abaixo: (1) **sem mudança no nginx** — o header `X-Accel-Buffering: no` desliga o buffer só desta resposta, e
+> um keep-alive (`: keep-alive`) sai a cada 15 s, abaixo do `proxy_read_timeout 300s` da rota `/orquestra/` (conferido
+> com um nginx 1.27 usando o mesmo bloco de produção: os eventos chegam no ritmo em que são emitidos); (2) a rodada
+> roda numa task própria — cliente que fecha a aba não perde a resposta, que é gravada e aparece no histórico;
+> (3) o leitor do front junta eventos partidos entre pedaços da rede (inclusive no meio de um caractere UTF-8) — o
+> exemplo abaixo, que separa cada pedaço por `\n`, quebraria; (4) `duracao_ms` também vai no endpoint JSON e fica
+> gravado, então a retomada mostra quanto cada resposta levou; (5) se a API ainda não tiver o `/stream`, a tela usa o
+> endpoint JSON. **Smoke em produção:** `curl -N` no `/orquestra/agentes/datastage/conversar/stream` e conferir que
+> os eventos chegam aos poucos (o `nginx.conf` de produção está à frente do repo — se tiver `gzip` para
+> `text/event-stream`, eles ficariam retidos).
+
 ## Problema
 
 O usuário que inicia uma consulta no agente DataStage fica sem feedback durante o processamento.
