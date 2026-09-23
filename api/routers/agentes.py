@@ -40,6 +40,7 @@ from services import agentes as svc
 from services import agentes_aprendizado as ap
 from services import agentes_conhecimento as ac
 from services import agentes_ferramentas as af
+from services import agentes_prompt as apr
 from services import ia_provedor
 
 router = APIRouter()
@@ -418,6 +419,139 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
     return {"sucesso": True, "mensagem": "Configuração de Agentes salva."}
 
 
+# ── Prompt do domínio: versões (spec docs/spec-agentes-admin.md §3.3, A1) ───
+#
+# Só admin. O corpo é validado ANTES de abrir conexão (um 422 não toca o
+# banco — mesma régua da curadoria). As versões só acrescentam: gravar e
+# restaurar criam a versão seguinte; nada é atualizado nem apagado.
+
+_EXEMPLO_PROJETO = "<projeto da conversa>"
+
+
+def _agente_com_prompt(agente_id: str) -> str:
+    if svc.agente(agente_id) is None or not apr.tem_padrao(agente_id):
+        raise HTTPException(status_code=404, detail={
+            "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
+    return agente_id
+
+
+def _422(e: apr.PromptInvalido) -> HTTPException:
+    return HTTPException(status_code=422, detail={"code": e.code, "message": e.message})
+
+
+def _409(e: apr.PromptMudou) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "code": "prompt_mudou", "versao_atual": e.atual,
+        "message": f"outro admin gravou antes de você — a versão ativa agora é a {e.atual}"})
+
+
+def _versao_para_api(v: dict, *, com_texto: bool) -> dict:
+    item = {"versao": v["versao"], "motivo": v["motivo"], "origem_versao": v["origem_versao"],
+            "criado_em": _iso(v["criado_em"]), "criado_por": v["criado_por"],
+            "padrao": v["versao"] == 0, "tamanho": len(v["texto"]), "hash": apr.hash_do_texto(v["texto"])}
+    if com_texto:
+        item["texto"] = v["texto"]
+    return item
+
+
+def _ativa(cur, agente_id: str) -> dict:
+    v = apr.versao_ativa(cur, agente_id)
+    return _versao_para_api(v or apr.texto_da_versao(cur, agente_id, 0), com_texto=True)
+
+
+@router.get("/agentes/admin/agentes/{agente_id}/prompt", tags=["agentes-admin"])
+async def agentes_admin_prompt_get(agente_id: str, _admin: dict = Depends(get_admin_user)):
+    """A versão ativa do domínio + as partes fixas que o código monta em volta
+    dele (só leitura, com um projeto de exemplo)."""
+    agente_id = _agente_com_prompt(agente_id)
+    with _conexao() as (_conn, cur):
+        ativa = _ativa(cur, agente_id)
+    antes, depois = svc.partes_fixas(_EXEMPLO_PROJETO)
+    return {"agente": agente_id, "ativa": ativa, "parte_fixa": {"antes": antes, "depois": depois},
+            "limites": {"texto_max": apr.TEXTO_MAX, "motivo_min": apr.MOTIVO_MIN, "motivo_max": apr.MOTIVO_MAX}}
+
+
+@router.put("/agentes/admin/agentes/{agente_id}/prompt", tags=["agentes-admin"])
+async def agentes_admin_prompt_put(agente_id: str, body: dict = Body(default={}),
+                                   admin: dict = Depends(get_admin_user)):
+    agente_id = _agente_com_prompt(agente_id)
+    try:
+        texto = apr.validar_texto(body.get("texto"))
+        motivo = apr.validar_motivo(body.get("motivo"))
+        versao_base = apr.validar_versao(body.get("versao_base"))
+    except apr.PromptInvalido as e:
+        raise _422(e) from None
+    try:
+        with _conexao() as (conn, cur):
+            apr.gravar_versao(conn, cur, agente_id=agente_id, texto=texto, motivo=motivo,
+                              matricula=admin["matricula"], versao_base=versao_base)
+            ativa = _ativa(cur, agente_id)
+    except apr.PromptMudou as e:
+        raise _409(e) from None
+    return {"sucesso": True, "ativa": ativa}
+
+
+@router.get("/agentes/admin/agentes/{agente_id}/prompt/versoes", tags=["agentes-admin"])
+async def agentes_admin_prompt_versoes(agente_id: str, _admin: dict = Depends(get_admin_user)):
+    """Todas as versões, da mais nova para a mais velha, e por último a
+    "versão 0" (padrão do código), que também pode ser restaurada."""
+    agente_id = _agente_com_prompt(agente_id)
+    with _conexao() as (_conn, cur):
+        versoes = apr.listar_versoes(cur, agente_id)
+    lista = [_versao_para_api(v, com_texto=False) for v in versoes]
+    lista.append(_versao_para_api(apr.texto_da_versao(None, agente_id, 0), com_texto=False))
+    return {"agente": agente_id, "ativa": versoes[0]["versao"] if versoes else 0, "versoes": lista}
+
+
+@router.get("/agentes/admin/agentes/{agente_id}/prompt/versoes/{versao}", tags=["agentes-admin"])
+async def agentes_admin_prompt_versao(agente_id: str, versao: int, _admin: dict = Depends(get_admin_user)):
+    agente_id = _agente_com_prompt(agente_id)
+    if not (0 <= versao <= apr.VERSAO_MAX):
+        raise HTTPException(status_code=404, detail={"code": "versao_nao_encontrada",
+                                                      "message": f"versão {versao} não existe"})
+    try:
+        if versao == 0:
+            v = apr.texto_da_versao(None, agente_id, 0)
+        else:
+            with _conexao() as (_conn, cur):
+                v = apr.texto_da_versao(cur, agente_id, versao)
+    except apr.VersaoNaoEncontrada:
+        raise HTTPException(status_code=404, detail={"code": "versao_nao_encontrada",
+                                                      "message": f"versão {versao} não existe"}) from None
+    return {"agente": agente_id, "versao": _versao_para_api(v, com_texto=True)}
+
+
+@router.post("/agentes/admin/agentes/{agente_id}/prompt/restaurar", tags=["agentes-admin"])
+async def agentes_admin_prompt_restaurar(agente_id: str, body: dict = Body(default={}),
+                                         admin: dict = Depends(get_admin_user)):
+    """Grava o texto de uma versão antiga como versão NOVA (`origem_versao`
+    aponta de onde veio). A versão 0 é o padrão do código ATUAL. O texto
+    passa pelas mesmas validações de uma gravação — uma versão antiga que já
+    não passaria hoje não volta por esta porta."""
+    agente_id = _agente_com_prompt(agente_id)
+    try:
+        versao = apr.validar_versao(body.get("versao"), "versao")
+        motivo = apr.validar_motivo(body.get("motivo"))
+        versao_base = apr.validar_versao(body.get("versao_base"))
+    except apr.PromptInvalido as e:
+        raise _422(e) from None
+    try:
+        with _conexao() as (conn, cur):
+            try:
+                texto = apr.validar_texto(apr.texto_da_versao(cur, agente_id, versao)["texto"])
+            except apr.VersaoNaoEncontrada:
+                raise HTTPException(status_code=404, detail={
+                    "code": "versao_nao_encontrada", "message": f"versão {versao} não existe"}) from None
+            except apr.PromptInvalido as e:
+                raise _422(e) from None
+            apr.gravar_versao(conn, cur, agente_id=agente_id, texto=texto, motivo=motivo,
+                              matricula=admin["matricula"], versao_base=versao_base, origem_versao=versao)
+            ativa = _ativa(cur, agente_id)
+    except apr.PromptMudou as e:
+        raise _409(e) from None
+    return {"sucesso": True, "ativa": ativa}
+
+
 def _preparar_conversa(body: dict, user: dict) -> dict:
     """Tudo o que vem ANTES da rodada com o modelo: validação do corpo,
     interruptores, dono e validade da conversa, histórico, config e
@@ -459,6 +593,11 @@ def _preparar_conversa(body: dict, user: dict) -> dict:
         if not svc.agente_ligado(agentes_cfg, svc.AGENTE_DATASTAGE):
             raise HTTPException(status_code=503, detail={
                 "code": "agente_desligado", "message": "Agente DataStage desligado"})
+        # O domínio do prompt é lido A CADA PERGUNTA, sem cache (spec admin
+        # A1, T2): a versão que o admin gravar vale na próxima pergunta, nos
+        # dois workers. Antes de qualquer gravação desta conversa — se a
+        # leitura falhar, o DataStage cai no padrão do código sem erro.
+        dominio = apr.dominio_em_uso(cur, svc.AGENTE_DATASTAGE)
         cur.execute(
             "SELECT projeto, matricula, DATEDIFF(day, ultima_msg_em, GETDATE()) "
             "FROM dbo.etl_agente_conversa WHERE conversa_id = ?", [conversa_id])
@@ -514,7 +653,11 @@ def _preparar_conversa(body: dict, user: dict) -> dict:
     acao_editar = PERM_EDITAR in user.get("permissoes", [])
     return {"t0": t0, "conversa_id": conversa_id, "matricula": matricula,
             "mensagem_redigida": mensagem_redigida,
+            # Rastreio: qual domínio respondeu. O hash separa os "padrão do
+            # código" de deploys diferentes, que dividem a versão 0.
+            "prompt": {"prompt_versao": dominio["versao"], "prompt_hash": dominio["hash"]},
             "kwargs": dict(
+                dominio=dominio["texto"],
                 mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
                 projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
                 identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
@@ -563,7 +706,8 @@ async def _rodar_e_gravar_interno(ctx: dict, emit_status=None) -> dict:
             "(conversa_id, papel, conteudo, status, artefatos_json) VALUES (?, ?, ?, ?, ?)",
             [conversa_id, "assistant", texto_redigido, resultado.get("status"),
              json.dumps(artefatos + [{"proposta_id": p["id"]} for p in propostas]
-                        + [{"duracao_ms": duracao_ms}], ensure_ascii=False)])
+                        + [{"duracao_ms": duracao_ms}]
+                        + ([ctx["prompt"]] if ctx.get("prompt") else []), ensure_ascii=False)])
         cur.execute(
             "UPDATE dbo.etl_agente_conversa SET projeto = ?, ultima_msg_em = GETDATE() "
             "WHERE conversa_id = ?", [resultado.get("projeto"), conversa_id])
