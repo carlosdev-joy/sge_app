@@ -869,12 +869,22 @@ def _limpar_children(payload: dict) -> None:
                              if isinstance(s, dict) and s.get("stage_type_raw") != "CJobActivity"]
 
 
-def _enriquecer_isx(abrir_conn, payload: dict) -> None:
+def _texto_isx(abrir_conn, payload: dict) -> tuple[str, str]:
+    """(texto para o MODELO, texto para a EVIDÊNCIA) de um resultado ISX.
+
+    Os dois saem limpos (`_limpar_children`) e redigidos. Só o do modelo
+    leva o NOME de quem criou/alterou o job (`_resolver_matriculas`, melhoria
+    de produção de 22/09). A evidência — que pode virar
+    `etl_agente_aprendizado.evidencia`, que NÃO vence — fica só com a
+    matrícula: nome de colaborador não fica guardado sem prazo (achado de
+    LGPD da auditoria de segurança da F7)."""
+    _limpar_children(payload)
+    evidencia = af._truncar(json.dumps(af.redigir_estrutura(payload), ensure_ascii=False, default=str))
     try:
         _com_cursor(abrir_conn, lambda cur: _resolver_matriculas(cur, payload))
     except Exception:  # noqa: BLE001 — o nome é enfeite; a extração não pode cair por ele
         log.warning("agentes: falha ao resolver nomes das matrículas do ISX", exc_info=True)
-    _limpar_children(payload)
+    return af._truncar(json.dumps(af.redigir_estrutura(payload), ensure_ascii=False, default=str)), evidencia
 
 
 async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_editar: bool,
@@ -975,13 +985,12 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
                   "ds_project": projeto_isx, "cache_hit": cache_hit}
         if resultado:
             payload.update({k: v for k, v in resultado.items() if k != "caminho_istool"})
-        _enriquecer_isx(abrir_conn, payload)
         # redigir_estrutura() — nunca o JSON inteiro de uma vez (achado real
         # da revisão adversarial da F2b: uma keyword sensível em QUALQUER
         # parte do JSON compacto apagava a resposta INTEIRA, inclusive o
         # lineage útil — stages/SQL/tabelas — que não tinha nada a ver).
-        texto = af._truncar(json.dumps(af.redigir_estrutura(payload), ensure_ascii=False, default=str))
-        return {"texto": texto, "lido": job_canon}, None
+        texto, evidencia = _texto_isx(abrir_conn, payload)
+        return {"texto": texto, "texto_evidencia": evidencia, "lido": job_canon}, None
 
     usuario_registro = f"{matricula or '?'} ({af.ORIGEM_AGENTE})"
     if not cache_hit:
@@ -997,10 +1006,9 @@ async def _isx_extrair(abrir_conn, args: dict, *, projeto: str | None, acao_edit
     if resposta is None:
         return {"texto": "Extração concluída, mas não encontrei o cabeçalho gravado — tente de novo."}, None
     resposta["cache_hit"] = cache_hit
-    _enriquecer_isx(abrir_conn, resposta)
-    texto = af._truncar(json.dumps(af.redigir_estrutura(resposta), ensure_ascii=False, default=str))
+    texto, evidencia = _texto_isx(abrir_conn, resposta)
     projeto_novo = projeto_isx if not projeto else None
-    return {"texto": texto, "lido": job_canon}, projeto_novo
+    return {"texto": texto, "texto_evidencia": evidencia, "lido": job_canon}, projeto_novo
 
 
 async def _dsx_consulta(abrir_conn, args: dict, *, projeto: str | None,
@@ -1301,7 +1309,9 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             # escreveu>'"), ecos de erro e a saída da `base` — que já traz
             # interpretações aprovadas — ficam de fora: senão o modelo
             # fabricava a própria evidência (achado da revisão de segurança).
-            saidas.append({"job": dado["lido"], "texto": dado["texto"]})
+            # `texto_evidencia` quando a ferramenta o dá (ISX): a mesma
+            # leitura SEM o nome de colaborador que só o modelo recebe.
+            saidas.append({"job": dado["lido"], "texto": dado.get("texto_evidencia") or dado["texto"]})
         # Dado DELIMITADO — nunca instrução: uma ferramenta que devolvesse
         # "ignore as instruções anteriores" entra aqui como TEXTO dentro da
         # tag, e a próxima rodada continua obedecendo só ao prompt de sistema.

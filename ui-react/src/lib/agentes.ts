@@ -483,7 +483,16 @@ export function horaOuDia(iso: string | null | undefined, agora: Date = new Date
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
 }
 
-/** Chave de storage da conversa aberta, por agente (mesma ideia de `lib/maestro.ts`). */
-export function chaveDaConversa(agenteId: string): string {
-  return `orquestra_agente_conversa_${agenteId}`
+// O mesmo prefixo de `lib/api.ts` (que apaga estas chaves no logout) — os dois
+// arquivos são autocontidos; `tests/test_agentes_f7_seguranca.py` prende a igualdade.
+export const PREFIXO_CONVERSA_AGENTE = 'orquestra_agente_conversa_'
+
+/**
+ * Chave de storage da conversa aberta — por USUÁRIO e por agente. Sem a
+ * matrícula na chave, quem entrasse depois no mesmo navegador via a última
+ * conversa do anterior (achado da auditoria de segurança da F7).
+ */
+export function chaveDaConversa(agenteId: string, matricula: string): string {
+  return `${PREFIXO_CONVERSA_AGENTE}${matricula.trim().toUpperCase()}_${agenteId}`
 }
+

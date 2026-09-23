@@ -109,8 +109,8 @@ def test_decisao_nao_regrava_storage_de_outra_conversa():
     o par id/projeto do que já está guardado."""
     fonte = codigo(PAGINA)
     assert "if (novas === m) return m" in fonte
-    assert "const atual = lerGuardada(agente.id)" in fonte
-    assert "guardar(agente.id, { ...atual, mensagens: novas })" in fonte
+    assert "const atual = lerGuardada(agente.id, matricula)" in fonte
+    assert "guardar(agente.id, matricula, { ...atual, mensagens: novas })" in fonte
 
 
 def test_chat_so_mostra_cartao_com_handler_e_informa_descartadas():
