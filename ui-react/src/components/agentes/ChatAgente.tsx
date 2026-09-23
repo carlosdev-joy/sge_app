@@ -38,8 +38,15 @@ interface Props {
 function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['artefatos']> }) {
   if (!artefatos.length) return null
   // Só os nomes, na ordem em que rodaram — é a trilha que o operador usa para
-  // saber SE a resposta veio da base ou do DataStage ao vivo.
-  const nomes = artefatos.map(a => FERRAMENTAS[a.ferramenta] ?? a.ferramenta)
+  // saber SE a resposta veio da base ou do DataStage ao vivo. F6: a chamada
+  // que falhou ganha "(falhou)", e a que o Orquestra nem rodou — porque já
+  // tinha falhado — "(não repetida)".
+  const nomes = artefatos.map(a => {
+    const nome = FERRAMENTAS[a.ferramenta] ?? a.ferramenta
+    if (a.repetida) return `${nome} (não repetida)`
+    if (a.falhou) return `${nome} (falhou)`
+    return nome
+  })
   return (
     <p className="text-[11px] text-dim mt-1.5" data-agentes-ferramentas>
       Consultei: {nomes.join(' › ')}
@@ -130,6 +137,19 @@ export function ChatAgente({
                   {m.propostasRecusadas.length === 1
                     ? `1 proposta descartada: ${m.propostasRecusadas[0]}.`
                     : `${m.propostasRecusadas.length} propostas descartadas: ${m.propostasRecusadas.join('; ')}.`}
+                </p>
+              )}
+              {m.aprendizadosUsados && m.aprendizadosUsados.length > 0 && (
+                <p className="text-[11px] text-dim mt-1 px-1" data-agentes-aprendizados-usados
+                   title={m.aprendizadosUsados.join('\n')}>
+                  Considerei {m.aprendizadosUsados.length === 1
+                    ? '1 aprendizado validado'
+                    : `${m.aprendizadosUsados.length} aprendizados validados`}.
+                </p>
+              )}
+              {m.aprendizadosSugeridos && m.aprendizadosSugeridos.length > 0 && (
+                <p className="text-[11px] text-dim mt-1 px-1" data-agentes-aprendizados-sugeridos>
+                  Sugeri à curadoria: {m.aprendizadosSugeridos.join('; ')}.
                 </p>
               )}
               {m.status && STATUS_RODADA[m.status] && (

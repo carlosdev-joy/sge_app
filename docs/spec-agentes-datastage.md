@@ -1,5 +1,5 @@
 # Spec: Agentes de IA (tela `/agentes`) — agente de mapeamento DataStage — Orquestra
-Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 11 de 20 dúvidas ✅/⚠️ (D-06, D-10 a D-17, D-20 ✅, D-19 ⚠️ parcial); F0 a F4 IMPLEMENTADAS e MERGEADAS (F0–F3 em produção, 22/09); F5 implementada (22/09)**
+Data: 2026-09-21 · Status: **rascunho — validação de produção parcial: 11 de 20 dúvidas ✅/⚠️ (D-06, D-10 a D-17, D-20 ✅, D-19 ⚠️ parcial); F0 a F4 IMPLEMENTADAS e MERGEADAS (F0–F3 em produção, 22/09); F5 mergeada e F6 implementada (22/09)**
 
 > Origem: entrevista de descoberta de 2026-09-21 (skill `entrevista-projeto`), Entendimento do Projeto
 > **confirmado pelo usuário**. Esta spec é autossuficiente: quem a lê (inclusive um agente rodando no
@@ -187,7 +187,7 @@ já configurado em Admin › IA (hoje ainda "Caixa Seguro IA"; renomeada na F0);
 
 ## 4. Modelo de dados
 
-Migrations `117_agentes.sql` (F1) e `118_agentes_titulo_redigido.sql` (F4) — **idempotentes**
+Migrations `117_agentes.sql` (F1), `118_agentes_titulo_redigido.sql` (F4) e `119_agentes_aprendizado_semente.sql` (F6, só dados) — **idempotentes**
 (`IF OBJECT_ID(...) IS NULL` / `IF NOT EXISTS`, rodam 2×), aplicadas na **etapa 6c** do `scripts/deploy.sh`
 (responder **s**). Sem migration: a tela avisa e nada quebra (padrão da 110).
 
@@ -438,6 +438,28 @@ multi-agente antes da PR** (`qa-adversarial`; `security-review` nas F1, F2, F5 e
 - **Validação:** padrão. **PR:** `feat(agentes): fatos gravados por ferramenta e propostas com aprovação (F5)`.
 
 ### F6 — Base de aprendizados e tela do curador
+- **🏁 IMPLEMENTADA 22/09/2026** (branch `feat/agentes-f6`). Novo `api/services/agentes_aprendizado.py` e **migration 119**
+  (só dados: as 5 sementes como `rascunho`, B-12). Como ficou (decisões de implementação):
+  - **Assinatura do erro = a da CHAMADA** (ferramenta + projeto em que roda + só os argumentos que a ferramenta usa), não
+    a do texto do erro: o XML inválido da D-12 muda linha/coluna e continua sendo UM aprendizado (`usos` sobe). A chave
+    crua nunca sai do servidor — viaja o hash (`chave_da_chamada`); `redigir()` não é injetivo e fazia chamadas
+    diferentes colidirem.
+  - **Guarda de reexecução:** falha PERMANENTE não roda de novo na conversa (as das perguntas anteriores voltam por
+    `artefatos_json`) e, se virou erro validado e vigente, nem em outra conversa — 0 chamadas, e o motivo vai ao modelo.
+    Falha PASSAGEIRA (servidor ocupado, 409/502/504, tempo, `dsjob` com código negativo) pode repetir e não vira
+    aprendizado. Uso errado pelo modelo (comando fora da allowlist) só entra na guarda da conversa.
+  - **Automáticos, nascem `validado`:** `erro` (título/corpo por CATEGORIA fixa; a mensagem só na evidência —
+    critério 2), `acesso` (SSH/ISX não configurado, decidido pela CONFIGURAÇÃO real, não pelo texto; não cita job) e
+    `busca` (grafia canônica do projeto). Revalidação: `dsjob` e "não encontrado" 1 dia; demais erros ISX 7.
+  - **Recuperação por relevância:** até 5 itens / 2 000 caracteres, só `validado` e vigente, num bloco `<aprendizados>`
+    delimitado. Erro de ferramenta fica FORA dela (age pela guarda exata) — o nome de job inventado pelo modelo não
+    vai ao prompt de todos.
+  - **Sugestões do modelo** (chave `aprendizados` no bloco final, máx. 2) viram `rascunho`.
+  - **Curadoria:** aba na tela `/agentes` para quem tem `agente_curador`; validar / rejeitar / marcar obsoleto, com a
+    evidência à vista. **Obsoleto** volta a valer se a ferramenta comprovar de novo; **rejeitado** nunca mais. Admin ›
+    Agentes ganhou a seção "Curadores" (o curador também precisa do acesso de uso para abrir a tela).
+  - Revisão: `qa-adversarial` (2 rodadas) + auditoria de segurança; achados e correções no PR.
+  - **Follow-up:** teto de rascunhos por usuário; a curadoria não olha os interruptores do agente.
 - **Entregável:** o agente registra e reutiliza aprendizados; curador valida interpretações.
 - **Inclui:** registro automático (erro/acesso/busca/leitura) com `assinatura`; corpo gerado por código; interpretação
   entra como `rascunho`; aba do curador (`agente_curador`): aprovar, rejeitar, marcar obsoleto; recuperação por
