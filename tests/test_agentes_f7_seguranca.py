@@ -94,7 +94,7 @@ async def test_nome_vai_ao_modelo_mas_nao_a_evidencia(monkeypatch):
     monkeypatch.setattr(svc, "_resolver_matriculas",
                         lambda cur, p: p.update(created_by="Maria Souza (CVP1)"))
     registrados = []
-    monkeypatch.setattr(svc, "_registrar_seguro", lambda abrir, a: registrados.append(a))
+    monkeypatch.setattr(svc, "_registrar_seguro", lambda abrir, a, agente="datastage": registrados.append(a))
     # este teste não trata da guarda nem da recuperação (o cursor dublê diria "achei" a tudo)
     monkeypatch.setattr(svc, "_erro_conhecido_seguro", lambda *a, **k: None)
     monkeypatch.setattr(svc, "_recuperar_seguro", lambda *a, **k: [])

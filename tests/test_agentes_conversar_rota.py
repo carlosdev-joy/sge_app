@@ -71,10 +71,13 @@ class _Cur:
             # de hoje, que é o caso de todos os testes deste arquivo.
             conversa_id = params[0]
             c = self.conversas.get(conversa_id)
-            self._rows = [(c["projeto"], c["matricula"], c.get("idade_dias", 0))] if c else []
+            # B2 da spec admin: e o agente da conversa (presa ao agente).
+            self._rows = [(c["projeto"], c["matricula"], c.get("idade_dias", 0),
+                           c.get("agente", "datastage"))] if c else []
         elif "insert into dbo.etl_agente_conversa" in s:
-            conversa_id, _agente, matricula, _titulo = params
-            self.conversas[conversa_id] = {"projeto": None, "matricula": matricula, "idade_dias": 0}
+            conversa_id, agente, matricula, _titulo = params
+            self.conversas[conversa_id] = {"projeto": None, "matricula": matricula, "idade_dias": 0,
+                                           "agente": agente}
             self.mensagens.setdefault(conversa_id, [])
         elif "select papel, conteudo from dbo.etl_agente_mensagem" in s:
             conversa_id = params[0]
