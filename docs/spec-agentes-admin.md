@@ -1,7 +1,7 @@
 # Spec: Agentes pela tela de Admin — prompt editável e criação de agentes
 
 **Data:** 2026-09-23 (rascunho `c7cff0f` da equipe, revisado com as decisões do usuário no mesmo dia)
-**Status:** 📋 PROPOSTA — aguardando aprovação para implementar
+**Status:** 📋 PROPOSTA — aguardando aprovação para implementar a partir da A1 (a **A0 já está na main**: PR #432, `fed2050`)
 **Base:** `docs/spec-agentes-datastage.md` (F0–F7 entregues, PRs #419–#431)
 **Prioridade:** Alta — hoje cada ajuste de prompt exige editar código, `docker cp` e restart da API
 
@@ -25,7 +25,7 @@ portada à mão para o repo. Criar um agente novo exige uma entrega de desenvolv
 |---|---|
 | D1 | **Duas fases na mesma spec.** **A:** editar o prompt do DataStage pela tela, com versões e sem deploy (resolve a dor principal). **B:** criar agentes novos. |
 | D2 | **Um agente novo pode fazer as duas coisas.** Na criação, o admin escolhe entre **só conversa** (sem ferramenta) e **um subconjunto das ferramentas que já existem**. Ferramenta nova continua **só por PR**: a configuração só restringe a allowlist do código, nunca amplia. |
-| D3 | **Acesso dos agentes novos: manual ou por perfil.** Manual = concessão usuário a usuário, como hoje. Por perfil = todo usuário do perfil escolhido. O modo `tela_padrao` do rascunho sai. O **DataStage continua só manual e só para `desenvolvedor`**, como decidido em 21/09. Restrição da revisão de segurança (**a confirmar pelo usuário**): o acesso **por perfil só vale para agente sem ferramenta que toque servidor** (`dsjob`, `isx_extrair`, `dsx_consulta`) e **nunca** para o perfil `consulta`, que é o perfil dado a quem entra sem cadastro. Agente com essas ferramentas é só manual, pelo mesmo motivo do DataStage (§4.2). |
+| D3 | **Acesso dos agentes novos: manual ou por perfil.** Manual = concessão usuário a usuário, como hoje. Por perfil = todo usuário do perfil escolhido. O modo `tela_padrao` do rascunho sai. O **DataStage continua só manual e só para `desenvolvedor`**, como decidido em 21/09. Restrição da revisão de segurança (**confirmada pelo usuário em 23/09**): o acesso **por perfil só vale para agente sem ferramenta que toque servidor** (`dsjob`, `isx_extrair`, `dsx_consulta`) e **nunca** para o perfil `consulta`, que é o perfil dado a quem entra sem cadastro. Agente com essas ferramentas é só manual, pelo mesmo motivo do DataStage (§4.2). |
 | D4 | **O admin edita só a parte do domínio do prompt**: instruções, ordem de uso, armadilhas e tom. O **protocolo** é montado pelo código e aparece na tela **só para leitura**. Protocolo = bloco de ferramenta, catálogo e allowlist, trava de projeto, formato de propostas e aprendizados, e regras de segurança. |
 
 Decisões técnicas tomadas junto (resolvem os pontos 5, 6, 8 e 9 do rascunho):
@@ -67,7 +67,8 @@ Hoje `_prompt_sistema()` é um texto único. Ele passa a ser **montado em blocos
 
   Ele não recebe os blocos 3 e 5. O formato de resposta ("como responder") é do domínio em todos os agentes.
 - O padrão do código é **o texto de hoje** dividido nesses blocos. As únicas mudanças no texto:
-  - saem do domínio a linha `Comandos disponíveis: {comandos}` e a seção "Como usar as ferramentas";
+  - saem do domínio a linha `Comandos disponíveis: {comandos}`, a seção "Como usar as ferramentas" e o aviso "Chamadas
+    que já falharam…", que vão para o protocolo (3), junto com a linha nova "Ferramentas disponíveis: …";
   - vão para os blocos fixos as frases de segurança.
 - Ordem de montagem: **1 → 6**, na ordem da tabela.
   - O contexto (1) vem antes do domínio, como no texto único de antes. O domínio manda "resolver_projeto primeiro",
@@ -132,16 +133,29 @@ CREATE TABLE dbo.etl_agente_prompt (
   - `prompt_com_segredo`: **valor** com cara de credencial. O prompt vai para o gateway de IA a cada pergunta. A
     regra **não** é o `redigir()`: ele casa `senha`, `token`, `secret` e `Encrypted` em qualquer lugar da linha e
     recusaria texto normal ("nunca peça a senha", "parâmetros Encrypted", o stage `TokenizerTransform`,
-    "secretaria"). A regra nova só recusa:
-    - uma palavra-chave **inteira** (`\b(senha|password|pwd|token|secret|api_key)\b`) seguida de `:` ou `=` e de
-      um valor de **6 ou mais caracteres sem espaço que tenha dígito ou símbolo**. "Senha: nunca peça" passa;
-      `senha=Abc123` não passa;
-    - ou formatos conhecidos de chave/token:
-      - `Bearer ` seguido de 20 ou mais caracteres de token;
-      - `\bsk-[A-Za-z0-9]{20,}` ("risk-" e "disk-" passam);
+    "secretaria"). A regra nova (sem diferenciar maiúsculas) recusa só:
+    - **chave = valor:** `(?<![a-z0-9])(?:[a-z0-9]+_)*(senha|password|passwd|pwd|secret|token|api[_-]?key)(?![a-z])`
+      seguido de aspas opcionais, `:` ou `=` com espaços opcionais, aspas opcionais e um valor de **6 ou mais
+      caracteres** sem espaço, aspas, `,`, `;` ou `}`, que **tenha dígito ou símbolo**.
+      - O prefixo `DB_`/`client_`/`access_` casa (`DB_PASSWORD=…`, `client_secret=…`), e o estilo JSON também
+        (`"senha": "…"`).
+      - **Não conta como segredo** um valor que seja referência ou marcador: `#PS_X.Y#`, `$PS_X.Y`, `<valor>`,
+        `****` ou o início de um JSON (`{…`, `[…`).
+    - **formatos conhecidos:**
+      - `(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}` (pega `sk-ant-api03-…` e `sk-proj-…`; "risk-" e "disk-" passam);
+      - `Bearer` seguido de 20 ou mais caracteres de token;
       - blocos `-----BEGIN … KEY-----`.
 
-    Um teste prende que essas frases normais passam e que `senha=Abc123` e `Bearer eyJ…` são recusados;
+    Regra testada em Python em 23/09 (3ª revisão da spec). A A1 prende em teste as mesmas frases, e **o prompt
+    padrão inteiro não dispara**:
+
+    | Recusa | Aceita |
+    |---|---|
+    | `senha=Abc123`, `PWD=Xk2!pz`, `api_key=9f8e7d6c5b` | "nunca peça a senha ao usuário", "Senha: nunca peça" |
+    | `DB_PASSWORD=Abc123!`, `client_secret=Xy9zAbcdef`, `access_token=abcdef123456` | "parâmetros do tipo Encrypted", "o stage TokenizerTransform", "secretaria de vendas" |
+    | `"senha": "Abc123"`, `password: S3nh@Forte` | `pwd=#PS_ORA.PWD#`, `senha=$PS_BD.senha`, `password: #PS_CONEXAO.password#` |
+    | `sk-ant-api03-…`, `sk-proj-…` | `senha=********`, `PWD=<valor>`, `token: {"job_name": "X"}` |
+    | `Bearer eyJhbGci…`, `-----BEGIN RSA PRIVATE KEY-----` | "risk-assessment…", "disk-usage", "o token expira em 1 hora" |
   - `agente_desconhecido` (404): id fora do catálogo.
 - **Concorrência:** `versao_base` diferente da versão ativa → **409 `prompt_mudou`**, com a versão atual no corpo. A
   tela avisa "outro admin gravou antes de você".
@@ -240,7 +254,8 @@ CREATE TABLE dbo.etl_agente (
   do admin. Sem isso, `/agentes/conversas?agente=<slug>` e `/agentes/status` respondem 404 `agente_desconhecido`.
 - A checagem de acesso (`require_agente`) vira dinâmica para as rotas com `{agente_id}`: procura o agente no código
   e, se não achar, no banco (um `SELECT` por chave). O DataStage continua com a checagem fixa de hoje.
-- **Por perfil só sem ferramenta de servidor e nunca `consulta`** (D3). O `POST`/`PUT` recusa com 422
+- **Por perfil só sem ferramenta de servidor e nunca `consulta`** (D3). O `consulta` também fica fora dos perfis
+  elegíveis do modo **manual**: não entra em `perfis_json` em nenhum modo. O `POST`/`PUT` recusa com 422
   `acesso_perfil_com_servidor` / `perfil_nao_permitido`.
   - O `require_agente` dinâmico também exige a **`tela_agentes`** do usuário. Hoje as rotas de conversa só olham o
     recurso do agente, e com acesso por perfil a API ficaria aberta a todo o perfil, mesmo sem o menu.
@@ -269,6 +284,10 @@ CREATE TABLE dbo.etl_agente (
     falha, e o modelo é informado;
   - trava de projeto, guarda de reexecução, propostas, aprendizados, orçamento de 240 s, `MAX_RODADAS_FERRAMENTA`,
     teto de 2 rodadas por usuário, gateway e sonda: **tudo igual ao DataStage**, gravado com `agente = <slug>`.
+- **Os blocos fixos seguem o subconjunto de ferramentas.** O contexto (1) só cita as ferramentas de projeto que o
+  agente tem. As propostas (5) só entram se o agente tem ao menos uma ferramenta que lê job (`dsjob`, `isx_extrair`
+  ou `dsx_consulta`), e citam só essas. Sem isso, o modelo pediria ferramentas que o backend recusa e gastaria
+  rodadas.
 - A identidade no gateway é a mesma do usuário, e a sonda é compartilhada entre os agentes.
 - **A conversa é presa ao agente.** O `_preparar_conversa` passa a comparar `etl_agente_conversa.agente` com o agente
   da rota. Conversa de outro agente → 404 `conversa_nao_encontrada`, igual a conversa de outro usuário. Sem isso, a
@@ -341,7 +360,7 @@ PUT    /agentes/admin/agentes/{id}       → nome, descrição, acesso, perfis, 
 
 | Fase | Entrega | Deploy |
 |---|---|---|
-| **A0** | separar domínio e protocolo em `_prompt_sistema`; teste do prompt montado; validação em produção depois do deploy | API |
+| **A0** ✅ | separar domínio e protocolo em `_prompt_sistema`; teste do prompt montado — **mergeada (#432, `fed2050`)**; falta a validação em produção depois do deploy | API |
 | **A1** | migration 120 + leitura por pergunta + endpoints + validações + `prompt_versao` | 6c `s` (120) + API |
 | **A2** | editor, parte fixa e histórico/restaurar na `AgentesTab` | `dist/` |
 | **B1** | migration 121 + CRUD admin + catálogo híbrido (todas as funções da §4.2) + acesso manual/perfil + checagem dinâmica com `tela_agentes` | 6c `s` (121) + API |
