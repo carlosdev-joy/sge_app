@@ -56,7 +56,10 @@ _NOME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,200}$")
 _PASTA_COMP_RE = re.compile(r"^[\w. \-()&+,]{1,200}$")
 # Caminhos que a API REST devolve (`id`, `$ref`) e que voltamos a pedir a ela: só
 # estes dois prefixos, sem `..`, `//` nem `:` — nada de URL absoluta ou salto de host.
-_API_CAMINHO_RE = re.compile(r"^(?:folders|jobdesigns)/[A-Za-z0-9%._-]+(?:/contents)?$")
+# `+`: a API REST codifica ESPAÇO como `+` nos `id`/`$ref` que devolve — sem
+# ele o BFS não atravessava pastas como "04. ODS" ou "00. ControleCarga"
+# (correção feita em produção em 22/09/2026 e portada para o repo).
+_API_CAMINHO_RE = re.compile(r"^(?:folders|jobdesigns)/[A-Za-z0-9%._+\-]+(?:/contents)?$")
 # Extensões do istool por tipo, em ORDEM de tentativa: um sequence que chama outros
 # jobs exporta como .qjb e um sequence simples como .sjb — a API REST diz só
 # "SEQUENCE" para os dois (documento de origem, §4.4). `exportar_job` tenta em ordem.
@@ -296,6 +299,10 @@ def _caminho_api_valido(caminho) -> str | None:
     `..`, outro prefixo) é ignorada — a API é confiável, mas o transporte da F2 anexa
     Basic auth ao que pedir, e o escopo tem de ser o desta API."""
     s = str(caminho or "").strip().lstrip("/")
+    # `..` à parte: o charset da regex aceita ponto, então `folders/..` passava
+    # apesar de a docstring prometer recusá-lo (apontado na revisão do port).
+    if ".." in s:
+        return None
     return s if _API_CAMINHO_RE.match(s) else None
 
 
