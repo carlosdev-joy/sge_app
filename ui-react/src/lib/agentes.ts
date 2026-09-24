@@ -626,6 +626,9 @@ export const ROTULO_ACESSO: Record<AcessoAgente, string> = {
   perfil: 'Por perfil — todo usuário dos perfis escolhidos',
 }
 
+/** Teto do texto do prompt — espelha `agentes_prompt.TEXTO_MAX` (a API manda o mesmo em `limites`). */
+export const LIMITE_PROMPT = 50000
+
 /** O mesmo formato de id que o backend aceita (`agentes_registro.RE_ID`). */
 export const RE_ID_AGENTE = /^[a-z][a-z0-9_]{2,29}$/
 
@@ -689,7 +692,7 @@ export function problemasDoAgente(r: RascunhoAgente, opcoes: {
   }
   if (opcoes.criacao) {
     if (!r.prompt.trim()) erros.push('Escreva o prompt inicial.')
-    else if (r.prompt.trim().length > 20000) erros.push('O prompt passa de 20.000 caracteres.')
+    else if (r.prompt.trim().length > LIMITE_PROMPT) erros.push(`O prompt passa de ${LIMITE_PROMPT.toLocaleString('pt-BR')} caracteres.`)
     if (!motivoValido(r.motivo)) erros.push('Informe o motivo (3 a 200 caracteres).')
   }
   return erros

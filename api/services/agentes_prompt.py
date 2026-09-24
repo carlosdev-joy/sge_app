@@ -27,7 +27,7 @@ from services.ssh_arquivos import utf16_len
 
 logger = logging.getLogger(__name__)
 
-TEXTO_MAX = 20_000
+TEXTO_MAX = 50_000  # decisão do usuário (23/09): o prompt vai inteiro ao gateway a cada pergunta
 MOTIVO_MIN, MOTIVO_MAX = 3, 200  # unidades UTF-16 — o que o NVARCHAR(200) conta
 VERSAO_MAX = 2**31 - 1  # `versao INT`: acima disso o pyodbc nem converte (OverflowError → 500)
 

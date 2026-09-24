@@ -497,7 +497,7 @@ async def test_conversar_monta_o_prompt_com_o_dominio_recebido(monkeypatch):
 
 # ═══════════ lacunas apontadas pela revisão adversarial da A1 ═════════════
 
-@pytest.mark.parametrize("texto", ["a_" * 10000, "ab1_" * 5000, "a_" * 9990 + "senha",
+@pytest.mark.parametrize("texto", ["a_" * 25000, "ab1_" * 12500, "a_" * 24990 + "senha",
                                    "senha=" * 3333, ("token: " + "a" * 50 + " ") * 300])
 def test_regra_de_segredo_e_linear_no_pior_caso(texto):
     """A 1ª versão da regex era quadrática: "a_" * 10000 levava ~10 s de CPU
@@ -600,3 +600,13 @@ def test_uso_ignora_artefato_torto_e_conta_sem_duracao():
     assert apr.uso_por_versao(cur, "datastage") == {1: {"respostas": 3, "duracao_media_ms": 200}}
     sql, params = cur.execute.call_args[0]
     assert "c.agente = ?" in sql and params == ["datastage", '%"prompt_versao"%']
+
+
+def test_limite_do_prompt_e_50_mil_e_o_front_espelha():
+    """Decisão do usuário (23/09): 20.000 → 50.000. O front antecipa o mesmo teto."""
+    assert apr.TEXTO_MAX == 50_000
+    lib = (RAIZ / "ui-react/src/lib/agentes.ts").read_text(encoding="utf-8")
+    assert "export const LIMITE_PROMPT = 50000" in lib
+    assert apr.validar_texto("x" * 50_000) == "x" * 50_000
+    with pytest.raises(apr.PromptInvalido):
+        apr.validar_texto("x" * 50_001)

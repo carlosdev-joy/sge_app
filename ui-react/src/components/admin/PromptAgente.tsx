@@ -19,7 +19,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
-  codigoDoErro, dataHoraCurta, duracaoDaVigencia, mensagemDeErro, motivoValido, tempoMedio,
+  LIMITE_PROMPT, codigoDoErro, dataHoraCurta, duracaoDaVigencia, mensagemDeErro, motivoValido, tempoMedio,
   type PromptResposta, type VersaoPrompt, type VersoesPromptResposta,
 } from '../../lib/agentes'
 import { Button } from '../ui/Button'
@@ -85,7 +85,7 @@ export function PromptAgente({ agente }: Props) {
   }
 
   const ativa = prompt.data?.ativa
-  const limites = prompt.data?.limites ?? { texto_max: 20000, motivo_min: 3, motivo_max: 200 }
+  const limites = prompt.data?.limites ?? { texto_max: LIMITE_PROMPT, motivo_min: 3, motivo_max: 200 }
 
   const salvar = useMutation({
     mutationFn: (v: { texto: string; motivo: string; versao_base: number }) =>
