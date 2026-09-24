@@ -1,0 +1,1 @@
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="15.0.4480.2"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT GETDATE() AS agora" StatementId="1" StatementCompId="1" StatementType="SELECT WITHOUT QUERY" RetrievedFromCache="false"></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>

@@ -59,7 +59,10 @@ MAX_CANDIDATOS = 300
 # Ferramentas que custam (servidor DataStage ou disco) — só elas passam pela
 # guarda de erro conhecido entre conversas. `base`/`resolver_projeto` são
 # consultas ao banco do Orquestra: repetir não custa nada.
-FERRAMENTAS_COM_GUARDA = ("dsjob", "isx_extrair", "dsx_consulta")
+FERRAMENTAS_COM_GUARDA = ("dsjob", "isx_extrair", "dsx_consulta", "banco_estrutura", "banco_consulta")
+# As de banco não dependem do projeto DataStage da conversa — fica fora da
+# chave (a mesma consulta é a mesma chamada em qualquer projeto).
+_FERRAMENTAS_SEM_PROJETO = ("banco_estrutura", "banco_consulta")
 
 # Um identificador DataStage "limpo" — só isso pode aparecer num título
 # gerado por código (nome de job/projeto vindo do modelo não é confiável).
@@ -79,6 +82,8 @@ _ARGS_RELEVANTES = {
     "dsjob": ("comando", "job_name"),
     "isx_extrair": ("pipeline_name", "job_name"),
     "dsx_consulta": ("operacao", "job_name", "termo", "exato", "tipos", "excluir", "pasta"),
+    "banco_estrutura": ("conexao", "banco", "filtro", "tabela"),
+    "banco_consulta": ("conexao", "banco", "sql"),
 }
 
 
@@ -109,6 +114,8 @@ def chamada_normalizada(ferramenta: str, args: dict, projeto: str | None) -> str
     relevantes = _ARGS_RELEVANTES.get(ferramenta)
     chaves = sorted(k for k in args if relevantes is None or k in relevantes)
     if ferramenta == "isx_extrair" and str(args.get("pipeline_name") or "").strip():
+        proj = ""
+    elif ferramenta in _FERRAMENTAS_SEM_PROJETO:
         proj = ""
     else:
         proj = projeto or ""
@@ -155,6 +162,14 @@ CATEGORIAS: dict[str, tuple[str, str]] = {
         "Extração ISX recusada",
         "A extração ISX de {alvo} foi recusada pelos dados do job. Não repita a mesma extração; use "
         "dsjob ou o DSX."),
+    "banco_objeto_inexistente": (
+        "Tabela ou coluna inexistente no banco",
+        "Esta consulta em {alvo} citou tabela ou coluna que não existe. Não repita: veja a estrutura com "
+        "banco_estrutura e confirme o nome com o usuário."),
+    "banco_sem_acesso": (
+        "Banco sem acesso para a consulta",
+        "O login da conexão não tem acesso ao que esta consulta em {alvo} lê. Não repita: avise o usuário "
+        "que a permissão é do administrador do banco."),
     "isx_grande": (
         "Export ISX grande demais",
         "O export ISX de {alvo} passa do teto permitido. Não repita; use dsjob (lstages/lparams) ou o DSX."),
@@ -242,6 +257,12 @@ def _alvo(ferramenta: str, args: dict, projeto: str | None, tipo: str = "erro") 
         # Acesso é da INSTALAÇÃO, não de um job: o título não leva nome
         # nenhum escolhido pelo modelo.
         return "esta instalação"
+    if ferramenta in _FERRAMENTAS_SEM_PROJETO:
+        conexao = str((args or {}).get("conexao") or "").strip()
+        banco = str((args or {}).get("banco") or "").strip()
+        if _RE_IDENT.match(conexao) and _RE_IDENT.match(banco):
+            return f"banco {conexao}/{banco}"
+        return "o banco"
     job = str((args or {}).get("job_name") or "").strip()
     proj = str(projeto or "").strip()
     partes = []

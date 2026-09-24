@@ -33,6 +33,8 @@ RE_ID = re.compile(r"\A[a-z][a-z0-9_]{2,29}\Z")
 # de uma rota fixa.
 _IDS_DE_ROTA = frozenset({"admin", "catalogo", "status", "conversas", "propostas", "aprendizados"})
 NOME_MAX, DESCRICAO_MAX, PERFIS_JSON_MAX = 100, 500, 200  # unidades UTF-16 (NVARCHAR)
+MAX_PARES_BANCO = 50
+CONEXAO_MAX, BANCO_MAX = 100, 128  # etl_conexao.conn_id VARCHAR(100); sysname
 ACESSOS = ("manual", "perfil")
 
 
@@ -51,6 +53,24 @@ class AgenteInvalido(ValueError):
 
 _COLS = ("agente_id, nome, descricao, acesso, perfis_json, ferramentas_json, ativo, "
          "criado_em, criado_por, atualizado_em, atualizado_por")
+# Migration 122 (ferramenta de banco). Sem ela, lê-se `_COLS` e o agente
+# fica sem banco nenhum — o que fecha a ferramenta, nunca abre.
+_COLS_122 = _COLS + ", bancos_json, mascarar_dados"
+
+
+def _coluna_ausente(e: Exception) -> bool:
+    """Coluna inexistente (SQLSTATE 42S22 / erro 207) — a 122 não rodou."""
+    args = getattr(e, "args", None) or ()
+    return (bool(args) and str(args[0]) == "42S22") or "(207)" in str(e)
+
+
+def _selecionar(cur, onde: str = "", params=()):
+    try:
+        cur.execute(f"SELECT {_COLS_122} FROM dbo.etl_agente{onde}", list(params))
+    except Exception as e:  # noqa: BLE001
+        if not _coluna_ausente(e):
+            raise
+        cur.execute(f"SELECT {_COLS} FROM dbo.etl_agente{onde}", list(params))
 
 
 def _lista_json(bruto) -> list[str]:
@@ -64,10 +84,26 @@ def _lista_json(bruto) -> list[str]:
 def _normalizar_ferramentas(nomes) -> tuple[str, ...]:
     """Só as da allowlist, na ordem canônica, e `resolver_projeto` junto de
     qualquer uma que dependa de projeto — a mesma regra da criação."""
-    conjunto = {f for f in nomes if f in svc.FERRAMENTAS_DATASTAGE}
+    conjunto = {f for f in nomes if f in svc.FERRAMENTAS_TELA}
     if conjunto & {"base", "dsjob", "dsx_consulta", "isx_extrair"}:
         conjunto.add("resolver_projeto")
-    return tuple(f for f in svc.FERRAMENTAS_DATASTAGE if f in conjunto)
+    return tuple(f for f in svc.FERRAMENTAS_TELA if f in conjunto)
+
+
+def _pares_json(bruto) -> tuple[tuple[str, str], ...]:
+    """`bancos_json` → pares `(conexao, banco)` sem repetição; o que não
+    tiver o formato é descartado (linha editada à mão não amplia nada)."""
+    try:
+        v = json.loads(bruto or "[]")
+    except (TypeError, ValueError):
+        return ()
+    pares: list[tuple[str, str]] = []
+    for item in v if isinstance(v, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("conexao"), str) and isinstance(item.get("banco"), str):
+            par = (item["conexao"].strip(), item["banco"].strip())
+            if all(par) and par not in pares:
+                pares.append(par)
+    return tuple(pares)
 
 
 def do_banco(r) -> dict:
@@ -80,6 +116,13 @@ def do_banco(r) -> dict:
         abre: D3 — sem isto o agente com `dsjob` ficava aberto ao perfil)."""
     agente_id = r[0]
     ferramentas = _normalizar_ferramentas(_lista_json(r[5]))
+    bancos = _pares_json(r[11]) if len(r) > 11 else ()
+    if not bancos:
+        # Ferramenta de banco sem par liberado (ou antes da 122): sai.
+        ferramentas = tuple(f for f in ferramentas if f not in svc.FERRAMENTAS_BANCO)
+    else:
+        bancos = bancos if any(f in svc.FERRAMENTAS_BANCO for f in ferramentas) else ()
+    mascarar = bool(r[12]) if len(r) > 12 and r[12] is not None else True
     acesso = r[3] if r[3] in ACESSOS else "manual"
     if acesso == "perfil" and any(f in svc.FERRAMENTAS_SERVIDOR for f in ferramentas):
         acesso = "manual"
@@ -91,6 +134,7 @@ def do_banco(r) -> dict:
         "perfis_elegiveis": tuple(p for p in _lista_json(r[4]) if p not in svc.PERFIS_PROIBIDOS),
         "concessao": "manual_por_usuario" if acesso == "manual" else "perfil",
         "origem": "banco", "acesso": acesso, "ferramentas": ferramentas, "ativo": bool(r[6]),
+        "bancos": bancos, "mascarar_dados": mascarar,
         "criado_em": r[7], "criado_por": r[8], "atualizado_em": r[9], "atualizado_por": r[10],
     }
 
@@ -101,7 +145,7 @@ def carregar(cur) -> dict[str, dict]:
     com erro de leitura, fica só o código — o DataStage não depende disto."""
     agentes = dict(svc.CATALOGO)
     try:
-        cur.execute(f"SELECT {_COLS} FROM dbo.etl_agente")
+        _selecionar(cur)
         linhas = cur.fetchall()
     except Exception:  # noqa: BLE001
         logger.warning("agentes: leitura de dbo.etl_agente falhou — só os agentes do código", exc_info=True)
@@ -124,7 +168,7 @@ def um(cur, agente_id: str) -> dict | None:
         return svc.CATALOGO[agente_id]
     if not RE_ID.match(agente_id) or id_reservado(agente_id):
         return None
-    cur.execute(f"SELECT {_COLS} FROM dbo.etl_agente WHERE agente_id = ?", [agente_id])
+    _selecionar(cur, " WHERE agente_id = ?", [agente_id])
     r = cur.fetchone()
     # A comparação do banco ignora maiúsculas e espaço no fim: 'foo' acha uma
     # linha 'Foo' ou 'foo ' gravada à mão — que `carregar` ignora. Só vale a
@@ -171,12 +215,60 @@ def _perfis(valor, existentes: set[str]) -> list[str]:
 def _ferramentas(valor) -> list[str]:
     if not isinstance(valor, list) or not all(isinstance(f, str) for f in valor):
         raise AgenteInvalido("ferramentas_invalidas", "ferramentas deve ser uma lista (vazia = só conversa)")
-    fora = sorted({f for f in valor if f not in svc.FERRAMENTAS_DATASTAGE})
+    fora = sorted({f for f in valor if f not in svc.FERRAMENTAS_TELA})
     if fora:
         raise AgenteInvalido("ferramentas_invalidas",
                              f"ferramenta fora da allowlist: {', '.join(fora)} — ferramenta nova só por PR")
     # Toda ferramenta que depende de projeto precisa de quem o resolve.
     return list(_normalizar_ferramentas(valor))
+
+
+def _bancos(valor) -> list[tuple[str, str]]:
+    """Corpo `bancos: [{"conexao": "...", "banco": "..."}]` → pares sem
+    repetição. Só o FORMATO — a conferência no servidor (abre, existe, tem
+    SHOWPLAN) é do router, só para os pares novos (`pares_novos`)."""
+    if not isinstance(valor, list):
+        raise AgenteInvalido("bancos_invalidos", 'bancos deve ser uma lista de {"conexao", "banco"}')
+    pares: list[tuple[str, str]] = []
+    for item in valor:
+        if not (isinstance(item, dict) and isinstance(item.get("conexao"), str)
+                and isinstance(item.get("banco"), str) and item["conexao"].strip() and item["banco"].strip()):
+            raise AgenteInvalido("bancos_invalidos", 'cada banco liberado precisa de "conexao" e "banco"')
+        par = (item["conexao"].strip(), item["banco"].strip())
+        if len(par[0]) > CONEXAO_MAX or len(par[1]) > BANCO_MAX:
+            raise AgenteInvalido("bancos_invalidos", "nome de conexão ou de banco longo demais")
+        if par not in pares:
+            pares.append(par)
+    if len(pares) > MAX_PARES_BANCO:
+        raise AgenteInvalido("bancos_demais", f"no máximo {MAX_PARES_BANCO} bancos por agente")
+    return pares
+
+
+def _coerencia_bancos(ferramentas: list[str], bancos: list[tuple[str, str]], veio_no_corpo: bool) -> list:
+    """Com ferramenta de banco, pelo menos um par; sem ela, nenhum — mas
+    tirar a ferramenta sem mandar `bancos` limpa os pares (não é erro)."""
+    usa_banco = any(f in svc.FERRAMENTAS_BANCO for f in ferramentas)
+    if usa_banco and not bancos:
+        raise AgenteInvalido("bancos_obrigatorios", "a consulta a banco precisa de pelo menos um banco liberado")
+    if not usa_banco and bancos:
+        if veio_no_corpo:
+            raise AgenteInvalido("bancos_sem_ferramenta", "bancos liberados só valem com a consulta a banco")
+        return []
+    return bancos
+
+
+def _mascarar(valor) -> bool:
+    if not isinstance(valor, bool):
+        raise AgenteInvalido("mascarar_invalido", "mascarar_dados deve ser true ou false")
+    return valor
+
+
+def pares_novos(atual: dict | None, novo: dict) -> list[tuple[str, str]]:
+    """Os pares que o router confere no servidor: os que não estavam no
+    agente. Pares que não mudaram não são reconferidos — um servidor fora do
+    ar não impede renomear o agente (spec ferramenta-banco §2)."""
+    antes = set(atual.get("bancos", ())) if atual else set()
+    return [p for p in novo["bancos"] if p not in antes]
 
 
 def _coerencia(acesso: str, ferramentas: list[str]) -> None:
@@ -205,7 +297,10 @@ def validar_criacao(body: dict, perfis_do_banco: set[str]) -> dict:
         "acesso": body.get("acesso"),
         "perfis": _perfis(body.get("perfis"), perfis_do_banco),
         "ferramentas": _ferramentas(body.get("ferramentas", [])),
+        "mascarar_dados": _mascarar(body.get("mascarar_dados", True)),
     }
+    campos["bancos"] = _coerencia_bancos(campos["ferramentas"], _bancos(body.get("bancos", [])),
+                                         "bancos" in body)
     _coerencia(campos["acesso"], campos["ferramentas"])
     try:
         campos["prompt"] = apr.validar_texto(body.get("prompt"))
@@ -215,7 +310,21 @@ def validar_criacao(body: dict, perfis_do_banco: set[str]) -> dict:
     return campos
 
 
-CAMPOS_ALTERAVEIS = ("nome", "descricao", "acesso", "perfis", "ferramentas", "ativo")
+CAMPOS_ALTERAVEIS = ("nome", "descricao", "acesso", "perfis", "ferramentas", "ativo", "bancos", "mascarar_dados")
+
+
+def _ferramentas_alteradas(atual: dict, body: dict) -> list[str]:
+    """As ferramentas de banco só saem com `bancos` no corpo. A tela de antes
+    da C2 só conhece as de DataStage e reenvia `ferramentas` sem elas a cada
+    edição — sem esta regra, renomear o agente apagava a consulta a banco em
+    silêncio (revisão da C1). Para tirar: `ferramentas` sem elas + `bancos: []`."""
+    if "ferramentas" not in body:
+        return list(atual["ferramentas"])
+    novas = _ferramentas(body["ferramentas"])
+    if "bancos" not in body and not any(f in svc.FERRAMENTAS_BANCO for f in novas):
+        novas = list(_normalizar_ferramentas(novas + [f for f in atual["ferramentas"]
+                                                       if f in svc.FERRAMENTAS_BANCO]))
+    return novas
 
 
 def validar_alteracao(atual: dict, body: dict, perfis_do_banco: set[str]) -> dict:
@@ -232,6 +341,7 @@ def validar_alteracao(atual: dict, body: dict, perfis_do_banco: set[str]) -> dic
         # validaria (editada à mão): é a saída de emergência, e fecha acesso.
         return {"nome": atual["nome"], "descricao": atual["descricao"], "acesso": atual["acesso"],
                 "perfis": list(atual["perfis_elegiveis"]), "ferramentas": list(atual["ferramentas"]),
+                "bancos": list(atual.get("bancos", ())), "mascarar_dados": atual.get("mascarar_dados", True),
                 "ativo": False}
     novo = {
         "nome": _texto(body["nome"], "nome", NOME_MAX) if "nome" in body else atual["nome"],
@@ -239,9 +349,14 @@ def validar_alteracao(atual: dict, body: dict, perfis_do_banco: set[str]) -> dic
                       if "descricao" in body else atual["descricao"]),
         "acesso": body.get("acesso", atual["acesso"]),
         "perfis": _perfis(body["perfis"], perfis_do_banco) if "perfis" in body else list(atual["perfis_elegiveis"]),
-        "ferramentas": _ferramentas(body["ferramentas"]) if "ferramentas" in body else list(atual["ferramentas"]),
+        "ferramentas": _ferramentas_alteradas(atual, body),
+        "mascarar_dados": (_mascarar(body["mascarar_dados"]) if "mascarar_dados" in body
+                           else atual.get("mascarar_dados", True)),
         "ativo": atual["ativo"],
     }
+    novo["bancos"] = _coerencia_bancos(
+        novo["ferramentas"], _bancos(body["bancos"]) if "bancos" in body else list(atual.get("bancos", ())),
+        "bancos" in body)
     if "ativo" in body:
         if not isinstance(body["ativo"], bool):
             raise AgenteInvalido("ativo_invalido", "ativo deve ser true ou false")
@@ -259,16 +374,49 @@ def _eh_pk_repetida(e: Exception) -> bool:
     return any(x in msg for x in ("2627", "2601", "PK_etl_agente"))
 
 
+def _bancos_para_gravar(campos: dict) -> str | None:
+    pares = campos.get("bancos") or []
+    return json.dumps([{"conexao": c, "banco": b} for c, b in pares], ensure_ascii=False) if pares else None
+
+
+def _sem_122(campos: dict) -> bool:
+    """Gravável sem as colunas da 122: sem banco e com o padrão de máscara."""
+    return not campos.get("bancos") and campos.get("mascarar_dados", True) is True
+
+
+def _migracao_122() -> AgenteInvalido:
+    return AgenteInvalido("migracao_pendente",
+                          "a consulta a banco exige a migration 122 — rode a etapa 6c do deploy", 503)
+
+
 def criar(conn, cur, campos: dict, matricula: str) -> None:
     """Agente + versão 1 do prompt na MESMA transação: ou os dois ficam, ou
     nenhum (o `gravar_versao` faz o commit; um erro nele desfaz o INSERT)."""
+    base = [campos["id"], campos["nome"], campos["descricao"], campos["acesso"],
+            json.dumps(campos["perfis"], ensure_ascii=False), json.dumps(campos["ferramentas"])]
     try:
-        cur.execute(
-            "INSERT INTO dbo.etl_agente (agente_id, nome, descricao, acesso, perfis_json, ferramentas_json, "
-            "ativo, criado_por, atualizado_por) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
-            [campos["id"], campos["nome"], campos["descricao"], campos["acesso"],
-             json.dumps(campos["perfis"], ensure_ascii=False), json.dumps(campos["ferramentas"]),
-             matricula, matricula])
+        try:
+            cur.execute(
+                "INSERT INTO dbo.etl_agente (agente_id, nome, descricao, acesso, perfis_json, ferramentas_json, "
+                "bancos_json, mascarar_dados, ativo, criado_por, atualizado_por) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                base + [_bancos_para_gravar(campos), 1 if campos.get("mascarar_dados", True) else 0,
+                        matricula, matricula])
+        except Exception as e:  # noqa: BLE001
+            if not _coluna_ausente(e):
+                raise
+            if not _sem_122(campos):
+                raise _migracao_122() from None
+            cur.execute(
+                "INSERT INTO dbo.etl_agente (agente_id, nome, descricao, acesso, perfis_json, ferramentas_json, "
+                "ativo, criado_por, atualizado_por) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                base + [matricula, matricula])
+    except AgenteInvalido:
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     except Exception as e:  # noqa: BLE001
         try:
             conn.rollback()
@@ -282,9 +430,21 @@ def criar(conn, cur, campos: dict, matricula: str) -> None:
 
 
 def alterar(conn, cur, agente_id: str, novo: dict, matricula: str) -> None:
-    cur.execute(
-        "UPDATE dbo.etl_agente SET nome = ?, descricao = ?, acesso = ?, perfis_json = ?, ferramentas_json = ?, "
-        "ativo = ?, atualizado_em = GETDATE(), atualizado_por = ? WHERE agente_id = ?",
-        [novo["nome"], novo["descricao"], novo["acesso"], json.dumps(novo["perfis"], ensure_ascii=False),
-         json.dumps(novo["ferramentas"]), 1 if novo["ativo"] else 0, matricula, agente_id])
+    base = [novo["nome"], novo["descricao"], novo["acesso"], json.dumps(novo["perfis"], ensure_ascii=False),
+            json.dumps(novo["ferramentas"])]
+    fim = [1 if novo["ativo"] else 0, matricula, agente_id]
+    try:
+        cur.execute(
+            "UPDATE dbo.etl_agente SET nome = ?, descricao = ?, acesso = ?, perfis_json = ?, ferramentas_json = ?, "
+            "bancos_json = ?, mascarar_dados = ?, "
+            "ativo = ?, atualizado_em = GETDATE(), atualizado_por = ? WHERE agente_id = ?",
+            base + [_bancos_para_gravar(novo), 1 if novo.get("mascarar_dados", True) else 0] + fim)
+    except Exception as e:  # noqa: BLE001
+        if not _coluna_ausente(e):
+            raise
+        if not _sem_122(novo):
+            raise _migracao_122() from None
+        cur.execute(
+            "UPDATE dbo.etl_agente SET nome = ?, descricao = ?, acesso = ?, perfis_json = ?, ferramentas_json = ?, "
+            "ativo = ?, atualizado_em = GETDATE(), atualizado_por = ? WHERE agente_id = ?", base + fim)
     conn.commit()

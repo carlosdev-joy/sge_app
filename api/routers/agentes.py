@@ -42,6 +42,7 @@ from services import agentes_conhecimento as ac
 from services import agentes_ferramentas as af
 from services import agentes_prompt as apr
 from services import agentes_registro as reg
+from services import agentes_sql as asql
 from services import ia_provedor
 
 router = APIRouter()
@@ -507,13 +508,14 @@ def _agente_com_prompt(agente_id: str) -> str:
         "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
 
 
-def _ferramentas_do(agente_id: str) -> tuple[str, ...]:
+def _ferramentas_do(agente_id: str) -> tuple[tuple[str, ...], tuple]:
+    """(ferramentas, pares de banco) do agente — para a prévia das partes fixas."""
     ag = svc.agente(agente_id)
     if ag is not None:
-        return tuple(ag.get("ferramentas", svc.FERRAMENTAS_DATASTAGE))
+        return tuple(ag.get("ferramentas", svc.FERRAMENTAS_DATASTAGE)), ()
     with _conexao() as (_conn, cur):
         ag = reg.um(cur, agente_id)
-    return tuple(ag["ferramentas"]) if ag else ()
+    return (tuple(ag["ferramentas"]), tuple(ag.get("bancos", ()))) if ag else ((), ())
 
 
 def _422(e: apr.PromptInvalido) -> HTTPException:
@@ -552,7 +554,7 @@ async def agentes_admin_prompt_get(agente_id: str, _admin: dict = Depends(get_ad
     agente_id = _agente_com_prompt(agente_id)
     with _conexao() as (_conn, cur):
         ativa = _ativa(cur, agente_id)
-    antes, depois = svc.partes_fixas(_EXEMPLO_PROJETO, False, _ferramentas_do(agente_id))
+    antes, depois = svc.partes_fixas(_EXEMPLO_PROJETO, False, *_ferramentas_do(agente_id))
     return {"agente": agente_id, "ativa": ativa, "parte_fixa": {"antes": antes, "depois": depois},
             "limites": {"texto_max": apr.TEXTO_MAX, "motivo_min": apr.MOTIVO_MIN, "motivo_max": apr.MOTIVO_MAX}}
 
@@ -773,6 +775,7 @@ def _preparar_conversa(body: dict, user: dict, ag: dict | None = None) -> dict:
             "prompt": {"prompt_versao": dominio["versao"], "prompt_hash": dominio["hash"]},
             "kwargs": dict(
                 dominio=dominio["texto"], agente=agente_id, ferramentas=tuple(ag.get("ferramentas", ())),
+                bancos=tuple(ag.get("bancos", ())), mascarar=bool(ag.get("mascarar_dados", True)),
                 mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
                 projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
                 identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
@@ -843,10 +846,16 @@ async def _rodar_e_gravar_interno(ctx: dict, emit_status=None) -> dict:
 # por aqui — os interruptores dele continuam em /agentes/admin/config. Os
 # criados pela tela nascem DESATIVADOS; ativar é um PUT {"ativo": true}.
 
+def _bancos_para_api(ag: dict) -> list[dict]:
+    return [{"conexao": c, "banco": b} for c, b in ag.get("bancos", ())]
+
+
 def _agente_para_admin(ag: dict, cfg: dict[str, str]) -> dict:
     return {"id": ag["id"], "nome": ag["nome"], "descricao": ag["descricao"],
             "origem": ag.get("origem", "codigo"), "acesso": ag.get("acesso", "manual"),
             "perfis": list(ag["perfis_elegiveis"]), "ferramentas": list(ag.get("ferramentas", ())),
+            "bancos": _bancos_para_api(ag),
+            "mascarar_dados": bool(ag.get("mascarar_dados", True)),
             "ativo": (cfg.get(ag["config_enabled"]) == "1") if ag.get("config_enabled") else bool(ag.get("ativo")),
             "recurso": ag["recurso"], "recurso_curador": ag.get("recurso_curador"),
             "criado_em": _iso(ag.get("criado_em")), "criado_por": ag.get("criado_por"),
@@ -863,23 +872,41 @@ async def agentes_admin_lista(_admin: dict = Depends(get_admin_user)):
         cfg = svc.carregar_config(cur)
         agentes = reg.carregar(cur)
     return {"agentes": [_agente_para_admin(ag, cfg) for ag in agentes.values()],
+            # `ferramentas` continua a lista de DataStage (a tela de hoje faz
+            # um checkbox por item); as de banco vêm à parte — na tela, um
+            # interruptor "Consulta a banco" liga as duas (spec §2).
             "ferramentas": list(svc.FERRAMENTAS_DATASTAGE),
             "ferramentas_servidor": list(svc.FERRAMENTAS_SERVIDOR),
+            "ferramentas_banco": list(svc.FERRAMENTAS_BANCO),
             "perfis_proibidos": sorted(svc.PERFIS_PROIBIDOS)}
+
+
+async def _conferir_pares(pares: list[tuple[str, str]]) -> list[str]:
+    """Pares NOVOS no servidor (abre, existe, tem SHOWPLAN), fora do loop de
+    eventos — é rede. Devolve os avisos de login com escrita (C6: só avisa)."""
+    if not pares:
+        return []
+    try:
+        return await asyncio.to_thread(asql.verificar_pares, pares)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail={"code": "banco_indisponivel", "message": str(e)}) from None
 
 
 @router.post("/agentes/admin/agentes", tags=["agentes-admin"])
 async def agentes_admin_criar(body: dict = Body(default={}), admin: dict = Depends(get_admin_user)):
-    """Cria o agente DESATIVADO, com a versão 1 do prompt na mesma transação."""
+    """Cria o agente DESATIVADO, com a versão 1 do prompt na mesma transação.
+    Os bancos liberados são conferidos no servidor ANTES de gravar."""
     try:
-        with _conexao() as (conn, cur):
+        with _conexao() as (_conn, cur):
             campos = reg.validar_criacao(body, reg.perfis_existentes(cur))
+        avisos = await _conferir_pares(reg.pares_novos(None, campos))
+        with _conexao() as (conn, cur):
             reg.criar(conn, cur, campos, admin["matricula"])
             cfg = svc.carregar_config(cur)
             ag = reg.um(cur, campos["id"])
     except reg.AgenteInvalido as e:
         raise _422_agente(e) from None
-    return {"sucesso": True, "agente": _agente_para_admin(ag, cfg)}
+    return {"sucesso": True, "agente": _agente_para_admin(ag, cfg), "avisos": avisos}
 
 
 @router.put("/agentes/admin/agentes/{agente_id}", tags=["agentes-admin"])
@@ -895,18 +922,49 @@ async def agentes_admin_alterar(agente_id: str, body: dict = Body(default={}),
         raise HTTPException(status_code=404, detail={
             "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
     try:
-        with _conexao() as (conn, cur):
+        with _conexao() as (_conn, cur):
             atual = reg.um(cur, agente_id)
             if atual is None:
                 raise HTTPException(status_code=404, detail={
                     "code": "agente_desconhecido", "message": f"agente '{agente_id}' não existe"})
             novo = reg.validar_alteracao(atual, body, reg.perfis_existentes(cur))
+        avisos = await _conferir_pares(reg.pares_novos(atual, novo))
+        with _conexao() as (conn, cur):
             reg.alterar(conn, cur, agente_id, novo, admin["matricula"])
             cfg = svc.carregar_config(cur)
             ag = reg.um(cur, agente_id)
     except reg.AgenteInvalido as e:
         raise _422_agente(e) from None
-    return {"sucesso": True, "agente": _agente_para_admin(ag, cfg)}
+    return {"sucesso": True, "agente": _agente_para_admin(ag, cfg), "avisos": avisos}
+
+
+# ── Bancos para a ferramenta de consulta (spec ferramenta-banco §8) ──────────
+#
+# Só admin. NÃO reaproveitam `conn_list` (devolve o login), `/copias/conexoes`
+# (mistura conexões do Airflow) nem `/jobs/databases` (com conexão não nativa
+# lista os bancos do servidor do Orquestra).
+
+@router.get("/agentes/admin/conexoes", tags=["agentes-admin"])
+async def agentes_admin_conexoes(_admin: dict = Depends(get_admin_user)):
+    with _conexao() as (_conn, cur):
+        return {"conexoes": asql.listar_conexoes(cur)}
+
+
+@router.get("/agentes/admin/conexoes/{conn_id}/bancos", tags=["agentes-admin"])
+async def agentes_admin_conexao_bancos(conn_id: str, _admin: dict = Depends(get_admin_user)):
+    """Os bancos que o login da conexão alcança, com SHOWPLAN e o aviso de
+    escrita por banco. Conexão ausente, não nativa ou fora do ar: 422 com
+    mensagem fixa (nunca host nem login)."""
+    if not conn_id or len(conn_id) > reg.CONEXAO_MAX:
+        raise HTTPException(status_code=404, detail={"code": "conexao_desconhecida",
+                                                      "message": "conexão não encontrada"})
+    try:
+        info = await asyncio.to_thread(asql.bancos_da_conexao, conn_id)
+    except asql.BancoIndisponivel:
+        raise HTTPException(status_code=422, detail={
+            "code": "banco_indisponivel",
+            "message": "a conexão não abriu (removida, não nativa, fora do ar ou login recusado)"}) from None
+    return {"conexao": conn_id, **info}
 
 
 # Teto de rodadas EM ANDAMENTO por usuário (por processo da API). Sem ele,
