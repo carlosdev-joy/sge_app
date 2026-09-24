@@ -175,4 +175,5 @@ fim (spec §7).
 
 - ~~Tela de criação de agentes e prompt editável sem deploy~~ — **entregue** (#432–#438):
   `docs/release-notes/agentes-admin.md`.
+- ~~Agentes que consultam banco~~ — **entregue** (#443–#445 e a C3): `docs/release-notes/agentes-banco.md`.
 - Ler o que entra e sai das conversas para gerar funcionalidades (B-07, exige política).

@@ -1,10 +1,10 @@
 # Spec: ferramenta de consulta a banco para os agentes
 
 **Data:** 2026-09-23
-**Status:** 📋 PROPOSTA (5ª versão) — aguardando aprovação do usuário para implementar. Revisões: 1ª e 2ª (análise
-de texto) reprovadas em escrita → **3ª abordagem: plano do SQL Server**, que bloqueou toda escrita nas provas no DEV; 2
-rodadas dela ajustaram alcance e sigilo (esta versão incorpora a 2ª). O usuário decidiu seguir para a implementação,
-com a matriz de ataques como teste contra o SQL Server do DEV e a revisão adversarial sobre o código.
+**Status:** ✅ ENTREGUE — C1 (#444), C2 (#445), C3 (manual, release note `docs/release-notes/agentes-banco.md`,
+smoke). Histórico da spec: 1ª e 2ª revisões (análise de texto) reprovadas em escrita → **3ª abordagem: plano do SQL
+Server**, que bloqueou toda escrita nas provas no DEV; 2 rodadas dela ajustaram alcance e sigilo. Limite aceito pelo
+usuário na C1 (24/09): uma única célula `(MAX)` gigante entra inteira na memória da API antes de ser reduzida.
 **Base:** `docs/spec-agentes-admin.md` (agentes criados pela tela, entregue #432–#440) · conexões de `dbo.etl_conexao`
 (migration 054, Admin › Conexões) · `api/services/conn_native.py`
 **Pedido do usuário (23/09, depois da implantação):** "nas ferramentas permitir consultas em banco, com base nas
@@ -355,9 +355,9 @@ Os dois exigem admin. **Não reaproveitam** as rotas existentes:
 
 | Fase | O quê | Deploy |
 |---|---|---|
-| **C1** | migration 122; `agentes_sql.py` (as três camadas da §4); as duas ferramentas; mascaramento (§5); prompt (§6); allowlists e acesso (§7); endpoints (§8), inclusive a checagem de `SHOWPLAN`; validação dos pares alterados | 6c `s` (122) + API |
-| **C2** | Admin: *Consulta a banco*, *Bancos liberados*, avisos de login, *Mascarar dados pessoais*; chat: **Consulta SQL** (realce + Copiar; `markdownLlm` guarda a linguagem do bloco), *Consultas executadas* | `dist/` |
-| **C3** | manual, release note, smoke | — |
+| **C1** ✅ #444 | migration 122; `agentes_sql.py` (as três camadas da §4); as duas ferramentas; mascaramento (§5); prompt (§6); allowlists e acesso (§7); endpoints (§8), inclusive a checagem de `SHOWPLAN`; validação dos pares alterados | 6c `s` (122) + API |
+| **C2** ✅ #445 | Admin: *Consulta a banco*, *Bancos liberados*, avisos de login, *Mascarar dados pessoais*; chat: **Consulta SQL** (realce + Copiar; `markdownLlm` guarda a linguagem do bloco), *Consultas executadas* | `dist/` |
+| **C3** ✅ | manual, release note (`docs/release-notes/agentes-banco.md`), smoke; migration **123**: registra a versão da entrega em Admin › Versões (o número do cabeçalho sobe no deploy) | 6c `s` (123) |
 
 ## 10. Critérios de aceite
 

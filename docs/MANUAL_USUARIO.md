@@ -1050,6 +1050,23 @@ ferramentas** funciona como o DataStage, mas só consulta o que lhe foi dado —
 tentar outra, a linha *Consultei:* mostra *(indisponível)*. Cada agente tem o próprio
 histórico, as próprias propostas e a própria curadoria.
 
+**Agentes que consultam banco.** Um agente com a **consulta a banco** responde perguntas
+sobre os dados dos bancos que o administrador liberou para ele — e **só consulta**: nunca
+apaga, altera nem insere nada, mesmo que você peça (ele devolve a consulta SELECT que
+responderia à sua pergunta). Cada consulta que ele usou aparece num bloco **Consulta SQL**,
+com realce e o botão **Copiar**; quando fizer sentido, ele **sugere** uma consulta para você
+rodar e aprofundar. Abaixo da resposta, **Consultas executadas** lista o SQL **exatamente
+como rodou**, com o banco, quantas linhas voltaram e quanto levou, e a linha *Consultei:*
+mostra *banco `<conexão>/<banco>`*. Cada consulta traz **até 100 linhas** e dura **até 30 s**
+— para volumes maiores, peça que ele agregue ou filtre. Se o administrador ligou *Mascarar
+dados pessoais*, o Orquestra esconde da IA o que reconhece nos dados que vêm do banco: CPF e
+CNPJ **válidos**, e-mail, telefone **formatado** (`(11) 91234-5678`, `+55 …`) e colunas com
+nome de dado pessoal (`cpf`, `email`, `telefone`…) — aparecem como `[cpf]`, `[email]`,
+`[oculto]`… Não é infalível: telefone sem formatação, CPF gravado como número (sem o zero
+à esquerda) numa coluna de outro nome e nomes de pessoa **passam**. O que **você** digita
+não é mascarado. Um agente só
+de banco não pede projeto DataStage.
+
 **Aviso do gateway.** Cada pergunta vai ao gateway de IA com a **sua** identidade
 (`cvp-<matrícula>`, ou a que o administrador cadastrou para você). Se a tela disser
 *"Sua matrícula ainda não está cadastrada no gateway de IA"*, siga o texto do aviso
@@ -1169,7 +1186,11 @@ Lembretes:
   Roteiro, conferência e smoke (`scripts/smoke_agentes.py`) em
   `docs/release-notes/agentes.md`. **Prompt editável e criação de agentes**: migrations
   **120** e **121** na etapa 6c; API e `dist/`; nada obrigatório depois (o DataStage segue
-  com o prompt padrão). Roteiro em `docs/release-notes/agentes-admin.md`.
+  com o prompt padrão). Roteiro em `docs/release-notes/agentes-admin.md`. **Consulta a
+  banco**: migration **122** na etapa 6c; API e `dist/`; nos bancos que os agentes vão
+  consultar, o login da conexão precisa de **SHOWPLAN** (e, de preferência, só leitura).
+  A migration **123** registra a versão desta entrega em Admin › Versões — o número do
+  cabeçalho sobe sozinho. Roteiro em `docs/release-notes/agentes-banco.md`.
 - **E-mail (§3.5-A / §3.5-B / §4.10)**: migration **111** na etapa 6c;
   `dags/utils/` ganhou dois arquivos → **reiniciar o worker** do Airflow;
   opcional no `.env` do host: `EMAIL_SENDMAIL_BIN` (padrão `/usr/sbin/sendmail`),
@@ -1490,9 +1511,10 @@ lista de escolha". Depois de desativar ou excluir um padrão, marque outro.
 ---
 
 ### 4.11 Agentes (Admin → Acessos & Comunicação → Agentes)
-A aba governa a tela **Agentes** (§3.12). Exige as migrations **116–121** — **não ligue
+A aba governa a tela **Agentes** (§3.12). Exige as migrations **116–122** — **não ligue
 os interruptores antes delas** (sem a 117 a aba abre com os padrões e o chat falha; sem a
-120/121, o prompt não tem versões e não dá para criar agentes).
+120/121, o prompt não tem versões e não dá para criar agentes; sem a 122, dá para criar
+agentes, mas não com a consulta a banco).
 
 **Interruptores.** *Agentes ligados/desligados* é o geral: desligado, **ninguém** vê
 agente nenhum, nem o administrador (é o kill switch). Cada agente tem o seu (*Mapeamento
@@ -1542,20 +1564,37 @@ e desliga em *Interruptores*) e os criados aqui. **+ Novo agente** pede:
 - **Nome**, **id** (minúsculas, números e `_`; não muda depois e **nunca é reaproveitado**)
   e **descrição** (aparece para o usuário no alto da tela);
 - **Ferramentas**: *Nenhuma — só conversa* (sem acesso a sistemas) ou as que ele pode
-  usar, entre as do DataStage (*projeto* entra sozinho quando outra precisa dele).
-  Ferramenta nova só por desenvolvimento;
+  usar, entre as do DataStage (*projeto* entra sozinho quando outra precisa dele) e a
+  **Consulta a banco**. Ferramenta nova só por desenvolvimento;
+- **Bancos liberados** (com a *Consulta a banco*): as conexões **nativas SQL Server** já
+  cadastradas em *Conexões de Dados* (nome e servidor — nunca login ou senha). Abra uma
+  conexão para ver os bancos que o login dela alcança e marque os que o agente pode
+  consultar — vários servidores e vários bancos. Um banco **sem SHOWPLAN** aparece
+  *indisponível*: sem essa permissão o Orquestra não confere a consulta, e o agente não usa
+  o banco (peça ao DBA `GRANT SHOWPLAN TO <usuário>` naquele banco). Se o login **pode
+  gravar** no banco, o formulário avisa — o agente só executa SELECT de qualquer jeito, mas
+  uma conexão **só de leitura** é a proteção extra recomendada; *"este login também
+  alcança: X, Y"* mostra os outros bancos que ele enxerga. Ao salvar, o Orquestra **confere
+  no servidor cada banco novo** (abre, existe, tem SHOWPLAN) e avisa também de escrita
+  concedida numa tabela, view ou procedure. Um banco
+  cuja conexão sumiu ou que o login não alcança mais aparece para você **desmarcar**;
+- **Mascarar dados pessoais** (com a *Consulta a banco*, ligado por padrão): CPF e CNPJ
+  válidos, e-mail e telefone formatado que vêm do banco — e colunas com `cpf`, `cnpj`,
+  `email`, `telefone`, `fone`, `celular`, `whatsapp` ou `documento` no nome — não chegam à
+  IA. Nomes de pessoa **não** são detectados;
 - **Acesso**: *Manual* (você libera usuário a usuário em *Quem pode usar*, como o
   DataStage) ou *Por perfil* (todo usuário dos perfis escolhidos, sem liberação
   individual). Nos dois casos o usuário precisa ser de um dos **perfis escolhidos** e ter
   a **tela Agentes**. **Por perfil não vale** com ferramenta que toca o servidor
-  (*DataStage ao vivo*, *extração ISX*, *arquivo DSX*), e o perfil **consulta** nunca
-  recebe agente. Se o perfil escolhido não tem a tela Agentes, o formulário avisa —
+  (*DataStage ao vivo*, *extração ISX*, *arquivo DSX*) — **vale** com a *Consulta a
+  banco* —, e o perfil **consulta** nunca recebe agente. Se o perfil escolhido não tem a tela Agentes, o formulário avisa —
   libere a tela em *Perfis*;
 - **Prompt inicial** (até 50.000 caracteres) e **motivo** (3 a 200) — viram a versão 1 do
   prompt.
 
 O agente **nasce desligado**: confira o prompt e quem pode usar e só então ligue (o
-interruptor na linha dele). **Editar** muda nome, descrição, ferramentas, acesso e perfis.
+interruptor na linha dele). **Editar** muda nome, descrição, ferramentas, bancos
+liberados, máscara, acesso e perfis.
 Não há exclusão: desligado, ele some para todos, e as conversas, propostas e
 aprendizados ficam. *Quem pode usar*, *Curadores* (só em agente com ferramentas) e
 *Prompt* aparecem para cada agente, abaixo. Os agentes criados aqui também aparecem nas
@@ -1586,6 +1625,12 @@ agente criado aqui não tem padrão — começa na versão 1.
   o prompt vai ao gateway de IA a cada pergunta.
 
 ## 5. Perguntas frequentes
+
+**O agente se recusou a apagar/atualizar um dado.** É o combinado: agente com consulta a banco **só executa SELECT**, mesmo que você peça e mesmo que o login da conexão possa gravar. Ele devolve a consulta que responde à sua pergunta; a alteração em si é com a equipe responsável pelo banco.
+
+**Na Consulta a banco, o banco aparece "sem SHOWPLAN — indisponível".** O login daquela conexão não tem a permissão SHOWPLAN no banco. Sem ela o Orquestra não consegue conferir a consulta antes de rodar, então o agente não usa o banco. Peça ao DBA `GRANT SHOWPLAN TO <usuário>` naquele banco; depois **recarregue a página** (a lista de bancos fica guardada por 1 minuto) e abra a conexão de novo no formulário.
+
+**O agente disse "Consulta recusada: …".** A consulta que ele escreveu quebrou uma das regras (nome de 3 partes, comentário, variável, tabela temporária, `INTO`…). Normalmente ele mesmo reescreve na rodada seguinte; se insistir, peça a consulta de outro jeito (por exemplo, *"use apelidos para as tabelas"*).
 
 **O pipeline não rodou no horário. Por quê?** Verifique, nesta ordem: (1) pipeline ativo? (2) data está num calendário de feriado ou blackout? (3) tipo "horários específicos": o horário consta na lista? (4) DAG gerado/atualizado após a última edição? (5) DAG despausado no Airflow?
 
