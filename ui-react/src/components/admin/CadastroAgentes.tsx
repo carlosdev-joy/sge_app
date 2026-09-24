@@ -243,12 +243,12 @@ function FormAgente({ inicial, editando, dados, idsDoCodigo, perfis, perfisErro,
             disabled={!criacao}
             maxLength={30}
             onChange={e => setR({ ...r, id: e.target.value.toLowerCase() })}
-            hint={criacao ? 'Minúsculas, números e _. Não muda depois e nunca é reaproveitado.' : 'O id não muda.'}
+            ajuda={criacao ? 'Minúsculas, números e _. Não muda depois e nunca é reaproveitado.' : 'O id não muda.'}
           />
         </div>
         <Input label="Descrição" value={r.descricao} maxLength={500}
                onChange={e => setR({ ...r, descricao: e.target.value })}
-               hint="Aparece para o usuário no topo da tela do agente." />
+               ajuda="Aparece para o usuário no topo da tela do agente." />
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-xs font-semibold text-ink mb-1">Ferramentas</legend>
@@ -326,9 +326,9 @@ function FormAgente({ inicial, editando, dados, idsDoCodigo, perfis, perfisErro,
             <Textarea label="Prompt inicial (instruções do domínio)" rows={10} value={r.prompt}
                       className="font-mono text-xs" spellCheck={false}
                       onChange={e => setR({ ...r, prompt: e.target.value })}
-                      hint="Vira a versão 1. As regras e o protocolo o Orquestra acrescenta sozinho." />
+                      ajuda="Vira a versão 1. As regras e o protocolo o Orquestra acrescenta sozinho." />
             <Input label="Motivo" value={r.motivo} maxLength={200} onChange={e => setR({ ...r, motivo: e.target.value })}
-                   hint="Fica no histórico de versões do prompt." />
+                   ajuda="Fica no histórico de versões do prompt." />
           </>
         )}
 
