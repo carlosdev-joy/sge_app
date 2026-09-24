@@ -20,7 +20,7 @@ import type {
   AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, DecisaoProposta, EstadoSonda,
   MensagemChat, PropostaAgente, RespostaConversa, StatusAgentes,
 } from '../lib/agentes'
-import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, ehSoConversa, mensagemDeErro } from '../lib/agentes'
+import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, mensagemDeErro, semProjetoDataStage } from '../lib/agentes'
 import { conversarPorStream, rotaStreamAusente } from '../lib/agentesStream'
 import { HistoricoConversas } from '../components/agentes/HistoricoConversas'
 import { AvisoSonda } from '../components/agentes/AvisoSonda'
@@ -171,10 +171,11 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
 
   const infoSonda = sonda ? SONDA[sonda] : null
   const bloqueado = infoSonda?.bloqueia ?? false
-  // Agente só de conversa (spec admin B3): sem projeto nem grafo. A curadoria
-  // já some sozinha — o catálogo manda `curador: false` para quem não tem
+  // Agente sem ferramenta de DataStage — só conversa (spec admin B3) ou só
+  // banco (spec ferramenta-banco C2): sem projeto nem grafo. A curadoria já
+  // some sozinha — o catálogo manda `curador: false` para quem não tem
   // ferramentas (não gera aprendizado).
-  const soConversa = ehSoConversa(agente)
+  const soConversa = semProjetoDataStage(agente)
 
   async function enviar(mensagemBruta?: string) {
     const conteudo = (mensagemBruta ?? texto).trim()
@@ -438,6 +439,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
           bloqueado={bloqueado}
           motivoBloqueio={infoSonda?.bloqueia ? infoSonda.titulo : undefined}
           nomeAgente={agente.nome}
+          ferramentas={agente.ferramentas}
           onDecidir={(id, d) => { void decidir(id, d) }}
           decidindo={decidindo}
         />

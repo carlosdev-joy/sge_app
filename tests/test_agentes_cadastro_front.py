@@ -65,7 +65,11 @@ def test_corpo_da_criacao_e_da_edicao():
     fonte = codigo(CADASTRO)
     comum = re.search(r"const comum = \{(.*?)\}", fonte, re.S).group(1)
     campos = set(re.findall(r"(\w+): rascunho\.\w+", comum))
-    assert campos == {"nome", "descricao", "acesso", "perfis", "ferramentas"}
+    # `bancos` vai sempre, condicionado à ferramenta (spec ferramenta-banco C2)
+    assert "bancos: usaBanco(rascunho.ferramentas) ? rascunho.bancos : []" in comum
+    assert "mascarar_dados: usaBanco(rascunho.ferramentas) ? rascunho.mascarar_dados : true" in comum
+    campos |= {"bancos", "mascarar_dados"}
+    assert campos == {"nome", "descricao", "acesso", "perfis", "ferramentas", "bancos", "mascarar_dados"}
     # PUT só com o que o backend deixa alterar (sem id, prompt, motivo)
     alteraveis = set(re.search(r"CAMPOS_ALTERAVEIS = \((.*?)\)", REGISTRO.read_text(encoding="utf-8")).group(1)
                      .replace('"', "").replace(" ", "").split(","))
@@ -170,7 +174,9 @@ def test_prompt_para_todos_os_agentes():
 
 def test_so_conversa_sem_projeto_nem_grafo():
     fonte = codigo(PAGINA)
-    assert "const soConversa = ehSoConversa(agente)" in fonte
+    # C2 da spec ferramenta-banco: sem ferramenta de DataStage (só conversa OU
+    # só banco) = sem projeto nem grafo; o harness do banco prende a função.
+    assert "const soConversa = semProjetoDataStage(agente)" in fonte
     i = fonte.index("{!soConversa && (")
     assert i < fonte.index("<IndicadorProjeto") < fonte.index("{!soConversa && grafoAberto && plotavel && (")
 

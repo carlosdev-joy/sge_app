@@ -15,7 +15,11 @@
 import { useEffect, useRef } from 'react'
 import { Send } from 'lucide-react'
 import type { DecisaoProposta, MensagemChat } from '../../lib/agentes'
-import { FERRAMENTAS, MAX_MENSAGEM, STATUS_RODADA, formatarDuracao, quando } from '../../lib/agentes'
+import {
+  MAX_MENSAGEM, STATUS_RODADA, consultasExecutadas, formatarDuracao, quando, rotuloDoArtefato, textosDoChat,
+} from '../../lib/agentes'
+import { resumoConsulta } from '../../lib/sqlRealce'
+import { BlocoSql } from './BlocoSql'
 import { CartaoProposta } from './CartaoProposta'
 import { MarkdownAgente } from './MarkdownAgente'
 
@@ -31,10 +35,34 @@ interface Props {
   bloqueado?: boolean
   motivoBloqueio?: string
   nomeAgente: string
+  /** As ferramentas do agente — mudam o convite e o placeholder do chat. */
+  ferramentas?: string[]
   /** F5: decidir uma proposta do agente. Sem ele, os cartões não aparecem. */
   onDecidir?: (id: number, decisao: DecisaoProposta) => void
   /** Ids com decisão em andamento (botões desabilitados). */
   decidindo?: ReadonlySet<number>
+}
+
+/**
+ * "Consultas executadas": cada SQL que RODOU, exatamente como rodou, com o
+ * banco, as linhas devolvidas e o tempo (spec ferramenta-banco §2, C5). As
+ * linhas em si nunca chegam aqui — nem ficam gravadas.
+ */
+function ConsultasExecutadas({ artefatos }: { artefatos: NonNullable<MensagemChat['artefatos']> }) {
+  const consultas = consultasExecutadas(artefatos)
+  if (!consultas.length) return null
+  return (
+    <details className="mt-2 text-xs" data-agentes-consultas>
+      <summary className="cursor-pointer text-[11px] text-dim select-none">
+        {consultas.length === 1 ? 'Consulta executada (1)' : `Consultas executadas (${consultas.length})`}
+      </summary>
+      <div className="flex flex-col gap-1.5 mt-1">
+        {consultas.map((c, i) => (
+          <BlocoSql key={i} sql={c.sql} rotulo={`${c.meta.conexao}/${c.meta.banco}`} rodape={resumoConsulta(c.meta)} />
+        ))}
+      </div>
+    </details>
+  )
 }
 
 function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['artefatos']> }) {
@@ -44,7 +72,8 @@ function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['
   // que falhou ganha "(falhou)", e a que o Orquestra nem rodou — porque já
   // tinha falhado — "(não repetida)".
   const nomes = artefatos.map(a => {
-    const nome = FERRAMENTAS[a.ferramenta] ?? a.ferramenta
+    // Consulta a banco: "banco <conexão>/<banco>" (spec ferramenta-banco §2).
+    const nome = rotuloDoArtefato(a)
     // Spec admin B2: a ferramenta não é deste agente — o Orquestra recusou.
     if (a.recusada) return `${nome} (indisponível)`
     if (a.repetida) return `${nome} (não repetida)`
@@ -60,8 +89,9 @@ function LinhaFerramentas({ artefatos }: { artefatos: NonNullable<MensagemChat['
 
 export function ChatAgente({
   mensagens, valor, onValor, onEnviar, enviando, statusTexto, bloqueado, motivoBloqueio, nomeAgente,
-  onDecidir, decidindo,
+  onDecidir, decidindo, ferramentas,
 }: Props) {
+  const textos = textosDoChat(ferramentas)
   const rolagemRef = useRef<HTMLDivElement>(null)
   const campoRef = useRef<HTMLTextAreaElement>(null)
   const enviandoAntes = useRef(enviando)
@@ -100,9 +130,13 @@ export function ChatAgente({
       >
         {mensagens.length === 0 && (
           <p className="text-sm text-dim px-2 py-6 text-center">
-            Pergunte sobre um job, um fluxo ou uma tabela do DataStage.
-            <br />
-            Ex.: <span className="text-ink">“o que o job BiCvp_Carga_Clientes faz?”</span>
+            {textos.convite}
+            {textos.exemplo && (
+              <>
+                <br />
+                Ex.: <span className="text-ink">{textos.exemplo}</span>
+              </>
+            )}
           </p>
         )}
 
@@ -117,6 +151,7 @@ export function ChatAgente({
             <div key={m.id} className="self-start max-w-[92%]">
               <div className="rounded-lg rounded-bl-sm px-3 py-2 bg-panel border border-edge text-ink shadow-sm">
                 <MarkdownAgente texto={m.texto} />
+                {m.artefatos && <ConsultasExecutadas artefatos={m.artefatos} />}
                 {m.artefatos && <LinhaFerramentas artefatos={m.artefatos} />}
                 {typeof m.duracaoMs === 'number' && (
                   // Quanto levou: o usuário calibra a expectativa da próxima
@@ -201,7 +236,7 @@ export function ChatAgente({
             rows={2}
             maxLength={MAX_MENSAGEM}
             aria-label="Sua pergunta"
-            placeholder={bloqueado ? 'Indisponível' : 'Pergunte sobre um job, fluxo ou tabela…'}
+            placeholder={bloqueado ? 'Indisponível' : textos.placeholder}
             className="flex-1 resize-none rounded-lg border border-edge bg-panel text-ink placeholder:text-dim
                        px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1A5FA8] disabled:opacity-60"
           />

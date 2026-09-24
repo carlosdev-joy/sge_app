@@ -10,9 +10,13 @@
 // (branca no claro), onde branco-sobre-branco simplesmente desaparece —
 // então cada cor vem de token (`edge`, `canvas`, `dim`), que já tem par
 // claro+escuro. Nenhuma cor fixa (critério 4 da F3).
+//
+// Bloco ```sql vira "Consulta SQL" (realce + Copiar — spec ferramenta-banco C5),
+// inclusive as consultas que o agente SUGERE ao usuário.
 import { useMemo } from 'react'
 import type { BlocoMd, PedacoInline } from '../../lib/markdownLlm'
 import { parseMarkdown } from '../../lib/markdownLlm'
+import { BlocoSql } from './BlocoSql'
 
 function Inline({ partes }: { partes: PedacoInline[] }) {
   return (
@@ -44,6 +48,7 @@ function Bloco({ b }: { b: BlocoMd }) {
     )
   }
   if (b.tipo === 'separador') return <hr className="border-0 border-t border-edge my-1" />
+  if (b.tipo === 'codigo' && b.linguagem === 'sql') return <BlocoSql sql={b.texto} />
   if (b.tipo === 'codigo') {
     return (
       <pre className="text-[11px] font-mono bg-canvas border border-edge rounded p-2 overflow-x-auto whitespace-pre">
