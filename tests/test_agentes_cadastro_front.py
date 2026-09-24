@@ -52,11 +52,59 @@ def test_funcoes_puras_rodam_no_node():
 
 # ═══════════ 1. ordem da aba ══════════════════════════════════════════════
 
-def test_cadastro_entra_entre_gateway_e_acessos_sem_reordenar():
+def test_aba_em_tres_niveis_geral_lista_detalhe():
+    """Reestruturação de 25/09, a PEDIDO do usuário ("fica abrindo curadoria para
+    cada agent novo"): configuração geral → tabela (lidera) → detalhe de UM agente."""
     fonte = codigo(ABA)
-    marcos = ["Interruptores", "Gateway e limites", "<CadastroAgentes />", "{todos.flatMap(ag =>", "<PromptAgente"]
+    marcos = ["Configuração geral", "Gateway e limites", "<CadastroAgentes", "{agenteSel && (", "<PromptAgente"]
     posicoes = [fonte.index(m) for m in marcos]
     assert posicoes == sorted(posicoes), dict(zip(marcos, posicoes))
+
+
+def test_um_agente_por_vez_sem_secoes_por_agente():
+    fonte = codigo(ABA)
+    assert "todos.flatMap(" not in fonte and "todos.map(ag => <PromptAgente" not in fonte
+    assert "papeisDe(agenteSel).map(papel =>" in fonte
+    assert "const agenteSel = todos.find(a => a.id === selecionado) ?? null" in fonte
+    assert "setSelecionado(atual => (atual === id ? null : id))" in fonte  # clicar de novo fecha
+
+
+def test_detalhe_acessivel_por_teclado():
+    fonte = codigo(ABA)
+    assert 'role="tablist"' in fonte and 'role="tab"' in fonte and 'role="tabpanel"' in fonte
+    assert "aria-selected={secao === x.id}" in fonte and "tabIndex={secao === x.id ? 0 : -1}" in fonte
+    assert "e.key !== 'ArrowRight' && e.key !== 'ArrowLeft'" in fonte
+    assert "if (selecionado) tituloRef.current?.focus()" in fonte  # abrir leva o foco ao título
+    assert "[data-agentes-gerenciar=\"${id}\"]" in fonte and "?.focus()" in fonte  # fechar devolve o foco
+    # Esc não fecha quando vem de um campo nem de um modal dentro do painel
+    assert "!alvo.closest('textarea, input, select, [role=\"dialog\"]')" in fonte
+    cad = codigo(CADASTRO)
+    assert 'aria-expanded={selecionado === ag.id} aria-controls="agente-detalhe"' in cad
+
+
+def test_limites_recolhidos_controlados_e_salvar_uma_vez_so():
+    """Revisão da reestruturação: `open={rascunho ? …}` fechava a seção ao salvar,
+    e o bloco Salvar/Descartar saiu duplicado."""
+    fonte = codigo(ABA)
+    assert "open={limitesAbertos}" in fonte and "onToggle={e => setLimitesAbertos(e.currentTarget.open)}" in fonte
+    assert fonte.count("Salvar alterações") == 1
+    assert "data-agentes-limites-pendente" in fonte  # "alterações não salvas" no título recolhido
+    # com o geral desligado, a chave do DataStage explica em TEXTO (balão seria cortado na tabela)
+    assert "data-agentes-geral-desligado" in fonte and "aria-describedby={ligado('agentes_enabled') ? undefined" in fonte
+
+
+def test_rascunho_do_prompt_nao_some_sem_aviso():
+    """Revisão da reestruturação: desmontar o PromptAgente ao trocar de aba ou
+    de agente apagava o texto digitado. Agora as duas abas ficam montadas e
+    sair do agente com rascunho pede confirmação."""
+    fonte = codigo(ABA)
+    assert "hidden={secao !== 'prompt'}" in fonte and "hidden={secao !== 'acesso'}" in fonte
+    assert "onSujo={setPromptSujo}" in fonte
+    assert "if (selecionado !== null && !podeSair()) return" in fonte
+    assert "if (!podeSair()) return" in fonte and "window.confirm(" in fonte
+    prompt = codigo(FRONT / "components" / "admin" / "PromptAgente.tsx")
+    assert "const sujo = rascunho !== null || seuTexto !== null" in prompt
+    assert "useEffect(() => { onSujo?.(sujo) }, [sujo, onSujo])" in prompt
 
 
 # ═══════════ 2. contrato com a API ════════════════════════════════════════
@@ -86,7 +134,10 @@ def test_ligar_manda_boolean():
 
 def test_datastage_nao_se_edita_nem_se_liga_pelo_cadastro():
     fonte = codigo(CADASTRO)
-    assert "ag.origem === 'codigo' ? (" in fonte and "(em Interruptores)" in fonte
+    assert "ag.origem === 'codigo' ? (" in fonte
+    # o DataStage liga/desliga NA PRÓPRIA LINHA (config), não mais "(em Interruptores)"
+    assert "interruptorDoCodigo?.(ag.id) ??" in fonte and "(em Interruptores)" not in fonte
+    assert "salvar.mutate({ [ag.config_enabled]: e.target.checked })" in codigo(ABA)
     assert "{ag.origem === 'banco' && (" in fonte  # só os da tela têm "Editar"
 
 
@@ -166,8 +217,10 @@ def test_secoes_de_acesso_valem_para_os_da_tela():
     assert "Conceder" not in bloco and "sem concessão individual" in bloco
 
 
-def test_prompt_para_todos_os_agentes():
-    assert "{todos.map(ag => <PromptAgente key={`prompt-${ag.id}`} agente={ag} />)}" in codigo(ABA)
+def test_prompt_do_agente_aberto_embutido_no_detalhe():
+    fonte = codigo(ABA)
+    assert "<PromptAgente key={agenteSel.id} agente={agenteSel} embutido onSujo={setPromptSujo} />" in fonte
+    assert "embutido ? 'flex flex-col gap-4'" in codigo(FRONT / "components" / "admin" / "PromptAgente.tsx")
 
 
 # ═══════════ 5. tela /agentes ═════════════════════════════════════════════

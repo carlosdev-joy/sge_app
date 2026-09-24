@@ -1197,8 +1197,8 @@ Lembretes:
   com o prompt padrão). Roteiro em `docs/release-notes/agentes-admin.md`. **Consulta a
   banco**: migration **122** na etapa 6c; API e `dist/`; nos bancos que os agentes vão
   consultar, o login da conexão precisa de **SHOWPLAN** (e, de preferência, só leitura).
-  As migrations **123** e **124** registram as versões destas entregas em Admin › Versões
-  — o número do cabeçalho sobe sozinho. Roteiro em `docs/release-notes/agentes-banco.md`.
+  As migrations **123**, **124** e **125** registram as versões destas entregas em Admin ›
+  Versões — o número do cabeçalho sobe sozinho. Roteiro em `docs/release-notes/agentes-banco.md`.
 - **E-mail (§3.5-A / §3.5-B / §4.10)**: migration **111** na etapa 6c;
   `dags/utils/` ganhou dois arquivos → **reiniciar o worker** do Airflow;
   opcional no `.env` do host: `EMAIL_SENDMAIL_BIN` (padrão `/usr/sbin/sendmail`),
@@ -1524,10 +1524,23 @@ os interruptores antes delas** (sem a 117 a aba abre com os padrões e o chat fa
 120/121, o prompt não tem versões e não dá para criar agentes; sem a 122, dá para criar
 agentes, mas não com a consulta a banco).
 
-**Interruptores.** *Agentes ligados/desligados* é o geral: desligado, **ninguém** vê
-agente nenhum, nem o administrador (é o kill switch). Cada agente tem o seu (*Mapeamento
-DataStage: ligado*), que só vale com o geral ligado. Os dois **nascem desligados**.
-Desligado, o chat e a curadoria respondem *"Agente DataStage desligado"*.
+**Como a aba se organiza.** Três níveis, de cima para baixo:
+1. **Configuração geral** — o interruptor geral e, recolhido, *Gateway e limites* (clique
+   para abrir; recolhido com alteração pendente, o título mostra *alterações não salvas*);
+2. **Agentes** — a tabela com todos os agentes, cada um com o seu *ligado/desligado* na
+   própria linha (inclusive o DataStage);
+3. **Gerenciar** — clicar em *Gerenciar* numa linha abre, embaixo da tabela, o painel
+   **daquele** agente, com as abas **Acesso** (*Quem pode usar* e *Curadores*) e
+   **Prompt**. Um agente por vez: *Gerenciar* de outro troca o painel; clicar de novo, o
+   botão *Fechar* ou **Esc** fecham. Pelo teclado, as setas trocam de aba. Trocar de aba
+   não perde o que você digitou no prompt; trocar de agente ou fechar com texto não salvo
+   pede confirmação.
+
+**Interruptores.** *Agentes ligados/desligados* (na Configuração geral) é o geral:
+desligado, **ninguém** vê agente nenhum, nem o administrador (é o kill switch). Cada
+agente tem o seu, na linha dele na tabela, que só vale com o geral ligado. Os dois
+**nascem desligados**. Desligado, o chat e a curadoria respondem *"Agente DataStage
+desligado"*.
 
 **Gateway e limites.**
 - **Campo da identidade no gateway** (`header:NOME` ou `body:CAMPO`): onde vai a
@@ -1552,7 +1565,7 @@ admin**. Para os demais, marque **Agentes** em Usuários & Perfis → *Perfis* (
 `desenvolvedor`, por exemplo) ou nas *permissões extras* do usuário (ícone da chave). Sem
 ela, o menu não aparece — mesmo com o agente concedido.
 
-**Quem pode usar — Mapeamento DataStage.** O **agente** é concedido **usuário a usuário,
+**Quem pode usar — Mapeamento DataStage** (Gerenciar › Acesso). O **agente** é concedido **usuário a usuário,
 nunca por perfil**, e só a quem é do perfil **desenvolvedor** (a lista só oferece esses).
 O administrador já usa sem concessão. **Curadores** — mesma regra; o curador também
 precisa estar em *Quem pode usar* para abrir a tela. Quem recebe (a tela ou o agente)
@@ -1574,8 +1587,8 @@ incompatível"*.
 `etl_log_cleanup` apaga o que passa disso — a tela já esconde as vencidas mesmo que a
 DAG não rode. **Fatos, propostas e aprendizados não vencem** com a conversa.
 
-**Agentes (criar e editar).** A seção **Agentes** lista o DataStage (vem do código — liga
-e desliga em *Interruptores*) e os criados aqui. **+ Novo agente** pede:
+**Agentes (criar e editar).** A tabela **Agentes** lista o DataStage (vem do código — liga
+e desliga na linha dele) e os criados aqui. **+ Novo agente** pede:
 - **Nome**, **id** (minúsculas, números e `_`; não muda depois e **nunca é reaproveitado**)
   e **descrição** (aparece para o usuário no alto da tela);
 - **Ferramentas**: *Nenhuma — só conversa* (sem acesso a sistemas) ou as que ele pode
@@ -1612,14 +1625,14 @@ interruptor na linha dele). **Editar** muda nome, descrição, ferramentas, banc
 liberados, máscara, acesso e perfis.
 Não há exclusão: desligado, ele some para todos, e as conversas, propostas e
 aprendizados ficam. *Quem pode usar*, *Curadores* (só em agente com ferramentas) e
-*Prompt* aparecem para cada agente, abaixo. Os agentes criados aqui também aparecem nas
+*Prompt* ficam no painel do agente, em **Gerenciar**. Os agentes criados aqui também aparecem nas
 *permissões extras* do usuário (Usuários & Perfis → ícone da chave). Lá, um agente que o
 perfil do usuário não pode usar aparece com *(perfil não elegível)*, desabilitado; se o
 usuário já tinha a liberação (por exemplo, você tirou o perfil dele do agente depois),
 aparece *(sem efeito — …)*: ela não dá acesso, mas **volta a valer** se o perfil voltar a
 ser elegível — desmarque para remover de vez.
 
-**Prompt (versões).** A seção **Prompt** de cada agente edita as **instruções do domínio**
+**Prompt (versões).** A aba **Prompt** do painel do agente (Gerenciar) edita as **instruções do domínio**
 — quem é o agente, a ordem em que usa as ferramentas, as armadilhas conhecidas, como
 responder. O protocolo das ferramentas, as regras de segurança e o formato das
 propostas o Orquestra acrescenta sozinho (*Parte fixa montada pelo Orquestra*, só
