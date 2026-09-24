@@ -43,6 +43,7 @@ from deps import PERM_ADMIN, get_current_user
 from services import agentes_aprendizado as ap
 from services import agentes_conhecimento as ac
 from services import agentes_ferramentas as af
+from services import agentes_sql as asql
 from services import ia_provedor
 from services.ssh_arquivos import cortar_utf16
 from services.ssh_datastage import DsConsoleError
@@ -65,6 +66,12 @@ FERRAMENTAS_DATASTAGE = ("resolver_projeto", "base", "dsx_consulta", "dsjob", "i
 # As que tocam o SERVIDOR (SSH/istool/arquivo .dsx). Agente com qualquer uma
 # delas é só por concessão manual, como o DataStage (D3 da spec admin).
 FERRAMENTAS_SERVIDOR = ("dsx_consulta", "dsjob", "isx_extrair")
+# Consulta a banco (spec docs/spec-agentes-ferramenta-banco.md): só para os
+# agentes da tela — o DataStage não as ganha (T6). Não tocam o servidor
+# DataStage, então NÃO entram em FERRAMENTAS_SERVIDOR (C3: por perfil vale).
+FERRAMENTAS_BANCO = ("banco_estrutura", "banco_consulta")
+# A allowlist dos agentes criados pela tela, na ordem canônica.
+FERRAMENTAS_TELA = FERRAMENTAS_DATASTAGE + FERRAMENTAS_BANCO
 # Perfis que NUNCA recebem agente: `consulta` é o perfil de quem entra sem
 # cadastro (deps.py) — acesso por perfil a ele seria acesso a qualquer login.
 PERFIS_PROIBIDOS = frozenset({"consulta"})
@@ -571,7 +578,25 @@ def _bloco_contexto(projeto: str | None, projeto_tem_dsx: bool,
     return f"## Contexto desta conversa\n\n{texto}"
 
 
-def _bloco_protocolo(ferramentas: tuple[str, ...]) -> str:
+def _linhas_banco(ferramentas: tuple[str, ...], bancos) -> list[str]:
+    """O protocolo das ferramentas de banco: os pares por NOME (nunca host
+    nem login) e as regras que a camada 1 aplica — dito antes, para o modelo
+    não gastar rodada com consulta que será recusada."""
+    pares = ", ".join(f"{c}/{b}" for c, b in bancos) or "(nenhum)"
+    linhas = ["", f"Bancos liberados (conexao/banco): {pares}."]
+    if "banco_estrutura" in ferramentas:
+        linhas.append('- banco_estrutura {"conexao": "C", "banco": "B", "filtro": "parte do nome"} lista '
+                      'tabelas e views; com {"tabela": "schema.tabela"} no lugar do filtro, as colunas dela. '
+                      "Veja a estrutura antes de consultar uma tabela que você não conhece.")
+    if "banco_consulta" in ferramentas:
+        linhas.append('- banco_consulta {"conexao": "C", "banco": "B", "sql": "SELECT …"}: UMA instrução SELECT '
+                      "(ou WITH … SELECT), devolve até 100 linhas. Sem comentários, variáveis (@), tabelas "
+                      "temporárias (#), dicas de tabela, OPTION, FOR XML/JSON nem nomes de 3 ou 4 partes — use "
+                      "schema.tabela com apelido (t.coluna, t.*). Prefira agregar e filtrar a trazer linhas soltas.")
+    return linhas
+
+
+def _bloco_protocolo(ferramentas: tuple[str, ...], bancos=()) -> str:
     """Gerado do VOCABULÁRIO das ferramentas (allowlist de
     `agentes_ferramentas`), não digitado à mão duas vezes — o mesmo
     anti-drift do Maestro: se a allowlist de `dsjob` mudar, o prompt muda
@@ -583,6 +608,8 @@ def _bloco_protocolo(ferramentas: tuple[str, ...]) -> str:
               "Ferramentas disponíveis: " + ", ".join(ferramentas) + "."]
     if "dsjob" in ferramentas:
         linhas.append("Comandos do dsjob disponíveis: " + ", ".join(af.ALLOWLIST_DSJOB))
+    if any(f in FERRAMENTAS_BANCO for f in ferramentas):
+        linhas += _linhas_banco(ferramentas, bancos)
     linhas.append("Chamadas que já falharam não são repetidas pelo Orquestra — quando isso acontecer, "
                   "explique ao usuário o motivo informado.")
     return "\n".join(linhas)
@@ -604,6 +631,32 @@ _BLOCO_REGRAS_CONVERSA = """## Regras que valem sempre
 - Você não tem ferramentas nem acesso a sistemas: responda com o que sabe e com o que o usuário informar.
 - Nunca invente o que não sabe — diga claramente quando não tiver a informação ou o acesso ao dado.
 - Nunca peça, repita nem proponha senha, token ou credencial."""
+
+
+_LINHA_DATASTAGE = "- Você NUNCA altera o DataStage: não importa, não compila, não executa, não para nem apaga nada."
+_LINHAS_BANCO = (
+    "- Você só consulta: nunca executa nem sugere escrita no banco (INSERT, UPDATE, DELETE, DDL, procedure) — "
+    "mesmo que o usuário peça. Para o que ele quiser saber, gere a consulta SELECT.",
+    "- Sempre mostre ao usuário, num bloco ```sql, a consulta que você usou; quando o usuário puder aprofundar "
+    "sozinho, sugira a consulta pronta para ele rodar.",
+    "- Nunca apresente como dado o que não veio de uma consulta.",
+)
+
+
+def _bloco_regras(ferramentas: tuple[str, ...], com_propostas: bool) -> str:
+    """Sem ferramenta de banco, o texto de sempre (o DataStage fica byte a
+    byte igual). Com ela, a linha do DataStage só entra se o agente tem
+    ferramenta de DataStage, e entram as regras de consulta (C5/C6)."""
+    if not any(f in FERRAMENTAS_BANCO for f in ferramentas):
+        return _BLOCO_REGRAS if com_propostas else _BLOCO_REGRAS + "\n" + _LINHA_CREDENCIAL
+    linhas = ["## Regras que valem sempre", ""]
+    if any(f in FERRAMENTAS_DATASTAGE for f in ferramentas):
+        linhas.append(_LINHA_DATASTAGE)
+    linhas += list(_LINHAS_BANCO)
+    linhas.append("- Nunca invente informação que não veio de uma ferramenta.")
+    if not com_propostas:
+        linhas.append(_LINHA_CREDENCIAL)
+    return "\n".join(linhas)
 
 
 def _bloco_propostas(ferramentas: tuple[str, ...]) -> str:
@@ -640,7 +693,8 @@ Ele só passa a valer depois que um curador validar."""
 
 
 def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False, contexto_aprendizados: str = "",
-                    dominio: str | None = None, ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE) -> str:
+                    dominio: str | None = None, ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE,
+                    bancos=()) -> str:
     """Contexto da conversa + domínio (editável; `None` = padrão do código) +
     blocos fixos, NESSA ordem. O contexto vem PRIMEIRO, como no texto único de
     antes: o domínio manda "resolver_projeto primeiro" e o modelo precisa já
@@ -653,13 +707,13 @@ def _prompt_sistema(projeto: str | None, projeto_tem_dsx: bool = False, contexto
     inteiro (o DataStage), o texto é o de sempre."""
     if dominio is None:
         dominio = PROMPT_DOMINIO_PADRAO[AGENTE_DATASTAGE]
-    antes, depois = partes_fixas(projeto, projeto_tem_dsx, ferramentas)
+    antes, depois = partes_fixas(projeto, projeto_tem_dsx, ferramentas, bancos)
     blocos = [antes, dominio.strip(), depois]
     return "\n\n".join(b for b in blocos if b) + "\n" + (f"\n{contexto_aprendizados}\n" if contexto_aprendizados else "")
 
 
 def partes_fixas(projeto: str | None, projeto_tem_dsx: bool = False,
-                 ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE) -> tuple[str, str]:
+                 ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE, bancos=()) -> tuple[str, str]:
     """O que o código monta em volta do domínio: (antes, depois). A tela do
     admin mostra as duas partes só para leitura (spec admin §3.3) — são
     exatamente as que `_prompt_sistema` usa, não uma cópia.
@@ -667,14 +721,17 @@ def partes_fixas(projeto: str | None, projeto_tem_dsx: bool = False,
     Segue o conjunto de ferramentas do agente (spec admin §4.3): o contexto só
     existe se alguma ferramenta depende de projeto e só cita essas; as
     propostas só entram se alguma lê job; sem ferramenta nenhuma, só a
-    variante genérica das regras."""
-    ferramentas = tuple(f for f in FERRAMENTAS_DATASTAGE if f in ferramentas)  # ordem canônica
+    variante genérica das regras.
+
+    `bancos` (spec ferramenta-banco §6): os pares `(conexao, banco)` do
+    agente, citados por nome no protocolo."""
+    ferramentas = tuple(f for f in FERRAMENTAS_TELA if f in ferramentas)  # ordem canônica
     if not ferramentas:
         return "", _BLOCO_REGRAS_CONVERSA
     propostas = _bloco_propostas(ferramentas)
-    regras = _BLOCO_REGRAS if propostas else _BLOCO_REGRAS + "\n" + _LINHA_CREDENCIAL
+    regras = _bloco_regras(ferramentas, bool(propostas))
     return (_bloco_contexto(projeto, projeto_tem_dsx, ferramentas),
-            "\n\n".join(b for b in (_bloco_protocolo(ferramentas), regras, propostas) if b))
+            "\n\n".join(b for b in (_bloco_protocolo(ferramentas, bancos), regras, propostas) if b))
 
 
 def _com_cursor(abrir_conn, fn):
@@ -721,7 +778,8 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
                                ssh_max: int, espera_max_s: float, acao_editar: bool,
                                matricula: str | None, extracoes_isx: int,
                                resta_agora, validade_dias: int = 7,
-                               agente: str = AGENTE_DATASTAGE) -> tuple[dict, str | None]:
+                               agente: str = AGENTE_DATASTAGE, bancos=(),
+                               mascarar: bool = True) -> tuple[dict, str | None]:
     """Executa UMA ferramenta pedida pelo modelo, sempre pela allowlist —
     NUNCA deixa `base`/`dsjob`/`dsx_consulta`/`isx_extrair` rodar sem
     `projeto` resolvido (a guarda do risco 28). `abrir_conn` é uma fábrica
@@ -744,7 +802,8 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
         return await _executar_ferramenta_interna(
             abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s,
             acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx,
-            resta_agora=resta_agora, validade_dias=validade_dias, agente=agente)
+            resta_agora=resta_agora, validade_dias=validade_dias, agente=agente, bancos=bancos,
+            mascarar=mascarar)
     except af.ServidorOcupado as e:
         return {"texto": af.redigir(str(e))}, None  # passageiro: pode tentar de novo
     except DsConsoleError as e:
@@ -761,9 +820,13 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
                                        ssh_max: int, espera_max_s: float, acao_editar: bool,
                                        matricula: str | None, extracoes_isx: int,
                                        resta_agora, validade_dias: int = 7,
-                                       agente: str = AGENTE_DATASTAGE) -> tuple[dict, str | None]:
+                                       agente: str = AGENTE_DATASTAGE, bancos=(),
+                                       mascarar: bool = True) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
+    if nome in FERRAMENTAS_BANCO:
+        return await _ferramenta_banco(nome, args, bancos=bancos, mascarar=mascarar, resta_agora=resta_agora), None
+
     if nome == "resolver_projeto" and _pede_listagem(args):
         # O prefixo do job não diz o projeto: lista as opções para o usuário
         # escolher (ajuste de produção de 23/09/2026 — nunca "não encontrado"
@@ -814,8 +877,7 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
         return await _dsx_consulta(abrir_conn, args, projeto=projeto, matricula=matricula)
 
     if nome not in ("base", "dsjob"):
-        return ({"texto": f"Ferramenta '{nome}' não existe — use resolver_projeto, base, dsjob, "
-                          "dsx_consulta ou isx_extrair."}, None)
+        return ({"texto": f"Ferramenta '{nome}' não existe — use só as ferramentas listadas."}, None)
 
     if not projeto:
         return ({"texto": "Ainda não sei o projeto DataStage desta conversa — "
@@ -892,6 +954,86 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
 
 
 _TETO_STDOUT_DSJOB = 200_000  # `ssh_datastage.run_dsjob` corta o stdout aqui
+
+# Consultas a banco simultâneas por processo da API: cada uma prende uma
+# thread e uma conexão no servidor consultado por até 30 s.
+MAX_CONSULTAS_BANCO = 4
+_VAGAS_BANCO: asyncio.Semaphore | None = None
+
+
+def _vagas_banco() -> asyncio.Semaphore:
+    global _VAGAS_BANCO
+    if _VAGAS_BANCO is None:
+        _VAGAS_BANCO = asyncio.Semaphore(MAX_CONSULTAS_BANCO)
+    return _VAGAS_BANCO
+
+
+async def _na_vaga(fn, *args, **kw):
+    """`fn` numa thread, ocupando uma vaga ATÉ A THREAD TERMINAR. Se o
+    orçamento da pergunta estourar (`wait_for` de fora cancela esta espera),
+    a consulta segue no servidor até o próprio tempo máximo — e a vaga só
+    volta quando ela acaba, senão o teto de 4 não segurava nada (revisão da C1)."""
+    vagas = _vagas_banco()
+    await vagas.acquire()
+    tarefa = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kw))
+
+    def _devolver(t: asyncio.Future) -> None:
+        if not t.cancelled():
+            t.exception()  # consome o erro de quem já desistiu de esperar
+        vagas.release()
+    tarefa.add_done_callback(_devolver)
+    return await asyncio.shield(tarefa)
+
+
+def _par_liberado(args: dict, bancos) -> tuple[str, str] | None:
+    """O par pedido pelo modelo, se for um dos liberados do agente — a
+    conexão pelo nome exato, o banco sem diferenciar maiúsculas (como o SQL
+    Server). Com um par só, os dois argumentos podem faltar."""
+    pares = [(str(c), str(b)) for c, b in bancos]
+    conexao = str((args or {}).get("conexao") or "").strip()
+    banco = str((args or {}).get("banco") or "").strip()
+    if not conexao and not banco and len(pares) == 1:
+        return pares[0]
+    return next(((c, b) for c, b in pares if c == conexao and b.lower() == banco.lower()), None)
+
+
+async def _ferramenta_banco(nome: str, args: dict, *, bancos, mascarar: bool, resta_agora) -> dict:
+    """`banco_estrutura` / `banco_consulta` (spec ferramenta-banco §4–§5).
+    Ao modelo só vão mensagens fixas e dados já mascarados; `sql` é o texto
+    EXECUTADO (vai intacto para `artefatos_json`); `meta` é o que a tela
+    mostra em *Consultas executadas* — nunca as linhas."""
+    par = _par_liberado(args, bancos)
+    if par is None:
+        pares = ", ".join(f"{c}/{b}" for c, b in bancos) or "nenhum"
+        return {"texto": f"Banco indisponível para este agente. Bancos liberados: {pares}."}
+    conexao, banco = par
+    tempo = min(asql.TIMEOUT_MAX_S, resta_agora() - 5)
+    if tempo < 2:
+        return {"texto": "Sem tempo para consultar o banco nesta pergunta — responda com o que já tem."}
+    meta = {"conexao": conexao, "banco": banco}
+    try:
+        if nome == "banco_estrutura":
+            filtro = str(args.get("filtro") or "").strip()[:128] or None
+            tabela = str(args.get("tabela") or "").strip()[:256] or None
+            r = await _na_vaga(asql.estrutura, conexao, banco, filtro=filtro, tabela=tabela,
+                               mascarar=mascarar, timeout_s=tempo)
+            return {"texto": r["texto"], "meta": {**meta, "linhas": r["linhas"], "ms": r["ms"]}}
+        liberados = {b for c, b in bancos if c == conexao}
+        r = await _na_vaga(asql.consultar, conexao, banco, args.get("sql"),
+                           bancos_da_conexao=liberados, mascarar=mascarar, timeout_s=tempo)
+        return {"texto": r["texto"], "sql": r["sql"],
+                "meta": {**meta, "linhas": len(r["linhas"]), "havia_mais": r["havia_mais"], "ms": r["ms"]}}
+    except asql.SqlRecusado as e:
+        # Erro do MODELO (não do ambiente): nem guarda, nem aprendizado.
+        return {"texto": f"Consulta recusada: {e.regra}. Reescreva como uma consulta SELECT só.",
+                "meta": {**meta, "recusada": True}}
+    except asql.BancoIndisponivel as e:
+        return {"texto": f"{e} — avise o usuário; é configuração do administrador.",
+                "meta": {**meta, "erro": True}}
+    except Exception as e:  # noqa: BLE001 — erro do driver: só a mensagem fixa
+        msg, categoria = asql.mensagem_de_erro(e, mascarar=mascarar)
+        falha = ap.Falha(categoria, True, "erro", msg, 1) if categoria else None
+        return {"texto": msg, "falha": falha, "meta": {**meta, "erro": True}}
 
 
 def _gravar_fatos_seguro(abrir_conn, *, matricula: str | None, **kw) -> None:
@@ -1274,6 +1416,10 @@ def texto_de_progresso(ferramenta: str, args: dict, projeto: str | None, *, repe
         return "Extraindo a definição do job via istool — pode levar até 60 s…"
     if ferramenta == "dsx_consulta":
         return "Lendo o arquivo DSX do projeto…"
+    if ferramenta == "banco_estrutura":
+        return "Lendo a estrutura do banco…"
+    if ferramenta == "banco_consulta":
+        return "Consultando o banco…"
     return "Consultando…"
 
 
@@ -1317,7 +1463,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
                     ssh_max: int, acao_editar: bool = False, matricula: str | None = None,
                     validade_fatos_dias: int = 7, falhas_anteriores: set[str] | None = None,
                     emit_status=None, dominio: str | None = None, agente: str = AGENTE_DATASTAGE,
-                    ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE) -> dict:
+                    ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE, bancos=(),
+                    mascarar: bool = True) -> dict:
     """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
     (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
     allowlist, e devolve a resposta final. Controla o orçamento de tempo
@@ -1338,10 +1485,14 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
     antes de tocar o servidor (e antes da allowlist); sem ferramenta nenhuma,
     a rodada é só de conversa (`_conversar_sem_ferramentas`).
 
+    `bancos`/`mascarar` (spec ferramenta-banco): os pares `(conexao, banco)`
+    liberados ao agente e o interruptor de dados pessoais (C2).
+
     Nunca levanta por conta do provedor/ferramenta: erro vira `status`
     nomeado com uma mensagem para o usuário, sempre 200 para quem chamou."""
     t0 = time.monotonic()
-    ferramentas = tuple(f for f in FERRAMENTAS_DATASTAGE if f in ferramentas)  # ordem canônica, só a allowlist
+    ferramentas = tuple(f for f in FERRAMENTAS_TELA if f in ferramentas)  # ordem canônica, só a allowlist
+    bancos = tuple((str(c), str(b)) for c, b in (bancos or ()))
 
     def _resta() -> float:
         return ORCAMENTO_AGENTE_S - (time.monotonic() - t0)
@@ -1401,7 +1552,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             projeto_do_contexto = projeto
             usados.update({i["id"]: i["titulo"] for i in aprendizados})
         sistema = _prompt_sistema(projeto, af.projeto_tem_dsx(projeto) if projeto else False,
-                                  ap.formatar_contexto(aprendizados), dominio=dominio, ferramentas=ferramentas)
+                                  ap.formatar_contexto(aprendizados), dominio=dominio, ferramentas=ferramentas,
+                                  bancos=bancos)
         await _status("Pensando na pergunta…" if rodada == 0 else "Analisando o que foi lido…")
         # O orçamento também vale por OPERAÇÃO, não só entre rodadas — sem
         # isto, uma única chamada ao gateway podia levar até TIMEOUT_S (60s)
@@ -1458,8 +1610,14 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
 
         nome_ferramenta = str(pedido.get("ferramenta") or "").strip()
         args = pedido.get("args") if isinstance(pedido.get("args"), dict) else {}
+        if nome_ferramenta in FERRAMENTAS_BANCO and nome_ferramenta in ferramentas:
+            # O par como está no CADASTRO (com um par só, o modelo pode omitir):
+            # a chave da guarda e o aprendizado não dependem de como ele escreveu.
+            par = _par_liberado(args, bancos)
+            if par is not None:
+                args = {**args, "conexao": par[0], "banco": par[1]}
         historico.append({"role": "assistant", "content": resposta})
-        if nome_ferramenta in FERRAMENTAS_DATASTAGE and nome_ferramenta not in ferramentas:
+        if nome_ferramenta in FERRAMENTAS_TELA and nome_ferramenta not in ferramentas:
             # Fora do conjunto DESTE agente (spec admin B2): recusada aqui,
             # antes da allowlist e sem tocar o servidor. O modelo é informado
             # e segue; nada de aprendizado (não é erro do ambiente).
@@ -1501,7 +1659,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
                     _executar_ferramenta(abrir_conn, nome_ferramenta, args, projeto=projeto,
                                          ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
                                          matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=_resta,
-                                         validade_dias=validade_fatos_dias, agente=agente),
+                                         validade_dias=validade_fatos_dias, agente=agente, bancos=bancos,
+                                         mascarar=mascarar),
                     timeout=max(1.0, resta - 2))
             except (asyncio.TimeoutError, TimeoutError):
                 return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}
@@ -1517,6 +1676,15 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
         # independente — mas a mesma defesa em profundidade do resto do
         # pipeline vale aqui também.
         artefato = {"ferramenta": nome_ferramenta, "args": af.redigir_estrutura(args)}
+        if dado.get("sql"):
+            # O SQL EXECUTADO fica intacto (spec ferramenta-banco §5): o
+            # `redigir()` de linha apagava o resto da consulta a partir de um
+            # `u.token_expira`, e a camada 1 já recusou literal com cara de
+            # credencial — o gravado é sempre o que rodou.
+            artefato["args"] = {"conexao": dado["meta"]["conexao"], "banco": dado["meta"]["banco"],
+                                "sql": dado["sql"]}
+        if dado.get("meta"):
+            artefato["banco"] = dado["meta"]
         falha = dado.get("falha")
         if chave in falhas or conhecido is not None:
             artefato["repetida"] = True

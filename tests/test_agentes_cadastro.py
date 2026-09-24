@@ -331,12 +331,19 @@ class _CursorCadastro(_CursorPrompt):
                 if p[0] in b.agentes_db:
                     raise RuntimeError("Violation of PRIMARY KEY constraint 'PK_etl_agente'. (2627)")
                 agora = b.agora()
-                b.agentes_db[p[0]] = (p[0], p[1], p[2], p[3], p[4], p[5], 0, agora, p[6], agora, p[7])
+                # Com a 122: bancos_json e mascarar_dados depois de ferramentas_json.
+                bancos, mascarar, por = (p[6], p[7], p[8]) if "bancos_json" in s else (None, 1, p[6])
+                b.agentes_db[p[0]] = (p[0], p[1], p[2], p[3], p[4], p[5], 0, agora, por, agora, por,
+                                      bancos, mascarar)
             else:  # update
-                nome, desc, acesso, perfis, ferr, ativo, por, agente_id = p
+                if "bancos_json" in s:
+                    nome, desc, acesso, perfis, ferr, bancos, mascarar, ativo, por, agente_id = p
+                else:
+                    nome, desc, acesso, perfis, ferr, ativo, por, agente_id = p
+                    bancos, mascarar = None, 1
                 r = b.agentes_db[agente_id]
                 b.agentes_db[agente_id] = (agente_id, nome, desc, acesso, perfis, ferr, ativo, r[7], r[8],
-                                           b.agora(), por)
+                                           b.agora(), por, bancos, mascarar)
             return
         if s == "select perfil_nome from dbo.etl_perfil":
             self._rows = [(x,) for x in sorted(b.perfis)]

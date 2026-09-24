@@ -588,6 +588,11 @@ export function dataHoraCurta(iso: string | null | undefined): string {
 // ── Cadastro de agentes (spec docs/spec-agentes-admin.md, B3) ──────────────
 
 /** Um agente na lista do Admin (`GET /agentes/admin/agentes`). */
+export interface BancoLiberado {
+  conexao: string
+  banco: string
+}
+
 export interface AgenteAdminItem {
   id: string
   nome: string
@@ -597,6 +602,10 @@ export interface AgenteAdminItem {
   acesso: AcessoAgente
   perfis: string[]
   ferramentas: string[]
+  /** Pares liberados à consulta a banco (vazio sem a ferramenta). */
+  bancos: BancoLiberado[]
+  /** C2 da spec ferramenta-banco: mascarar CPF/CNPJ/e-mail/telefone. */
+  mascarar_dados: boolean
   ativo: boolean
   recurso: string
   recurso_curador: string | null
@@ -608,10 +617,12 @@ export interface AgenteAdminItem {
 
 export interface AgentesAdminResposta {
   agentes: AgenteAdminItem[]
-  /** A allowlist inteira, na ordem canônica. */
+  /** As ferramentas de DataStage, na ordem canônica (um checkbox cada). */
   ferramentas: string[]
   /** As que tocam o servidor — nunca com acesso por perfil. */
   ferramentas_servidor: string[]
+  /** As de consulta a banco — um interruptor só na tela liga as duas. */
+  ferramentas_banco: string[]
   /** Perfis que nunca recebem agente (`consulta`). */
   perfis_proibidos: string[]
 }
