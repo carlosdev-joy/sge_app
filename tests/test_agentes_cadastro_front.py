@@ -229,3 +229,12 @@ def test_modal_sinaliza_grant_de_agente_sem_efeito():
     assert "if (marcado && ehAdmin) return null" in sinal
     # a query traz os perfis de cada agente
     assert "recurso_curador: string | null; perfis: string[] }[]" in fonte
+
+
+def test_formulario_do_modal_usa_ajuda_e_nao_hint():
+    """O `hint` é um popover que abre para CIMA e é cortado pelo corpo com
+    rolagem do Modal (Input.tsx explica) — no campo Id, só a última linha
+    aparecia (relato de 23/09). Dentro de modal, a regra do repo é `ajuda`."""
+    fonte = codigo(CADASTRO)
+    assert "hint=" not in fonte
+    assert fonte.count("ajuda=") >= 4
