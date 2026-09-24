@@ -45,14 +45,14 @@ def test_funcoes_puras_rodam_no_node():
 
 # ═══════════ 1. posição na aba ════════════════════════════════════════════
 
-def test_secao_do_prompt_entra_no_fim_da_aba_sem_reordenar():
+def test_prompt_vive_no_detalhe_do_agente():
+    """Desde a reestruturação de 25/09 o prompt é uma ABA do detalhe do agente
+    escolhido (antes: uma seção por agente no fim da aba)."""
     fonte = codigo(ABA)
     assert "import { PromptAgente } from './PromptAgente'" in fonte
-    i_prompt = fonte.index("<PromptAgente")
-    # tudo o que já existia vem antes, na mesma ordem
-    ordem = [fonte.index(t) for t in ("Interruptores", "Gateway e limites", "Quem pode usar", "Curadores")]
-    assert ordem == sorted(ordem) and ordem[-1] < i_prompt
-    assert fonte[i_prompt:].count("</section>") == 0, "nada da aba antiga pode vir depois do prompt"
+    i_detalhe = fonte.index("{agenteSel && (")
+    assert fonte.index("Gateway e limites") < fonte.index("<CadastroAgentes") < i_detalhe < fonte.index("<PromptAgente")
+    assert "hidden={secao !== 'prompt'}" in fonte  # montado mesmo com a outra aba ativa
 
 
 # ═══════════ 2–4. contrato com a API ═════════════════════════════════════

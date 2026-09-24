@@ -15,6 +15,7 @@
 // pessoais". O PUT manda SEMPRE `bancos` — é o que diz à API que a tela
 // conhece a consulta a banco (sem o campo, ela preserva as de banco).
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import {
@@ -50,7 +51,18 @@ function resumoFerramentas(ag: Pick<AgenteAdminItem, 'ferramentas' | 'bancos'>):
   return nomes.join(', ')
 }
 
-export function CadastroAgentes() {
+/**
+ * `selecionado`/`onGerenciar`: a linha abre o DETALHE do agente logo abaixo da
+ * tabela (acesso, curadores, prompt) — um agente por vez, em vez de uma seção
+ * de cada tipo para cada agente (reestruturação da aba, 25/09).
+ * `interruptorDoCodigo`: o liga/desliga de um agente do CÓDIGO (DataStage), que
+ * mora na config — a linha dele mostra o controle em vez de mandar procurar.
+ */
+export function CadastroAgentes({ selecionado = null, onGerenciar, interruptorDoCodigo }: {
+  selecionado?: string | null
+  onGerenciar?: (id: string) => void
+  interruptorDoCodigo?: (id: string) => ReactNode
+} = {}) {
   const qc = useQueryClient()
   const lista = useQuery<AgentesAdminResposta>({
     queryKey: Q_AGENTES_ADMIN, queryFn: () => apiFetch('/agentes/admin/agentes'),
@@ -125,8 +137,8 @@ export function CadastroAgentes() {
         <div>
           <h3 className="text-sm font-semibold text-ink">Agentes</h3>
           <p className="text-xs text-dim mt-0.5">
-            O DataStage vem do código. Os criados aqui nascem desligados: confira o prompt (seção Prompt, abaixo) e
-            quem pode usar antes de ligar.
+            O DataStage vem do código. Os criados aqui nascem desligados: em <strong className="font-medium text-ink">Gerenciar</strong>,
+            confira quem pode usar e o prompt antes de ligar.
           </p>
         </div>
         <Button size="sm" onClick={() => setForm({ rascunho: { ...VAZIO }, editando: null })} data-agentes-novo>
@@ -148,7 +160,9 @@ export function CadastroAgentes() {
           </thead>
           <tbody className="divide-y divide-edge">
             {dados.agentes.map(ag => (
-              <tr key={ag.id} className="text-ink align-top" data-agentes-item={ag.id}>
+              <tr key={ag.id} data-agentes-item={ag.id}
+                  className={`text-ink align-top transition-colors ${selecionado === ag.id
+                    ? 'bg-[#1A5FA8]/[0.06] dark:bg-blue-400/10' : ''}`}>
                 <td className="py-2 pr-3 min-w-[12rem]">
                   <div className="font-medium">{ag.nome}</div>
                   <div className="text-dim">{ag.id}</div>
@@ -161,10 +175,13 @@ export function CadastroAgentes() {
                 <td className="py-2 pr-3 min-w-[10rem]">{resumoFerramentas(ag)}</td>
                 <td className="py-2 pr-3">
                   {ag.origem === 'codigo' ? (
-                    <span className="text-dim">{ag.ativo ? 'sim' : 'não'} (em Interruptores)</span>
+                    interruptorDoCodigo?.(ag.id) ?? <span className="text-dim">{ag.ativo ? 'sim' : 'não'}</span>
                   ) : (
+                    // Texto curto ao lado; o nome do agente vai para o leitor de
+                    // tela — o rótulo com o nome quebrava a linha em 3.
                     <Switch
-                      label={ag.ativo ? `${ag.nome}: ligado` : `${ag.nome}: desligado`}
+                      label={ag.ativo ? 'ligado' : 'desligado'}
+                      aria-label={ag.ativo ? `${ag.nome}: ligado` : `${ag.nome}: desligado`}
                       checked={ag.ativo}
                       disabled={alternar.isPending}
                       onChange={e => alternar.mutate({ id: ag.id, ativo: e.target.checked })}
@@ -172,6 +189,14 @@ export function CadastroAgentes() {
                   )}
                 </td>
                 <td className="py-2 text-right whitespace-nowrap">
+                  {onGerenciar && (
+                    <Button size="sm" variant={selecionado === ag.id ? 'secondary' : 'ghost'}
+                            aria-expanded={selecionado === ag.id} aria-controls="agente-detalhe"
+                            aria-label={`Gerenciar ${ag.nome}`} data-agentes-gerenciar={ag.id}
+                            onClick={() => onGerenciar(ag.id)}>
+                      Gerenciar
+                    </Button>
+                  )}
                   {ag.origem === 'banco' && (
                     <Button size="sm" variant="ghost" aria-label={`Editar ${ag.nome}`}
                             onClick={() => setForm({

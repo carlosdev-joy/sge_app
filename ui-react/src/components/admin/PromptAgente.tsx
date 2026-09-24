@@ -14,7 +14,7 @@
 // da janela, invalidação), e usar `ativa.versao` ali fazia uma gravação feita
 // sobre a v3 passar por cima da v4 de outro admin sem 409 (revisão
 // adversarial da A2).
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { copyToClipboard } from '../../lib/clipboard'
@@ -30,9 +30,15 @@ import { toast } from '../ui/Toast'
 
 interface Props {
   agente: { id: string; nome: string }
+  /** Dentro do painel do agente (Admin › Agentes): sem moldura de cartão e
+   *  sem repetir o nome no título — o painel já diz de quem é. */
+  embutido?: boolean
+  /** Avisa quem contém se há texto NÃO salvo (rascunho ou "Seu texto" de um
+   *  conflito) — o painel confirma antes de trocar de agente ou fechar. */
+  onSujo?: (sujo: boolean) => void
 }
 
-export function PromptAgente({ agente }: Props) {
+export function PromptAgente({ agente, embutido = false, onSujo }: Props) {
   const qc = useQueryClient()
   const base = `/agentes/admin/agentes/${encodeURIComponent(agente.id)}/prompt`
   const qPrompt = ['agentes-admin-prompt', agente.id] as const
@@ -87,6 +93,11 @@ export function PromptAgente({ agente }: Props) {
   const ativa = prompt.data?.ativa
   const limites = prompt.data?.limites ?? { texto_max: LIMITE_PROMPT, motivo_min: 3, motivo_max: 200 }
 
+  // O pai (painel do agente) precisa saber se sair daqui perde texto digitado.
+  const sujo = rascunho !== null || seuTexto !== null
+  useEffect(() => { onSujo?.(sujo) }, [sujo, onSujo])
+  useEffect(() => () => onSujo?.(false), [onSujo])
+
   const salvar = useMutation({
     mutationFn: (v: { texto: string; motivo: string; versao_base: number }) =>
       apiFetch<{ ativa: VersaoPrompt }>(base, { method: 'PUT', body: JSON.stringify(v) }),
@@ -134,11 +145,13 @@ export function PromptAgente({ agente }: Props) {
     && motivoValido(motivo, limites.motivo_min, limites.motivo_max) && !salvar.isPending
 
   return (
-    <section className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-4"
+    <section className={embutido ? 'flex flex-col gap-4'
+                                 : 'bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-4'}
              data-agentes-prompt={agente.id}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-ink">Prompt — {agente.nome}</h3>
+          {/* Embutido, a aba "Prompt" do painel já é o título (e o campo abaixo se chama "Instruções do domínio"). */}
+          {!embutido && <h3 className="text-sm font-semibold text-ink">Prompt — {agente.nome}</h3>}
           <p className="text-xs text-dim mt-0.5">
             Você edita só as instruções do domínio. Cada gravação vira uma versão nova e vale a partir da
             próxima pergunta, sem reiniciar nada.
