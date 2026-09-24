@@ -1,10 +1,10 @@
 # 🗄️ Agentes que consultam banco — só SELECT, com o SQL sempre à vista
 
 **Compatibilidade:** a mesma dos agentes da tela (`docs/release-notes/agentes-admin.md`). Nos bancos consultados, as conexões **nativas SQL Server** já cadastradas em *Conexões de Dados*, com login que tenha **SHOWPLAN**
-**Migrations:** **122** (`etl_agente.bancos_json` e `mascarar_dados`) e **123** (registra a versão desta entrega em Admin › Versões — o número do cabeçalho sobe sozinho) — etapa 6c, responder **s**. Idempotentes
+**Migrations:** **122** (`etl_agente.bancos_json` e `mascarar_dados`), **123** e **124** (registram as versões das entregas em Admin › Versões — o número do cabeçalho sobe sozinho) — etapa 6c, responder **s**. Idempotentes
 **Spec:** `docs/spec-agentes-ferramenta-banco.md`
 **Manual:** `docs/MANUAL_USUARIO.md` §3.12 (usar), §4.11 (administrar), §4.6 (deploy), §5 (FAQ)
-**PRs:** #443 (spec) · #444 C1 (backend) · #445 C2 (tela) · C3 (esta nota, manual, smoke)
+**PRs:** #443 (spec) · #444 C1 (backend) · #445 C2 (tela) · #446 C3 (esta nota, manual, smoke) · ajustes: escolha em cards e tempos configuráveis
 
 ---
 
@@ -42,8 +42,8 @@ o banco, as linhas e o tempo.
 > **Impacto para os usuários:** perguntas sobre os dados viram resposta **com a consulta junto**, em
 > bloco com realce e **Copiar**. Dá para conferir, reaproveitar e aprofundar sem pedir a ninguém.
 >
-> **Impacto para a operação:** cada consulta roda com **até 100 linhas** e **30 s**, cancelada no
-> servidor se passar do tempo. São no máximo **4 consultas ao mesmo tempo** por processo da API e
+> **Impacto para a operação:** cada consulta roda com **até 100 linhas** e até o tempo máximo configurado
+> (padrão **30 s**, de 5 a 120), cancelada no servidor se passar do tempo. São no máximo **4 consultas ao mesmo tempo** por processo da API e
 > **4 ferramentas** por pergunta.
 >
 > **Impacto para a segurança:**
@@ -72,6 +72,16 @@ o banco, as linhas e o tempo.
   uma delas. Usa SQL **fixo** do Orquestra, que não passa pela IA. O teto é de 300 itens.
 - `banco_consulta`: roda **uma** consulta SELECT (ou `WITH … SELECT`, com CTE) escrita pelo agente e
   devolve até 100 linhas.
+
+**Tempos (configuráveis).** Em Admin › Agentes › Gateway e limites: **Tempo para conectar ao banco**
+(5–60 s, padrão 10 — vale também para listar os bancos no formulário) e **Tempo máximo de cada consulta**
+(5–120 s, padrão 30). Lidos a cada pergunta, sem deploy. O orçamento da pergunta (4 minutos) continua
+mandando: a conexão usa no máximo 1/3 do que resta, e a conferência do plano e a execução dividem o resto. Quando o servidor não
+responde no tempo, a mensagem diz quanto o Orquestra esperou.
+
+**Escolha do agente.** A tela Agentes abre em **cards** (nome, descrição e o que o agente consulta), com
+"usado por último", "conversa em andamento" e busca (nome, descrição ou tipo) a partir de 6 agentes; *Trocar agente* volta aos
+cards.
 
 **Onde roda.** Na conexão **nativa** cadastrada (`etl_conexao`), com a senha cifrada dela, **já aberta no
 banco liberado**. Se a conexão não é nativa, se foi removida ou se o login não abre, a resposta é
@@ -144,7 +154,7 @@ só de leitura é a proteção extra recomendada:
 | Passo | O quê |
 |---|---|
 | Antes | Conferir commits novos na branch `feat/agente-datastage-melhorias` e portar, como sempre |
-| 6c | Migrations **122** e **123** → **s** (as 120 e 121 também, se ainda não foram). A 123 registra a versão desta entrega em **Admin › Versões** e o número do cabeçalho sobe (maior versão registrada, +1 no segundo número: 2.4.x → 2.5.0). Já registrada, não repete |
+| 6c | Migrations **122**, **123** e **124** → **s** (as 120 e 121 também, se ainda não foram). A 123 e a 124 registram as versões em **Admin › Versões** e o número do cabeçalho sobe: com produção em 2.2.0 → **2.3.0** (123, +1 no segundo número) → **2.3.1** (124, ajuste: +1 no terceiro). Já registradas, não repetem |
 | `api/` | **sim** (C1) |
 | `dags/` | não |
 | `dist/` | **sim** (C2) |
@@ -170,7 +180,8 @@ Depois do deploy:
 -- migration 122
 SELECT COL_LENGTH('dbo.etl_agente', 'bancos_json'), COL_LENGTH('dbo.etl_agente', 'mascarar_dados');  -- dois valores
 -- migration 123: a versão desta entrega (e o número que o cabeçalho mostra)
-SELECT versao, titulo, criado_em FROM dbo.etl_versao_ferramenta WHERE titulo = N'Agentes pela tela e consulta a banco';
+SELECT versao, titulo, criado_em FROM dbo.etl_versao_ferramenta
+ WHERE titulo IN (N'Agentes pela tela e consulta a banco', N'Agentes: escolha em cards e tempos da consulta a banco');
 SELECT config_value FROM dbo.etl_app_config WHERE config_key = 'app_version';
 -- agentes com consulta a banco e seus pares
 SELECT agente_id, ferramentas_json, bancos_json, mascarar_dados, ativo FROM dbo.etl_agente
@@ -235,7 +246,8 @@ desta entrega, a **migration de versão** faz isso no deploy: a 123 registra *"A
 banco"* com o changelog e sincroniza `app_version`. O número é a maior versão já registrada com +1 no segundo
 número; ele fica visível depois do deploy, e a aba continua servindo para corrigir o texto ou o número.
 **Convenção para as próximas entregas:** uma migration `NNN_versao_<entrega>.sql` no mesmo formato (título
-como chave, idempotente).
+como chave, idempotente) — **funcionalidade nova sobe o segundo número** (123: 2.2.0 → 2.3.0), **ajuste sobe o
+terceiro** (124: 2.3.0 → 2.3.1).
 
 ## 🧭 Próximos passos (backlog)
 

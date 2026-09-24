@@ -470,6 +470,19 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
         except (TypeError, ValueError):
             erros.append("agentes_fato_validade_dias deve ser um número inteiro entre 1 e 365")
 
+    # Consulta a banco: tempo para conectar e tempo de cada consulta (faixas em agentes_sql).
+    for chave, minimo, maximo, rotulo in (
+            ("agentes_banco_conexao_s", asql.CONEXAO_MIN_S, asql.CONEXAO_MAX_S, "tempo para conectar ao banco"),
+            ("agentes_banco_consulta_s", asql.CONSULTA_MIN_S, asql.CONSULTA_MAX_S, "tempo máximo de cada consulta")):
+        if chave in body:
+            try:
+                n = int(body.get(chave))
+                if not (minimo <= n <= maximo):
+                    raise ValueError
+                valores[chave] = str(n)
+            except (TypeError, ValueError):
+                erros.append(f"{chave} ({rotulo}) deve ser um número inteiro entre {minimo} e {maximo} segundos")
+
     if erros:
         raise HTTPException(status_code=422, detail={"code": "agentes_config_invalida", "errors": erros})
     if not valores:
@@ -776,6 +789,7 @@ def _preparar_conversa(body: dict, user: dict, ag: dict | None = None) -> dict:
             "kwargs": dict(
                 dominio=dominio["texto"], agente=agente_id, ferramentas=tuple(ag.get("ferramentas", ())),
                 bancos=tuple(ag.get("bancos", ())), mascarar=bool(ag.get("mascarar_dados", True)),
+                limites_banco_s=svc.limites_banco(agentes_cfg),
                 mensagens=historico + [{"role": "user", "content": mensagem_redigida}],
                 projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
                 identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
@@ -881,13 +895,23 @@ async def agentes_admin_lista(_admin: dict = Depends(get_admin_user)):
             "perfis_proibidos": sorted(svc.PERFIS_PROIBIDOS)}
 
 
+def _conexao_s() -> int:
+    """O tempo para conectar ao banco configurado pelo admin (padrão se a
+    leitura falhar) — as telas do admin esperam o mesmo que o agente."""
+    try:
+        with _conexao() as (_conn, cur):
+            return svc.limites_banco(svc.carregar_config(cur))[0]
+    except Exception:  # noqa: BLE001
+        return asql.CONEXAO_PADRAO_S
+
+
 async def _conferir_pares(pares: list[tuple[str, str]]) -> list[str]:
     """Pares NOVOS no servidor (abre, existe, tem SHOWPLAN), fora do loop de
     eventos — é rede. Devolve os avisos de login com escrita (C6: só avisa)."""
     if not pares:
         return []
     try:
-        return await asyncio.to_thread(asql.verificar_pares, pares)
+        return await asyncio.to_thread(asql.verificar_pares, pares, _conexao_s())
     except ValueError as e:
         raise HTTPException(status_code=422, detail={"code": "banco_indisponivel", "message": str(e)}) from None
 
@@ -959,11 +983,14 @@ async def agentes_admin_conexao_bancos(conn_id: str, _admin: dict = Depends(get_
         raise HTTPException(status_code=404, detail={"code": "conexao_desconhecida",
                                                       "message": "conexão não encontrada"})
     try:
-        info = await asyncio.to_thread(asql.bancos_da_conexao, conn_id)
-    except asql.BancoIndisponivel:
-        raise HTTPException(status_code=422, detail={
-            "code": "banco_indisponivel",
-            "message": "a conexão não abriu (removida, não nativa, fora do ar ou login recusado)"}) from None
+        info = await asyncio.to_thread(asql.bancos_da_conexao, conn_id, _conexao_s())
+    except asql.BancoIndisponivel as e:
+        # Mensagem FIXA do módulo (nunca host/login): a do tempo esgotado diz
+        # quanto esperou, para o admin saber que é ajustável.
+        motivo = (f"a conexão não abriu: {str(e).split('— ', 1)[-1]} (tempo em Gateway e limites)"
+                  if "não respondeu" in str(e)
+                  else "a conexão não abriu (removida, não nativa, fora do ar ou login recusado)")
+        raise HTTPException(status_code=422, detail={"code": "banco_indisponivel", "message": motivo}) from None
     return {"conexao": conn_id, **info}
 
 

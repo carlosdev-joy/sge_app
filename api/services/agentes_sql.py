@@ -38,7 +38,16 @@ MAX_SQL = 20_000            # o mesmo da Cópia de Dados
 MAX_CELULA = 200
 MAX_BLOCO = 15_000
 MAX_ESTRUTURA = 300
-TIMEOUT_MAX_S = 30
+# Tempos (configuráveis em Admin › Agentes › Gateway e limites — chaves
+# `agentes_banco_conexao_s` e `agentes_banco_consulta_s`, lidas a cada
+# pergunta; os padrões valem quando a chave não existe).
+CONEXAO_PADRAO_S, CONEXAO_MIN_S, CONEXAO_MAX_S = 10, 5, 60     # abrir a conexão (login)
+CONSULTA_PADRAO_S, CONSULTA_MIN_S, CONSULTA_MAX_S = 30, 5, 120  # executar a consulta
+TIMEOUT_MAX_S = CONSULTA_PADRAO_S  # nome antigo, mantido para quem já importava
+# A conferência do plano (camada 2) só COMPILA — leva milissegundos (0,11 s numa
+# consulta pesada na revisão da spec). Tem teto próprio, pequeno, para não
+# disputar o orçamento da pergunta com a execução.
+PLANO_MAX_S = 15
 
 
 class SqlRecusado(ValueError):
@@ -737,14 +746,34 @@ def mensagem_de_erro(e: Exception, *, mascarar: bool) -> tuple[str, str | None]:
 # Conexão e execução
 # ══════════════════════════════════════════════════════════════════════════
 
-def _abrir(conn_id: str, banco: str, timeout_s: float):
-    """Conexão NATIVA no banco, com o tempo máximo já definido — o cursor
-    que `abrir_conexao_nativa` devolve é descartado (não herda o timeout)."""
-    from services.conn_native import abrir_conexao_nativa
+def limitar(valor, minimo: int, maximo: int, padrao: int) -> int:
+    """Valor de config (texto) → inteiro dentro da faixa; lixo = padrão."""
     try:
-        par = abrir_conexao_nativa(conn_id, banco, timeout_s=10)
+        n = int(str(valor).strip())
+    except (TypeError, ValueError):
+        return padrao
+    return max(minimo, min(maximo, n))
+
+
+def _abrir(conn_id: str, banco: str, timeout_s: float, conexao_s: float = CONEXAO_PADRAO_S):
+    """Conexão NATIVA no banco, com o tempo máximo já definido — o cursor
+    que `abrir_conexao_nativa` devolve é descartado (não herda o timeout).
+    `conexao_s`: quanto esperar o LOGIN; `timeout_s`: cada comando depois."""
+    from services.conn_native import abrir_conexao_nativa
+    espera = max(1, int(conexao_s))
+    inicio = time.monotonic()
+    try:
+        par = abrir_conexao_nativa(conn_id, banco, timeout_s=espera)
     except Exception as e:  # noqa: BLE001 — login/rede: nunca o texto do driver
         log.warning("agentes_sql: conexão %s/%s falhou: %s", conn_id, banco, type(e).__name__)
+        # Só é "não respondeu no tempo" se o tempo de fato passou: host
+        # inexistente e porta fechada também chegam como "Login timeout"
+        # do driver, mas na hora — e aí aumentar o tempo não resolve.
+        esperou = time.monotonic() - inicio >= espera * 0.8
+        if esperou and ("HYT00" in str(e) or "Login timeout" in str(e)):
+            # O servidor não respondeu no tempo: é o caso que o admin resolve
+            # aumentando "Tempo para conectar ao banco" — a mensagem diz o tempo.
+            raise BancoIndisponivel(f"conexão indisponível — o servidor não respondeu em {espera} s") from None
         raise BancoIndisponivel("conexão indisponível") from None
     if par is None:
         # Não nativa (só no Airflow) ou ilegível: SEM fallback para a
@@ -798,14 +827,16 @@ def _fechar(cx) -> None:
 
 
 def consultar(conn_id: str, banco: str, sql: str, *, bancos_da_conexao: set[str], mascarar: bool,
-              timeout_s: float) -> dict:
+              timeout_s: float, conexao_s: float = CONEXAO_PADRAO_S, plano_s: float | None = None) -> dict:
     """As três camadas. Devolve {sql (o texto EXECUTADO), texto, colunas,
     linhas, havia_mais, ms}.
     Levanta `SqlRecusado`, `BancoIndisponivel` ou a exceção do driver (o
     chamador a traduz com `mensagem_de_erro`)."""
     texto = validar(sql)                       # camada 1 — antes de conectar
     t0 = time.monotonic()
-    cx = _abrir(conn_id, banco, min(TIMEOUT_MAX_S, timeout_s))
+    execucao = min(CONSULTA_MAX_S, timeout_s)
+    plano = min(PLANO_MAX_S, execucao) if plano_s is None else plano_s
+    cx = _abrir(conn_id, banco, plano, conexao_s)  # o timeout vale para os cursores criados DEPOIS
     try:
         try:
             xmls = _plano(cx, texto)           # camada 2 — compila, não executa
@@ -814,6 +845,7 @@ def consultar(conn_id: str, banco: str, sql: str, *, bancos_da_conexao: set[str]
                 raise BancoIndisponivel("conexão indisponível (sem permissão SHOWPLAN)") from None
             raise
         analisar_plano(xmls, bancos_da_conexao)
+        cx.timeout = max(1, int(execucao))      # antes de criar o cursor da execução
         cur = cx.cursor()                       # camada 3 — transação desfeita
         cur.execute("BEGIN TRANSACTION")
         cur.execute(texto)
@@ -886,11 +918,11 @@ def _escapar_like(v: str) -> str:
 
 
 def estrutura(conn_id: str, banco: str, *, filtro: str | None, tabela: str | None, mascarar: bool,
-              timeout_s: float) -> dict:
+              timeout_s: float, conexao_s: float = CONEXAO_PADRAO_S) -> dict:
     """`banco_estrutura`: SQL FIXO e parametrizado do próprio Orquestra (não
     passa pelo modelo) — tabelas/views (com filtro) ou as colunas de uma."""
     t0 = time.monotonic()
-    cx = _abrir(conn_id, banco, min(TIMEOUT_MAX_S, timeout_s))
+    cx = _abrir(conn_id, banco, min(CONSULTA_MAX_S, timeout_s), conexao_s)
     try:
         cur = cx.cursor()
         if tabela:
@@ -935,10 +967,10 @@ def listar_conexoes(cur) -> list[dict]:
             for r in cur.fetchall()]
 
 
-def bancos_da_conexao(conn_id: str) -> dict:
+def bancos_da_conexao(conn_id: str, conexao_s: float = CONEXAO_PADRAO_S) -> dict:
     """Os bancos que a conexão alcança, com SHOWPLAN e o aviso de escrita
     por banco (C6: escrita só AVISA). Levanta `BancoIndisponivel`."""
-    cx = _abrir(conn_id, "master", 15)
+    cx = _abrir(conn_id, "master", 15, conexao_s)
     try:
         cur = cx.cursor()
         cur.execute(
@@ -962,13 +994,13 @@ def bancos_da_conexao(conn_id: str) -> dict:
         _fechar(cx)
 
 
-def _escrita_em_objeto(conn_id: str, banco: str) -> bool:
+def _escrita_em_objeto(conn_id: str, banco: str, conexao_s: float = CONEXAO_PADRAO_S) -> bool:
     """GRANT de escrita numa tabela/view/procedure (o nível de
     banco de `bancos_da_conexao` não vê — revisão da C1). Só ao salvar, e
     só para os bancos escolhidos. Se não der para conferir, avisa (na
     dúvida, o aviso é o lado seguro)."""
     try:
-        cx = _abrir(conn_id, banco, 20)
+        cx = _abrir(conn_id, banco, 20, conexao_s)
     except BancoIndisponivel:
         return True
     try:
@@ -991,7 +1023,7 @@ def _escrita_em_objeto(conn_id: str, banco: str) -> bool:
         _fechar(cx)
 
 
-def verificar_pares(pares: list[tuple[str, str]]) -> list[str]:
+def verificar_pares(pares: list[tuple[str, str]], conexao_s: float = CONEXAO_PADRAO_S) -> list[str]:
     """Ao salvar o agente: cada par NOVO ou alterado precisa abrir, existir e
     ter SHOWPLAN (§2 da spec). Levanta `ValueError` com a mensagem para o
     admin; devolve os AVISOS (login com escrita — C6: avisa, não bloqueia).
@@ -1002,8 +1034,11 @@ def verificar_pares(pares: list[tuple[str, str]]) -> list[str]:
         por_conexao.setdefault(conexao, []).append(banco)
     for conexao, bancos in por_conexao.items():
         try:
-            info = bancos_da_conexao(conexao)
-        except BancoIndisponivel:
+            info = bancos_da_conexao(conexao, conexao_s)
+        except BancoIndisponivel as e:
+            if "não respondeu" in str(e):
+                raise ValueError(f"a conexão '{conexao}' não abriu: o servidor não respondeu no tempo "
+                                 "configurado (Admin › Agentes › Gateway e limites)") from None
             raise ValueError(f"a conexão '{conexao}' não abriu (removida, não nativa, fora do ar ou "
                              "login recusado)") from None
         alcancaveis = {b["banco"].lower(): b for b in info["bancos"]}
@@ -1014,7 +1049,7 @@ def verificar_pares(pares: list[tuple[str, str]]) -> list[str]:
             if not b["showplan"]:
                 raise ValueError(f"o login da conexão '{conexao}' não tem SHOWPLAN no banco '{banco}' — "
                                  "sem ele o Orquestra não confere a consulta e o agente não usa o banco")
-            if b["escrita"] or info["sysadmin"] or _escrita_em_objeto(conexao, b["banco"]):
+            if b["escrita"] or info["sysadmin"] or _escrita_em_objeto(conexao, b["banco"], conexao_s):
                 avisos.append(f"o login de '{conexao}' pode gravar em '{banco}' — o agente só executa SELECT, "
                               "mas uma conexão só de leitura é a proteção extra recomendada")
     return avisos

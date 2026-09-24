@@ -46,6 +46,8 @@ _SR_ONLY_CONHECIDOS = {
     "components/utilitarios/FormEnviarArquivo.tsx": 1,
     "components/utilitarios/BarraTransferencia.tsx": 1,
     "components/utilitarios/ModalEnvioArquivo.tsx": 1,
+    # rótulo da busca da galeria de agentes — dentro do `relative w-full sm:w-72`
+    "components/agentes/GaleriaAgentes.tsx": 1,
 }
 
 

@@ -477,6 +477,10 @@ def main() -> int:
         "u) com 'Mascarar dados pessoais' ligado, uma coluna de CPF/e-mail aparece como [oculto] na resposta",
         "v) agente só de banco: sem 'Nenhum projeto definido' e sem grafo; convite fala dos bancos liberados",
         "w) nos bancos liberados, conferir synonyms/views/funções que apontem para linked server (spec §4.4)",
+        "x) abrir Agentes → cards com nome, descrição e o que consulta; 'usado por último' e 'conversa em andamento';"
+        " clicar entra no chat; 'Trocar agente' e o voltar do navegador voltam aos cards; com 6+ agentes, a busca",
+        "y) Admin › Agentes › Gateway e limites: 'Tempo para conectar ao banco' e 'Tempo máximo de cada consulta'"
+        " salvam dentro das faixas (5–60 e 5–120) e recusam fora delas; valem na pergunta seguinte",
     ):
         print(f"  [ ] {item}")
 

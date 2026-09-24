@@ -244,6 +244,22 @@ export function AgentesTab() {
             onChange={e => editar('agentes_fato_validade_dias', e.target.value)}
             hint="Depois disso o agente reconsulta em vez de confiar no que já sabia."
           />
+          <Input
+            label="Tempo para conectar ao banco (s)"
+            type="number" min={5} max={60}
+            value={cfg.agentes_banco_conexao_s ?? ''}
+            onChange={e => editar('agentes_banco_conexao_s', e.target.value)}
+            hint="Consulta a banco: quanto esperar o servidor aceitar a conexão (5 a 60). Vale também para listar os bancos aqui no admin."
+            data-agentes-banco-conexao
+          />
+          <Input
+            label="Tempo máximo de cada consulta (s)"
+            type="number" min={5} max={120}
+            value={cfg.agentes_banco_consulta_s ?? ''}
+            onChange={e => editar('agentes_banco_consulta_s', e.target.value)}
+            hint="Consulta a banco: passou disso, a consulta é cancelada no servidor (5 a 120). A pergunta inteira continua limitada a 4 minutos."
+            data-agentes-banco-consulta
+          />
         </div>
         {rascunho && (
           <div className="flex items-center gap-2">
