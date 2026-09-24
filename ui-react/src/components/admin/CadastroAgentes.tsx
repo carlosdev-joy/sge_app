@@ -9,13 +9,20 @@
 // só as antecipa para o admin não precisar de uma ida e volta. O acesso por
 // perfil nunca vale com ferramenta que toca o servidor, e o perfil `consulta`
 // nunca recebe agente (D3 da spec, confirmada pelo usuário).
+//
+// Consulta a banco (spec ferramenta-banco C2): UM interruptor liga as duas
+// ferramentas de banco; com ele, "Bancos liberados" e "Mascarar dados
+// pessoais". O PUT manda SEMPRE `bancos` — é o que diz à API que a tela
+// conhece a consulta a banco (sem o campo, ela preserva as de banco).
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import {
-  FERRAMENTAS, Q_AGENTES_ADMIN, ROTULO_ACESSO, dataHoraCurta, mensagemDeErro, normalizarFerramentas, problemasDoAgente,
+  FERRAMENTAS, FERRAMENTAS_BANCO, Q_AGENTES_ADMIN, ROTULO_ACESSO, dataHoraCurta, mensagemDeErro, normalizarFerramentas,
+  problemasDoAgente, usaBanco,
   type AcessoAgente, type AgenteAdminItem, type AgentesAdminResposta, type RascunhoAgente,
 } from '../../lib/agentes'
+import { BancosLiberados } from './BancosLiberados'
 import { Button } from '../ui/Button'
 import { InfoBanner } from '../ui/InfoBanner'
 import { Input, Textarea } from '../ui/Input'
@@ -30,10 +37,17 @@ const adminPost = <T,>(action: string) =>
 
 const VAZIO: RascunhoAgente = {
   id: '', nome: '', descricao: '', acesso: 'manual', perfis: ['desenvolvedor'], ferramentas: [], prompt: '', motivo: '',
+  bancos: [], mascarar_dados: true,
 }
 
-function resumoFerramentas(ferramentas: string[]): string {
-  return ferramentas.length ? ferramentas.map(f => FERRAMENTAS[f] ?? f).join(', ') : 'só conversa'
+function resumoFerramentas(ag: Pick<AgenteAdminItem, 'ferramentas' | 'bancos'>): string {
+  if (!ag.ferramentas.length) return 'só conversa'
+  const nomes = ag.ferramentas.filter(f => !usaBanco([f])).map(f => FERRAMENTAS[f] ?? f)
+  if (usaBanco(ag.ferramentas)) {
+    const n = ag.bancos?.length ?? 0
+    nomes.push(`consulta a banco (${n === 1 ? '1 banco' : `${n} bancos`})`)
+  }
+  return nomes.join(', ')
 }
 
 export function CadastroAgentes() {
@@ -63,17 +77,23 @@ export function CadastroAgentes() {
       const comum = {
         nome: rascunho.nome, descricao: rascunho.descricao, acesso: rascunho.acesso,
         perfis: rascunho.perfis, ferramentas: rascunho.ferramentas,
+        bancos: usaBanco(rascunho.ferramentas) ? rascunho.bancos : [],
+        // Sem a consulta a banco, o padrão (ligado): um valor escondido na
+        // tela não vai para a API — e sem banco o backend grava mesmo sem a 122.
+        mascarar_dados: usaBanco(rascunho.ferramentas) ? rascunho.mascarar_dados : true,
       }
       return editando
-        ? apiFetch<{ agente: AgenteAdminItem }>(`/agentes/admin/agentes/${encodeURIComponent(editando)}`,
+        ? apiFetch<{ agente: AgenteAdminItem; avisos?: string[] }>(`/agentes/admin/agentes/${encodeURIComponent(editando)}`,
           { method: 'PUT', body: JSON.stringify(comum) })
-        : apiFetch<{ agente: AgenteAdminItem }>('/agentes/admin/agentes', {
+        : apiFetch<{ agente: AgenteAdminItem; avisos?: string[] }>('/agentes/admin/agentes', {
           method: 'POST',
           body: JSON.stringify({ ...comum, id: rascunho.id, prompt: rascunho.prompt, motivo: rascunho.motivo }),
         })
     },
     onSuccess: async (r, v) => {
       toast.success(v.editando ? 'Agente atualizado' : `Agente “${r.agente.nome}” criado — desativado até você ligar`)
+      // C6: login com escrita só AVISA — a gravação já aconteceu.
+      for (const aviso of r.avisos ?? []) toast.info(aviso)
       setForm(null)
       await invalidar()
     },
@@ -138,7 +158,7 @@ export function CadastroAgentes() {
                   {ag.acesso === 'perfil' ? 'por perfil' : 'manual'}
                   <span className="text-dim">{` · ${ag.perfis.join(', ') || '—'}`}</span>
                 </td>
-                <td className="py-2 pr-3 min-w-[10rem]">{resumoFerramentas(ag.ferramentas)}</td>
+                <td className="py-2 pr-3 min-w-[10rem]">{resumoFerramentas(ag)}</td>
                 <td className="py-2 pr-3">
                   {ag.origem === 'codigo' ? (
                     <span className="text-dim">{ag.ativo ? 'sim' : 'não'} (em Interruptores)</span>
@@ -157,7 +177,8 @@ export function CadastroAgentes() {
                             onClick={() => setForm({
                               editando: ag.id,
                               rascunho: { ...VAZIO, id: ag.id, nome: ag.nome, descricao: ag.descricao, acesso: ag.acesso,
-                                          perfis: ag.perfis, ferramentas: ag.ferramentas },
+                                          perfis: ag.perfis, ferramentas: ag.ferramentas,
+                                          bancos: ag.bancos ?? [], mascarar_dados: ag.mascarar_dados ?? true },
                             })}>
                       Editar
                     </Button>
@@ -204,7 +225,8 @@ function FormAgente({ inicial, editando, dados, idsDoCodigo, perfis, perfisErro,
 }) {
   const [r, setR] = useState<RascunhoAgente>(inicial)
   const criacao = editando === null
-  const ferramentasFinais = normalizarFerramentas(r.ferramentas, dados.ferramentas)
+  const bancoLigado = usaBanco(r.ferramentas)
+  const ferramentasFinais = normalizarFerramentas(r.ferramentas, [...dados.ferramentas, ...(dados.ferramentas_banco ?? [])])
   const final = { ...r, ferramentas: ferramentasFinais }
   const problemas = problemasDoAgente(final, {
     criacao, ferramentasServidor: dados.ferramentas_servidor, perfisProibidos: dados.perfis_proibidos, idsDoCodigo,
@@ -268,10 +290,39 @@ function FormAgente({ inicial, editando, dados, idsDoCodigo, perfis, perfisErro,
               </label>
             ))}
           </div>
+          {(dados.ferramentas_banco ?? []).length > 0 && (
+            <label className="flex items-center gap-2 text-xs text-ink" data-agentes-consulta-banco>
+              <input type="checkbox" checked={bancoLigado}
+                     onChange={() => setR({
+                       ...r,
+                       ferramentas: bancoLigado
+                         ? r.ferramentas.filter(f => !usaBanco([f]))
+                         : [...r.ferramentas, ...FERRAMENTAS_BANCO],
+                     })} />
+              Consulta a banco <span className="text-dim">(só SELECT, nos bancos liberados abaixo)</span>
+            </label>
+          )}
           <p className="text-[11px] text-dim">
             Ferramenta nova só por desenvolvimento. “projeto” entra sozinho quando outra ferramenta precisa dele.
           </p>
         </fieldset>
+
+        {bancoLigado && (
+          <fieldset className="flex flex-col gap-2">
+            <legend className="text-xs font-semibold text-ink mb-1">Bancos liberados</legend>
+            <BancosLiberados pares={r.bancos} onPares={bancos => setR(atual => ({ ...atual, bancos }))} />
+            <p className="text-[11px] text-dim">
+              O agente só executa SELECT, com no máximo 100 linhas e 30 s por consulta, mesmo que o login da conexão
+              possa gravar. Ao salvar, o Orquestra confere cada banco novo no servidor.
+            </p>
+            <label className="flex items-center gap-2 text-xs text-ink" data-agentes-mascarar>
+              <input type="checkbox" checked={r.mascarar_dados}
+                     onChange={() => setR({ ...r, mascarar_dados: !r.mascarar_dados })} />
+              Mascarar dados pessoais
+              <span className="text-dim">(CPF, CNPJ, e-mail e telefone não chegam à IA)</span>
+            </label>
+          </fieldset>
+        )}
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-xs font-semibold text-ink mb-1">Acesso</legend>

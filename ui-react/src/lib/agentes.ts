@@ -28,6 +28,39 @@ export function ehSoConversa(ag: Pick<AgenteCatalogo, 'ferramentas'>): boolean {
   return Array.isArray(ag.ferramentas) && ag.ferramentas.length === 0
 }
 
+/**
+ * Agente sem nenhuma ferramenta de DataStage (só conversa ou só banco): sem
+ * projeto nem grafo. Ausente = API anterior à Fase B = DataStage completo.
+ */
+export function semProjetoDataStage(ag: Pick<AgenteCatalogo, 'ferramentas'>): boolean {
+  return Array.isArray(ag.ferramentas)
+    && !ag.ferramentas.some(f => ['resolver_projeto', 'base', 'dsx_consulta', 'dsjob', 'isx_extrair'].includes(f))
+}
+
+/** O convite do chat vazio e o placeholder, conforme o que o agente consulta. */
+export function textosDoChat(ferramentas: readonly string[] | undefined): {
+  convite: string; exemplo: string | null; placeholder: string
+} {
+  const lista = ferramentas ?? ['resolver_projeto']  // sem o campo = DataStage
+  const dataStage = lista.some(f => ['resolver_projeto', 'base', 'dsx_consulta', 'dsjob', 'isx_extrair'].includes(f))
+  const banco = lista.some(f => f === 'banco_estrutura' || f === 'banco_consulta')
+  if (dataStage) {
+    return {
+      convite: 'Pergunte sobre um job, um fluxo ou uma tabela do DataStage.',
+      exemplo: '“o que o job BiCvp_Carga_Clientes faz?”',
+      placeholder: 'Pergunte sobre um job, fluxo ou tabela…',
+    }
+  }
+  if (banco) {
+    return {
+      convite: 'Pergunte sobre os dados dos bancos liberados para este agente — ele consulta e mostra o SQL que usou.',
+      exemplo: '“quantos registros entraram ontem na tabela de propostas?”',
+      placeholder: 'Pergunte sobre os dados…',
+    }
+  }
+  return { convite: 'Faça sua pergunta.', exemplo: null, placeholder: 'Sua pergunta…' }
+}
+
 /** Os 8 estados de `ia_provedor.sondar_usuario` (SONDA_*). */
 export type EstadoSonda =
   | 'ok'
@@ -74,6 +107,37 @@ export interface ArtefatoFerramenta {
   repetida?: boolean
   /** Spec admin B2: a ferramenta não é deste agente — recusada, não rodou. */
   recusada?: string
+  /**
+   * Consulta a banco (spec ferramenta-banco §5): onde rodou e o que devolveu —
+   * nunca as linhas. `linhas` só existe quando EXECUTOU; `recusada`/`erro`
+   * quando não. O SQL executado vem intacto em `args.sql`.
+   */
+  banco?: MetaBanco
+}
+
+export interface MetaBanco {
+  conexao: string
+  banco: string
+  linhas?: number
+  havia_mais?: boolean
+  ms?: number
+  recusada?: boolean
+  erro?: boolean
+}
+
+export const FERRAMENTAS_BANCO = ['banco_estrutura', 'banco_consulta'] as const
+
+/** As consultas SQL que rodaram de verdade numa resposta, na ordem. */
+export function consultasExecutadas(artefatos: readonly ArtefatoFerramenta[] | undefined): {
+  sql: string; meta: MetaBanco
+}[] {
+  return (artefatos ?? []).flatMap(a => {
+    const sql = a.args?.sql
+    return a.ferramenta === 'banco_consulta' && a.banco && typeof a.banco.linhas === 'number'
+      && typeof sql === 'string' && sql
+      ? [{ sql, meta: a.banco }]
+      : []
+  })
 }
 
 /** Estados de `etl_agente_proposta.estado` (F5). */
@@ -230,6 +294,14 @@ export const FERRAMENTAS: Record<string, string> = {
   dsjob: 'DataStage ao vivo',
   dsx_consulta: 'arquivo DSX',
   isx_extrair: 'extração ISX',
+  banco_estrutura: 'estrutura do banco',
+  banco_consulta: 'banco',
+}
+
+/** O nome na linha "Consultei:" — com o par, quando é consulta a banco. */
+export function rotuloDoArtefato(a: ArtefatoFerramenta): string {
+  const nome = FERRAMENTAS[a.ferramenta] ?? a.ferramenta
+  return a.banco ? `${nome} ${a.banco.conexao}/${a.banco.banco}` : nome
 }
 
 /**
@@ -631,6 +703,7 @@ export type AcessoAgente = 'manual' | 'perfil'
 
 /** Chave do cache de `GET /agentes/admin/agentes` — a mesma no Cadastro, na aba e no Admin. */
 export const Q_AGENTES_ADMIN = ['agentes-admin-agentes'] as const
+export const Q_CONEXOES_BANCO = ['agentes-admin-conexoes'] as const
 
 export const ROTULO_ACESSO: Record<AcessoAgente, string> = {
   manual: 'Manual — o admin libera usuário a usuário',
@@ -672,6 +745,36 @@ export interface RascunhoAgente {
   ferramentas: string[]
   prompt: string
   motivo: string
+  /** Pares liberados — só valem com as ferramentas de banco. */
+  bancos: BancoLiberado[]
+  mascarar_dados: boolean
+}
+
+export function usaBanco(ferramentas: readonly string[]): boolean {
+  return ferramentas.some(f => (FERRAMENTAS_BANCO as readonly string[]).includes(f))
+}
+
+export function mesmoPar(a: BancoLiberado, b: BancoLiberado): boolean {
+  return a.conexao === b.conexao && a.banco.toLowerCase() === b.banco.toLowerCase()
+}
+
+/** Liga/desliga um par (o banco sem diferenciar maiúsculas, como o servidor). */
+export function alternarPar(pares: readonly BancoLiberado[], par: BancoLiberado): BancoLiberado[] {
+  return pares.some(p => mesmoPar(p, par)) ? pares.filter(p => !mesmoPar(p, par)) : [...pares, par]
+}
+
+/** Resposta de `GET /agentes/admin/conexoes`. */
+export interface ConexaoBanco {
+  conexao: string
+  servidor: string
+  descricao: string | null
+}
+
+/** Resposta de `GET /agentes/admin/conexoes/{conn_id}/bancos`. */
+export interface BancosDaConexao {
+  conexao: string
+  bancos: { banco: string; showplan: boolean; escrita: boolean }[]
+  sysadmin: boolean
 }
 
 /**
@@ -700,6 +803,9 @@ export function problemasDoAgente(r: RascunhoAgente, opcoes: {
   const servidor = r.ferramentas.filter(f => opcoes.ferramentasServidor.includes(f))
   if (r.acesso === 'perfil' && servidor.length) {
     erros.push(`Acesso por perfil não vale com ferramenta que toca o servidor (${servidor.join(', ')}) — use o acesso manual.`)
+  }
+  if (usaBanco(r.ferramentas) && !(r.bancos ?? []).length) {
+    erros.push('Consulta a banco: escolha ao menos um banco liberado.')
   }
   if (opcoes.criacao) {
     if (!r.prompt.trim()) erros.push('Escreva o prompt inicial.')

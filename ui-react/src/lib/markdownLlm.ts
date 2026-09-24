@@ -41,7 +41,10 @@ export type BlocoMd =
   | { tipo: 'lista'; ordenada: boolean; itens: PedacoInline[][] }
   | { tipo: 'tabela'; cabecalho: PedacoInline[][]; linhas: PedacoInline[][][] }
   | { tipo: 'separador' }
-  | { tipo: 'codigo'; texto: string }
+  // `linguagem`: o que vem depois da cerca (```sql → 'sql'), em minúsculas.
+  // Os agentes desenham ```sql como "Consulta SQL" (spec ferramenta-banco C5);
+  // quem não usa o campo continua igual.
+  | { tipo: 'codigo'; texto: string; linguagem?: string }
 
 // ── Inline ──────────────────────────────────────────────────────────────────
 // `**negrito**`, `*itálico*`/`_itálico_` e `` `código` ``. Uma passada só, com
@@ -163,12 +166,13 @@ export function parseMarkdown(fonte: string): BlocoMd[] {
     // título ou tabela.
     if (linha.startsWith('```')) {
       fecharParagrafo()
+      const linguagem = linha.slice(3).trim().split(/\s+/)[0].toLowerCase()
       const corpo: string[] = []
       i++
       while (i < linhas.length && !linhas[i].trim().startsWith('```')) {
         corpo.push(linhas[i]); i++
       }
-      blocos.push({ tipo: 'codigo', texto: corpo.join('\n') })
+      blocos.push(linguagem ? { tipo: 'codigo', texto: corpo.join('\n'), linguagem } : { tipo: 'codigo', texto: corpo.join('\n') })
       continue
     }
 
