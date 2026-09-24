@@ -581,6 +581,52 @@ export function chaveDaConversa(agenteId: string, matricula: string): string {
   return `${PREFIXO_CONVERSA_AGENTE}${matricula.trim().toUpperCase()}_${agenteId}`
 }
 
+/**
+ * O agente usado por último, por usuário — só uma MARCA no card (a ordem dos
+ * cards é a do catálogo). Mesmo prefixo das conversas: o logout apaga junto.
+ * `__ultimo` nunca colide com `chaveDaConversa` — id de agente começa por letra.
+ */
+export function chaveDoUltimoAgente(matricula: string): string {
+  return `${PREFIXO_CONVERSA_AGENTE}${matricula.trim().toUpperCase()}__ultimo`
+}
+
+/** O que um agente consulta — o que o card mostra antes do usuário entrar. */
+export type Capacidade = 'datastage' | 'banco' | 'conversa'
+
+export const ROTULO_CAPACIDADE: Record<Capacidade, string> = {
+  datastage: 'DataStage',
+  banco: 'Consulta a banco',
+  conversa: 'Só conversa',
+}
+
+const FERRAMENTAS_DS = ['resolver_projeto', 'base', 'dsx_consulta', 'dsjob', 'isx_extrair']
+
+/** Sem o campo `ferramentas` (API anterior à Fase B) = o DataStage completo. */
+export function capacidadesDoAgente(ag: Pick<AgenteCatalogo, 'ferramentas'>): Capacidade[] {
+  if (!Array.isArray(ag.ferramentas)) return ['datastage']
+  const caps: Capacidade[] = []
+  if (ag.ferramentas.some(f => FERRAMENTAS_DS.includes(f))) caps.push('datastage')
+  if (ag.ferramentas.some(f => f === 'banco_estrutura' || f === 'banco_consulta')) caps.push('banco')
+  return caps.length ? caps : ['conversa']
+}
+
+function semAcento(t: string): string {
+  return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+}
+
+/** Busca da galeria: cada palavra do termo precisa aparecer no nome, na
+ *  descrição ou nas capacidades — sem diferenciar acento nem maiúsculas. */
+export function filtrarAgentes<T extends Pick<AgenteCatalogo, 'nome' | 'descricao' | 'ferramentas'>>(
+  agentes: readonly T[], termo: string,
+): T[] {
+  const palavras = semAcento(termo).split(/\s+/).filter(Boolean)
+  if (!palavras.length) return [...agentes]
+  return agentes.filter(a => {
+    const alvo = semAcento([a.nome, a.descricao, ...capacidadesDoAgente(a).map(c => ROTULO_CAPACIDADE[c])].join(' '))
+    return palavras.every(p => alvo.includes(p))
+  })
+}
+
 
 // ── Prompt do domínio: versões (spec docs/spec-agentes-admin.md A2 + BK-1) ──
 

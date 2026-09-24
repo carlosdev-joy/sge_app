@@ -246,7 +246,20 @@ CONFIG_DEFAULTS: dict[str, str] = {
     "agentes_cadastro_texto": "Solicite o cadastro no gateway de IA ao administrador.",
     "agentes_ssh_max": "10",
     "agentes_fato_validade_dias": "7",
+    # Consulta a banco (spec ferramenta-banco): quanto esperar o servidor
+    # aceitar a conexão e quanto cada consulta pode rodar — faixas em agentes_sql.
+    "agentes_banco_conexao_s": "10",
+    "agentes_banco_consulta_s": "30",
 }
+
+
+def limites_banco(config: dict[str, str]) -> tuple[int, int]:
+    """(conexão, consulta) em segundos, dentro das faixas — lixo na config
+    vira o padrão, nunca derruba a pergunta."""
+    return (asql.limitar(config.get("agentes_banco_conexao_s"), asql.CONEXAO_MIN_S, asql.CONEXAO_MAX_S,
+                         asql.CONEXAO_PADRAO_S),
+            asql.limitar(config.get("agentes_banco_consulta_s"), asql.CONSULTA_MIN_S, asql.CONSULTA_MAX_S,
+                         asql.CONSULTA_PADRAO_S))
 
 
 def carregar_config(cur) -> dict[str, str]:
@@ -779,7 +792,8 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
                                matricula: str | None, extracoes_isx: int,
                                resta_agora, validade_dias: int = 7,
                                agente: str = AGENTE_DATASTAGE, bancos=(),
-                               mascarar: bool = True) -> tuple[dict, str | None]:
+                               mascarar: bool = True,
+                               limites_s=None) -> tuple[dict, str | None]:
     """Executa UMA ferramenta pedida pelo modelo, sempre pela allowlist —
     NUNCA deixa `base`/`dsjob`/`dsx_consulta`/`isx_extrair` rodar sem
     `projeto` resolvido (a guarda do risco 28). `abrir_conn` é uma fábrica
@@ -803,7 +817,7 @@ async def _executar_ferramenta(abrir_conn, nome: str, args: dict, *, projeto: st
             abrir_conn, nome, args, projeto=projeto, ssh_max=ssh_max, espera_max_s=espera_max_s,
             acao_editar=acao_editar, matricula=matricula, extracoes_isx=extracoes_isx,
             resta_agora=resta_agora, validade_dias=validade_dias, agente=agente, bancos=bancos,
-            mascarar=mascarar)
+            mascarar=mascarar, limites_s=limites_s)
     except af.ServidorOcupado as e:
         return {"texto": af.redigir(str(e))}, None  # passageiro: pode tentar de novo
     except DsConsoleError as e:
@@ -821,11 +835,13 @@ async def _executar_ferramenta_interna(abrir_conn, nome: str, args: dict, *, pro
                                        matricula: str | None, extracoes_isx: int,
                                        resta_agora, validade_dias: int = 7,
                                        agente: str = AGENTE_DATASTAGE, bancos=(),
-                                       mascarar: bool = True) -> tuple[dict, str | None]:
+                                       mascarar: bool = True,
+                                       limites_s=None) -> tuple[dict, str | None]:
     """O corpo de fato de `_executar_ferramenta` — pode levantar; quem chama
     (`_executar_ferramenta`) é quem garante que nunca escapa."""
     if nome in FERRAMENTAS_BANCO:
-        return await _ferramenta_banco(nome, args, bancos=bancos, mascarar=mascarar, resta_agora=resta_agora), None
+        return await _ferramenta_banco(nome, args, bancos=bancos, mascarar=mascarar, resta_agora=resta_agora,
+                                       limites=limites_s), None
 
     if nome == "resolver_projeto" and _pede_listagem(args):
         # O prefixo do job não diz o projeto: lista as opções para o usuário
@@ -997,7 +1013,8 @@ def _par_liberado(args: dict, bancos) -> tuple[str, str] | None:
     return next(((c, b) for c, b in pares if c == conexao and b.lower() == banco.lower()), None)
 
 
-async def _ferramenta_banco(nome: str, args: dict, *, bancos, mascarar: bool, resta_agora) -> dict:
+async def _ferramenta_banco(nome: str, args: dict, *, bancos, mascarar: bool, resta_agora,
+                            limites=None) -> dict:
     """`banco_estrutura` / `banco_consulta` (spec ferramenta-banco §4–§5).
     Ao modelo só vão mensagens fixas e dados já mascarados; `sql` é o texto
     EXECUTADO (vai intacto para `artefatos_json`); `meta` é o que a tela
@@ -1007,7 +1024,21 @@ async def _ferramenta_banco(nome: str, args: dict, *, bancos, mascarar: bool, re
         pares = ", ".join(f"{c}/{b}" for c, b in bancos) or "nenhum"
         return {"texto": f"Banco indisponível para este agente. Bancos liberados: {pares}."}
     conexao, banco = par
-    tempo = min(asql.TIMEOUT_MAX_S, resta_agora() - 5)
+    # `None` = os padrões. Não como valor padrão do parâmetro: agentes_sql
+    # importa este módulo (via agentes_prompt), e ler `asql.*` na DEFINIÇÃO
+    # quebrava quem importa agentes_sql primeiro (importação circular).
+    conexao_s, consulta_s = limites or (asql.CONEXAO_PADRAO_S, asql.CONSULTA_PADRAO_S)
+    # O orçamento da pergunta (240 s) manda: no pior caso gastam-se conectar +
+    # conferir o plano + executar, e a soma tem de caber no que resta — senão
+    # quem corta é o `wait_for` da rodada, a pergunta inteira vira "tempo
+    # esgotado" e a vaga fica presa até a thread terminar. O plano só compila
+    # (milissegundos): teto próprio pequeno, e a execução fica com o resto —
+    # assim o tempo configurado vale inteiro sempre que couber (revisão dos
+    # tempos configuráveis, 2 rodadas).
+    resta = resta_agora() - 5
+    conectar = min(conexao_s, max(1, resta / 3))
+    plano = min(asql.PLANO_MAX_S, max(1, (resta - conectar) / 4))
+    tempo = min(consulta_s, resta - conectar - plano)
     if tempo < 2:
         return {"texto": "Sem tempo para consultar o banco nesta pergunta — responda com o que já tem."}
     meta = {"conexao": conexao, "banco": banco}
@@ -1016,11 +1047,12 @@ async def _ferramenta_banco(nome: str, args: dict, *, bancos, mascarar: bool, re
             filtro = str(args.get("filtro") or "").strip()[:128] or None
             tabela = str(args.get("tabela") or "").strip()[:256] or None
             r = await _na_vaga(asql.estrutura, conexao, banco, filtro=filtro, tabela=tabela,
-                               mascarar=mascarar, timeout_s=tempo)
+                               mascarar=mascarar, timeout_s=tempo, conexao_s=conectar)
             return {"texto": r["texto"], "meta": {**meta, "linhas": r["linhas"], "ms": r["ms"]}}
         liberados = {b for c, b in bancos if c == conexao}
         r = await _na_vaga(asql.consultar, conexao, banco, args.get("sql"),
-                           bancos_da_conexao=liberados, mascarar=mascarar, timeout_s=tempo)
+                           bancos_da_conexao=liberados, mascarar=mascarar, timeout_s=tempo,
+                           conexao_s=conectar, plano_s=plano)
         return {"texto": r["texto"], "sql": r["sql"],
                 "meta": {**meta, "linhas": len(r["linhas"]), "havia_mais": r["havia_mais"], "ms": r["ms"]}}
     except asql.SqlRecusado as e:
@@ -1464,7 +1496,8 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
                     validade_fatos_dias: int = 7, falhas_anteriores: set[str] | None = None,
                     emit_status=None, dominio: str | None = None, agente: str = AGENTE_DATASTAGE,
                     ferramentas: tuple[str, ...] = FERRAMENTAS_DATASTAGE, bancos=(),
-                    mascarar: bool = True) -> dict:
+                    mascarar: bool = True,
+                    limites_banco_s=None) -> dict:
     """Uma rodada completa do agente DataStage: pede ferramenta ao modelo
     (no máximo `MAX_RODADAS_FERRAMENTA` vezes), executa cada uma pela
     allowlist, e devolve a resposta final. Controla o orçamento de tempo
@@ -1487,6 +1520,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
 
     `bancos`/`mascarar` (spec ferramenta-banco): os pares `(conexao, banco)`
     liberados ao agente e o interruptor de dados pessoais (C2).
+    `limites_banco_s`: (conectar, consultar) em segundos, da config do admin.
 
     Nunca levanta por conta do provedor/ferramenta: erro vira `status`
     nomeado com uma mensagem para o usuário, sempre 200 para quem chamou."""
@@ -1660,7 +1694,7 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
                                          ssh_max=ssh_max, espera_max_s=espera, acao_editar=acao_editar,
                                          matricula=matricula, extracoes_isx=extracoes_isx, resta_agora=_resta,
                                          validade_dias=validade_fatos_dias, agente=agente, bancos=bancos,
-                                         mascarar=mascarar),
+                                         mascarar=mascarar, limites_s=limites_banco_s),
                     timeout=max(1.0, resta - 2))
             except (asyncio.TimeoutError, TimeoutError):
                 return {**texto_esgotado, "projeto": projeto, "artefatos": artefatos}

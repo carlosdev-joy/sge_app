@@ -1042,8 +1042,16 @@ Agentes (o item do menu) e o **agente** DataStage em si — este **usuário a us
 para o perfil **Desenvolvedor ETL**. Com a tela e sem o agente, a tela abre e explica.
 Depois de receber a liberação, **saia e entre de novo** para ela valer.
 
-**Outros agentes.** O administrador pode criar outros agentes (§4.11) — quando houver
-mais de um liberado para você, escolha no seletor **Agente**, no alto da tela. Um agente
+**Escolher o agente.** Ao abrir **Agentes**, cada agente liberado para você aparece num
+**card** com o nome, a descrição e o que ele consulta (*DataStage*, *Consulta a banco* ou
+*Só conversa*). O card mostra também o agente **usado por último** e se há uma **conversa
+em andamento** com ele neste navegador. Com 6 agentes ou mais aparece a **busca** (pelo
+nome, pelo que está na descrição ou pelo tipo — *DataStage*, *banco*, *conversa*; com um
+resultado só, Enter já entra nele). Clique no card para
+conversar; **Trocar agente**, no alto da conversa, volta aos cards — o *voltar* do
+navegador também.
+
+**Outros agentes.** O administrador pode criar outros agentes (§4.11). Um agente
 **só de conversa** não acessa sistema nenhum: responde com o que sabe e com o que você
 informar, sem projeto, grafo, propostas nem curadoria. Um agente com **parte das
 ferramentas** funciona como o DataStage, mas só consulta o que lhe foi dado — se ele
@@ -1057,7 +1065,7 @@ responderia à sua pergunta). Cada consulta que ele usou aparece num bloco **Con
 com realce e o botão **Copiar**; quando fizer sentido, ele **sugere** uma consulta para você
 rodar e aprofundar. Abaixo da resposta, **Consultas executadas** lista o SQL **exatamente
 como rodou**, com o banco, quantas linhas voltaram e quanto levou, e a linha *Consultei:*
-mostra *banco `<conexão>/<banco>`*. Cada consulta traz **até 100 linhas** e dura **até 30 s**
+mostra *banco `<conexão>/<banco>`*. Cada consulta traz **até 100 linhas** e dura até o tempo máximo que o administrador configurou (padrão **30 s**)
 — para volumes maiores, peça que ele agregue ou filtre. Se o administrador ligou *Mascarar
 dados pessoais*, o Orquestra esconde da IA o que reconhece nos dados que vêm do banco: CPF e
 CNPJ **válidos**, e-mail, telefone **formatado** (`(11) 91234-5678`, `+55 …`) e colunas com
@@ -1189,8 +1197,8 @@ Lembretes:
   com o prompt padrão). Roteiro em `docs/release-notes/agentes-admin.md`. **Consulta a
   banco**: migration **122** na etapa 6c; API e `dist/`; nos bancos que os agentes vão
   consultar, o login da conexão precisa de **SHOWPLAN** (e, de preferência, só leitura).
-  A migration **123** registra a versão desta entrega em Admin › Versões — o número do
-  cabeçalho sobe sozinho. Roteiro em `docs/release-notes/agentes-banco.md`.
+  As migrations **123** e **124** registram as versões destas entregas em Admin › Versões
+  — o número do cabeçalho sobe sozinho. Roteiro em `docs/release-notes/agentes-banco.md`.
 - **E-mail (§3.5-A / §3.5-B / §4.10)**: migration **111** na etapa 6c;
   `dags/utils/` ganhou dois arquivos → **reiniciar o worker** do Airflow;
   opcional no `.env` do host: `EMAIL_SENDMAIL_BIN` (padrão `/usr/sbin/sendmail`),
@@ -1531,6 +1539,13 @@ Desligado, o chat e a curadoria respondem *"Agente DataStage desligado"*.
   ao mesmo tempo, para não disputar o servidor com o Console, os Utilitários e as DAGs.
 - **Validade dos fatos (dias)** (padrão 7): depois disso o agente reconsulta ao vivo em
   vez de confiar no que já leu pelo `dsjob`.
+- **Tempo para conectar ao banco (s)** (5–60, padrão 10): na consulta a banco, quanto
+  esperar o servidor aceitar a conexão — vale também para listar os bancos no formulário
+  do agente. Se o servidor não responder no tempo, o agente e o formulário dizem quanto o
+  Orquestra esperou: aumente aqui se o servidor for lento para aceitar conexões.
+- **Tempo máximo de cada consulta (s)** (5–120, padrão 30): passou disso, a consulta é
+  cancelada no servidor. A pergunta inteira continua limitada a **4 minutos** — tempos
+  altos consomem esse orçamento (uma pergunta usa até 4 ferramentas).
 
 **Liberar a TELA primeiro.** A tela Agentes (`tela_agentes`) nasce **só no perfil
 admin**. Para os demais, marque **Agentes** em Usuários & Perfis → *Perfis* (no perfil

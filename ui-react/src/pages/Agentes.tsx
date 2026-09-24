@@ -4,6 +4,10 @@
 // `components/agentes/` só desenham. Sem subrotas — agente e conversa vão em
 // query (`?agente=&conversa=`), como a spec define.
 //
+// Sem `?agente=`, a tela abre na GALERIA (cards dos agentes liberados); o card
+// escolhido vira `?agente=<id>` numa entrada NOVA do histórico — o "voltar" do
+// navegador e o botão "Agentes" do cabeçalho levam de volta aos cards.
+//
 // Três estados que a tela precisa distinguir, e que o critério 1 da F3
 // verifica: (a) SEM grant nenhum, o catálogo volta VAZIO e isso não é erro —
 // é o estado normal antes de o admin liberar o primeiro agente, e merece uma
@@ -13,19 +17,22 @@
 import { useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Bot, ClipboardCheck, History, MessageSquarePlus } from 'lucide-react'
+import { Bot, ClipboardCheck, History, LayoutGrid, MessageSquarePlus } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { apiFetch } from '../lib/api'
 import type {
   AgenteCatalogo, ArtefatoFerramenta, CatalogoResposta, ConversaDetalhe, DecisaoProposta, EstadoSonda,
   MensagemChat, PropostaAgente, RespostaConversa, StatusAgentes,
 } from '../lib/agentes'
-import { SONDA, aplicarDecisao, chaveDaConversa, codigoDoErro, mensagemDeErro, semProjetoDataStage } from '../lib/agentes'
+import {
+  SONDA, aplicarDecisao, chaveDaConversa, chaveDoUltimoAgente, codigoDoErro, mensagemDeErro, semProjetoDataStage,
+} from '../lib/agentes'
 import { conversarPorStream, rotaStreamAusente } from '../lib/agentesStream'
 import { HistoricoConversas } from '../components/agentes/HistoricoConversas'
 import { AvisoSonda } from '../components/agentes/AvisoSonda'
 import { ChatAgente } from '../components/agentes/ChatAgente'
 import { CuradoriaAprendizados } from '../components/agentes/CuradoriaAprendizados'
+import { GaleriaAgentes, GaleriaCarregando } from '../components/agentes/GaleriaAgentes'
 import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
 import { IndicadorProjeto } from '../components/agentes/IndicadorProjeto'
 import { toast } from '../components/ui/Toast'
@@ -47,6 +54,24 @@ function lerGuardada(agenteId: string, matricula: string): ConversaGuardada | nu
     return dado
   } catch {
     return null  // storage bloqueado/corrompido nunca derruba a tela
+  }
+}
+
+function lerUltimo(matricula: string): string | null {
+  if (!matricula) return null
+  try {
+    return localStorage.getItem(chaveDoUltimoAgente(matricula))
+  } catch {
+    return null
+  }
+}
+
+function marcarUltimo(matricula: string, agenteId: string) {
+  if (!matricula) return
+  try {
+    localStorage.setItem(chaveDoUltimoAgente(matricula), agenteId)
+  } catch {
+    /* só uma marca no card: sem storage, ela não aparece */
   }
 }
 
@@ -453,6 +478,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
 export default function Agentes() {
   const [params, setParams] = useSearchParams()
   const agenteParam = params.get('agente')
+  const matricula = useAuthStore(s => s.user?.matricula ?? '')
 
   const catalogo = useQuery<CatalogoResposta>({
     queryKey: ['agentes-catalogo'],
@@ -465,18 +491,28 @@ export default function Agentes() {
   })
 
   const agentes = useMemo(() => catalogo.data?.agentes ?? [], [catalogo.data])
-  const agente = useMemo(
-    () => agentes.find(a => a.id === agenteParam) ?? agentes[0] ?? null,
-    [agentes, agenteParam])
+  // Só o agente PEDIDO na URL; sem ele (ou um que não é liberado), a galeria.
+  const agente = useMemo(() => agentes.find(a => a.id === agenteParam) ?? null, [agentes, agenteParam])
 
-  if (catalogo.isLoading) {
-    return <p className="text-sm text-dim p-6">Carregando agentes…</p>
+  function escolher(id: string) {
+    marcarUltimo(matricula, id)
+    const p = new URLSearchParams(params)
+    p.set('agente', id)
+    setParams(p)  // entrada nova no histórico: "voltar" do navegador volta aos cards
   }
+
+  function voltarAosCards() {
+    const p = new URLSearchParams(params)
+    p.delete('agente')
+    setParams(p)
+  }
+
+  if (catalogo.isLoading) return <GaleriaCarregando />
 
   // Critério 1 da F3: sem grant o catálogo volta VAZIO — e isso é o estado
   // normal antes de o admin liberar o primeiro agente, não um erro. A tela
   // abre e explica; quem chamar a API direto é que leva 403.
-  if (!agente) {
+  if (agentes.length === 0) {
     return (
       <div className="p-6 max-w-2xl" data-agentes-vazio>
         <div className="bg-panel border border-edge rounded-lg p-6 shadow-sm text-center">
@@ -496,6 +532,31 @@ export default function Agentes() {
     )
   }
 
+  if (!agente) {
+    const ultimo = lerUltimo(matricula)
+    const sonda = status.data?.estado
+    return (
+      <GaleriaAgentes
+        agentes={agentes}
+        onEscolher={escolher}
+        info={id => ({
+          mensagensEmAndamento: lerGuardada(id, matricula)?.mensagens.length ?? 0,
+          ultimo: id === ultimo,
+        })}
+        // O gateway vale para TODOS os agentes: se ele barra, o aviso vem antes
+        // da escolha (a conversa ia bloquear de qualquer jeito).
+        aviso={sonda && SONDA[sonda]?.bloqueia ? (
+          <AvisoSonda
+            estado={sonda}
+            cadastroTexto={catalogo.data?.cadastro_texto}
+            onTentarDeNovo={() => { void status.refetch() }}
+            recarregando={status.isFetching}
+          />
+        ) : undefined}
+      />
+    )
+  }
+
   return (
     <div className="p-4 sm:p-6 flex flex-col gap-4 h-[calc(100vh-7rem)] min-h-0">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -506,23 +567,18 @@ export default function Agentes() {
           </h1>
           <p className="text-sm text-dim mt-0.5 max-w-2xl">{agente.descricao}</p>
         </div>
-        {agentes.length > 1 && (
-          <label className="text-sm text-dim flex items-center gap-2">
-            Agente
-            <select
-              value={agente.id}
-              onChange={e => {
-                const p = new URLSearchParams(params)
-                p.set('agente', e.target.value)
-                setParams(p, { replace: true })
-              }}
-              className="rounded border border-edge bg-panel text-ink px-2 py-1 text-sm
-                         focus:outline-none focus:ring-2 focus:ring-[#1A5FA8]"
-            >
-              {agentes.map(a => <option key={a.id} value={a.id}>{a.nome}</option>)}
-            </select>
-          </label>
-        )}
+        {/* No lugar do antigo seletor: volta aos cards (o mesmo que o "voltar"). */}
+        <button
+          type="button"
+          onClick={voltarAosCards}
+          data-agentes-trocar
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-edge bg-panel text-ink
+                     text-[13px] font-medium transition-colors hover:bg-canvas
+                     focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1A5FA8]"
+        >
+          <LayoutGrid className="w-4 h-4" aria-hidden="true" />
+          {agentes.length > 1 ? 'Trocar agente' : 'Agentes'}
+        </button>
       </header>
 
       {/* `key`: trocar de agente descarta a conversa anterior por completo. */}

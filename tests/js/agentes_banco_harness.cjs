@@ -102,6 +102,29 @@ try {
   assert.doesNotMatch(lib.textosDoChat(['banco_consulta']).placeholder, /job/)
   assert.equal(lib.textosDoChat([]).exemplo, null)
 
+  // ── galeria de agentes ──
+  assert.deepEqual(lib.capacidadesDoAgente({}), ['datastage'], 'API antiga = DataStage')
+  assert.deepEqual(lib.capacidadesDoAgente({ ferramentas: [] }), ['conversa'])
+  assert.deepEqual(lib.capacidadesDoAgente({ ferramentas: ['banco_consulta'] }), ['banco'])
+  assert.deepEqual(lib.capacidadesDoAgente({ ferramentas: ['resolver_projeto', 'base', 'banco_estrutura'] }),
+                   ['datastage', 'banco'])
+  const ags = [
+    { id: 'datastage', nome: 'Mapeamento DataStage', descricao: 'Explica fluxos e lineage' },
+    { id: 'analista_dw', nome: 'Analista do DW', descricao: 'Responde sobre adesões', ferramentas: ['banco_consulta'] },
+    { id: 'padroes', nome: 'Padrões de código', descricao: 'Tira dúvidas de convenções', ferramentas: [] },
+  ]
+  assert.deepEqual(lib.filtrarAgentes(ags, '').map(a => a.id), ['datastage', 'analista_dw', 'padroes'])
+  assert.deepEqual(lib.filtrarAgentes(ags, 'ADESOES').map(a => a.id), ['analista_dw'], 'sem acento nem caixa')
+  assert.deepEqual(lib.filtrarAgentes(ags, 'banco').map(a => a.id), ['analista_dw'], 'pela capacidade')
+  assert.deepEqual(lib.filtrarAgentes(ags, 'padroes conv').map(a => a.id), ['padroes'], 'todas as palavras')
+  assert.deepEqual(lib.filtrarAgentes(ags, 'xyz'), [])
+  assert.deepEqual(lib.filtrarAgentes(ags, 'datastage').map(a => a.id), ['datastage'], 'ordem do catálogo')
+  const ultimo = lib.chaveDoUltimoAgente(' cvp123 ')
+  assert.ok(ultimo.startsWith(lib.PREFIXO_CONVERSA_AGENTE), 'o logout apaga junto')
+  for (const id of ['abc', 'ultimo', 'a_ultimo', 'x_1']) {
+    assert.notEqual(lib.chaveDaConversa(id, 'CVP123'), ultimo, `colide com o agente ${id}`)
+  }
+
   console.log('ok')
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true })

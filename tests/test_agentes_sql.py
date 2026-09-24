@@ -318,3 +318,18 @@ def test_leitura_para_no_teto_de_linhas_e_de_bytes():
     assert mais and por_tamanho and len(linhas) == 4 and cur.lidas == 4  # 40 MB > 32 MB: parou
     txt = s.formatar(["b"], linhas, mascarar=False, havia_mais=mais, por_tamanho=por_tamanho)
     assert "volume de dados" in txt and "100 linhas" not in txt
+
+
+def test_importa_em_qualquer_ordem():
+    """agentes_sql → agentes_prompt → agentes → agentes_sql: ler `asql.*` na
+    DEFINIÇÃO de uma função de `agentes` (valor padrão de parâmetro) quebrava
+    quem importa agentes_sql primeiro — foi o script de prova do DEV que pegou.
+    Cada ordem num processo NOVO (no pytest os módulos já estão carregados)."""
+    import subprocess
+    api = Path(__file__).resolve().parents[1] / "api"
+    for primeiro in ("agentes_sql", "agentes_prompt", "agentes", "agentes_registro"):
+        codigo = ("import sys; from unittest.mock import MagicMock; sys.modules.setdefault('pyodbc', MagicMock()); "
+                  f"from services import {primeiro}")
+        r = subprocess.run([sys.executable, "-c", codigo], cwd=api, capture_output=True, text=True, timeout=120,
+                           env={**__import__("os").environ, "MSSQL_CONN_STR": "__mock__"})
+        assert r.returncode == 0, f"importar {primeiro} primeiro: {r.stderr[-600:]}"

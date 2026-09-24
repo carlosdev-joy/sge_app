@@ -170,7 +170,7 @@ def test_criar_confere_os_pares_e_devolve_os_avisos(cadastro):
     with patch.object(asql, "verificar_pares", return_value=["o login pode gravar"]) as v:
         r = cliente.post("/agentes/admin/agentes", json=_corpo(ferramentas=list(BANCO), bancos=[PAR]))
     assert r.status_code == 200, r.text
-    v.assert_called_once_with([("dw_prod", "PREV")])
+    v.assert_called_once_with([("dw_prod", "PREV")], 10)  # + o tempo de conexão da config (padrão)
     corpo = r.json()
     assert corpo["avisos"] == ["o login pode gravar"]
     assert corpo["agente"]["bancos"] == [PAR] and corpo["agente"]["mascarar_dados"] is True
@@ -198,7 +198,7 @@ def test_alterar_so_confere_o_par_novo(cadastro):
     novo = {"conexao": "dw_prod", "banco": "VIDA"}
     with patch.object(asql, "verificar_pares", return_value=[]) as v:
         r = cliente.put("/agentes/admin/agentes/assistente", json={"bancos": [PAR, novo], "mascarar_dados": False})
-    v.assert_called_once_with([("dw_prod", "VIDA")])
+    v.assert_called_once_with([("dw_prod", "VIDA")], 10)
     assert r.json()["agente"]["bancos"] == [PAR, novo] and r.json()["agente"]["mascarar_dados"] is False
 
 
@@ -208,12 +208,12 @@ def test_conexoes_e_bancos_sem_login(cadastro, monkeypatch):
                                                                "descricao": None}])
     assert cliente.get("/agentes/admin/conexoes").json() == {
         "conexoes": [{"conexao": "dw_prod", "servidor": "h,1433", "descricao": None}]}
-    monkeypatch.setattr(asql, "bancos_da_conexao", lambda c: {
+    monkeypatch.setattr(asql, "bancos_da_conexao", lambda c, conexao_s=10: {
         "bancos": [{"banco": "PREV", "showplan": True, "escrita": True}], "sysadmin": False})
     r = cliente.get("/agentes/admin/conexoes/dw_prod/bancos").json()
     assert r["bancos"][0]["escrita"] is True and "login" not in json.dumps(r)
 
-    def _cai(c):
+    def _cai(c, conexao_s=10):
         raise asql.BancoIndisponivel("conexão indisponível")
     monkeypatch.setattr(asql, "bancos_da_conexao", _cai)
     r = cliente.get("/agentes/admin/conexoes/nao_existe/bancos")
@@ -403,3 +403,120 @@ async def test_vaga_so_volta_quando_a_consulta_termina(monkeypatch):
         await asyncio.sleep(0.02)
     assert not vagas.locked()
     assert await svc._na_vaga(lambda: 7) == 7
+
+
+# ═══════════ 6. tempos configuráveis (conectar e consultar) ═══════════════
+
+def test_limites_da_config_com_faixa_e_padrao():
+    assert svc.limites_banco({}) == (10, 30)
+    assert svc.limites_banco({"agentes_banco_conexao_s": "25", "agentes_banco_consulta_s": "90"}) == (25, 90)
+    assert svc.limites_banco({"agentes_banco_conexao_s": "1", "agentes_banco_consulta_s": "999"}) == (5, 120)
+    assert svc.limites_banco({"agentes_banco_conexao_s": "x", "agentes_banco_consulta_s": ""}) == (10, 30)
+    assert svc.CONFIG_DEFAULTS["agentes_banco_conexao_s"] == "10"
+    assert svc.CONFIG_DEFAULTS["agentes_banco_consulta_s"] == "30"
+
+
+@pytest.mark.parametrize("corpo,erro", [
+    ({"agentes_banco_conexao_s": 4}, "entre 5 e 60"),
+    ({"agentes_banco_conexao_s": 61}, "entre 5 e 60"),
+    ({"agentes_banco_consulta_s": "abc"}, "entre 5 e 120"),
+    ({"agentes_banco_consulta_s": 121}, "entre 5 e 120"),
+])
+def test_config_recusa_fora_da_faixa(cadastro, corpo, erro):
+    cliente, _, _ = cadastro
+    r = cliente.post("/agentes/admin/config", json=corpo)
+    assert r.status_code == 422 and any(erro in e for e in r.json()["detail"]["errors"])
+
+
+def test_config_grava_os_dois_tempos(cadastro, monkeypatch):
+    from contextlib import contextmanager
+    import routers.agentes as rota
+    cliente, _, _ = cadastro
+    gravados = []
+    cur = MagicMock()
+    cur.execute.side_effect = lambda sql, p=None: gravados.append((p or [None])[0:2])
+
+    @contextmanager
+    def _conexao():
+        yield MagicMock(), cur
+    monkeypatch.setattr(rota, "_conexao", _conexao)
+    r = cliente.post("/agentes/admin/config", json={"agentes_banco_conexao_s": 45, "agentes_banco_consulta_s": "60"})
+    assert r.status_code == 200, r.text
+    assert sorted(gravados) == [["agentes_banco_conexao_s", "45"], ["agentes_banco_consulta_s", "60"]]
+
+
+@pytest.mark.asyncio
+async def test_consulta_usa_os_tempos_da_config(monkeypatch, sem_aprendizado):
+    chamadas = _executou(monkeypatch)
+    p = _Provedor([_pedido("banco_consulta", sql="SELECT 1"), "ok"])
+    await _conversar(monkeypatch, p, agente="assistente", ferramentas=BANCO, bancos=(("dw_prod", "PREV"),),
+                     limites_banco_s=(45, 90))
+    kw = chamadas[0][3]
+    assert kw["conexao_s"] == 45 and kw["timeout_s"] == 90
+
+
+@pytest.mark.asyncio
+async def test_orcamento_da_pergunta_limita_os_tempos(monkeypatch):
+    chamadas = _executou(monkeypatch)
+    r = await svc._ferramenta_banco("banco_consulta", {"sql": "SELECT 1"}, bancos=(("dw_prod", "PREV"),),
+                                    mascarar=True, resta_agora=lambda: 25, limites=(60, 120))
+    kw = chamadas[0][3]
+    # resta 20 s: conexão ≤ 1/3, plano com teto pequeno, a execução fica com o resto
+    assert kw["conexao_s"] + kw["plano_s"] + kw["timeout_s"] <= 20 + 1e-9
+    assert round(kw["conexao_s"], 2) == 6.67 and round(kw["plano_s"], 2) == 3.33 and round(kw["timeout_s"], 2) == 10.0
+    assert r["sql"] == "SELECT 1"
+
+
+@pytest.mark.parametrize("resta,limites", [(235, (60, 120)), (235, (10, 30)), (60, (60, 120)), (12, (5, 5))])
+@pytest.mark.asyncio
+async def test_pior_caso_cabe_no_que_resta(monkeypatch, resta, limites):
+    chamadas = _executou(monkeypatch)
+    await svc._ferramenta_banco("banco_consulta", {"sql": "SELECT 1"}, bancos=(("dw_prod", "PREV"),),
+                                mascarar=True, resta_agora=lambda: resta, limites=limites)
+    if chamadas:
+        kw = chamadas[0][3]
+        assert kw["conexao_s"] + kw["plano_s"] + kw["timeout_s"] <= resta - 5 + 1e-9
+        assert kw["conexao_s"] <= limites[0] and kw["timeout_s"] <= limites[1] and kw["plano_s"] <= 15
+
+
+@pytest.mark.parametrize("resta,limites,consulta", [
+    (235, (10, 120), 120),   # o máximo da faixa vale inteiro no começo da pergunta
+    (55, (10, 30), 30),      # padrão perto do fim: os 30 s de sempre (como antes da mudança)
+])
+@pytest.mark.asyncio
+async def test_tempo_configurado_vale_inteiro_quando_cabe(monkeypatch, resta, limites, consulta):
+    chamadas = _executou(monkeypatch)
+    await svc._ferramenta_banco("banco_consulta", {"sql": "SELECT 1"}, bancos=(("dw_prod", "PREV"),),
+                                mascarar=True, resta_agora=lambda: resta, limites=limites)
+    assert chamadas[0][3]["timeout_s"] == consulta
+
+
+def test_login_que_estoura_o_tempo_diz_quanto_esperou(monkeypatch):
+    import services.conn_native as cn
+
+    relogio = {"t": 1000.0}
+    monkeypatch.setattr(asql.time, "monotonic", lambda: relogio["t"])
+
+    def _lento(conn_id, database, timeout_s=15):
+        relogio["t"] += timeout_s  # esperou o tempo todo
+        raise RuntimeError(f"conexão '{conn_id}' (10.9.9.9,1433) falhou: [HYT00] Login timeout expired")
+    monkeypatch.setattr(cn, "abrir_conexao_nativa", _lento)
+    with pytest.raises(asql.BancoIndisponivel) as e:
+        asql._abrir("dw_prod", "PREV", 30, conexao_s=45)
+    assert str(e.value) == "conexão indisponível — o servidor não respondeu em 45 s"
+    assert "10.9.9.9" not in str(e.value)
+
+    def _host_inexistente(conn_id, database, timeout_s=15):
+        relogio["t"] += 0.2  # o driver diz "Login timeout", mas falhou NA HORA (DNS/porta fechada)
+        raise RuntimeError("[HYT00] Login timeout expired; TCP Provider: Error code 0x2749")
+    monkeypatch.setattr(cn, "abrir_conexao_nativa", _host_inexistente)
+    with pytest.raises(asql.BancoIndisponivel) as e:
+        asql._abrir("dw_prod", "PREV", 30, conexao_s=45)
+    assert str(e.value) == "conexão indisponível"  # aumentar o tempo não resolveria
+
+    def _recusa(conn_id, database, timeout_s=15):
+        raise RuntimeError("Login failed for user 'svc' (18456)")
+    monkeypatch.setattr(cn, "abrir_conexao_nativa", _recusa)
+    with pytest.raises(asql.BancoIndisponivel) as e:
+        asql._abrir("dw_prod", "PREV", 30)
+    assert str(e.value) == "conexão indisponível"
