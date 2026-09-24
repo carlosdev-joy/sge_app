@@ -1559,7 +1559,11 @@ interruptor na linha dele). **Editar** muda nome, descrição, ferramentas, aces
 Não há exclusão: desligado, ele some para todos, e as conversas, propostas e
 aprendizados ficam. *Quem pode usar*, *Curadores* (só em agente com ferramentas) e
 *Prompt* aparecem para cada agente, abaixo. Os agentes criados aqui também aparecem nas
-*permissões extras* do usuário (Usuários & Perfis → ícone da chave).
+*permissões extras* do usuário (Usuários & Perfis → ícone da chave). Lá, um agente que o
+perfil do usuário não pode usar aparece com *(perfil não elegível)*, desabilitado; se o
+usuário já tinha a liberação (por exemplo, você tirou o perfil dele do agente depois),
+aparece *(sem efeito — …)*: ela não dá acesso, mas **volta a valer** se o perfil voltar a
+ser elegível — desmarque para remover de vez.
 
 **Prompt (versões).** A seção **Prompt** de cada agente edita as **instruções do domínio**
 — quem é o agente, a ordem em que usa as ferramentas, as armadilhas conhecidas, como

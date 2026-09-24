@@ -200,3 +200,32 @@ def test_cadastro_usa_so_os_tokens_de_cor():
 
 def test_lib_agentes_continua_sem_import():
     assert not re.search(r"^\s*import\s", LIB.read_text(encoding="utf-8"), re.M)
+
+
+# ═══════════ grant sem efeito (decisão do usuário, 23/09) ═════════════════
+
+def test_modal_sinaliza_grant_de_agente_sem_efeito():
+    """Grant de agente para um perfil que não pode usá-lo: marcado = "sem
+    efeito" (não dá acesso, e volta a valer se o perfil voltar a ser
+    elegível); desmarcado = não se concede (a API recusaria). Vale para os
+    agentes do código (lista fixa) e para os da tela."""
+    fonte = codigo(ADMIN)
+    assert "const inelegivel = (rec: string) => permUser ? agenteInelegivel(rec, permUser.perfil, agentesDaTela.data?.agentes ?? []) : null" in fonte
+    # lista fixa (DataStage e curador)
+    assert "const travado = herdado || (agenteFora !== null && !permDraft.has(rec))" in fonte
+    assert "disabled={travado}" in fonte
+    assert "{!herdado && <SinalGrantAgente agente={agenteFora} perfil={permUser.perfil} marcado={permDraft.has(rec)} ehAdmin={ehAdmin} />}" in fonte
+    assert "const ehAdmin = doPerfil.has('acao_admin') || permDraft.has('acao_admin')" in fonte
+    assert fonte.index("const ehAdmin =") < fonte.index("{RBAC_RECURSOS.map(([rec, lbl]) =>")
+    # agentes da tela
+    assert "disabled={inelegivel(rec) !== null && !permDraft.has(rec)}" in fonte
+    assert "<SinalGrantAgente agente={inelegivel(rec)} perfil={permUser.perfil} marcado={permDraft.has(rec)} ehAdmin={ehAdmin} />" in fonte
+    # o sinal: sem efeito (marcado) × não elegível (desmarcado), com par escuro na cor
+    sinal = fonte[fonte.index("function SinalGrantAgente"):]
+    sinal = sinal[:sinal.index("\n}\n")]
+    assert "sem efeito — o perfil ${perfil} não pode usar ${agente}" in sinal and "(perfil não elegível)" in sinal
+    assert "text-amber-700 dark:text-amber-400" in sinal
+    # com acao_admin ele USA o agente: "não pode usar" seria falso (revisão)
+    assert "if (marcado && ehAdmin) return null" in sinal
+    # a query traz os perfis de cada agente
+    assert "recurso_curador: string | null; perfis: string[] }[]" in fonte

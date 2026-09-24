@@ -53,6 +53,20 @@ try {
   // edição: sem id, prompt e motivo
   assert.deepEqual(lib.problemasDoAgente({ ...base, id: '', prompt: '', motivo: '' }, { ...op, criacao: false }), [])
 
+  // grant de agente para perfil que não pode usá-lo (modal de permissões extras)
+  const ags = [
+    { nome: 'Mapeamento DataStage', recurso: 'agente_datastage', recurso_curador: 'agente_curador', perfis: ['desenvolvedor'] },
+    { nome: 'Assistente', recurso: 'agente_assistente', recurso_curador: null, perfis: ['analista', 'desenvolvedor'] },
+  ]
+  assert.equal(lib.agenteInelegivel('agente_datastage', 'desenvolvedor', ags), null)
+  assert.equal(lib.agenteInelegivel('agente_datastage', 'operador', ags), 'Mapeamento DataStage')
+  assert.equal(lib.agenteInelegivel('agente_curador', 'analista', ags), 'Mapeamento DataStage', 'curador segue o perfil do agente')
+  assert.equal(lib.agenteInelegivel('agente_assistente', 'analista', ags), null)
+  assert.equal(lib.agenteInelegivel('agente_assistente', 'consulta', ags), 'Assistente')
+  assert.equal(lib.agenteInelegivel('agente_datastage', 'admin', ags), null, 'admin usa tudo')
+  assert.equal(lib.agenteInelegivel('tela_jobs', 'operador', ags), null, 'recurso que não é de agente')
+  assert.equal(lib.agenteInelegivel('agente_datastage', 'operador', []), null, 'lista ainda não carregou: sem sinal')
+
   console.log('ok')
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true })
