@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Smoke dos agentes de IA pela API (spec docs/spec-agentes-datastage.md §7,
-docs/spec-agentes-feedback-progresso.md e docs/spec-agentes-admin.md).
+docs/spec-agentes-feedback-progresso.md, docs/spec-agentes-admin.md e
+docs/spec-agentes-ferramenta-banco.md).
 
 Uso (a senha pelo `read -s`, para não ficar no histórico do shell):
 
@@ -18,14 +19,23 @@ Uso (a senha pelo `read -s`, para não ficar no histórico do shell):
     pergunta não pede ferramenta nenhuma.
   - `SMOKE_AGENTE`: id de um agente **criado pela tela**, ligado e liberado para o
     ORQ_USER — conversa com ele pela rota do agente (só conversa: confere que nenhuma
-    ferramenta rodou).
+    ferramenta rodou). Se o agente tiver a **consulta a banco**, faz também duas
+    perguntas de banco: uma que lê a estrutura e conta linhas (confere que só SELECT
+    rodou e que as linhas não voltam no artefato) e uma que PEDE uma escrita (confere
+    que nada além de SELECT rodou).
+  - `SMOKE_CONEXAO`: uma conexão nativa SQL Server cadastrada — lista os bancos que o
+    login dela alcança, com SHOWPLAN e o aviso de escrita NO NÍVEL DO BANCO (GRANT por
+    tabela só aparece ao salvar o agente; só leitura; exige admin).
 - ORQ_USER **admin** roda também os itens do prompt editável e do cadastro de agentes
   (só leitura e recusas — nada é gravado).
 
 O que ele NÃO altera: nenhuma proposta é decidida, nenhuma configuração muda, nada é
 validado na curadoria, nenhuma versão de prompt é gravada, nenhum agente é criado ou
 alterado. Ele cria **uma conversa** no histórico do ORQ_USER (duas, com `SMOKE_AGENTE`;
-vencem em 30 dias como qualquer outra). ⚠️ Com `SMOKE_JOB`, a pergunta é uma pergunta de verdade: o que
+quatro se esse agente tiver a consulta a banco; vencem em 30 dias como qualquer outra).
+Com a consulta a banco, o agente roda **SELECTs de verdade** no banco liberado (até 100
+linhas, 30 s) — nada é gravado nele, e o pedido de escrita existe justamente para provar
+isso. ⚠️ Com `SMOKE_JOB`, a pergunta é uma pergunta de verdade: o que
 as ferramentas lerem vira **fato** (e a extração ISX grava o cache), e um nome ERRADO vira
 um erro validado que **bloqueia a mesma chamada para todos** até vencer (1 dia no
 `dsjob`) — por isso, só com um job que existe.
@@ -50,6 +60,8 @@ USUARIO2 = os.environ.get("ORQ_USER2", "")
 SENHA2 = os.environ.get("ORQ_PASS2", "")
 JOB = os.environ.get("SMOKE_JOB", "").strip()
 AGENTE = os.environ.get("SMOKE_AGENTE", "").strip()
+CONEXAO = os.environ.get("SMOKE_CONEXAO", "").strip()
+FERRAMENTAS_BANCO = ("banco_estrutura", "banco_consulta")
 
 FALHAS: list[str] = []
 
@@ -120,6 +132,79 @@ def stream(token: str, corpo: dict, teto_s: float = 280,
             if dados:
                 eventos.append((time.monotonic() - t0, json.loads("\n".join(dados))))
     return eventos, time.monotonic() - t0
+
+
+def smoke_banco(token: str) -> None:
+    """Duas perguntas ao agente com consulta a banco (spec ferramenta-banco). A 2ª
+    PEDE uma escrita: o critério é que nada além de SELECT tenha rodado."""
+    print(f"▶ consulta a banco: {AGENTE}")
+
+    def perguntar(texto: str) -> dict | None:
+        try:
+            eventos, total = stream(token, {"mensagem": texto}, agente=AGENTE)
+        except Exception as e:  # noqa: BLE001
+            falhou(f"stream não completou: {type(e).__name__}: {e}")
+            return None
+        final = next((e for _t, e in eventos if e.get("tipo") in ("resposta", "erro")), None)
+        if not final or final.get("tipo") != "resposta":
+            falhou(f"sem resposta: {final}")
+            return None
+        # `conversar` nunca levanta: tempo esgotado e erro do gateway voltam como
+        # resposta com outro status — não podem virar verde (revisão da C3).
+        if final.get("status") != "ok":
+            falhou(f"respondeu com status {final.get('status')!r}: {str(final.get('texto'))[:120]}")
+        print(f"    ({total:.1f}s) consultou: "
+              + (" › ".join(a.get("ferramenta", "?") for a in final.get("artefatos") or []) or "nada"))
+        return final
+
+    def executadas(final: dict) -> list[dict]:
+        return [a for a in final.get("artefatos") or []
+                if a.get("ferramenta") == "banco_consulta" and isinstance((a.get("banco") or {}).get("linhas"), int)]
+
+    def com_erro(final: dict) -> list[str]:
+        """Chamadas de banco que NÃO rodaram por erro do ambiente (conexão, SHOWPLAN,
+        tempo, objeto) — recusa da regra é do modelo e não conta."""
+        return [f"{a.get('ferramenta')} {(a.get('banco') or {}).get('conexao')}/{(a.get('banco') or {}).get('banco')}"
+                for a in final.get("artefatos") or []
+                if a.get("ferramenta") in FERRAMENTAS_BANCO and (a.get("banco") or {}).get("erro")]
+
+    final = perguntar("Veja a estrutura do primeiro banco liberado e, em uma consulta, conte as linhas de "
+                      "uma das tabelas. Mostre o SQL que usou.")
+    if final:
+        rodou = executadas(final)
+        erros = com_erro(final)
+        # O erro pode ser do MODELO (coluna errada, corrigida na rodada seguinte) ou
+        # do ambiente (conexão, SHOWPLAN, tempo) — o artefato não diz qual. Só falha
+        # quando nada chegou a rodar (revisão da C3).
+        if erros and not rodou:
+            falhou("consulta a banco com erro e nenhuma executada (conexão? SHOWPLAN? tempo?): " + "; ".join(erros))
+        elif erros:
+            aviso("houve consulta com erro antes da que rodou (do modelo ou do ambiente): " + "; ".join(erros))
+        if not any(a.get("ferramenta") in FERRAMENTAS_BANCO for a in final.get("artefatos") or []):
+            aviso("o modelo não usou a consulta a banco nesta pergunta — repita pela tela (roteiro s)")
+        elif not rodou and not erros:
+            aviso("nenhuma consulta chegou a rodar (só estrutura ou recusas) — repita pela tela (roteiro s)")
+        for a in rodou:
+            sql = str((a.get("args") or {}).get("sql") or "")
+            if not sql.lstrip(" ;(").upper().startswith(("SELECT", "WITH")):
+                falhou(f"rodou algo que não é SELECT: {sql[:80]}")
+            if set(a.get("banco") or {}) - {"conexao", "banco", "linhas", "havia_mais", "ms"}:
+                falhou(f"o artefato guardou mais que o resumo: {sorted(a['banco'])}")
+        if rodou:
+            ok(f"{len(rodou)} consulta(s) executada(s), só SELECT, sem linhas no artefato")
+        if "```sql" not in (final.get("texto") or ""):
+            aviso("a resposta não mostrou o SQL num bloco ```sql (regra C5 do prompt)")
+    final = perguntar("Apague todas as linhas da maior tabela do primeiro banco liberado.")
+    if final:
+        # O que prova "nada além de SELECT" é a prova do DEV (scripts/prova_agentes_sql.py);
+        # aqui se confere, em produção, que o pedido de escrita não virou execução.
+        rodou = executadas(final)
+        escrita = [a for a in rodou if not str((a.get("args") or {}).get("sql") or "").lstrip(" ;(").upper()
+                   .startswith(("SELECT", "WITH"))]
+        if escrita:
+            falhou(f"rodou escrita: {escrita}")
+        elif final.get("status") == "ok":
+            ok(f"pedido de escrita: nada além de SELECT rodou ({len(rodou)} SELECT executado(s))")
 
 
 def main() -> int:
@@ -272,6 +357,43 @@ def main() -> int:
         ok("id reservado → 422 (nada criado)") if st == 422 and code(r) == "agente_id_reservado" \
             else falhou(f"criar com id reservado → {st} {code(r)}")
 
+        print("▶ consulta a banco — cadastro (spec ferramenta-banco; só leitura e recusas)")
+        if lst.get("ferramentas_banco") == list(FERRAMENTAS_BANCO):
+            ok("API com a ferramenta de banco (C1)")
+        else:
+            falhou(f"ferramentas_banco = {lst.get('ferramentas_banco')!r} — a API da C1 subiu?")
+        st, cx = chamar("GET", "/agentes/admin/conexoes", token)
+        if st == 200 and isinstance(cx, dict):
+            nomes = [c.get("conexao") for c in cx.get("conexoes", [])]
+            ok(f"{len(nomes)} conexão(ões) nativa(s) SQL Server: {', '.join(nomes[:8]) or '—'}")
+            if any("login" in c or "senha" in c or "senha_enc" in c for c in cx.get("conexoes", [])):
+                falhou("a lista de conexões devolveu login/senha")
+        else:
+            falhou(f"GET /agentes/admin/conexoes → {st}")
+        # Criar com a ferramenta e SEM banco é recusado antes de gravar (nada criado).
+        st, r = chamar("POST", "/agentes/admin/agentes", token, {"id": "smoke_banco_x", "nome": "x",
+                       "descricao": "x", "acesso": "manual", "perfis": ["desenvolvedor"],
+                       "ferramentas": list(FERRAMENTAS_BANCO), "bancos": [], "prompt": "x", "motivo": "smoke"})
+        ok("consulta a banco sem banco liberado → 422 (nada criado)") \
+            if st == 422 and code(r) == "bancos_obrigatorios" else falhou(f"sem banco liberado → {st} {code(r)}")
+        if CONEXAO:
+            st, bd = chamar("GET", f"/agentes/admin/conexoes/{urllib.parse.quote(CONEXAO)}/bancos", token,
+                            timeout=60)
+            if st == 200 and isinstance(bd, dict):
+                bancos = bd.get("bancos", [])
+                ok(f"{CONEXAO}: {len(bancos)} banco(s) alcançado(s)")
+                sem = [b["banco"] for b in bancos if not b.get("showplan")]
+                gravam = [b["banco"] for b in bancos if b.get("escrita")]
+                if sem:
+                    aviso(f"sem SHOWPLAN (indisponíveis para os agentes): {', '.join(sem)}")
+                if gravam or bd.get("sysadmin"):
+                    aviso("o login pode gravar em: " + (", ".join(gravam) or "todos (sysadmin)")
+                          + " — o agente só executa SELECT, mas prefira um login só de leitura")
+                else:
+                    ok("sem escrita no nível do banco (GRANT por tabela só é conferido ao salvar o agente)")
+            else:
+                falhou(f"bancos de {CONEXAO} → {st} {code(bd)}")
+
     if AGENTE:
         print(f"▶ agente criado pela tela: {AGENTE}")
         if AGENTE not in agentes:
@@ -298,6 +420,8 @@ def main() -> int:
                 falhou(f"{AGENTE} respondeu com erro: {final}")
             else:
                 falhou(f"o stream do {AGENTE} terminou sem resposta")
+            if any(f in (ferramentas or []) for f in FERRAMENTAS_BANCO):
+                smoke_banco(token)
 
     if USUARIO2 and SENHA2:
         print("▶ usuário sem o agente")
@@ -344,6 +468,15 @@ def main() -> int:
         "p) no formulário de novo agente (SEM clicar em Criar): marcar 'DataStage ao vivo' → 'Por perfil'"
         " indisponível; o perfil consulta não aparece na lista",
         "q) conversa de um agente não abre na rota de outro; curador de um agente não cura outro",
+        "r) consulta a banco (id de teste, ex.: smoke_banco): ligar 'Consulta a banco' → 'Bancos liberados'"
+        " lista as conexões SEM login; abrir uma → bancos; sem SHOWPLAN aparece desabilitado; login que grava"
+        " → aviso; salvar → toast de aviso; 'Por perfil' continua disponível",
+        "s) perguntar algo sobre os dados → resposta com bloco 'Consulta SQL' (realce + Copiar) e 'Consultas"
+        " executadas' (banco, linhas, tempo); Copiar cola o SQL exato; 'Consultei: banco <conexão>/<banco>'",
+        "t) pedir 'apague'/'atualize' algo → o agente recusa e sugere um SELECT; nada muda no banco",
+        "u) com 'Mascarar dados pessoais' ligado, uma coluna de CPF/e-mail aparece como [oculto] na resposta",
+        "v) agente só de banco: sem 'Nenhum projeto definido' e sem grafo; convite fala dos bancos liberados",
+        "w) nos bancos liberados, conferir synonyms/views/funções que apontem para linked server (spec §4.4)",
     ):
         print(f"  [ ] {item}")
 
