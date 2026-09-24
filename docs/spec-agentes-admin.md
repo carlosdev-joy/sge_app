@@ -127,7 +127,8 @@ CREATE TABLE dbo.etl_agente_prompt (
   ```
 
 - **Validação ao gravar** (422 com `code`):
-  - `prompt_vazio` / `prompt_grande`: texto entre 1 e 20.000 caracteres depois do `strip`;
+  - `prompt_vazio` / `prompt_grande`: texto entre 1 e 50.000 caracteres depois do `strip` (era 20.000; ampliado por
+    decisão do usuário em 23/09);
   - `motivo_obrigatorio`: motivo com 3 a 200 **unidades UTF-16** (`utf16_len`, porque é o que o `NVARCHAR` conta; o
     mesmo vale para nome, descrição e perfis na Fase B);
   - `prompt_com_marcador`: o texto contém marcadores reservados do protocolo (`<ferramenta`, `</ferramenta`,

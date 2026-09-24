@@ -1551,7 +1551,7 @@ e desliga em *Interruptores*) e os criados aqui. **+ Novo agente** pede:
   (*DataStage ao vivo*, *extração ISX*, *arquivo DSX*), e o perfil **consulta** nunca
   recebe agente. Se o perfil escolhido não tem a tela Agentes, o formulário avisa —
   libere a tela em *Perfis*;
-- **Prompt inicial** (até 20.000 caracteres) e **motivo** (3 a 200) — viram a versão 1 do
+- **Prompt inicial** (até 50.000 caracteres) e **motivo** (3 a 200) — viram a versão 1 do
   prompt.
 
 O agente **nasce desligado**: confira o prompt e quem pode usar e só então ligue (o
@@ -1570,7 +1570,7 @@ ser elegível — desmarque para remover de vez.
 responder. O protocolo das ferramentas, as regras de segurança e o formato das
 propostas o Orquestra acrescenta sozinho (*Parte fixa montada pelo Orquestra*, só
 leitura). **Salvar versão** pede o motivo e **vale a partir da próxima pergunta**, sem
-reiniciar nada. O texto vai até **20.000 caracteres** e o motivo tem de **3 a 200**. O
+reiniciar nada. O texto vai até **50.000 caracteres** e o motivo tem de **3 a 200**. O
 **Histórico de versões** mostra, de cada uma, de quando a quando valeu, quanto tempo
 ficou em uso, quantas respostas deu e o tempo médio delas (contando as conversas ainda
 guardadas — a limpeza diária apaga as de mais de 30 dias); **Ver** mostra o texto e
