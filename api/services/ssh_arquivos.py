@@ -745,7 +745,7 @@ def validar_extensao_gravacao(bruta, permitidas) -> str:
         raise ArquivoError(422, MSG_EXTENSAO_INVALIDA)
     if s not in set(permitidas or ()):
         raise ArquivoError(
-            422, f"Extensão '{s}' não liberada — o admin inclui em Admin › Utilitários.")
+            422, f"Extensão '{s}' não liberada — o admin inclui em Admin › Integrações & Dados › Servidor DataStage (SFTP).")
     return s
 
 
@@ -793,10 +793,10 @@ def extensao_para_envio(nome: str, permitidas) -> str:
     if ext is None:
         raise ArquivoError(
             422, "Arquivo sem extensão — só entram arquivos com extensão da lista do admin "
-                 "(Admin › Utilitários).")
+                 "(Admin › Integrações & Dados › Servidor DataStage (SFTP)).")
     if not EXTENSAO_RE.match(ext) or ext not in set(permitidas or ()):
         raise ArquivoError(
-            422, f"Extensão '{ext}' não liberada — o admin inclui em Admin › Utilitários.")
+            422, f"Extensão '{ext}' não liberada — o admin inclui em Admin › Integrações & Dados › Servidor DataStage (SFTP).")
     return ext
 
 

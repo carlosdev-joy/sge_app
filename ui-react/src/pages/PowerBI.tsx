@@ -13,6 +13,9 @@ import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
 import { PageSpinner } from '../components/ui/Spinner'
 import { InfoBanner } from '../components/ui/InfoBanner'
+import { LinkAdmin } from '../components/admin/LinkAdmin'
+import { SecaoComoLiberarAcessos } from '../components/powerbi/GuiaAcessosPowerBI'
+import { useRolarParaAncora } from '../lib/useRolarParaAncora'
 
 // ── Tipos ──────────────────────────────────────────────────────────────────
 
@@ -384,6 +387,10 @@ export default function PowerBI() {
     })
   }, [datasets, search, workspaceFilter, statusFilter, sourceFilter])
 
+  // /powerbi#como-liberar-acessos (endereço antigo da aba do admin): abre a
+  // seção e rola até ela depois que o resto da tela assentou.
+  useRolarParaAncora(!statusQ.isLoading && !overviewQ.isLoading)
+
   if (statusQ.isLoading) return <PageSpinner />
 
   if (!configurado) {
@@ -391,12 +398,16 @@ export default function PowerBI() {
       <div className="p-6 space-y-4">
         <h1 className="text-xl font-semibold flex items-center gap-2"><BarChart3 size={20} /> Power BI — Sustentação</h1>
         <InfoBanner icon="⚠️">
-          Power BI ainda não está configurado. Em <strong>Admin &gt; Configurações</strong>, adicione os parâmetros:
+          Power BI ainda não está configurado. Em <strong><LinkAdmin grupo="sistema" aba="parametros" /></strong>, adicione os parâmetros:
           <code className="block mt-1 text-[11px] bg-black/20 rounded px-2 py-1">
             powerbi_tenant_id · powerbi_client_id · powerbi_client_secret · powerbi_scope (opcional) · powerbi_token_url (opcional)
           </code>
           {statusQ.data?.erro && <div className="mt-2 text-red-700 dark:text-red-300">{statusQ.data.erro}</div>}
         </InfoBanner>
+
+        {/* F4 da reestruturação do admin: guia que era a aba Admin › Sistema ›
+            Power BI — Acessos. No fim, fechado por padrão (spec §3.3). */}
+        <SecaoComoLiberarAcessos />
       </div>
     )
   }
@@ -517,6 +528,10 @@ export default function PowerBI() {
           {tab === 'gateways' && <GatewaysTab />}
         </>
       )}
+
+      {/* F4 da reestruturação do admin: guia que era a aba Admin › Sistema ›
+          Power BI — Acessos. No fim, fechado por padrão (spec §3.3). */}
+      <SecaoComoLiberarAcessos />
 
       {selectedRow && <DatasetDetailModal row={selectedRow} onClose={() => setSelectedRow(null)} />}
     </div>

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
 import { Button } from '../components/ui/Button'
@@ -390,7 +391,11 @@ export default function DsConsole() {
   })
 
   // Aba ativa (cada aba é uma VISÃO do lote único de comandos sobre o mesmo job).
-  const [activeTab, setActiveTab] = useState('geral')
+  // `?aba=seqflow` abre direto no Fluxo (XML): é para onde o endereço da antiga
+  // aba "Fluxo DS" do admin redireciona (F4 de docs/spec-admin-reestruturacao.md).
+  // Só a aba inicial lê o endereço; trocar de aba não o reescreve.
+  const [searchParams] = useSearchParams()
+  const [activeTab, setActiveTab] = useState(() => (searchParams.get('aba') === 'seqflow' ? 'seqflow' : 'geral'))
 
   // Inputs compartilhados entre abas (projeto + job) — persistem ao trocar de aba.
   const [project, setProject] = useState('')

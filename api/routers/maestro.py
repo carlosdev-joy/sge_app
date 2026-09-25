@@ -8,7 +8,7 @@
 
 Tudo atrás de `tela_jobs` — a permissão de Etapas e Fluxos (nav.ts): o Maestro
 não grava parâmetro nenhum, só orienta. Provedor de IA: services/ia_provedor
-(config ia_* de Admin › IA; até 21/09/2026 era services/caixa_ia, com a
+(config ia_* de Admin › Inteligência Artificial › Provedor; até 21/09/2026 era services/caixa_ia, com a
 mesma config sob o nome caixa_ia_* — ver docs/spec-agentes-datastage.md, F0);
 interruptor próprio `maestro_enabled` (migration 110). Regras e validação:
 services/maestro.
@@ -35,7 +35,7 @@ router = APIRouter()
 _require_jobs = require_perm("tela_jobs")
 _CONVERSA_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,36}$")
 _INDISPONIVEL = ("Maestro temporariamente indisponível — contate o administrador "
-                 "(Admin › IA › Verificar mostra a causa)")
+                 "(Admin › Inteligência Artificial › Provedor › Verificar mostra a causa)")
 
 
 def _abrir():
@@ -58,7 +58,7 @@ def _fechar(conn, cur, commit: bool = False) -> None:
 def _estado(cur) -> tuple[bool, bool, dict]:
     """(interruptor, tem_chave, cfg). A tela só mostra o avatar com os dois:
     interruptor ligado sem provedor seria um 503 permanente — e as duas causas
-    têm donos diferentes (Admin › Maestro × Admin › IA), por isso
+    têm donos diferentes (Admin › Inteligência Artificial › Maestro × Admin › Inteligência Artificial › Provedor), por isso
     o conversar as distingue em vez de dizer só 'desligado'."""
     cfg = ia_provedor.load_config(cur)
     return maestro.enabled(cur), bool(cfg.get("api_key_enc")), cfg
@@ -167,11 +167,11 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
         interruptor, tem_chave, cfg = _estado(cur)
         if not interruptor:
             raise HTTPException(status_code=503,
-                                detail="Maestro desligado (Admin › Acessos & Comunicação › Maestro)")
+                                detail="Maestro desligado (Admin › Inteligência Artificial › Maestro)")
         if not tem_chave:
             raise HTTPException(status_code=503,
                                 detail="Maestro ligado, mas sem provedor de IA configurado "
-                                       "(Admin › IA: chave de API)")
+                                       "(Admin › Inteligência Artificial › Provedor: chave de API)")
         try:
             catalogo = maestro.carregar_catalogo(cur)
         except maestro.MaestroIndisponivel as e:
@@ -288,7 +288,7 @@ def maestro_admin_config(_user: dict = Depends(get_admin_user)):
 
 @router.post("/maestro/admin/config", tags=["maestro-admin"])
 def maestro_admin_config_set(body: dict = Body(default={}), user: dict = Depends(get_admin_user)):
-    """Liga/desliga. Ligar exige o provedor com chave (Admin › IA):
+    """Liga/desliga. Ligar exige o provedor com chave (Admin › Inteligência Artificial › Provedor):
     ligado sem provedor seria um avatar que nunca aparece e um 503 permanente."""
     ligado = bool(body.get("enabled"))
     conn, cur = _abrir()
@@ -297,7 +297,7 @@ def maestro_admin_config_set(body: dict = Body(default={}), user: dict = Depends
         if ligado and not tem_chave:
             raise HTTPException(status_code=422, detail={
                 "code": "provedor_sem_chave",
-                "errors": ["Configure o provedor de IA com a chave de API em Admin › IA antes de ligar o Maestro"]})
+                "errors": ["Configure o provedor de IA com a chave de API em Admin › Inteligência Artificial › Provedor antes de ligar o Maestro"]})
         maestro.gravar_enabled(cur, ligado, user["matricula"])
         _fechar(conn, cur, commit=True)
         return {"enabled": ligado}

@@ -9,11 +9,13 @@
 //   /admin/<grupo>        → 1ª aba do grupo
 //   /admin/<idAntigo>     → endereço novo (config, regen, notificacoes, …)
 //   /admin/<g>/<idAntigo> → idem (ex.: /admin/sistema/config)
+//   aba que SAIU do admin (F4) → tela nova: /admin/sistema/sla → /performance#sla,
+//                           …/powerbi-acessos → /powerbi, …/fluxo-ds → /ds-console
 import { useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { AdminShell } from '../components/admin/AdminShell'
 import {
-  ABA_PADRAO, caminhoDaAba, gravarUltimaAba, interpretarCaminhoAdmin, lerUltimaAba,
+  ABA_PADRAO, caminhoDaAba, ehCaminhoAdmin, gravarUltimaAba, interpretarCaminhoAdmin, lerUltimaAba,
 } from '../lib/adminNav'
 
 export default function Admin() {
@@ -27,7 +29,10 @@ export default function Admin() {
   // Durante um redirect para uma aba (ex.: clicar "Admin" na sidebar estando
   // dentro dela: /admin → última aba) a casca segue montada COM a aba de
   // destino — devolver null desmontava a aba e apagava o formulário em edição.
-  const abaDoRedirect = redirecionarPara
+  // Destino fora do admin (aba que saiu na F4) não tem aba a manter montada:
+  // devolve null e o navigate troca de tela (replace — o Voltar não volta ao
+  // endereço morto, e a tela nova não é /admin, então não há laço).
+  const abaDoRedirect = redirecionarPara && ehCaminhoAdmin(redirecionarPara)
     ? interpretarCaminhoAdmin(redirecionarPara.replace(/^\/admin\/?/, ''))
     : null
   const abaAtual = destino.tipo === 'aba' ? destino.aba

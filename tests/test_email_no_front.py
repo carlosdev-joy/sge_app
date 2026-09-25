@@ -204,7 +204,7 @@ def test_pasta_do_anexo_aceita_subpasta_e_so_dentro_da_raiz(modelos):
 def test_regua_local_aceita_o_anexo_em_subpasta(modelos):
     assert modelos["anexoEmSubpasta"] == []
     assert modelos["anexoForaDaRaizAgora"] == [
-        'A pasta do anexo não está entre as permitidas no Admin › E-mail']
+        'A pasta do anexo não está entre as permitidas no Admin › Comunicação › E-mail']
 
 
 def test_sugestao_do_marcador_de_data(modelos):
@@ -230,7 +230,7 @@ def test_guarda_do_save_so_cobra_modelo_com_o_catalogo_em_maos(modelos):
     inteiro por um erro que a tela não sabe explicar."""
     assert modelos["guardaSemCatalogo"] == []
     assert modelos["guardaNovoExigindo"] == [
-        'Escolha um modelo do catálogo (Admin › E-mail exige modelo)']
+        'Escolha um modelo do catálogo (Admin › Comunicação › E-mail exige modelo)']
     assert modelos["guardaAntigoExigindo"] == []
 
 

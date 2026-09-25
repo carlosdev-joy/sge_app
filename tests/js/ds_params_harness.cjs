@@ -116,6 +116,7 @@ module.exports = { useQuery: (opts) => ({
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ds-params-'))
 preparar(tmp)
 shims(tmp)
+require('./link_admin_duble.cjs')(tmp)  // <LinkAdmin> do PainelEmail (F4 do admin)
 // lib/api.ts importa o store de auth — não é chamado aqui (useQuery é shim),
 // mas precisa carregar: dá um módulo vazio no lugar.
 fs.mkdirSync(path.join(tmp, 'lib'), { recursive: true })

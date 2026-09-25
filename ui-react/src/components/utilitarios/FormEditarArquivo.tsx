@@ -27,6 +27,7 @@ import {
   extensaoValida, foraDoLatin1, gravacaoPronta, nomeArquivoCompleto, separarNomeExtensao,
   type Codificacao, type PedidoGravacao,
 } from '../../lib/utilitariosGravacao'
+import { LinkAdmin } from '../admin/LinkAdmin'
 
 export interface CarregadoExistente {
   conteudo: string
@@ -146,7 +147,8 @@ export function FormEditarArquivo({
       )}
       {!desabilitado && semExtensoes && (
         <p className="text-xs text-amber-700 dark:text-amber-300 inline-flex items-center gap-1.5" data-aviso="sem-extensoes">
-          <AlertTriangle size={12} /> Nenhuma extensão liberada — o admin inclui em Admin › Utilitários.
+          <AlertTriangle size={12} className="shrink-0" />
+          <span>Nenhuma extensão liberada — o admin inclui em <LinkAdmin grupo="integracoes" aba="servidor-datastage" novaAba />.</span>
         </p>
       )}
 

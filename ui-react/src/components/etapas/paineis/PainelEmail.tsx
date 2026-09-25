@@ -28,6 +28,8 @@ import { PreviaEmail } from '../PreviaEmail'
 import { dicaDoMarcador, marcadoresDesconhecidos } from '../previaEmailDados'
 import { NomeField } from './shared'
 import { avisosTabelaEmail } from '../../../lib/emailTabelaOrigem'
+import { LinkAdmin } from '../../admin/LinkAdmin'
+import { rotuloAdmin } from '../../../lib/adminNav'
 
 interface EmailStatus {
   enabled: boolean
@@ -248,7 +250,7 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
               <p className="text-[10px] text-dim/70">
                 {statusFalhou
                   ? 'Não foi possível consultar as pastas liberadas agora — tente de novo em instantes.'
-                  : 'Nenhuma pasta liberada para anexo — cadastre as pastas em Admin › E-mail.'}
+                  : <>Nenhuma pasta liberada para anexo — cadastre as pastas em <LinkAdmin grupo="comunicacao" aba="email" novaAba />.</>}
               </p>
             ) : anexoLigado && cfg.anexo ? (
               <>
@@ -260,11 +262,11 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
                   value={cfg.anexo.raiz}
                   onChange={v => patch({ anexo: { ...cfg.anexo!, raiz: v } })}
                   raizes={raizes}
-                  ajuda={'Caminho no servidor do DataStage, abaixo de uma pasta liberada em Admin › E-mail.\nUse Navegar… para escolher o arquivo sem digitar.'}
-                  // As raízes do anexo são de Admin › E-mail, não da tela de
+                  ajuda={`Caminho no servidor do DataStage, abaixo de uma pasta liberada em ${rotuloAdmin('comunicacao', 'email')}.\nUse Navegar… para escolher o arquivo sem digitar.`}
+                  // As raízes do anexo são de Comunicação › E-mail, não da tela de
                   // Utilitários: sem isto o campo manda cadastrar no lugar
                   // errado, numa tabela que este painel nem lê.
-                  ondeCadastrar="Admin › E-mail"
+                  ondeCadastrar={rotuloAdmin('comunicacao', 'email')}
                   onNavegar={navegador.disponivel ? () => navegador.abrir(cfg.anexo?.raiz || null) : undefined}
                 />
                 <Input
@@ -331,7 +333,7 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
 
           {status && !status.enabled && (
             <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-              O canal de e-mail está desligado em Admin › E-mail. O nó fica salvo, mas a corrida vai pular este envio.
+              O canal de e-mail está desligado em <LinkAdmin grupo="comunicacao" aba="email" novaAba />. O nó fica salvo, mas a corrida vai pular este envio.
             </p>
           )}
           {erros.length > 0 && (
@@ -362,7 +364,7 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
             <div className="flex flex-col gap-1">
               <Select
                 label="Modelo"
-                hint={'O layout vem do catálogo e é lido no envio: trocar o modelo em Admin › E-mail vale para todos os fluxos.\nCorpo livre é a saída para um aviso fora do padrão.'}
+                hint={`O layout vem do catálogo e é lido no envio: trocar o modelo em ${rotuloAdmin('comunicacao', 'email')} vale para todos os fluxos.\nCorpo livre é a saída para um aviso fora do padrão.`}
                 value={cfg.modelo_id != null ? String(cfg.modelo_id) : ''}
                 onChange={e => patch({ modelo_id: e.target.value ? Number(e.target.value) : null })}
                 className="text-xs"
@@ -381,16 +383,17 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
               )}
               {faltaEscolherModelo && (
                 <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                  <LinkAdmin grupo="comunicacao" aba="email" novaAba />
                   {modelos.length === 0
-                    ? 'Admin › E-mail exige um modelo do catálogo, e não há nenhum modelo ativo. Peça ao Admin para ativar um antes de salvar este nó.'
-                    : 'Admin › E-mail exige um modelo do catálogo: escolha um para salvar este nó.'}
+                    ? ' exige um modelo do catálogo, e não há nenhum modelo ativo. Peça ao Admin para ativar um antes de salvar este nó.'
+                    : ' exige um modelo do catálogo: escolha um para salvar este nó.'}
                 </p>
               )}
               {modeloForaDaLista && (
                 <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                   O modelo #{cfg.modelo_id} não está na lista de escolha. Se foi apenas
                   desativado, o envio continua usando o layout dele; se foi removido do
-                  catálogo, a corrida falha. Confira em Admin › E-mail › Modelos — ou
+                  catálogo, a corrida falha. Confira em <LinkAdmin grupo="comunicacao" aba="email" secao="Modelos" novaAba /> — ou
                   escolha outro aqui.
                 </p>
               )}
@@ -505,7 +508,7 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
                 {catalogoSemResposta
                   ? `Sem prévia: não foi possível carregar o modelo #${cfg.modelo_id} agora. O envio continua usando o layout dele.`
                   : `Sem prévia: o modelo #${cfg.modelo_id} está fora da lista de escolha.`}
-                {' '}O conteúdo dele fica em Admin › E-mail › Modelos.
+                {' '}O conteúdo dele fica em <LinkAdmin grupo="comunicacao" aba="email" secao="Modelos" novaAba />.
               </p>
             ) : (
               <PreviaEmail

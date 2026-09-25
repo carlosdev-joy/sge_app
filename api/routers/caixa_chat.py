@@ -165,7 +165,7 @@ async def chat_enviar(assistente: str, body: dict = Body(default={}),
     cfg = ia_provedor.load_config()
     if not cfg["enabled"]:
         raise HTTPException(status_code=503,
-                            detail="Assistentes IA desativados (Admin > IA)")
+                            detail="Assistentes IA desativados (Admin › Inteligência Artificial › Provedor)")
 
     system_prompt = _system_prompt(assistente, context)
     inicio = time.monotonic()

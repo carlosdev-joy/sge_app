@@ -10,7 +10,7 @@ agentes (docs/spec-agentes-datastage.md) e o que vier depois.
 
 Config em dbo.etl_app_config, chaves `ia_*` (novas) com fallback para as
 `caixa_ia_*` (antigas — nenhuma delas é apagada aqui; ver `_LEGADO` abaixo e a
-migration 117_ia_provedor_config.sql), gerida em Admin > IA (ações
+migration 117_ia_provedor_config.sql), gerida em Admin › Inteligência Artificial › Provedor (ações
 `ia_get/ia_set/ia_test/ia_verificar`; as `caixa_ia_*` seguem respondendo como
 aliases). A chave de API é cifrada com o mesmo Fernet das conexões
 (services/conn_crypto, ORQUESTRA_CONN_KEY).
@@ -149,7 +149,7 @@ def _api_key(cfg: dict) -> str:
     if not cfg.get("api_key_enc"):
         raise HTTPException(status_code=503,
                             detail="Assistentes IA sem chave de API configurada "
-                                   "(Admin > IA)")
+                                   "(Admin › Inteligência Artificial › Provedor)")
     return decrypt_password(cfg["api_key_enc"])
 
 
@@ -271,7 +271,7 @@ async def _chat_openai_compat(cfg: dict, api_key: str, model: str,
     if not base_url:
         raise HTTPException(status_code=503,
                             detail="Provedor OpenAI-compatível sem base_url configurada "
-                                   "(Admin > IA)")
+                                   "(Admin › Inteligência Artificial › Provedor)")
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
             r = await client.post(
@@ -422,7 +422,7 @@ async def _chat_caixa_gateway(cfg: dict, api_key: str, model: str,
     if not base_url:
         raise HTTPException(status_code=503,
                             detail="Gateway da Caixa sem base_url configurada "
-                                   "(Admin > IA)")
+                                   "(Admin › Inteligência Artificial › Provedor)")
     headers_extra, corpo = _corpo_gateway(model, system_prompt, message, identidade, campo_identidade)
     try:
         # trust_env=False por padrão: a rota é interna e o proxy corporativo

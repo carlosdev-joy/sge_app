@@ -1,5 +1,5 @@
 """api/services/email_config.py — a configuração global do e-mail em
-dbo.etl_app_config (chaves email_*, migration 111), gerida em Admin › E-mail.
+dbo.etl_app_config (chaves email_*, migration 111), gerida em Admin › Comunicação › E-mail.
 
 Sem segredo: o relay não exige autenticação e o remetente é público. Por isso
 nada aqui é cifrado — e nada aqui pode virar comando: os valores só entram em
@@ -20,7 +20,7 @@ K_DOMINIOS = "email_dominios_permitidos"
 K_EXIGIR_MODELO = "email_exigir_modelo"
 CHAVES = (K_HABILITADO, K_REMETENTE, K_LIMITE_MB, K_RAIZES, K_DOMINIOS, K_EXIGIR_MODELO)
 
-DESCRICAO = "E-mail do Orquestra (Admin > E-mail)"
+DESCRICAO = "E-mail do Orquestra (Admin › Comunicação › E-mail)"
 LIMITE_VALOR = 1000   # dbo.etl_app_config.config_value VARCHAR(1000)
 
 

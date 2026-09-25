@@ -1,7 +1,7 @@
 """api/services/servicenow.py — configuração da integração com o ServiceNow.
 
-Config em dbo.etl_app_config (chaves `servicenow_*`), gerida em Admin >
-ServiceNow. A senha é cifrada com o mesmo Fernet das conexões
+Config em dbo.etl_app_config (chaves `servicenow_*`), gerida em Admin ›
+Integrações & Dados › ServiceNow. A senha é cifrada com o mesmo Fernet das conexões
 (services/conn_crypto, ORQUESTRA_CONN_KEY) — a MESMA chave precisa estar no
 orquestra-api e nos containers do Airflow, porque a DAG de sync decifra a
 credencial para executar.
@@ -138,7 +138,7 @@ def credencial_executora(cfg: dict) -> tuple[str, str, str]:
         raise HTTPException(
             status_code=422,
             detail=("ServiceNow não configurado — falta " + ", ".join(faltando)
-                    + ". Preencha em Admin > ServiceNow."))
+                    + ". Preencha em Admin › Integrações & Dados › ServiceNow."))
     return cfg["url"], cfg["usuario"], decrypt_password(cfg["senha_enc"])
 
 

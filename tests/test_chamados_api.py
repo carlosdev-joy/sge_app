@@ -168,7 +168,7 @@ def test_fila_vazia_sem_sync_nenhum_aponta_o_admin(cliente, banco):
     banco["cur"] = CursorFalso([], None)
     d = cliente.get("/chamados").json()
     assert "Nenhuma sincronização registrada" in d["alerta_fila_vazia"]
-    assert "Admin > ServiceNow" in d["alerta_fila_vazia"]
+    assert "Admin › Integrações & Dados › ServiceNow" in d["alerta_fila_vazia"]
 
 
 def test_fila_com_chamados_nao_tem_alerta_de_vazio(cliente, banco):

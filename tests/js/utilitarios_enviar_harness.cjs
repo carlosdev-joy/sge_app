@@ -104,6 +104,7 @@ module.exports = new Proxy({}, { get: (_, nome) => {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'utilitarios-enviar-'))
 preparar(tmp)
 shims(tmp)
+require('./link_admin_duble.cjs')(tmp)  // <LinkAdmin> do aviso de extensões (F4 do admin)
 const { FormEnviarArquivo } = require(path.join(tmp, 'components/utilitarios/FormEnviarArquivo.js'))
 const { ModalEnvioArquivo } = require(path.join(tmp, 'components/utilitarios/ModalEnvioArquivo.js'))
 const T = require(path.join(tmp, 'lib/utilitariosTransferencia.js'))

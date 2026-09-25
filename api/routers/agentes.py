@@ -416,7 +416,7 @@ async def agentes_admin_config_get(_admin: dict = Depends(get_admin_user)):
     with _conexao() as (_conn, cur):
         cfg = svc.carregar_config(cur)
     # O catálogo vai junto com `recurso`/`perfis_elegiveis` porque a aba
-    # Admin › Agentes precisa saber A QUEM pode oferecer cada agente. Sem
+    # Admin › Inteligência Artificial › Agentes precisa saber A QUEM pode oferecer cada agente. Sem
     # isso o front teria de repetir essa regra à mão — e uma 2ª lista de
     # RBAC fora de sincronia é exatamente o defeito que `RBAC_RECURSOS` já
     # custou uma vez (tests/test_rbac_recursos_admin.py existe por isso).

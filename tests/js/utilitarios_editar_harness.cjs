@@ -104,6 +104,7 @@ module.exports = new Proxy({}, { get: (_, nome) => {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'utilitarios-editar-'))
 preparar(tmp)
 shims(tmp)
+require('./link_admin_duble.cjs')(tmp)  // <LinkAdmin> do aviso de extensões (F4 do admin)
 const { FormEditarArquivo } = require(path.join(tmp, 'components/utilitarios/FormEditarArquivo.js'))
 const { ModalGravacaoArquivo } = require(path.join(tmp, 'components/utilitarios/ModalGravacaoArquivo.js'))
 const puras = require(path.join(tmp, 'lib/utilitariosGravacao.js'))

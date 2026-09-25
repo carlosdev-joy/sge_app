@@ -1,0 +1,1 @@
+import{n as e}from"./comum-BveKYLUQ.js";var t=[`admin-perfis`],n=()=>e(`perfil_list`);function r(e){return e.length?e.map(e=>e.perfil_nome):[`admin`,`operador`,`consulta`]}export{n,r,t};

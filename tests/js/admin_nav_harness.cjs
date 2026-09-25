@@ -42,7 +42,18 @@ const destino = (splat) => {
 const saida = {
   abas: m.ABAS_ADMIN.map((a) => ({ grupo: a.grupo, id: a.id, rotulo: a.rotulo, descricao: a.descricao, idsAntigos: a.idsAntigos || [], chavesConfig: a.chavesConfig, lazy: !!(a.componente && a.componente.__lazy) })),
   grupos: m.GRUPOS_ADMIN.map((g) => g.id),
+  gruposRotulos: Object.fromEntries(m.GRUPOS_ADMIN.map((g) => [g.id, g.rotulo])),
   idsAntigos: { ...m.IDS_ANTIGOS },
+  // F4: abas que saíram do admin
+  externos: { ...m.REDIRECIONAMENTOS_EXTERNOS },
+  rotulos: {
+    email: m.rotuloAdmin('comunicacao', 'email'),
+    emailModelos: m.rotuloAdmin('comunicacao', 'email', 'Modelos'),
+    sftp: m.rotuloAdmin('integracoes', 'servidor-datastage'),
+    inexistente: m.rotuloAdmin('sistema', 'sla'),
+    inexistenteComSecao: m.rotuloAdmin('sistema', 'sla', 'X'),
+    todas: m.ABAS_ADMIN.map((a) => m.rotuloAdmin(a.grupo, a.id)),
+  },
   busca: {
     teams_webhook: primeiro('teams_webhook'),
     TEAMS_WEBHOOK: primeiro('TEAMS_WEBHOOK'),
@@ -67,12 +78,19 @@ const saida = {
     triagem: caminhos('triagem'),
     chamados_triagem_lote: caminhos('chamados_triagem_lote'),
     monitor: caminhos('monitor'),
+    // F4: o que saiu do admin não é aba — a busca não acha
+    sla: caminhos('sla'),
+    'fluxo ds': caminhos('fluxo ds'),
+    'relatório': caminhos('relatório'),
     chaves: Object.fromEntries(['teams_webhook_url', 'teams_webhook_url_ack', 'teams_webhook_url_resolved']
       .map((k) => [k, (primeiro(k) || {}).caminho || null])),
   },
   destinos: Object.fromEntries(['', 'comunicacao/email', 'comunicacao', 'config', 'sistema/config', 'ia', 'foo',
     'foo/bar', 'comunicacao/inexistente', 'comunicacao/email/extra', '/comunicacao/email/', 'constructor', 'toString',
-    'integracoes/monitoramento', 'servidor', 'monitor', 'integracoes/servidor']
+    'integracoes/monitoramento', 'servidor', 'monitor', 'integracoes/servidor',
+    // F4: saídas (id antigo, slug da F2 com grupo e id antigo com grupo)
+    'sla', 'sistema/sla', 'powerbi', 'sistema/powerbi-acessos', 'sistema/powerbi', 'fluxo_ds', 'sistema/fluxo-ds',
+    'sistema/fluxo_ds', 'powerbi-acessos', 'fluxo-ds']
     .map((s) => [s, destino(s)])),
 }
 
@@ -84,6 +102,12 @@ armazenado.set(m.CHAVE_ULTIMA_ABA, '/admin/nao/existe')
 saida.ultima.lixo = m.lerUltimaAba()
 armazenado.set(m.CHAVE_ULTIMA_ABA, '/admin/integracoes/monitoramento')
 saida.ultima.aposentada = m.lerUltimaAba()
+// F4: última aba gravada antes da saída — /admin não pode mandar para fora
+saida.ultima.saiuDoAdmin = {}
+for (const v of ['/admin/sistema/sla', '/admin/sistema/powerbi-acessos', '/admin/sistema/fluxo-ds']) {
+  armazenado.set(m.CHAVE_ULTIMA_ABA, v)
+  saida.ultima.saiuDoAdmin[v] = m.lerUltimaAba()
+}
 armazenamentoQuebrado = true
 saida.ultima.quebradoLer = m.lerUltimaAba()
 let lancou = false

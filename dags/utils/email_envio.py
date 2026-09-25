@@ -213,7 +213,7 @@ def validar_anexo_cadastro(raiz, nome, raizes_permitidas: list[str]) -> tuple[di
     else:
         pasta = pasta_do_anexo(r, raizes_permitidas)
         if pasta is None:
-            erros.append(f"anexo: a pasta '{r}' não está entre as permitidas no Admin › E-mail")
+            erros.append(f"anexo: a pasta '{r}' não está entre as permitidas no Admin › Comunicação › E-mail")
         else:
             r = pasta
     if not n:

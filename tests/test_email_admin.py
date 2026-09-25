@@ -486,7 +486,7 @@ def test_sem_raiz_cadastrada_a_navegacao_explica_em_vez_de_conectar(navegacao):
     cliente, cur, chamadas, auditoria, _estado, _ssh = navegacao
     cur.config["email_anexo_raizes"] = "[]"
     r = cliente.get("/email/anexo/listar?caminho=/dados/saida")
-    assert r.status_code == 403 and "Admin › E-mail" in r.json()["detail"]
+    assert r.status_code == 403 and "Admin › Comunicação › E-mail" in r.json()["detail"]
     assert chamadas == []
     # a recusa também deixa rastro: sem ela o relatório não mostra a tentativa
     assert auditoria[-1]["resultado"] == "negado" and "nenhuma pasta liberada" in auditoria[-1]["detalhe"]

@@ -177,7 +177,7 @@ def comando_sendmail(remetente: str) -> str:
 
 def run_sendmail(mensagem: bytes, remetente: str, timeout: int = 60) -> dict:
     """Entrega uma mensagem MIME ao sendmail do servidor do DataStage pelo
-    stdin da sessão SSH (o botão Testar de Admin › E-mail; spec
+    stdin da sessão SSH (o botão Testar de Admin › Comunicação › E-mail; spec
     docs/spec-notificacao-email.md). Nada digitado pelo usuário passa pela
     linha de comando (só o remetente do Admin, por allowlist); destinatários e
     assunto vão nos cabeçalhos. Devolve {exit_code, stderr, duration_ms, host}.

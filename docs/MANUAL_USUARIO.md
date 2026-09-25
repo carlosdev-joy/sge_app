@@ -14,7 +14,7 @@
 | **Desenvolvedor ETL** | Equipe de engenharia de dados | Tudo do Operador + cadastrar/editar pipelines, jobs, lineage, agendamentos, importar sequences DSX, **criar e editar arquivos no servidor** (Utilitários), **extrair o lineage direto do DataStage** (Governança › Job DataStage), **usar o agente de mapeamento DataStage** (menu Agentes — liberado pelo administrador usuário a usuário) |
 | **Administrador** | Responsável pela plataforma | Tudo + aba Admin: configurações, tipos de job, regenerar DAGs, excluir pipelines, calendários/blackout, **diretórios e extensões dos Utilitários**, **lote do lineage DataStage**, **agentes de IA** (interruptores, quem usa, curadores) |
 
-> **Como funciona:** todo usuário entra automaticamente no 1º login com perfil **consulta**. O administrador promove usuários e ajusta o que cada perfil acessa (telas e ações) em **Admin → Usuários & Perfis** — sem mexer no banco. A sessão sobrevive ao F5 e expira após o período configurado (padrão 12h); a senha nunca é armazenada, apenas um token de sessão revogável.
+> **Como funciona:** todo usuário entra automaticamente no 1º login com perfil **consulta**. O administrador promove usuários e ajusta o que cada perfil acessa (telas e ações) em **Admin › Acesso › Usuários** e **Admin › Acesso › Perfis e Permissões** — sem mexer no banco. A sessão sobrevive ao F5 e expira após o período configurado (padrão 12h); a senha nunca é armazenada, apenas um token de sessão revogável.
 
 ---
 
@@ -406,7 +406,7 @@ Carga_Vida ── ✉ Avisa_Equipe
 ```
 
 Antes de usar, alguém com perfil de administrador precisa ligar o canal em
-**Admin › E-mail** (remetente, e as pastas liberadas para anexo). Com o canal
+**Admin › Comunicação › E-mail** (remetente, e as pastas liberadas para anexo). Com o canal
 desligado, o nó fica salvo e a corrida **pula** o envio, sem falhar.
 
 #### Para quem o e-mail vai
@@ -429,7 +429,7 @@ corpo e o anexo.
 #### O modelo da mensagem
 
 O corpo do aviso é **escolhido numa lista** — os modelos que o administrador
-mantém em Admin › E-mail › Modelos, mais a opção **Corpo livre**:
+mantém em Admin › Comunicação › E-mail › Modelos, mais a opção **Corpo livre**:
 
 | Escolha | Quando usar |
 |---|---|
@@ -503,7 +503,7 @@ avisos do tipo "a carga fechou — e aqui está o que entrou".
 
 O campo do corpo só aparece quando o nó está em **Corpo livre**. Se ele estiver
 usando um modelo do catálogo, escolha *Corpo livre* na lista de modelos — ou
-acrescente o `{tabela}` ao **modelo**, em Admin › E-mail › Modelos, lembrando
+acrescente o `{tabela}` ao **modelo**, em Admin › Comunicação › E-mail › Modelos, lembrando
 que ali a mudança vale para **todos** os fluxos que usam aquele modelo.
 
 Três coisas que vale saber antes de montar:
@@ -538,7 +538,7 @@ dizendo "concluído" afirmaria sucesso num fluxo quebrado.
 #### Anexar um arquivo gerado pela corrida
 
 Marque **Anexar um arquivo do servidor** e clique em **Navegar…**: a janela abre
-nas pastas liberadas em Admin › E-mail, você desce até onde o arquivo está e
+nas pastas liberadas em Admin › Comunicação › E-mail, você desce até onde o arquivo está e
 **clica nele** — a pasta e o nome são preenchidos de uma vez. É a mesma
 navegação da tela de Utilitários.
 
@@ -569,13 +569,13 @@ quando algo deu errado, o motivo.
 - **Nó sem destinatário nenhum** — o fluxo não salva. Informe uma lista própria
   ou marque para incluir a do fluxo.
 - **Pasta do anexo fora da lista** — o anexo só sai de dentro das pastas
-  cadastradas em Admin › E-mail (ou de subpastas delas). Peça ao administrador
+  cadastradas em Admin › Comunicação › E-mail (ou de subpastas delas). Peça ao administrador
   para liberar a pasta.
 - **"O modelo não está na lista de escolha"** — o modelo que o nó usa foi
   desativado ou removido do catálogo. Desativado, o envio continua usando o
-  layout dele; removido, a corrida falha. Confira em Admin › E-mail › Modelos,
+  layout dele; removido, a corrida falha. Confira em Admin › Comunicação › E-mail › Modelos,
   ou escolha outro modelo no nó.
-- **"Admin › E-mail exige um modelo do catálogo"** — a padronização está ligada
+- **"Admin › Comunicação › E-mail exige um modelo do catálogo"** — a padronização está ligada
   e este nó é novo: escolha um modelo para poder salvar.
 - **Assunto com quebra de linha** — não é aceito (quebraria o cabeçalho da
   mensagem).
@@ -597,7 +597,7 @@ canal, modelo e mensagem são lidos **na hora do disparo**. Trocar o texto do
 card, o modelo ou o canal na tela vale na **próxima corrida**, sem regerar nada.
 
 ⚠️ **Uma vez, depois desta atualização, republique os pipelines que já têm nó
-de notificação** (Admin › Publicar DAGs). As DAGs publicadas antes ainda
+de notificação** (Admin › Pipelines & Ambiente › Publicar DAGs). As DAGs publicadas antes ainda
 carregam o texto antigo gravado por dentro, e vão continuar mandando o card
 velho até serem regeradas. Depois dessa única republicação, mudar texto nunca
 mais pede republicação.
@@ -746,7 +746,7 @@ Mensagens que você pode ver:
 | Mensagem | O que significa |
 |---|---|
 | **Seu perfil só lê…** | Sem a permissão de cadastrar/editar; peça ao administrador. |
-| **Nenhuma extensão liberada** / **Extensão não liberada.** | O admin não incluiu essa extensão em Admin › Utilitários. |
+| **Nenhuma extensão liberada** / **Extensão não liberada.** | O admin não incluiu essa extensão em Admin › Integrações & Dados › Servidor DataStage (SFTP). |
 | **Caractere fora do Latin-1 na linha N (…)** | Troque o caractere ou grave em UTF-8. |
 | **O arquivo já existe. Confirme para gravar por cima.** | Escolha Sobrescrever ou Cancelar. |
 | **O servidor recusou gravar em /…: o sistema de arquivos está montado somente leitura.** | A pasta é de uma montagem sem escrita; escolha outra pasta ou acione a sustentação. |
@@ -800,7 +800,7 @@ Mensagens que você pode ver:
 
 | Mensagem | O que significa |
 |---|---|
-| **Extensão X não está na lista do admin.** / **Arquivo sem extensão** | Só entram extensões liberadas em Admin › Utilitários; renomeie ou peça a inclusão. |
+| **Extensão X não está na lista do admin.** / **Arquivo sem extensão** | Só entram extensões liberadas em Admin › Integrações & Dados › Servidor DataStage (SFTP); renomeie ou peça a inclusão. |
 | **Arquivo de X, acima do teto de 50,0 MB para envio.** | Divida o arquivo ou envie por outro meio; o teto é fixo. |
 | **O arquivo já existe. Confirme para gravar por cima.** | Escolha Sobrescrever ou Cancelar. |
 | **O servidor recusou gravar em /…: o sistema de arquivos está montado somente leitura.** | A pasta é de uma montagem sem escrita; escolha outra pasta. |
@@ -1013,7 +1013,7 @@ salvar**: o que a régua recusa nunca chega ao botão *Aplicar*.
 **Quando o cenário não existe.** Dias úteis, feriados, valor lido de tabela ou
 arquivo, condições, qualquer coisa fora do catálogo e do vocabulário: o Maestro
 diz que **não atende**, orienta a **procurar o administrador** e o pedido fica
-registrado — o administrador vê a lista em Admin › Maestro › *Pedidos não
+registrado — o administrador vê a lista em Admin › Inteligência Artificial › Maestro › *Pedidos não
 atendidos* (§4.9) e decide se cria o cenário.
 
 **Encrypted e o que sai da tela.** O Maestro nunca pede nem repete senhas: para
@@ -1142,9 +1142,21 @@ acidentes, não para uso normal.
 
 ## 4. Perfil Administrador
 
-Tudo dos demais, mais a aba **Admin** (visível apenas para administradores):
+Tudo dos demais, mais a aba **Admin** (visível apenas para administradores).
 
-### 4.1 Configurações da aplicação
+> **Navegação do Admin.** O Admin tem um sub-menu lateral com **6 grupos** — **Acesso**,
+> **Inteligência Artificial**, **Comunicação**, **Integrações & Dados**, **Pipelines & Ambiente** e
+> **Sistema** — e cada aba tem endereço próprio (`/admin/<grupo>/<aba>`, ex.:
+> `/admin/comunicacao/email`): o F5 fica na mesma aba e o botão **Copiar link** do cabeçalho
+> manda a aba para alguém. A **busca** no topo do sub-menu (atalho `/`) acha a aba pelo nome, pelo
+> assunto ou pela chave de configuração (digitar `teams_webhook` leva a Comunicação › Teams). Nas
+> outras telas, as menções "Admin › Grupo › Aba" são links para a aba (para quem tem acesso ao
+> Admin). Três abas saíram do Admin: o **Relatório SLA** virou a seção *Aderência ao SLA* no fim
+> de **Performance**; o **guia de acessos do Power BI** virou a seção recolhível *Como liberar
+> acessos* no fim da tela **Power BI**; e o **Fluxo DS** foi retirado — o mesmo fluxo está na aba
+> *Fluxo (XML)* do **Console DataStage**. Links antigos dessas abas levam à tela nova.
+
+### 4.1 Parâmetros avançados (Admin › Sistema › Parâmetros avançados)
 Chave/valor em `etl_app_config` (ex.: URL do webhook Teams, parâmetros de monitor). Alterações valem sem redeploy.
 
 ### 4.2 Tipos de job
@@ -1158,10 +1170,10 @@ CRUD dos tipos de job aceitos no cadastro (nome, descrição, lineage habilitado
 - **Calendários** (ex.: feriados nacionais/ANBIMA): cadastre datas; pipelines vinculados não rodam nessas datas.
 - **Blackout**: janelas início/fim em que execuções agendadas são suprimidas globalmente ou por pipeline.
 
-### 4.5 Usuários & Perfis (Admin → 👤 Usuários & Perfis)
+### 4.5 Usuários e perfis (Admin › Acesso › Usuários · Perfis e Permissões · Roles do Airflow)
 - **Usuários**: lista quem já acessou (matrícula, nome — preenchido automaticamente com os dados do Airflow no 1º login —, perfil, último login). Altere o perfil pelo formulário; mudar o perfil derruba as sessões ativas do usuário (ele só precisa logar de novo). Remover um usuário faz com que ele volte ao perfil `consulta` se logar novamente.
 - **Perfis**: marque por checkbox quais telas (Dashboard, Pipelines, Jobs, Logs, DS Monitor, Governança, Malha, Admin) e ações (Executar, Cadastrar/Editar, Administração) cada perfil possui. Crie perfis novos se precisar (ex.: `auditoria`). Os perfis `admin` e `consulta` são protegidos contra exclusão, e o `admin` nunca perde a permissão de administração.
-- O TTL da sessão é configurável pela chave `session_ttl_hours` em Admin → Configurações.
+- O TTL da sessão é configurável pela chave `session_ttl_hours` em Admin › Sistema › Parâmetros avançados.
 
 ### 4.6 Rotina de deploy (servidor air-gapped)
 ```bash
@@ -1170,7 +1182,7 @@ cd /opt/airflow && git pull
 sqlcmd -S SQL14 -d DMDB41 -i sql/migrations/0XX_*.sql
 docker compose build orquestra-api && docker compose up -d --no-deps orquestra-api
 docker compose restart ui-nginx
-# se o factory mudou: Admin → Regenerar todos os DAGs
+# se o factory mudou: Admin › Pipelines & Ambiente › Publicar DAGs
 ```
 Lembretes:
 - Segredos só em `/opt/airflow/.env` (nunca no Git).
@@ -1182,8 +1194,8 @@ Lembretes:
   `docs/release-notes/parametros-datastage.md`.
 - **Maestro (§3.11 / §4.9)**: migration **110** na etapa 6c; `dags/etl_log_cleanup.py`
   ganhou a limpeza das conversas (arquivo de DAG — **sem** restart do worker);
-  o provedor de IA é o da aba *IA* (chave cifrada com `ORQUESTRA_CONN_KEY`
-  na API); ligar em Admin › Acessos & Comunicação › **Maestro**. Roteiro em
+  o provedor de IA é o de Admin › Inteligência Artificial › *Provedor* (chave cifrada com `ORQUESTRA_CONN_KEY`
+  na API); ligar em Admin › Inteligência Artificial › **Maestro**. Roteiro em
   `docs/release-notes/maestro.md`.
 - **Agentes (§3.12 / §4.11)**: migrations **116–119** na etapa 6c (a **118** tem de ir
   no mesmo deploy da F4 — zera os títulos gravados antes da redação); `dags/` (purga
@@ -1197,13 +1209,13 @@ Lembretes:
   com o prompt padrão). Roteiro em `docs/release-notes/agentes-admin.md`. **Consulta a
   banco**: migration **122** na etapa 6c; API e `dist/`; nos bancos que os agentes vão
   consultar, o login da conexão precisa de **SHOWPLAN** (e, de preferência, só leitura).
-  As migrations **123**, **124** e **125** registram as versões destas entregas em Admin ›
+  As migrations **123**, **124** e **125** registram as versões destas entregas em Admin › Sistema ›
   Versões — o número do cabeçalho sobe sozinho. Roteiro em `docs/release-notes/agentes-banco.md`.
 - **E-mail (§3.5-A / §3.5-B / §4.10)**: migration **111** na etapa 6c;
   `dags/utils/` ganhou dois arquivos → **reiniciar o worker** do Airflow;
   opcional no `.env` do host: `EMAIL_SENDMAIL_BIN` (padrão `/usr/sbin/sendmail`),
   repassada pelo compose à API **e** ao worker. Depois do deploy, configurar em
-  Admin › Acessos & Comunicação › **E-mail** e **republicar uma vez** os
+  Admin › Comunicação › **E-mail** e **republicar uma vez** os
   pipelines que já tinham nó de notificação (§3.5-B) ou nó de e-mail. Roteiro e
   conferência em `docs/release-notes/email.md`.
 - **Modelos de e-mail e seletor de anexo (§3.5-A / §4.10)**: migration **112**
@@ -1220,7 +1232,7 @@ Lembretes:
   continua rodando igual, só sem oferecer a tabela. Roteiro consolidado,
   conferência e reversão em `docs/release-notes/email-tabela-sql.md`.
 
-### 4.7 Utilitários (Admin → Sistema → Utilitários)
+### 4.7 Utilitários (Admin › Integrações & Dados › Servidor DataStage (SFTP))
 É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança
 no servidor do DataStage. Nada vem de fábrica: sem raiz cadastrada, ninguém
 lê, baixa, grava nem envia.
@@ -1268,7 +1280,7 @@ mesma pasta (ligado por padrão), na gravação e no envio. Lembre que ninguém
 expurga os `.bak` e que um envio de 50 MB sobrescrito com cópia ocupa 100 MB:
 combine a limpeza com a sustentação.
 
-**Permissão.** Em Admin → Usuários & Perfis, a tela **Utilitários** é um
+**Permissão.** Em Admin › Acesso › Perfis e Permissões, a tela **Utilitários** é um
 checkbox por perfil (admin, desenvolvedor e operador já vêm marcados pela
 migration 105). Gravar exige, além da tela, a ação **Cadastrar/Editar**. A
 permissão só aparece para o usuário depois de **sair e entrar de novo**.
@@ -1370,12 +1382,12 @@ exigir o token** da sessão — scripts externos que liam o lineage sem autentic
 param de funcionar. A extração unitária exige `acao_editar`; o lote, admin; o
 disparo genérico de DAGs da API também exige admin para esta DAG.
 
-### 4.9 Maestro (Admin → Acessos & Comunicação → Maestro)
+### 4.9 Maestro (Admin › Inteligência Artificial › Maestro)
 A aba governa o assistente de parâmetros do §3.11. Exige a migration **110**
 (sem ela a aba diz isso em vez de carregar).
 
 **Interruptor.** *Maestro ligado/desligado*. Ligar exige o **provedor de IA com
-chave** configurado na aba *IA* (o mesmo provedor dos assistentes do
+chave** configurado em Admin › Inteligência Artificial › *Provedor* (o mesmo provedor dos assistentes do
 Caixa: Anthropic, OpenAI-compatível ou o gateway interno; o interruptor dos
 assistentes do Caixa é independente). Desligado — ou ligado sem chave — o
 avatar não aparece para ninguém. Ao lado, o provedor, o modelo, se a chave está
@@ -1412,7 +1424,7 @@ DAG `etl_log_cleanup` (03h) apaga o que passa disso — inclusive os pedidos nã
 atendidos, tratados ou não. Um pedido que mereça virar cenário deve ser tratado
 (ou registrado no backlog) antes disso.
 
-### 4.10 E-mail (Admin → Acessos & Comunicação → E-mail)
+### 4.10 E-mail (Admin › Comunicação › E-mail)
 A aba governa o canal de e-mail do §3.5-A. Exige a migration **111** (sem ela a
 aba diz isso em vez de carregar).
 
@@ -1518,7 +1530,7 @@ lista de escolha". Depois de desativar ou excluir um padrão, marque outro.
 
 ---
 
-### 4.11 Agentes (Admin → Acessos & Comunicação → Agentes)
+### 4.11 Agentes (Admin › Inteligência Artificial › Agentes)
 A aba governa a tela **Agentes** (§3.12). Exige as migrations **116–122** — **não ligue
 os interruptores antes delas** (sem a 117 a aba abre com os padrões e o chat falha; sem a
 120/121, o prompt não tem versões e não dá para criar agentes; sem a 122, dá para criar
@@ -1579,7 +1591,7 @@ Para quem o gateway conhece por outro identificador (matrícula fora do padrão
 chave (permissões extras) do usuário. Letras, números e `. _ @ -`, até 100, única por
 usuário.
 
-**Provedor de IA.** O agente usa o provedor da aba **IA** e exige o `caixa_gateway`
+**Provedor de IA.** O agente usa o provedor de **Admin › Inteligência Artificial › Provedor** e exige o `caixa_gateway`
 (identidade por usuário); outro provedor deixa a tela em *"Provedor de IA
 incompatível"*.
 
@@ -1679,11 +1691,11 @@ aparece mas o agente não: os dois interruptores precisam estar ligados (§4.11)
 perfil precisa ser **desenvolvedor**.
 
 **Criei um agente e ninguém o vê.** Ele nasce **desligado** — ligue na linha dele em
-Admin › Agentes (e o interruptor geral *Agentes ligados* também). Depois, a pessoa
+Admin › Inteligência Artificial › Agentes (e o interruptor geral *Agentes ligados* também). Depois, a pessoa
 precisa ser de um dos **perfis escolhidos** no agente e ter a **tela Agentes**; no acesso
 *Manual*, também ser liberada em *Quem pode usar* (e sair e entrar de novo).
 
-**Mudei o prompt e o agente piorou.** Em Admin › Agentes › Prompt › *Histórico de
+**Mudei o prompt e o agente piorou.** Em Admin › Inteligência Artificial › Agentes › Prompt › *Histórico de
 versões*, **Restaurar** a versão anterior (no DataStage, também o *Padrão do código*) —
 vale na próxima pergunta.
 
@@ -1702,7 +1714,7 @@ se repetir).
 **Execução manual rodou em feriado.** Comportamento esperado: execuções manuais ignoram calendário/blackout/horários.
 
 **Ninguém recebeu o e-mail, mas a etapa ficou verde.** O canal está desligado em
-Admin → E-mail: nesse caso a etapa fica *pulada*, de propósito. Se o canal está
+Admin › Comunicação › E-mail: nesse caso a etapa fica *pulada*, de propósito. Se o canal está
 ligado, abra a corrida em Execuções e veja o bloco *E-mails enviados* — ele diz
 para quem foi e se houve erro.
 
@@ -1722,7 +1734,7 @@ corridas seguintes mudarem, a DAG é anterior à versão que lê em tempo de
 corrida: republique o pipeline uma vez.
 
 **Não consigo escolher a pasta do anexo.** O anexo só sai de dentro das pastas
-liberadas em Admin → E-mail (§4.10), ou de subpastas delas — é por isso que o
+liberadas em Admin › Comunicação › E-mail (§4.10), ou de subpastas delas — é por isso que o
 **Navegar…** abre só nelas, e que um caminho digitado fora é recusado. Sem
 nenhuma pasta cadastrada, o campo de anexo fica indisponível.
 
@@ -1751,15 +1763,15 @@ atualização que passou a ler o texto na hora do envio. Republique o pipeline
 uma vez (§3.5-B); daí em diante mudar o texto vale sem republicar.
 
 **O card do Teams parou de chegar.** O canal do nó foi apagado ou desativado em
-Admin → Acessos & Comunicação → Notificações. Antes o card ia para o canal padrão do sistema, o que
+Admin › Comunicação › Teams. Antes o card ia para o canal padrão do sistema, o que
 escondia o problema. Agora ele não é enviado e o log da etapa diz qual canal
 está faltando.
 
-**Não vejo a aba Admin (ou outra aba).** Seu perfil não tem acesso a essa tela — solicite ao administrador em Admin → Usuários & Perfis.
+**Não vejo a aba Admin (ou outra aba).** Seu perfil não tem acesso a essa tela — solicite ao administrador em Admin › Acesso › Perfis e Permissões.
 
 **Apertei F5 e continuei logado — é normal?** Sim. A sessão usa um token salvo no navegador (a senha nunca fica armazenada) e expira automaticamente após o período configurado (padrão 12h). Para encerrar antes, use Sair.
 
-**Utilitários diz "Fora dos diretórios liberados", mas a pasta existe.** Existir não basta: a pasta precisa estar abaixo de uma raiz cadastrada e ativa em Admin → Sistema → Utilitários (§4.7). Se o caminho passa por um link que sai da raiz, a resposta é a mesma.
+**Utilitários diz "Fora dos diretórios liberados", mas a pasta existe.** Existir não basta: a pasta precisa estar abaixo de uma raiz cadastrada e ativa em Admin › Integrações & Dados › Servidor DataStage (SFTP) (§4.7). Se o caminho passa por um link que sai da raiz, a resposta é a mesma.
 
 **Cancelei o envio e o arquivo apareceu no servidor mesmo assim.** O Cancelar só interrompe enquanto o arquivo está subindo do seu computador. Depois que ele chega inteiro (o botão some e o modal diz *gravando… aguarde*), o servidor grava de qualquer forma — por isso a mensagem de cancelamento pede para conferir na pasta. Para desfazer, sobrescreva com a versão certa: a cópia de segurança `.bak-<data-hora>` guarda o que estava lá antes (§3.8).
 
@@ -1779,7 +1791,7 @@ está faltando.
 
 **Não vejo o botão "Extrair todos (lote)".** Ele é só do administrador (§4.8); a extração unitária pede a permissão de cadastrar/editar (Desenvolvedor ETL).
 
-**O botão do Maestro não aparece na seção de parâmetros.** Ele só existe em etapa `datastage`, e só quando o administrador ligou o Maestro **e** o provedor de IA tem chave (Admin › Maestro, §4.9). Depois de ligar, quem já estava com a tela aberta pode precisar de F5 (o status é lido a cada 5 min). Sem a migration 110 o Maestro fica oculto.
+**O botão do Maestro não aparece na seção de parâmetros.** Ele só existe em etapa `datastage`, e só quando o administrador ligou o Maestro **e** o provedor de IA tem chave (Admin › Inteligência Artificial › Maestro, §4.9). Depois de ligar, quem já estava com a tela aberta pode precisar de F5 (o status é lido a cada 5 min). Sem a migration 110 o Maestro fica oculto.
 
 **O Maestro disse que "não atende" o meu cenário.** Ele só promete o que está no catálogo e se monta com o vocabulário do §3.10 (dias úteis, feriados e valor vindo de tabela ficam de fora). O pedido já ficou registrado para o administrador (§4.9); se o cenário for viável, ele cria o cenário no catálogo e o Maestro passa a atender.
 

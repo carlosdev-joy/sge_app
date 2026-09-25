@@ -54,6 +54,8 @@ _SR_ONLY_CONHECIDOS = {
     "components/admin/AdminShell.tsx": 3,
     # contagem da busca (aria-live) — dentro da raiz `relative` do MenuAdmin
     "components/admin/casca/MenuAdmin.tsx": 1,
+    # "(abre em nova aba)" do link para o admin (F4) — dentro do próprio <a relative>
+    "components/admin/LinkAdmin.tsx": 1,
 }
 
 

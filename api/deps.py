@@ -215,7 +215,7 @@ async def get_admin_user(user: dict = Depends(get_current_user)) -> dict:
 async def require_ds_console(user: dict = Depends(get_current_user)) -> dict:
     """
     Dependency do Console DataStage: libera para admin (acao_admin) OU para quem
-    tem o recurso 'tela_ds_console' (configurável por perfil em Admin > Usuários
+    tem o recurso 'tela_ds_console' (configurável por perfil em Admin › Acesso › Usuários
     & Perfis). Assim o acesso deixa de ser só de administrador.
     """
     perms = user.get("permissoes", [])

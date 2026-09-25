@@ -112,7 +112,7 @@ def require_agente(agente_id: str, curador: bool = False):
     `deps.require_ds_console`. Não-admin precisa das DUAS coisas: perfil
     elegível E o recurso em `permissoes_extra` (não em `permissoes`, que
     inclui o que vem do PERFIL — um `agente_datastage` marcado num perfil
-    pela tela genérica de Admin › Perfis não deve dar acesso a ninguém além
+    pela tela genérica de Admin › Acesso › Perfis e Permissões não deve dar acesso a ninguém além
     do admin; é a defesa em profundidade da spec, risco 26)."""
     ag = CATALOGO.get(agente_id)
     if ag is None:
