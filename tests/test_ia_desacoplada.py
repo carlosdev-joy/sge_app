@@ -200,7 +200,9 @@ def test_caixa_ia_so_citado_onde_e_esperado():
         "api/routers/maestro.py", "dags/etl_servicenow_sync.py",
         "dags/utils/triagem_ia.py", "tests/test_ia_provedor_config.py",
         "tests/test_triagem_ia.py", "tests/test_servicenow_config.py",
-        "ui-react/src/pages/Admin.tsx",
+        # Aba ServiceNow (extraída de pages/Admin.tsx na F1 de
+        # docs/spec-admin-reestruturacao.md): comentário comparando chaves.
+        "ui-react/src/components/admin/abas/SondaServiceNowTab.tsx",
         # F1 (docs/spec-agentes-datastage.md): o dublê de cursor do teste da
         # rota de agentes simula as duas gerações de chave (ia_*/caixa_ia_*)
         # para provar que GET /agentes/status discrimina certo entre elas.

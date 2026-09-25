@@ -27,7 +27,8 @@ HARNESS = RAIZ / "tests" / "js" / "utilitarios_tela_harness.cjs"
 SUCRASE = RAIZ / "ui-react" / "node_modules" / "sucrase"
 NAV = RAIZ / "ui-react" / "src" / "lib" / "nav.ts"
 APP = RAIZ / "ui-react" / "src" / "App.tsx"
-ADMIN = RAIZ / "ui-react" / "src" / "pages" / "Admin.tsx"
+# RBAC_RECURSOS saiu de pages/Admin.tsx (F1 de docs/spec-admin-reestruturacao.md).
+RBAC_TS = RAIZ / "ui-react" / "src" / "lib" / "rbacRecursos.ts"
 PAGINA = RAIZ / "ui-react" / "src" / "pages" / "Utilitarios.tsx"
 MODAL = RAIZ / "ui-react" / "src" / "components" / "utilitarios" / "ModalConteudoArquivo.tsx"
 MIGRATION = RAIZ / "sql" / "migrations" / "105_utilitarios_arquivos.sql"
@@ -176,8 +177,8 @@ def test_tela_nos_quatro_lugares():
     assert re.search(r"to:\s*'/utilitarios',\s*label:\s*'Utilitários',\s*icon:\s*Wrench,\s*group:\s*'Operação',\s*perm:\s*'tela_utilitarios'", nav)
     app = APP.read_text(encoding="utf-8")
     assert "'/utilitarios': <Utilitarios />" in app and "from './pages/Utilitarios'" in app
-    admin = ADMIN.read_text(encoding="utf-8")
-    assert "['tela_utilitarios', 'Utilitários']" in admin
+    rbac = RBAC_TS.read_text(encoding="utf-8")
+    assert "['tela_utilitarios', 'Utilitários']" in rbac
     mig = MIGRATION.read_text(encoding="utf-8")
     for perfil in ("admin", "desenvolvedor", "operador"):
         assert re.search(rf"\('{perfil}',\s*'tela_utilitarios'\)", mig), perfil
