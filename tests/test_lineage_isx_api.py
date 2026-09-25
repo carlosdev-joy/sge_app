@@ -683,7 +683,7 @@ class TestLote:
         # admin passa
         _auth(app, [PERM_ADMIN, PERM_EXECUTAR], "admin")
         assert client.post("/airflow/dags/etl_lineage_extract_isx/dagRuns", json={}).status_code == 200
-        assert rt_airflow._DAGS_SO_ADMIN == frozenset({"etl_lineage_extract_isx"})  # noqa: SLF001
+        assert rt_airflow._DAGS_SO_ADMIN == frozenset({"etl_lineage_extract_isx", "etl_admin_manage"})  # noqa: SLF001
 
     def test_lote_validacoes_e_falhas_do_airflow(self, client, db, airflow, auth_admin, monkeypatch):
         assert client.post("/lineage/isx/lote", json={"jobs": ["x; id"]}).status_code == 422

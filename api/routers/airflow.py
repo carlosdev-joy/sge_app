@@ -19,7 +19,13 @@ _DAG_ID_RE = re.compile(r'^[a-zA-Z0-9_.\-]+$')
 # contornaria o gate de admin dos endpoints próprios delas (auditoria da F3 do
 # lineage ISX). Quem tem role Op no Airflow ainda dispara pela UI do Airflow — o
 # gate vale para a API do Orquestra.
-_DAGS_SO_ADMIN = frozenset({"etl_lineage_extract_isx"})
+#
+# etl_admin_manage (QA da F5 do admin): a DAG confere "é admin?" pelo
+# `requested_by` que vem no PRÓPRIO conf — pelo proxy, quem só tem
+# acao_executar se passava por admin e gravava/apagava etl_app_config (e
+# usuários, perfis, conexões) sem a trava por dono. O Orquestra só a dispara
+# por dentro (admin.py → cliente do Airflow, conn_migrate), não por aqui.
+_DAGS_SO_ADMIN = frozenset({"etl_lineage_extract_isx", "etl_admin_manage"})
 
 
 def _exigir_admin_para_dag(dag_id: str, user: dict) -> None:

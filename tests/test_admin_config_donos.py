@@ -361,3 +361,47 @@ def test_segredo_orfao_sai_mascarado(admin_client, banco):
     assert cfg["powerbi_client_secret"].startswith("••••")
     assert cfg["x_api_key"].startswith("••••") and cfg["y_senha_enc"].startswith("••••")
     assert cfg["powerbi_client_id"] == "id-publico" and cfg["app_base_url"] == "http://orquestra"
+
+
+# ═══════════ achados do QA + auditoria de segurança da F5 ═══════════════════
+
+@pytest.mark.parametrize("chave", [
+    "ｅmail_remetente",          # fullwidth: casa com a linha real no SQL Server (CI_AS)
+    "﻿teams_webhook_url",       # BOM: peso zero na colação
+    "\u0000servicenow_senha_enc",    # NUL
+    "teams＿webhook_url",        # underscore fullwidth
+    "email remetente",               # espaço no meio
+    "x" * 101,
+])
+@pytest.mark.parametrize("action", ["config_upsert", "config_delete"])
+def test_chave_fora_do_ascii_e_recusada_antes_do_banco(admin_client, banco, chave, action):
+    r = _post(admin_client, action=action, config_key=chave, config_value="v")
+    assert r.status_code == 422 and "Chave inválida" in r.json()["detail"]
+    assert banco["conexoes"] == 0, "a recusa não pode tocar o banco"
+
+
+def test_config_upsert_nao_ecoa_o_valor(admin_client, banco):
+    r = _post(admin_client, action="config_upsert", config_key="powerbi_client_secret", config_value="s3gr3do-xyz")
+    assert r.status_code == 200 and "s3gr3do-xyz" not in r.text
+
+
+def test_config_publico_omite_todo_segredo(monkeypatch):
+    """GET /config não exige login: nenhuma chave com padrão de segredo sai."""
+    linhas = {"app_base_url": "https://x", "servicenow_senha_enc": "gAAAA-token",
+              "ia_api_key_enc": "gAAAA-ia", "gateway_api_key": "k-123",
+              "powerbi_client_secret": "s", "teams_webhook_url_ack": "https://h",
+              "qualquer_api_token": "t"}
+    cur = Cursor(linhas)
+    conn = MagicMock(); conn.cursor.return_value = cur
+    monkeypatch.setattr("routers.infra.get_db_conn", lambda: conn)
+    corpo = TestClient(app).get("/config").json()
+    assert corpo.get("app_base_url") == "https://x"
+    vazou = [k for k in linhas if k != "app_base_url" and k in corpo]
+    assert not vazou, vazou
+
+
+def test_etl_admin_manage_so_admin_pelo_proxy():
+    """A DAG confia no requested_by do conf: pelo proxy genérico (acao_executar)
+    qualquer executor se passaria por admin."""
+    from routers import airflow as rt_airflow
+    assert "etl_admin_manage" in rt_airflow._DAGS_SO_ADMIN  # noqa: SLF001

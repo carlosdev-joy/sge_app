@@ -70,6 +70,10 @@ export function ConfigTab() {
   }
 
   const donoNova = newKey.trim() ? donoDaChave(newKey) : null
+  // Mesma regra do backend (CHAVE_VALIDA em api/services/admin_config_donos.py):
+  // letra "de largura dupla" ou invisível casaria com a chave real no SQL Server
+  // e contornaria a trava por dono.
+  const chaveNovaInvalida = !!newKey.trim() && !/^[A-Za-z0-9_.-]{1,100}$/.test(newKey.trim())
   const novaSensivel = ehChaveSensivel(newKey)
 
   return (
@@ -172,10 +176,15 @@ export function ConfigTab() {
           <Input label="Valor" value={newVal} onChange={e => setNewVal(e.target.value)} className="w-52"
             type={novaSensivel ? 'password' : 'text'} autoComplete={novaSensivel ? 'new-password' : 'off'} />
           <Input label="Descrição (opcional)" value={newDesc} onChange={e => setNewDesc(e.target.value)} className="w-56" />
-          <Button onClick={() => upsertMut.mutate({ config_key: newKey.trim(), config_value: newVal, descricao: newDesc || undefined })} loading={upsertMut.isPending && !savingKey} disabled={!newKey.trim() || !newVal || !!donoNova}><Plus size={13} /> Adicionar</Button>
+          <Button onClick={() => upsertMut.mutate({ config_key: newKey.trim(), config_value: newVal, descricao: newDesc || undefined })} loading={upsertMut.isPending && !savingKey} disabled={!newKey.trim() || !newVal || !!donoNova || chaveNovaInvalida}><Plus size={13} /> Adicionar</Button>
         </div>
         {/* Chave com dono: o backend recusaria (422); aqui a pessoa já vê
             para onde ir, com o link da aba dona. */}
+        {chaveNovaInvalida && (
+          <p role="status" className="mt-3 text-xs text-ink">
+            Use só letras sem acento, números, <code className="font-mono">_ . -</code> na chave (até 100 caracteres).
+          </p>
+        )}
         {donoNova && (
           <p role="status" className="mt-3 text-xs text-ink">
             A chave <code className="font-mono">{newKey.trim()}</code> é gerida em{' '}

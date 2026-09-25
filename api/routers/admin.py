@@ -27,7 +27,9 @@ from routers.copias import _consulta_direta, _introspect_via_dag, _server_da_con
 from services import agentes as svc_agentes
 from services import agentes_registro as reg_agentes
 from services import servicenow
-from services.admin_config_donos import dono_da_chave, mensagem_chave_com_dono
+from services.admin_config_donos import (
+    CHAVE_VALIDA, PADROES_SEGREDO, dono_da_chave, mensagem_chave_com_dono,
+)
 from services.conn_crypto import decrypt_password, encrypt_password
 
 log = logging.getLogger("orquestra-api")
@@ -45,8 +47,7 @@ FREEZE_MOTIVO = "Congelamento manual do ambiente"
 # y_webhook_url, z_senha_enc) sai mascarada sem precisar lembrar de vir aqui.
 # ESPELHO: PADROES_SEGREDO em ui-react/src/lib/adminNav.ts (a tela deixa o
 # campo vazio para essas chaves); tests/test_admin_config_donos.py prende.
-_PADROES_SEGREDO = ("teams_webhook", "caixa_ia_api_key", "ia_api_key", "secret",
-                    "password", "token", "senha", "webhook", "_key", "_enc")
+_PADROES_SEGREDO = PADROES_SEGREDO  # fonte única em services/admin_config_donos.py
 
 # Prefixo do valor mascarado. Um valor que comece com ele e chegue para gravar
 # é a máscara voltando por engano (campo pré-preenchido com o que o
@@ -154,6 +155,10 @@ def _get_app_config_value(key: str) -> str | None:
 def _recusar_chave_com_dono(chave) -> None:
     """422 nomeando a aba dona — o front mostra o `detail` como veio."""
     k = str(chave or "").strip()
+    if not CHAVE_VALIDA.match(k):
+        raise HTTPException(
+            status_code=422,
+            detail="Chave inválida: use só letras sem acento, números, _ . e - (até 100 caracteres).")
     rotulo = dono_da_chave(k)
     if rotulo:
         raise HTTPException(status_code=422, detail=mensagem_chave_com_dono(k, rotulo))
@@ -259,7 +264,7 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
                 [key, value, desc, value, desc, requested_by, requested_by],
             )
             conn.commit(); cur.close(); conn.close()
-            return {"sucesso": True, "mensagem": f'Parâmetro "{key}" salvo.', "detalhes": {"key": key, "value": value}}
+            return {"sucesso": True, "mensagem": f'Parâmetro "{key}" salvo.', "detalhes": {"key": key}}
 
         elif action == "config_delete":
             key = (body.get("config_key") or "").strip()
