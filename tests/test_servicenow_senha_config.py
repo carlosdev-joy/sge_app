@@ -11,7 +11,7 @@ era o pior tipo de falha: `{"ok": true}`, toast de "Configuração salva", e o
 `servicenow_senha_enc` continuando vazio no banco. Nada na tela dizia isso.
 Sintoma reproduzido no ambiente dev em 2026-08-28.
 
-⚠️ Um `grep` por `senhaParaEnviar` no `Admin.tsx` NÃO serviria: ficaria verde
+⚠️ Um `grep` por `senhaParaEnviar` no `SondaServiceNowTab.tsx` NÃO serviria: ficaria verde
 com a chamada presente e a regra invertida. O que se afirma aqui é o VALOR que
 sai da função em cada estado do formulário.
 
@@ -94,8 +94,9 @@ def test_a_regra_mora_em_funcao_propria_e_nao_inline_no_jsx() -> None:
     fonte = FONTE.read_text(encoding="utf-8")
     assert "export function senhaParaEnviar" in fonte
 
-    admin = (RAIZ / "ui-react" / "src" / "pages" / "Admin.tsx").read_text(
-        encoding="utf-8")
-    assert "senhaParaEnviar(" in admin, "Admin.tsx deixou de usar a regra"
+    # Aba ServiceNow — extraída de pages/Admin.tsx (F1 de docs/spec-admin-reestruturacao.md).
+    admin = (RAIZ / "ui-react" / "src" / "components" / "admin" / "abas"
+             / "SondaServiceNowTab.tsx").read_text(encoding="utf-8")
+    assert "senhaParaEnviar(" in admin, "SondaServiceNowTab.tsx deixou de usar a regra"
     assert "trocarSenha ? cfgForm.senha" not in admin, (
         "a condição antiga voltou para o JSX — é ela que ignora a primeira senha")

@@ -1,10 +1,12 @@
-"""RBAC_RECURSOS (Admin.tsx) × NAV (lib/nav.ts) — o teste anti-drift do menu de perfis.
+"""RBAC_RECURSOS (lib/rbacRecursos.ts) × NAV (lib/nav.ts) — o teste anti-drift do menu de perfis.
 
 O registro de navegação (`ui-react/src/lib/nav.ts`) declara, por tela, o recurso
 RBAC exigido para exibi-la (`perm: 'tela_*'`). Quem **concede** esse recurso é o
 Admin, em "Perfis e Permissões" e no modal de permissões extras por usuário —
 e ambos desenham seus checkboxes a partir de uma segunda lista, escrita à mão:
-`RBAC_RECURSOS` em `ui-react/src/pages/Admin.tsx`.
+`RBAC_RECURSOS` em `ui-react/src/lib/rbacRecursos.ts` (até a F1 de
+docs/spec-admin-reestruturacao.md morava em `pages/Admin.tsx`), renderizada
+pela aba `components/admin/abas/UsuariosTab.tsx`.
 
 Duas listas, mantidas em arquivos diferentes, sem nada prendendo uma à outra.
 Foi assim que `tela_chamados` (PR #307) subiu com a tela funcionando, a migration
@@ -34,7 +36,10 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
 NAV_TS = RAIZ / "ui-react" / "src" / "lib" / "nav.ts"
-ADMIN_TSX = RAIZ / "ui-react" / "src" / "pages" / "Admin.tsx"
+# As listas (definição) e a aba que as RENDERIZA vivem em arquivos separados
+# desde a F1 de docs/spec-admin-reestruturacao.md (extração do pages/Admin.tsx).
+RBAC_TS = RAIZ / "ui-react" / "src" / "lib" / "rbacRecursos.ts"
+USUARIOS_TSX = RAIZ / "ui-react" / "src" / "components" / "admin" / "abas" / "UsuariosTab.tsx"
 
 
 def _perms_do_nav() -> set[str]:
@@ -49,10 +54,10 @@ def _perms_do_nav() -> set[str]:
 
 def _recursos_do_admin() -> list[tuple[str, str]]:
     """Pares (recurso, rótulo) oferecidos pelo Admin, na ordem da tela."""
-    fonte = ADMIN_TSX.read_text(encoding="utf-8")
+    fonte = RBAC_TS.read_text(encoding="utf-8")
     bloco = re.search(
         r"const RBAC_RECURSOS: \[string, string\]\[\] = \[(.*?)\n\]", fonte, re.S)
-    assert bloco, "RBAC_RECURSOS não encontrado em pages/Admin.tsx"
+    assert bloco, "RBAC_RECURSOS não encontrado em lib/rbacRecursos.ts"
     pares = re.findall(r"\['([^']+)',\s*'([^']*)'\]", bloco.group(1))
     assert pares, "nenhum recurso lido de RBAC_RECURSOS — a regex ficou para trás"
     return pares
@@ -66,7 +71,7 @@ def test_toda_perm_do_nav_esta_em_rbac_recursos():
     faltam = _perms_do_nav() - {rec for rec, _ in _recursos_do_admin()}
     assert not faltam, (
         f"Recursos exigidos pelo NAV que não aparecem em RBAC_RECURSOS "
-        f"(ui-react/src/pages/Admin.tsx): {sorted(faltam)} — cadastre o par "
+        f"(ui-react/src/lib/rbacRecursos.ts): {sorted(faltam)} — cadastre o par "
         f"['recurso', 'Rótulo'] para o admin poder habilitar a tela por perfil")
 
 
@@ -125,7 +130,7 @@ def _variavel_do_map_que_precede(fonte: str, marcador: str, janela: int = 600) -
     o `.map()` para `RBAC_RECURSOS` cru — só conferia a EXISTÊNCIA da
     `const`, nunca quem a consome)."""
     pos = fonte.find(marcador)
-    assert pos != -1, f"marcador {marcador!r} não encontrado em Admin.tsx — o JSX mudou de forma?"
+    assert pos != -1, f"marcador {marcador!r} não encontrado em UsuariosTab.tsx — o JSX mudou de forma?"
     trecho = fonte[max(0, pos - janela):pos]
     achados = re.findall(r"(RBAC_RECURSOS(?:_PERFIS)?)\.map\(", trecho)
     assert achados, (f"nenhum '<algo>.map(' encontrado nos {janela} caracteres antes de "
@@ -137,7 +142,7 @@ def test_matriz_de_perfis_RENDERIZA_com_RBAC_RECURSOS_PERFIS():
     """Lê o `.map()` que alimenta de verdade o bloco da matriz de perfis
     (ancorado em `togglePerm(p.perfil_nome`, exclusivo desse bloco) — não a
     definição da constante isolada."""
-    fonte = ADMIN_TSX.read_text(encoding="utf-8")
+    fonte = USUARIOS_TSX.read_text(encoding="utf-8")
     variavel = _variavel_do_map_que_precede(fonte, "togglePerm(p.perfil_nome")
     assert variavel == "RBAC_RECURSOS_PERFIS", (
         f"a matriz de perfis renderiza a partir de {variavel!r}, não de 'RBAC_RECURSOS_PERFIS' — "
@@ -148,7 +153,7 @@ def test_modal_de_usuario_RENDERIZA_com_RBAC_RECURSOS_completo():
     """O modal de permissões extras POR USUÁRIO precisa continuar oferecendo
     `agente_*` (é o único lugar da F1 onde dá para conceder um agente) —
     ancorado em `permDraft.has(rec)`, exclusivo desse bloco."""
-    fonte = ADMIN_TSX.read_text(encoding="utf-8")
+    fonte = USUARIOS_TSX.read_text(encoding="utf-8")
     variavel = _variavel_do_map_que_precede(fonte, "checked={herdado || permDraft.has(rec)}")
     assert variavel == "RBAC_RECURSOS", (
         f"o modal de permissões extras passou a renderizar {variavel!r} — sem a lista "
@@ -157,13 +162,13 @@ def test_modal_de_usuario_RENDERIZA_com_RBAC_RECURSOS_completo():
 
 def _recursos_da_matriz_de_perfis() -> list[str]:
     """`RBAC_RECURSOS_PERFIS` — a lista que alimenta SÓ a matriz de perfis
-    (Admin.tsx); é derivada de RBAC_RECURSOS, filtrando `agente_*`. Usada
+    (lib/rbacRecursos.ts); é derivada de RBAC_RECURSOS, filtrando `agente_*`. Usada
     pelos testes de CONTEÚDO da lista — a prova de que é ELA quem é
     renderizada está nos dois testes acima."""
-    fonte = ADMIN_TSX.read_text(encoding="utf-8")
+    fonte = RBAC_TS.read_text(encoding="utf-8")
     bloco = re.search(
         r"const RBAC_RECURSOS_PERFIS = RBAC_RECURSOS\.filter\((.*)$", fonte, re.MULTILINE)
-    assert bloco, ("RBAC_RECURSOS_PERFIS não encontrado em pages/Admin.tsx — a matriz de "
+    assert bloco, ("RBAC_RECURSOS_PERFIS não encontrado em lib/rbacRecursos.ts — a matriz de "
                    "perfis voltou a usar RBAC_RECURSOS direto? Isso reabriria o risco 26.")
     assert "agente_" in bloco.group(1), (
         "RBAC_RECURSOS_PERFIS não filtra mais por 'agente_' — confira o predicado do .filter()")
