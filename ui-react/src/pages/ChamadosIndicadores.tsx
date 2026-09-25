@@ -34,6 +34,7 @@ import { BarrasHorizontais, Painel } from '../components/chamados/graficos'
 import {
   SERIE_ENTRADAS, SERIE_SAIDAS, passoRampa, xDeY,
 } from '../components/chamados/escalas'
+import { LinkAdmin } from '../components/admin/LinkAdmin'
 
 interface FaixaAging { faixa: string; total: number }
 interface Celula { tipo: string; estado: string; total: number }
@@ -477,7 +478,7 @@ export default function ChamadosIndicadores() {
                 valor: t.total,
               }))} />
           : <p className="text-[11px] text-dim">
-              Nenhum chamado triado ainda. Ligue a triagem em Admin › Inteligência Artificial › Triagem de chamados.
+              Nenhum chamado triado ainda. Ligue a triagem em <LinkAdmin grupo="ia" aba="triagem" />.
             </p>}
       </Painel>
 

@@ -248,7 +248,7 @@ export function errosDoEmailNo(
 ): string[] {
   const erros: string[] = []
   if (modelo && opcoesDoModeloNo({ ...modelo, modeloId: cfg.modelo_id }).faltaEscolherModelo) {
-    erros.push('Escolha um modelo do catálogo (Admin › E-mail exige modelo)')
+    erros.push('Escolha um modelo do catálogo (Admin › Comunicação › E-mail exige modelo)')
   }
   const assunto = (cfg.assunto || '').trim()
   if (!assunto) erros.push('Informe o assunto')
@@ -274,7 +274,7 @@ export function errosDoEmailNo(
     // pasta abaixo dela** — é assim que o seletor chega ao arquivo, e o envio
     // sempre mediu o caminho final contra as raízes.
     if (raizesPermitidas.length && !pastaDentroDasRaizes(cfg.anexo.raiz, raizesPermitidas)) {
-      erros.push('A pasta do anexo não está entre as permitidas no Admin › E-mail')
+      erros.push('A pasta do anexo não está entre as permitidas no Admin › Comunicação › E-mail')
     }
     if (!cfg.anexo.raiz.trim()) erros.push('Escolha a pasta do anexo')
     // Nome vazio some em silêncio na serialização (anexo vira null) — o

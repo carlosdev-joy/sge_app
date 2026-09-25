@@ -55,10 +55,12 @@ export type AvisoPasta =
 /** O que o campo Pasta diz enquanto o usuário digita. null = nada a dizer. */
 /** `onde` = a tela que cadastra ESTAS raízes. O campo é reusado por telas com
  * listas de raízes diferentes (o anexo do e-mail tem as suas, em Admin ›
- * E-mail): mandar todo mundo para Admin › Utilitários é mandar para o lugar
- * errado, onde a pessoa cadastraria numa tabela que esta tela não lê. */
+ * Comunicação › E-mail): mandar todo mundo para o Servidor DataStage (SFTP) é
+ * mandar para o lugar errado, onde a pessoa cadastraria numa tabela que esta
+ * tela não lê. Texto literal (lib pura, sem o registro do admin): o pytest
+ * test_admin_saidas_f4 confere que o caminho existe no registro. */
 export function avisoPasta(bruto: string, raizes: string[],
-                           onde: string = 'Admin › Utilitários'): AvisoPasta {
+                           onde: string = 'Admin › Integrações & Dados › Servidor DataStage (SFTP)'): AvisoPasta {
   const s = (bruto || '').trim()
   if (!s) return null
   if (!s.startsWith('/')) return { tom: 'erro', texto: 'Precisa ser um caminho absoluto (começar com /).' }

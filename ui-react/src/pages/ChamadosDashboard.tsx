@@ -30,6 +30,7 @@ import {
   ORDEM_FILA, ORDEM_PRAZO, bloco, contaPorPrazo, contaPorResponsavel,
   type BlocoDoPainel, type ChamadoDoPainel,
 } from '../lib/dashboardChamados'
+import { LinkAdmin } from '../components/admin/LinkAdmin'
 
 const VISOES = [
   { id: 'geral', rotulo: 'Geral', ajuda: 'toda a fila ativa' },
@@ -97,7 +98,7 @@ export default function ChamadosDashboard() {
         dark:bg-yellow-900/20 border-amber-200 dark:border-yellow-800
         text-amber-800 dark:text-yellow-200">
         O espelho de chamados está indisponível — os números não seriam
-        confiáveis, então não são mostrados. Verifique em Admin &gt; ServiceNow.
+        confiáveis, então não são mostrados. Verifique em <LinkAdmin grupo="integracoes" aba="servicenow" />.
       </div>
     )
   }

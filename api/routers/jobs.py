@@ -1171,7 +1171,7 @@ def _msg_timeout_previa(segundos: int, acao: str) -> str:
     o que aconteceu com o default de 15s, que ninguém achava onde mexer."""
     return (f"A consulta excedeu o tempo limite de {segundos}s {acao} e foi cancelada "
             "no servidor. Refine o SELECT (filtros, menos colunas) — ou aumente o "
-            "limite em Admin › Sistema › Configurações › Configurações de fluxo "
+            "limite em Admin › Sistema › Parâmetros avançados › Configurações de fluxo "
             f"(até {_PREVIEW_TIMEOUT_MAX}s).")
 
 

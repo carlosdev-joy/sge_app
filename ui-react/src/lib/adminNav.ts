@@ -250,30 +250,6 @@ export const ABAS_ADMIN: AbaAdmin[] = [
     chavesConfig: [],
     componente: carregar(() => import('../components/admin/abas/BacklogTab'), 'BacklogTab'),
   },
-  // sai na F4 (vai para /performance)
-  {
-    grupo: 'sistema', id: 'sla', rotulo: 'Relatório SLA', idsAntigos: ['sla'],
-    descricao: 'Percentual de pipelines entregues dentro do SLA no período, com exportação em CSV.',
-    palavrasChave: ['sla', 'relatório', 'aderência', 'atraso', 'csv'],
-    chavesConfig: [],
-    componente: carregar(() => import('../components/admin/abas/SlaReportTab'), 'SlaReportTab'),
-  },
-  // sai na F4 (vai para /powerbi)
-  {
-    grupo: 'sistema', id: 'powerbi-acessos', rotulo: 'Power BI — Acessos', idsAntigos: ['powerbi'],
-    descricao: 'Guia de como liberar o acesso aos relatórios do Power BI.',
-    palavrasChave: ['power bi', 'powerbi', 'relatório', 'acesso', 'workspace', 'guia'],
-    chavesConfig: [],
-    componente: carregar(() => import('../components/admin/abas/PowerBIAccessGuideTab'), 'PowerBIAccessGuideTab'),
-  },
-  // sai na F4 (duplica a aba "Fluxo (XML)" do /ds-console)
-  {
-    grupo: 'sistema', id: 'fluxo-ds', rotulo: 'Fluxo DS', idsAntigos: ['fluxo_ds'],
-    descricao: 'Lê o fluxo de uma sequence DataStage do XML do projeto, para validar o parser.',
-    palavrasChave: ['fluxo', 'datastage', 'xml', 'job', 'stage'],
-    chavesConfig: [],
-    componente: carregar(() => import('../components/admin/abas/FluxoDsTab'), 'FluxoDsTab'),
-  },
 ]
 
 export const ABA_PADRAO: AbaAdmin = ABAS_ADMIN[0]
@@ -300,6 +276,42 @@ export const IDS_ANTIGOS: Readonly<Record<string, string>> = Object.freeze(
   Object.fromEntries(ABAS_ADMIN.flatMap((a) => (a.idsAntigos ?? []).map((id) => [id, caminhoDaAba(a)]))),
 )
 
+// ── Saídas do Admin (F4) ─────────────────────────────────────────────────
+// O que deixou de ser aba e foi morar noutra tela. Não é aba: não entra no
+// sub-menu, na busca nem na última aba visitada — só o endereço velho (id do
+// Admin antes da F2 e slug publicado na F2) continua levando a algum lugar.
+export interface SaidaAdmin {
+  /** ids antigos e slugs da F2 que apontavam para a aba que saiu */
+  ids: string[]
+  /** destino fora do /admin (com âncora/aba quando a tela de destino aceita) */
+  para: string
+}
+
+export const SAIDAS_ADMIN: SaidaAdmin[] = [
+  // Relatório SLA → seção "Aderência ao SLA" no fim de /performance.
+  { ids: ['sla'], para: '/performance#sla' },
+  // Guia de acessos do Power BI → seção recolhível no fim de /powerbi.
+  { ids: ['powerbi', 'powerbi-acessos'], para: '/powerbi#como-liberar-acessos' },
+  // Fluxo DS duplicava a aba "Fluxo (XML)" do Console DataStage.
+  { ids: ['fluxo_ds', 'fluxo-ds'], para: '/ds-console?aba=seqflow' },
+]
+
+/** id/slug de aba que saiu do admin → endereço da tela nova (fora do /admin). */
+export const REDIRECIONAMENTOS_EXTERNOS: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(SAIDAS_ADMIN.flatMap((s) => s.ids.map((id) => [id, s.para]))),
+)
+
+/** O destino é uma aba do admin (e não uma tela que saiu dele)? */
+export function ehCaminhoAdmin(caminho: string): boolean {
+  return caminho.startsWith('/admin/')
+}
+
+function destinoAntigo(id: string): string | null {
+  if (Object.hasOwn(IDS_ANTIGOS, id)) return IDS_ANTIGOS[id]
+  if (Object.hasOwn(REDIRECIONAMENTOS_EXTERNOS, id)) return REDIRECIONAMENTOS_EXTERNOS[id]
+  return null
+}
+
 export type DestinoAdmin =
   | { tipo: 'aba'; aba: AbaAdmin }
   | { tipo: 'redirecionar'; para: string }
@@ -315,14 +327,33 @@ export function interpretarCaminhoAdmin(splat: string | undefined): DestinoAdmin
   if (p2 === undefined) {
     const doGrupo = abasDoGrupo(p1)
     if (doGrupo.length > 0) return { tipo: 'redirecionar', para: caminhoDaAba(doGrupo[0]) }
-    if (Object.hasOwn(IDS_ANTIGOS, p1)) return { tipo: 'redirecionar', para: IDS_ANTIGOS[p1] }
-    return { tipo: 'nao-encontrada' }
+    const antigo = destinoAntigo(p1)
+    return antigo ? { tipo: 'redirecionar', para: antigo } : { tipo: 'nao-encontrada' }
   }
   const aba = resolverAba(p1, p2)
   if (aba) return { tipo: 'aba', aba }
-  // /admin/<qualquer>/<idAntigo> (ex.: /admin/sistema/config) — link antigo com grupo.
-  if (Object.hasOwn(IDS_ANTIGOS, p2)) return { tipo: 'redirecionar', para: IDS_ANTIGOS[p2] }
-  return { tipo: 'nao-encontrada' }
+  // /admin/<qualquer>/<idAntigo> (ex.: /admin/sistema/config) — link antigo com
+  // grupo; inclui as abas que saíram do admin (/admin/sistema/sla → /performance#sla).
+  const antigo = destinoAntigo(p2)
+  return antigo ? { tipo: 'redirecionar', para: antigo } : { tipo: 'nao-encontrada' }
+}
+
+// ── Migalhas de outras telas (F4) ─────────────────────────────────────────
+// "Admin › Comunicação › E-mail" sai SEMPRE do registro: renomear uma aba ou
+// mudá-la de grupo atualiza todas as telas que mandam o usuário até ela. O
+// componente <LinkAdmin> (components/admin/LinkAdmin.tsx) vira link; texto que
+// não pode ser link (hint, mensagem de validação) usa rotuloAdmin direto.
+export const SEPARADOR_MIGALHA = ' › '
+
+/**
+ * "Admin › Grupo › Aba" (+ " › Seção", quando a migalha aponta um bloco
+ * dentro da aba, como "Modelos"). Aba inexistente devolve só "Admin › Grupo"
+ * — nunca lança numa tela de terceiros; o pytest prende as chamadas.
+ */
+export function rotuloAdmin(grupo: GrupoAdminId, aba: string, secao?: string): string {
+  const g = GRUPOS_ADMIN.find((x) => x.id === grupo)
+  const a = resolverAba(grupo, aba)
+  return ['Admin', g?.rotulo, a?.rotulo, a ? secao : undefined].filter(Boolean).join(SEPARADOR_MIGALHA)
 }
 
 // ── Busca ─────────────────────────────────────────────────────────────────
@@ -448,8 +479,11 @@ export function lerUltimaAba(): string | null {
     const d = interpretarCaminhoAdmin(partes)
     if (d.tipo === 'aba') return caminhoDaAba(d.aba)
     // Aba que mudou de lugar (ex.: integracoes/monitoramento → integracoes/bancos
-    // na F3): segue o redirecionamento, desde que caia numa aba do admin.
+    // na F3): segue o redirecionamento, desde que caia numa aba do admin. Aba que
+    // SAIU do admin (F4: /admin/sistema/sla → /performance) não vale: abrir
+    // /admin jogaria a pessoa para fora dele — cai na aba padrão.
     if (d.tipo === 'redirecionar') {
+      if (!ehCaminhoAdmin(d.para)) return null
       const r = interpretarCaminhoAdmin(d.para.replace(/^\/admin\//, ''))
       return r.tipo === 'aba' ? caminhoDaAba(r.aba) : null
     }

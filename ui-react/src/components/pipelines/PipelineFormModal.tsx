@@ -18,6 +18,7 @@ import {
 import { DependenciasModal } from './DependenciasModal'
 import { ParametrosPipelineSecao } from './ParametrosPipeline'
 import { dsParamErrors, dsParamsToApi, paramsFromApi, type JobParam, type JobParamApi } from '../../lib/dsParams'
+import { LinkAdmin } from '../admin/LinkAdmin'
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
 
@@ -929,7 +930,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                     <option key={c.calendario_nome} value={c.calendario_nome}>{c.calendario_nome} ({c.datas} data{c.datas !== 1 ? 's' : ''})</option>
                   ))}
                 </select>
-                <p className="text-[10px] text-dim">Datas do calendário (feriados/fechamento) em que o pipeline <strong>não roda</strong>. Gerencie em Admin ▸ Agendamento.</p>
+                <p className="text-[10px] text-dim">Datas do calendário (feriados/fechamento) em que o pipeline <strong>não roda</strong>. Gerencie em <LinkAdmin grupo="pipelines" aba="calendarios" novaAba />.</p>
               </div>
             )}
 

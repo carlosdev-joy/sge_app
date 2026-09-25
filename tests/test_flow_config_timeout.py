@@ -108,7 +108,7 @@ def test_a_mensagem_de_timeout_diz_onde_aumentar(J):
     mensagem passasse a exibir `{_PREVIEW_TIMEOUT_MAX}` cru para o operador."""
     msg = J._msg_timeout_previa(60, "na pré-visualização")
     assert "60s na pré-visualização" in msg
-    assert "Admin › Sistema › Configurações › Configurações de fluxo" in msg
+    assert "Admin › Sistema › Parâmetros avançados › Configurações de fluxo" in msg
     assert "(até 280s)" in msg          # o teto real, interpolado
     assert "{" not in msg and "}" not in msg, "f-string quebrada: marcador cru na mensagem"
 
@@ -119,7 +119,7 @@ def test_a_simulacao_da_decisao_usa_a_mesma_mensagem(J):
     ensinar o mesmo caminho."""
     msg = J._msg_timeout_previa(120, "na simulação")
     assert "120s na simulação" in msg
-    assert "Admin › Sistema › Configurações" in msg
+    assert "Admin › Sistema › Parâmetros avançados" in msg
 
 
 def test_o_timeout_de_conexao_nao_acompanha_o_de_execucao(J):

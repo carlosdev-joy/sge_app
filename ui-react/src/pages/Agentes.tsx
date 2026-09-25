@@ -37,6 +37,7 @@ import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
 import { IndicadorProjeto } from '../components/agentes/IndicadorProjeto'
 import { toast } from '../components/ui/Toast'
 import { useAuthStore } from '../store/auth'
+import { LinkAdmin } from '../components/admin/LinkAdmin'
 
 interface ConversaGuardada {
   conversa_id: string
@@ -519,7 +520,7 @@ export default function Agentes() {
           <Bot className="w-8 h-8 mx-auto text-dim" aria-hidden="true" />
           <h2 className="text-base font-semibold text-ink mt-3">Nenhum agente liberado para você</h2>
           <p className="text-sm text-dim mt-2">
-            Os agentes de IA são liberados pelo administrador, em Admin › Agentes. Se você precisa
+            Os agentes de IA são liberados pelo administrador, em <LinkAdmin grupo="ia" aba="agentes" />. Se você precisa
             de um agente — como o de mapeamento DataStage —, peça a liberação a ele.
           </p>
           {catalogo.isError && (

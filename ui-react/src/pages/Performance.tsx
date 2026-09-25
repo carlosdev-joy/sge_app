@@ -7,6 +7,8 @@ import { Button } from '../components/ui/Button'
 import { PageSpinner } from '../components/ui/Spinner'
 import { Gauge, RefreshCw } from 'lucide-react'
 import { durStr, fmtDt } from '../components/execucao/ExecucaoDetailModal'
+import { AderenciaSla } from '../components/performance/AderenciaSla'
+import { useRolarParaAncora } from '../lib/useRolarParaAncora'
 
 // ── Tipos do retorno de GET /performance ─────────────────────────────────────
 interface PerfRow {
@@ -42,6 +44,10 @@ export default function Performance() {
     queryKey: ['performance', filtro, page],
     queryFn: () => apiFetch(`/performance?${qs}`),
   })
+
+  // /performance#sla (endereço antigo do Relatório SLA do admin): rola até a
+  // seção depois que a tabela de alertas acima assentou.
+  useRolarParaAncora(!isLoading)
 
   const aplicar = () => { setFiltro(pipeline.trim()); setPage(0) }
 
@@ -139,6 +145,10 @@ export default function Performance() {
           </div>
         </div>
       )}
+
+      {/* F4 da reestruturação do admin: veio de Admin › Sistema › Relatório SLA.
+          Fica no FIM (decisão §9.2) — nada acima muda de lugar. */}
+      <AderenciaSla />
     </div>
   )
 }

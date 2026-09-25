@@ -47,6 +47,7 @@ import { baixarArquivo } from '../lib/utilitariosDownload'
 import { enviarArquivo, type EnvioEmCurso, type ErroEnvioTransporte } from '../lib/utilitariosEnvio'
 import type { Listagem } from '../lib/utilitariosNavegador'
 import type { ListarPasta } from '../components/utilitarios/useNavegadorPastas'
+import { LinkAdmin } from '../components/admin/LinkAdmin'
 
 // Navegador de pastas (F6): a listagem vem daqui; os formulários cuidam do resto.
 const listarPasta: ListarPasta = (servidor, caminho, mostrarOcultos) => {
@@ -325,8 +326,8 @@ export default function Utilitarios() {
           <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
           <p className="text-sm text-amber-800 dark:text-amber-200">
             Nenhum diretório liberado ainda. {isAdmin()
-              ? <>Cadastre uma raiz em <strong>Admin › Sistema › Utilitários</strong>.</>
-              : <>Peça ao administrador para cadastrar uma raiz em Admin › Utilitários.</>}
+              ? <>Cadastre uma raiz em <LinkAdmin grupo="integracoes" aba="servidor-datastage" />.</>
+              : <>Peça ao administrador para cadastrar uma raiz em <LinkAdmin grupo="integracoes" aba="servidor-datastage" />.</>}
           </p>
         </div>
       )}

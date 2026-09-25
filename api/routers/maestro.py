@@ -167,7 +167,7 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
         interruptor, tem_chave, cfg = _estado(cur)
         if not interruptor:
             raise HTTPException(status_code=503,
-                                detail="Maestro desligado (Admin › Acessos & Comunicação › Maestro)")
+                                detail="Maestro desligado (Admin › Inteligência Artificial › Maestro)")
         if not tem_chave:
             raise HTTPException(status_code=503,
                                 detail="Maestro ligado, mas sem provedor de IA configurado "

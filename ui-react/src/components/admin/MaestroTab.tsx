@@ -19,6 +19,8 @@ import {
   type CenarioApi, type ConfigMaestroApi, type PedidoApi, type cenarioParaApi,
 } from '../../lib/maestroAdmin'
 import { MaestroCenarioModal } from './MaestroCenarioModal'
+import { LinkAdmin } from './LinkAdmin'
+import { rotuloAdmin } from '../../lib/adminNav'
 
 const Q_CONFIG = ['maestro-admin-config'] as const
 const Q_CENARIOS = ['maestro-admin-cenarios'] as const
@@ -90,7 +92,7 @@ export function MaestroTab() {
         O Maestro é o assistente conversacional da seção <em>Parâmetros do job</em> (Etapas e Fluxos): o usuário
         descreve o cenário e ele diz como preencher cada parâmetro. Ele só promete o que está no <strong>catálogo</strong>
         abaixo e se monta com o vocabulário dos parâmetros; o resto vira um <strong>pedido não atendido</strong> para
-        você avaliar. Usa o provedor de IA configurado em <em>Admin › IA</em>.
+        você avaliar. Usa o provedor de IA configurado em <LinkAdmin grupo="ia" aba="provedor" />.
       </InfoBanner>
 
       {/* ── Interruptor ─────────────────────────────────────────────────── */}
@@ -104,19 +106,19 @@ export function MaestroTab() {
             checked={cfg.enabled}
             disabled={ligar.isPending}
             onChange={e => ligar.mutate(e.target.checked)}
-            hint="Ligado, o avatar aparece na seção Parâmetros do job para quem tem acesso a Etapas/Fluxos. Ligar exige o provedor de IA com chave em Admin › IA."
+            hint={`Ligado, o avatar aparece na seção Parâmetros do job para quem tem acesso a Etapas/Fluxos. Ligar exige o provedor de IA com chave em ${rotuloAdmin('ia', 'provedor')}.`}
           />
           <div className="text-xs text-dim">
             Provedor: <span className="text-ink">{cfg.provedor.provider}</span>
             {cfg.provedor.model ? <> · modelo <span className="text-ink">{cfg.provedor.model}</span></> : null}
             {' · '}chave de API: {cfg.provedor.api_key_set
               ? <span className="text-emerald-700 dark:text-emerald-300">configurada</span>
-              : <span className="text-amber-700 dark:text-amber-300">ausente (Admin › IA)</span>}
+              : <span className="text-amber-700 dark:text-amber-300">ausente (<LinkAdmin grupo="ia" aba="provedor" />)</span>}
           </div>
         </div>
         {cfg.enabled && !cfg.provedor.api_key_set && (
           <p className="text-xs text-amber-700 dark:text-amber-300" data-maestro-sem-chave>
-            Ligado, mas sem provedor de IA com chave: o avatar fica oculto e o chat responderia "sem provedor". Configure a chave em Admin › IA.
+            Ligado, mas sem provedor de IA com chave: o avatar fica oculto e o chat responderia "sem provedor". Configure a chave em <LinkAdmin grupo="ia" aba="provedor" />.
           </p>
         )}
         <p className="text-[11px] text-dim">
