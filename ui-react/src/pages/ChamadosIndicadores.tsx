@@ -477,7 +477,7 @@ export default function ChamadosIndicadores() {
                 valor: t.total,
               }))} />
           : <p className="text-[11px] text-dim">
-              Nenhum chamado triado ainda. Ligue a triagem em Admin &gt; ServiceNow.
+              Nenhum chamado triado ainda. Ligue a triagem em Admin › Inteligência Artificial › Triagem de chamados.
             </p>}
       </Painel>
 

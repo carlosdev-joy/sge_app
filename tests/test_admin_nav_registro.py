@@ -18,6 +18,9 @@ antigos e (F5) do filtro de chaves órfãs. O que se prende aqui:
      o resolvedor redireciona ids antigos, com e sem grupo, e não confunde
      propriedades de Object (`constructor`) com id; a última aba sobrevive a
      localStorage quebrado. Sem Node/sucrase, SALTA (não finge).
+  4. **Remanejamentos da F3**: Acesso em 3 abas, Triagem em IA, Bancos &
+     Monitoramento numa aba só (o slug `monitoramento` da F2 redireciona), e
+     `teams_webhook_url*` com dono (Teams).
 """
 from __future__ import annotations
 
@@ -44,6 +47,12 @@ IDS_ANTIGOS = (
     "comunicados", "notificacoes", "powerbi", "ia", "maestro", "agentes", "email", "sla",
 )
 
+# Slugs publicados na F2 que a F3 aposentou (a aba foi fundida em outra) —
+# continuam resolvendo, como id antigo, para o endereço novo.
+SLUGS_APOSENTADOS_F3 = {"monitoramento": "/admin/integracoes/bancos"}
+
+TOTAL_ABAS = 26
+
 GRUPOS = ("acesso", "ia", "comunicacao", "integracoes", "pipelines", "sistema")
 
 
@@ -64,7 +73,7 @@ def _importadas(fonte: str) -> list[str]:
 
 def test_toda_aba_aparece_exatamente_uma_vez_no_registro():
     esperadas = sorted([p.stem for p in ABAS_DIR.glob("*.tsx")] + list(ABAS_FORA))
-    assert len(esperadas) == 24, esperadas
+    assert len(esperadas) == TOTAL_ABAS, esperadas
     pares = _importadas(_fonte())
     # O import dinâmico e o nome exportado apontam para o MESMO componente.
     assert all(arq == nome for arq, nome in pares), pares
@@ -81,7 +90,7 @@ def test_aba_de_abas_importada_pelo_caminho_certo():
 
 def test_uma_entrada_por_import_e_campos_obrigatorios():
     entradas = _entradas(_fonte())
-    assert len(entradas) == 24
+    assert len(entradas) == TOTAL_ABAS
     for e in entradas:
         for campo in ("grupo:", "id:", "rotulo:", "descricao:", "palavrasChave:", "chavesConfig:", "componente: carregar("):
             assert campo in e, (campo, e[:120])
@@ -102,7 +111,7 @@ def test_slugs_unicos_e_grupos_validos():
 def test_todo_id_antigo_declarado_uma_vez():
     declarados = re.findall(r"idsAntigos:\s*\[([^\]]*)\]", _fonte())
     ids = [x for bloco in declarados for x in re.findall(r"'([\w-]+)'", bloco)]
-    assert sorted(ids) == sorted(IDS_ANTIGOS)
+    assert sorted(ids) == sorted(IDS_ANTIGOS + tuple(SLUGS_APOSENTADOS_F3))
 
 
 def test_saidas_da_f4_marcadas():
@@ -126,7 +135,7 @@ def bancada() -> dict:
 
 def test_bancada_registro_completo(bancada):
     assert bancada["grupos"] == list(GRUPOS)
-    assert len(bancada["abas"]) == 24
+    assert len(bancada["abas"]) == TOTAL_ABAS
     assert all(a["lazy"] for a in bancada["abas"]), "toda aba é lazy (chunk próprio)"
     assert all(a["descricao"].endswith(".") and len(a["descricao"]) <= 120 for a in bancada["abas"])
     assert bancada["abas"][0]["grupo"] == "acesso" and bancada["abas"][0]["id"] == "usuarios"
@@ -134,7 +143,7 @@ def test_bancada_registro_completo(bancada):
 
 def test_bancada_ids_antigos_resolvem(bancada):
     existentes = {f"/admin/{a['grupo']}/{a['id']}" for a in bancada["abas"]}
-    assert set(bancada["idsAntigos"]) == set(IDS_ANTIGOS)
+    assert set(bancada["idsAntigos"]) == set(IDS_ANTIGOS) | set(SLUGS_APOSENTADOS_F3)
     assert set(bancada["idsAntigos"].values()) <= existentes
     assert bancada["idsAntigos"]["config"] == "/admin/sistema/parametros"
     assert bancada["idsAntigos"]["notificacoes"] == "/admin/comunicacao/teams"
@@ -154,7 +163,7 @@ def test_bancada_busca(bancada):
     assert b["configuracao"]["trecho"]["casou"] == "configuração"
     assert b["CONFIGURAÇÃO"]["caminho"] == "/admin/sistema/parametros"
     assert b["calendario"]["trecho"] == {"antes": "", "casou": "Calendário", "depois": "s & Blackout"}
-    assert b["inteligencia"] == ["/admin/ia/provedor", "/admin/ia/maestro", "/admin/ia/agentes"]
+    assert b["inteligencia"] == ["/admin/ia/provedor", "/admin/ia/maestro", "/admin/ia/agentes", "/admin/ia/triagem"]
     assert b["publicar dag"] == ["/admin/pipelines/publicar-dags"], "vários termos: todos precisam casar"
     assert b["agentes"]["caminho"] == "/admin/ia/agentes"
     assert b["powerbi_client_secret"] == ["/admin/sistema/parametros"], "chave órfã leva a Parâmetros avançados"
@@ -186,3 +195,58 @@ def test_bancada_ultima_aba(bancada):
     assert u["gravada"] == u["lida"] == "/admin/comunicacao/email"
     assert u["lixo"] is None, "endereço que não existe mais não vira destino"
     assert u["quebradoLer"] is None and u["quebradoGravarLancou"] is False
+
+
+# ═══════════ 4. remanejamentos da F3 ══════════════════════════════════════
+
+def test_f3_acesso_em_tres_abas_na_ordem_dos_blocos(bancada):
+    acesso = [a["id"] for a in bancada["abas"] if a["grupo"] == "acesso"]
+    assert acesso == ["usuarios", "perfis", "roles-airflow"]
+    assert bancada["idsAntigos"]["usuarios"] == "/admin/acesso/usuarios"
+    assert "/admin/acesso/perfis" in bancada["busca"]["perfil"][:2]
+
+
+def test_f3_triagem_em_ia_com_as_chaves(bancada):
+    b = bancada["busca"]
+    assert b["triagem"][0] == "/admin/ia/triagem"
+    assert "/admin/integracoes/servicenow" not in b["triagem"], "a triagem saiu do ServiceNow"
+    assert b["chamados_triagem_lote"][0] == "/admin/ia/triagem"
+    donos = {a["id"]: a["chavesConfig"] for a in bancada["abas"]}
+    assert "chamados_triagem_" in donos["triagem"]
+    assert "chamados_triagem_" not in donos["servicenow"]
+
+
+def test_f3_teams_dono_do_webhook_padrao(bancada):
+    donos = {a["id"]: a["chavesConfig"] for a in bancada["abas"]}
+    assert donos["teams"] == ["teams_webhook_url"]
+    for chave in ("teams_webhook_url", "teams_webhook_url_ack", "teams_webhook_url_resolved"):
+        assert bancada["busca"]["chaves"][chave] == "/admin/comunicacao/teams", chave
+    assert "até a F3" not in _fonte()
+
+
+def test_f3_bancos_e_monitoramento_numa_aba(bancada):
+    integ = [a["id"] for a in bancada["abas"] if a["grupo"] == "integracoes"]
+    assert "monitoramento" not in integ and "bancos" in integ
+    for antigo in ("servidor", "monitor", "monitoramento"):
+        assert bancada["idsAntigos"][antigo] == "/admin/integracoes/bancos", antigo
+    d = bancada["destinos"]
+    for splat in ("integracoes/monitoramento", "servidor", "monitor", "integracoes/servidor"):
+        assert d[splat] == {"tipo": "redirecionar", "para": "/admin/integracoes/bancos"}, splat
+    assert bancada["busca"]["monitor"][0] == "/admin/integracoes/bancos"
+    # última aba gravada com o slug aposentado segue o redirecionamento
+    assert bancada["ultima"]["aposentada"] == "/admin/integracoes/bancos"
+
+
+def test_f3_bancos_renderiza_servidor_em_cima_e_monitoramento_embaixo():
+    fonte = (ABAS_DIR / "BancosTab.tsx").read_text(encoding="utf-8")
+    assert fonte.index("<ServidorTab />") < fonte.index("<MonitoramentoTab />")
+
+
+def test_f3_cada_bloco_movido_tem_comentario_de_onde_veio():
+    """Critério da F3: cada movimento deixa, no ponto novo, o registro de que foi
+    decisão da spec e de onde veio — senão a próxima passagem "conserta" de volta."""
+    admin = FRONT / "components" / "admin"
+    for arq in ("abas/PerfisTab.tsx", "abas/RolesAirflowTab.tsx", "abas/UsuariosTab.tsx", "abas/TriagemTab.tsx",
+                "abas/BancosTab.tsx", "abas/NotificacoesTab.tsx", "abas/SondaServiceNowTab.tsx", "abas/ConfigTab.tsx"):
+        fonte = (admin / arq).read_text(encoding="utf-8")
+        assert "Decisão explícita da spec" in fonte and "F3" in fonte, arq

@@ -62,9 +62,17 @@ const saida = {
     servicenow_admin_perfis: caminhos('servicenow_admin_perfis'),
     agentes_titulo_redigido_em: caminhos('agentes_titulo_redigido_em'),
     admin_perfis: caminhos('admin_perfis'),
+    // F3
+    perfil: caminhos('perfil'),
+    triagem: caminhos('triagem'),
+    chamados_triagem_lote: caminhos('chamados_triagem_lote'),
+    monitor: caminhos('monitor'),
+    chaves: Object.fromEntries(['teams_webhook_url', 'teams_webhook_url_ack', 'teams_webhook_url_resolved']
+      .map((k) => [k, (primeiro(k) || {}).caminho || null])),
   },
   destinos: Object.fromEntries(['', 'comunicacao/email', 'comunicacao', 'config', 'sistema/config', 'ia', 'foo',
-    'foo/bar', 'comunicacao/inexistente', 'comunicacao/email/extra', '/comunicacao/email/', 'constructor', 'toString']
+    'foo/bar', 'comunicacao/inexistente', 'comunicacao/email/extra', '/comunicacao/email/', 'constructor', 'toString',
+    'integracoes/monitoramento', 'servidor', 'monitor', 'integracoes/servidor']
     .map((s) => [s, destino(s)])),
 }
 
@@ -74,6 +82,8 @@ m.gravarUltimaAba(email)
 saida.ultima = { gravada: armazenado.get(m.CHAVE_ULTIMA_ABA), lida: m.lerUltimaAba() }
 armazenado.set(m.CHAVE_ULTIMA_ABA, '/admin/nao/existe')
 saida.ultima.lixo = m.lerUltimaAba()
+armazenado.set(m.CHAVE_ULTIMA_ABA, '/admin/integracoes/monitoramento')
+saida.ultima.aposentada = m.lerUltimaAba()
 armazenamentoQuebrado = true
 saida.ultima.quebradoLer = m.lerUltimaAba()
 let lancou = false

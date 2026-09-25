@@ -1323,7 +1323,7 @@ def _test_webhook_impl(requested_by: str, _req):
 
     webhook_url = val_ack or val_default or val_env
     if not webhook_url:
-        diag["erro"] = "Nenhum webhook configurado. Preencha teams_webhook_url_ack em Admin > Configurações."
+        diag["erro"] = "Nenhum webhook configurado. Preencha o canal de ACK em Admin › Comunicação › Teams › Webhook padrão."
         return diag
 
     diag["url_usada"] = webhook_url[:40] + "..." + webhook_url[-20:] if len(webhook_url) > 64 else webhook_url
@@ -1342,7 +1342,7 @@ def _test_webhook_impl(requested_by: str, _req):
                      "text": "🔔 ORQUESTRA — Teste de webhook",
                      "size": "Large", "weight": "Bolder", "wrap": True, "color": "Accent"},
                     {"type": "TextBlock",
-                     "text": f"Testado por {requested_by} via Admin > Configurações.",
+                     "text": f"Testado por {requested_by} via Admin › Comunicação › Teams.",
                      "wrap": True, "isSubtle": True},
                     {"type": "FactSet", "facts": [
                         {"title": "Chave usada",  "value": diag["fonte"]},

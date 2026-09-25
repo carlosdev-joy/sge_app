@@ -9,9 +9,10 @@ import { PageSpinner } from '../../ui/Spinner'
 import { toast } from '../../ui/Toast'
 import { queryClient } from '../../../lib/queryClient'
 import { Q_AGENTES_ADMIN, agenteInelegivel, mensagemDeErro } from '../../../lib/agentes'
-import { RBAC_RECURSOS, RBAC_RECURSOS_PERFIS } from '../../../lib/rbacRecursos'
+import { RBAC_RECURSOS } from '../../../lib/rbacRecursos'
 import { adminPost } from '../comum'
 import { ConfirmModal } from '../ComumUI'
+import { Q_ADMIN_PERFIS, buscarPerfis, nomesDePerfis, type PerfilRow } from '../acesso'
 import { Edit2, Trash2, Plus, Save, KeyRound } from 'lucide-react'
 
 /**
@@ -39,10 +40,14 @@ function SinalGrantAgente({ agente, perfil, marcado, ehAdmin }: {
   )
 }
 
-// ── Usuários & Perfis ───────────────────────────────────────────
+// ── Usuários ────────────────────────────────────────────────────
+// Decisão explícita da spec (docs/spec-admin-reestruturacao.md, F3): até a F2
+// esta era a aba "Usuários & Perfis", com três blocos em sequência — Usuários,
+// Perfis e Permissões, Mapeamento de Roles. Os dois últimos viraram as abas
+// Acesso › Perfis e Permissões (abas/PerfisTab.tsx) e Acesso › Roles do
+// Airflow (abas/RolesAirflowTab.tsx). Aqui fica a lista de usuários e o modal
+// de permissões extras/identidade no gateway (com o SinalGrantAgente).
 interface UsuarioRow { matricula: string; perfil: string; primeiro_nome?: string; ultimo_nome?: string; email?: string; ativo: boolean; ultimo_login?: string; identidade_gateway?: string | null }
-interface PerfilRow { perfil_nome: string; descricao?: string; permissoes: string[] }
-interface RoleMapRow { role_airflow: string; perfil_nome: string; ordem_prioridade: number; descricao?: string; ativo: number }
 export function UsuariosTab() {
   const [userForm, setUserForm] = useState({ matricula: '', perfil: 'consulta' })
   const [deleteUser, setDeleteUser] = useState<string | null>(null)
@@ -53,16 +58,11 @@ export function UsuariosTab() {
   // cadastro que sobrepõe o padrão cvp-<matrícula>. Editada no mesmo modal
   // de permissões extras, mas salva por uma ação PRÓPRIA (user_identidade_set).
   const [identidadeDraft, setIdentidadeDraft] = useState('')
-  // perfis: estado local de permissões editáveis por perfil
-  const [permEdits, setPermEdits] = useState<Record<string, Set<string>>>({})
-  const [newPerfil, setNewPerfil] = useState({ nome: '', descricao: '' })
-  const [deletePerfil, setDeletePerfil] = useState<string | null>(null)
-  // role map
-  const [rmForm, setRmForm] = useState({ role_airflow: '', perfil_nome: '', ordem_prioridade: 99, descricao: '', ativo: true })
-  const [deleteRm, setDeleteRm] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery<{ usuarios: UsuarioRow[] }>({ queryKey: ['admin-usuarios'], queryFn: () => adminPost('user_list') })
-  const { data: perfis } = useQuery<{ perfis: PerfilRow[] }>({ queryKey: ['admin-perfis'], queryFn: () => adminPost('perfil_list') })
+  // Perfis: o select do formulário e o "(do perfil)" do modal de extras. Mesma
+  // query da aba Perfis e Permissões — ver components/admin/acesso.ts.
+  const { data: perfis } = useQuery<{ perfis: PerfilRow[] }>({ queryKey: Q_ADMIN_PERFIS, queryFn: buscarPerfis })
   // Recursos dos agentes criados pela tela (spec admin B3) — vêm da API, não
   // de uma 2ª lista à mão. Só quando o modal abre; sem a lista, o modal segue
   // com os fixos (o `permDraft` reenvia os grants que não aparecem).
@@ -79,7 +79,6 @@ export function UsuariosTab() {
       [a.recurso, `Agente — ${a.nome}`] as [string, string],
       ...(a.recurso_curador ? [[a.recurso_curador, `Agente — Curador — ${a.nome}`] as [string, string]] : []),
     ])
-  const { data: roleMap } = useQuery<{ dados: RoleMapRow[] }>({ queryKey: ['admin-rolemap'], queryFn: () => adminPost('role_map_list') })
   const { data: userPerms } = useQuery<{ permissoes: Record<string, string[]> }>({ queryKey: ['admin-user-perms'], queryFn: () => adminPost('user_perm_list') })
 
   const userUpsert = useMutation({
@@ -90,26 +89,6 @@ export function UsuariosTab() {
   const userDelete = useMutation({
     mutationFn: (matricula: string) => adminPost('user_delete', { matricula }),
     onSuccess: () => { toast.success('Usuário removido'); queryClient.invalidateQueries({ queryKey: ['admin-usuarios'] }); setDeleteUser(null) },
-    onError: (e: any) => toast.error(e.message),
-  })
-  const perfilSave = useMutation({
-    mutationFn: (p: { perfil_nome: string; permissoes?: string[]; descricao?: string }) => adminPost('perfil_upsert', p),
-    onSuccess: (_, v) => { toast.success(`Perfil "${v.perfil_nome}" salvo`); queryClient.invalidateQueries({ queryKey: ['admin-perfis'] }); setPermEdits(prev => { const n = { ...prev }; delete n[v.perfil_nome]; return n }); setNewPerfil({ nome: '', descricao: '' }) },
-    onError: (e: any) => toast.error(e.message),
-  })
-  const perfilDelete = useMutation({
-    mutationFn: (perfil_nome: string) => adminPost('perfil_delete', { perfil_nome }),
-    onSuccess: () => { toast.success('Perfil removido'); queryClient.invalidateQueries({ queryKey: ['admin-perfis'] }); setDeletePerfil(null) },
-    onError: (e: any) => toast.error(e.message),
-  })
-  const rmSave = useMutation({
-    mutationFn: (p: typeof rmForm) => adminPost('role_map_upsert', p),
-    onSuccess: () => { toast.success('Mapeamento salvo'); queryClient.invalidateQueries({ queryKey: ['admin-rolemap'] }); setRmForm({ role_airflow: '', perfil_nome: '', ordem_prioridade: 99, descricao: '', ativo: true }) },
-    onError: (e: any) => toast.error(e.message),
-  })
-  const rmDelete = useMutation({
-    mutationFn: (role_airflow: string) => adminPost('role_map_delete', { role_airflow }),
-    onSuccess: () => { toast.success('Mapeamento removido'); queryClient.invalidateQueries({ queryKey: ['admin-rolemap'] }); setDeleteRm(null) },
     onError: (e: any) => toast.error(e.message),
   })
   const userPermSet = useMutation({
@@ -126,18 +105,8 @@ export function UsuariosTab() {
   })
 
   const perfilOpts = perfis?.perfis ?? []
-  const perfilNames = perfilOpts.length ? perfilOpts.map(p => p.perfil_nome) : ['admin', 'operador', 'consulta']
+  const perfilNames = nomesDePerfis(perfilOpts)
   const usuarios = data?.usuarios ?? []
-
-  // helpers de permissão
-  const permSet = (p: PerfilRow): Set<string> => permEdits[p.perfil_nome] ?? new Set(p.permissoes ?? [])
-  const togglePerm = (perfil: string, rec: string, base: string[]) => {
-    setPermEdits(prev => {
-      const cur = new Set(prev[perfil] ?? base)
-      cur.has(rec) ? cur.delete(rec) : cur.add(rec)
-      return { ...prev, [perfil]: cur }
-    })
-  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -191,94 +160,6 @@ export function UsuariosTab() {
             {perfilNames.map(p => <option key={p} value={p}>{p}</option>)}
           </Select>
           <Button onClick={() => userUpsert.mutate(userForm)} loading={userUpsert.isPending} disabled={!userForm.matricula.trim()}><Plus size={13} /> Adicionar / Atualizar</Button>
-        </div>
-      </div>
-
-      {/* Perfis e permissões */}
-      <div className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-ink">Perfis e Permissões</h3>
-        <div className="flex flex-col gap-3">
-          {(perfis?.perfis ?? []).map(p => {
-            const base = p.permissoes ?? []
-            const set = permSet(p)
-            const dirty = !!permEdits[p.perfil_nome]
-            const protegido = p.perfil_nome === 'admin' || p.perfil_nome === 'consulta'
-            return (
-              <div key={p.perfil_nome} className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Badge value={p.perfil_nome} />
-                    <span className="text-xs text-dim">{p.descricao}</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button size="sm" onClick={() => perfilSave.mutate({ perfil_nome: p.perfil_nome, permissoes: Array.from(set) })} loading={perfilSave.isPending} disabled={!dirty}><Save size={11} /> Salvar</Button>
-                    {!protegido && <button onClick={() => setDeletePerfil(p.perfil_nome)} className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded" title="Excluir perfil"><Trash2 size={13} /></button>}
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                  {RBAC_RECURSOS_PERFIS.map(([rec, lbl]) => (
-                    <label key={rec} className="flex items-center gap-1.5 text-xs text-ink cursor-pointer">
-                      <input type="checkbox" checked={set.has(rec)} onChange={() => togglePerm(p.perfil_nome, rec, base)} />
-                      {lbl}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-wrap gap-3 items-end">
-          <Input label="Novo perfil" value={newPerfil.nome} onChange={e => setNewPerfil(f => ({ ...f, nome: e.target.value.toLowerCase() }))} className="w-40" placeholder="ex: auditor" />
-          <Input label="Descrição" value={newPerfil.descricao} onChange={e => setNewPerfil(f => ({ ...f, descricao: e.target.value }))} className="w-56" />
-          <Button onClick={() => perfilSave.mutate({ perfil_nome: newPerfil.nome, descricao: newPerfil.descricao, permissoes: [] })} loading={perfilSave.isPending} disabled={!newPerfil.nome.trim()}><Plus size={13} /> Criar Perfil</Button>
-        </div>
-      </div>
-
-      {/* Mapeamento Airflow Role → Perfil */}
-      <div className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-ink">Mapeamento de Roles (Airflow → Perfil)</h3>
-        <div className="bg-panel border border-edge rounded-lg overflow-hidden shadow-sm">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-dim border-b border-edge bg-canvas/50">
-                <th className="px-4 py-2.5 text-left font-semibold">Role Airflow</th>
-                <th className="px-4 py-2.5 text-left font-semibold">Perfil</th>
-                <th className="px-4 py-2.5 text-center font-semibold">Prioridade</th>
-                <th className="px-4 py-2.5 text-left font-semibold">Descrição</th>
-                <th className="px-4 py-2.5 text-center font-semibold">Ativo</th>
-                <th className="px-4 py-2.5 w-20"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {(roleMap?.dados ?? []).map(r => (
-                <tr key={r.role_airflow} className="border-b border-edge/50 hover:bg-canvas/50 transition-colors">
-                  <td className="px-4 py-2.5 font-medium text-xs text-ink">{r.role_airflow}</td>
-                  <td className="px-4 py-2.5"><code className="text-xs text-[#1A5FA8] dark:text-blue-400">{r.perfil_nome}</code></td>
-                  <td className="px-4 py-2.5 text-center text-xs text-dim">{r.ordem_prioridade}</td>
-                  <td className="px-4 py-2.5 text-xs text-dim">{r.descricao}</td>
-                  <td className="px-4 py-2.5 text-center text-xs">{r.ativo ? '✅' : '⏸'}</td>
-                  <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-1 justify-end">
-                      <button onClick={() => setRmForm({ role_airflow: r.role_airflow, perfil_nome: r.perfil_nome, ordem_prioridade: r.ordem_prioridade, descricao: r.descricao ?? '', ativo: !!r.ativo })} className="text-slate-400 hover:text-[#1A5FA8] dark:hover:text-blue-400 p-1 rounded" title="Editar"><Edit2 size={13} /></button>
-                      <button onClick={() => setDeleteRm(r.role_airflow)} className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded" title="Remover"><Trash2 size={13} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {(roleMap?.dados ?? []).length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-xs text-dim">Nenhum mapeamento cadastrado.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-        <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-wrap gap-3 items-end">
-          <Input label="Role Airflow" value={rmForm.role_airflow} onChange={e => setRmForm(f => ({ ...f, role_airflow: e.target.value }))} className="w-44" />
-          <Select label="Perfil" value={rmForm.perfil_nome} onChange={e => setRmForm(f => ({ ...f, perfil_nome: e.target.value }))} className="w-36">
-            <option value="">selecione</option>
-            {perfilNames.map(p => <option key={p} value={p}>{p}</option>)}
-          </Select>
-          <Input label="Prioridade" type="number" value={String(rmForm.ordem_prioridade)} onChange={e => setRmForm(f => ({ ...f, ordem_prioridade: parseInt(e.target.value) || 99 }))} className="w-24" />
-          <Input label="Descrição" value={rmForm.descricao} onChange={e => setRmForm(f => ({ ...f, descricao: e.target.value }))} className="w-44" />
-          <label className="flex items-center gap-1.5 text-xs text-ink mb-2"><input type="checkbox" checked={rmForm.ativo} onChange={e => setRmForm(f => ({ ...f, ativo: e.target.checked }))} /> Ativo</label>
-          <Button onClick={() => rmSave.mutate(rmForm)} loading={rmSave.isPending} disabled={!rmForm.role_airflow.trim() || !rmForm.perfil_nome}><Save size={13} /> Salvar Mapeamento</Button>
         </div>
       </div>
 
@@ -364,8 +245,6 @@ export function UsuariosTab() {
         )
       })()}
       <ConfirmModal open={!!deleteUser} title="Remover Usuário" message={`Remover "${deleteUser}"? Volta ao perfil "consulta" se logar novamente.`} danger confirmLabel="Remover" onConfirm={() => deleteUser && userDelete.mutate(deleteUser)} onCancel={() => setDeleteUser(null)} />
-      <ConfirmModal open={!!deletePerfil} title="Excluir Perfil" message={`Excluir o perfil "${deletePerfil}"? Só é possível se nenhum usuário o utiliza.`} danger confirmLabel="Excluir" onConfirm={() => deletePerfil && perfilDelete.mutate(deletePerfil)} onCancel={() => setDeletePerfil(null)} />
-      <ConfirmModal open={!!deleteRm} title="Remover Mapeamento" message={`Remover o mapeamento do role "${deleteRm}"?`} danger confirmLabel="Remover" onConfirm={() => deleteRm && rmDelete.mutate(deleteRm)} onCancel={() => setDeleteRm(null)} />
     </div>
   )
 }

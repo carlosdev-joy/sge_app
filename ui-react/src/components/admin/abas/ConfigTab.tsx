@@ -18,7 +18,6 @@ export function ConfigTab() {
   const [newVal, setNewVal] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [delKey, setDelKey] = useState<string | null>(null)
-  const [webhookDiag, setWebhookDiag] = useState<any>(null)
 
   const { data, isLoading } = useQuery<{ config: Record<string, string> }>({
     queryKey: ['admin-config'],
@@ -44,15 +43,6 @@ export function ConfigTab() {
     onError: (e: any) => toast.error(e.message),
   })
 
-  const testWebhook = async () => {
-    setWebhookDiag(null)
-    try {
-      const d = await apiFetch<any>('/admin/test-webhook', { method: 'POST' })
-      if (d.ok) toast.success(`Card enviado (HTTP ${d.http_status}). Verifique o canal Teams.`)
-      else { toast.error(d.erro ?? 'Falha no webhook'); setWebhookDiag(d) }
-    } catch (e: any) { toast.error(e.message) }
-  }
-
   const entries = Object.entries(data?.config ?? {})
 
   const handleInlineSave = (key: string) => {
@@ -64,20 +54,11 @@ export function ConfigTab() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-dim">Parâmetros do sistema. Edite o valor na célula e clique em Salvar.</p>
-        <Button variant="secondary" size="sm" onClick={testWebhook}>🔔 Testar Webhook</Button>
-      </div>
-
-      {webhookDiag && (
-        <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-red-700 dark:text-red-300">📋 Diagnóstico do Webhook</span>
-            <button onClick={() => setWebhookDiag(null)} className="text-red-400 hover:text-red-600"><X size={14} /></button>
-          </div>
-          <pre className="text-xs text-red-700 dark:text-red-300 overflow-auto max-h-48 whitespace-pre-wrap">{JSON.stringify(webhookDiag, null, 2)}</pre>
-        </div>
-      )}
+      {/* O botão "Testar Webhook" (e o quadro de diagnóstico dele) ficava à
+          direita desta frase. Decisão explícita da spec
+          (docs/spec-admin-reestruturacao.md, F3): foi para o card "Webhook
+          padrão" no fim de Comunicação › Teams (abas/NotificacoesTab.tsx). */}
+      <p className="text-sm text-dim">Parâmetros do sistema. Edite o valor na célula e clique em Salvar.</p>
 
       {isLoading ? <PageSpinner /> : (
         <div className="bg-panel border border-edge rounded-lg overflow-hidden shadow-sm">

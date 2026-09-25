@@ -10,9 +10,10 @@ import { adminPost } from '../comum'
 import { Zap } from 'lucide-react'
 import { InfoBanner } from '../../ui/InfoBanner'
 
-// ── Sonda ServiceNow (bancada pré-spec dos chamados, PR #297) ────
-// Valida credencial, tabelas, grupos e volumetria ANTES de a F1 existir.
-// A credencial vive só na chamada: não é gravada nem logada em lugar nenhum.
+// ── ServiceNow: credencial executora + Diagnóstico ──────────────
+// A seção "Diagnóstico" é a antiga "Sonda de descoberta" (nasceu na PR #297):
+// valida credencial, tabelas, grupos e volumetria. A credencial digitada nela
+// vive só na chamada: não é gravada nem logada em lugar nenhum.
 interface SnAuth { status: number | null; ok: boolean; motivo?: string }
 interface SnTabela { acessivel: boolean; status: number | null; total_ativos: number | null; estados_exemplo: string[]; erro?: string }
 interface SnDiagnostico {
@@ -28,9 +29,8 @@ interface SnDiagnostico {
 interface SnConfig {
   url: string; usuario: string; grupos: string; proxy: string
   habilitado: boolean; tem_senha: boolean; configurado: boolean
-  // Triagem por IA (migration 093): interruptor PRÓPRIO, separado do
-  // caixa_ia_enabled, que governa só os assistentes do Caixa Seguro.
-  triagem_habilitada: boolean; triagem_lote: string
+  // triagem_habilitada/triagem_lote também voltam do servicenow_get, mas são
+  // da aba IA › Triagem de chamados (abas/TriagemTab.tsx) desde a F3.
 }
 
 export function SondaServiceNowTab() {
@@ -53,7 +53,6 @@ export function SondaServiceNowTab() {
   const [edits, setEdits] = useState<Partial<{
     url: string; usuario: string; senha: string; grupos: string
     proxy: string; habilitado: boolean
-    triagem_habilitada: boolean; triagem_lote: string
   }>>({})
   const cfgForm = {
     url:        edits.url        ?? cfg?.url        ?? cfgEnv?.url ?? '',
@@ -62,8 +61,6 @@ export function SondaServiceNowTab() {
     grupos:     edits.grupos     ?? cfg?.grupos     ?? '',
     proxy:      edits.proxy      ?? cfg?.proxy      ?? '',
     habilitado: edits.habilitado ?? cfg?.habilitado ?? false,
-    triagem_habilitada: edits.triagem_habilitada ?? cfg?.triagem_habilitada ?? false,
-    triagem_lote: edits.triagem_lote ?? cfg?.triagem_lote ?? '20',
   }
   const setCfgForm = (patch: Partial<typeof cfgForm>) =>
     setEdits(e => ({ ...e, ...patch }))
@@ -87,8 +84,10 @@ export function SondaServiceNowTab() {
     mutationFn: () => adminPost<{ mensagem?: string }>('servicenow_set', {
       url: cfgForm.url, usuario: cfgForm.usuario, grupos: cfgForm.grupos,
       proxy: cfgForm.proxy, habilitado: cfgForm.habilitado,
-      triagem_habilitada: cfgForm.triagem_habilitada,
-      triagem_lote: cfgForm.triagem_lote,
+      // Sem triagem_habilitada/triagem_lote de propósito (F3): o servicenow_set
+      // só grava as chaves chamados_triagem_* quando o campo VEM no corpo, então
+      // salvar a credencial aqui não mexe na triagem, que agora é gravada pela
+      // aba IA › Triagem de chamados.
       // string vazia = manter a senha atual. A regra e o porquê estão em
       // `lib/servicenowConfig` — inclusive o caso da PRIMEIRA senha, que sem
       // ela nunca saía daqui.
@@ -165,28 +164,10 @@ export function SondaServiceNowTab() {
           Sincronização agendada habilitada
         </label>
 
-        {/* Triagem por IA — interruptor SEPARADO do provedor. Desligar aqui
-            não desliga os assistentes do Caixa Seguro, e vice-versa. */}
-        <div className="border-t border-edge pt-3 flex flex-col gap-2">
-          <label className="flex items-center gap-1.5 text-xs text-ink">
-            <input type="checkbox" checked={cfgForm.triagem_habilitada}
-              onChange={e => setCfgForm({ triagem_habilitada: e.target.checked })} />
-            Triagem dos chamados por IA
-          </label>
-          <p className="text-[11px] text-dim">
-            Classifica cada chamado em <strong>pode iniciar</strong> ou{' '}
-            <strong>retornar ao solicitante</strong>, com as lacunas e as perguntas
-            a devolver. Usa o provedor configurado em <em>IA</em>.
-            {' '}Desligada, a fila continua sendo classificada por regra de texto —
-            e a tela marca esses vereditos como automáticos, para ninguém confundir
-            com análise de IA.
-          </p>
-          <Input label="Chamados analisados por ciclo" type="number" className="w-56"
-            value={cfgForm.triagem_lote}
-            ajuda="A triagem roda dentro do ciclo de 15 min, que tem teto de 10 min. Lote grande demais faz o sync estourar o tempo."
-            onChange={e => setCfgForm({ triagem_lote: e.target.value })} />
-        </div>
-
+        {/* O interruptor e o lote da triagem por IA ficavam aqui, entre
+            "Sincronização agendada habilitada" e os botões. Decisão explícita
+            da spec (docs/spec-admin-reestruturacao.md, F3): foram para
+            IA › Triagem de chamados (abas/TriagemTab.tsx) — não devolver. */}
         <div className="flex justify-end gap-2">
           <Button size="sm" variant="secondary" loading={sonda.isPending}
             disabled={!cfg?.configurado}
@@ -200,7 +181,17 @@ export function SondaServiceNowTab() {
         </div>
       </div>
 
-      {/* ── Sonda de descoberta ──────────────────────────────────────── */}
+      {/* ── Diagnóstico ──────────────────────────────────────────────────
+          Decisão explícita da spec (docs/spec-admin-reestruturacao.md, F3): a
+          antiga "Sonda de descoberta" virou a seção "Diagnóstico", logo depois
+          da credencial executora. Só ganhou título e subtítulo; a lógica e os
+          campos são os mesmos. */}
+      <div className="mt-2">
+        <h3 className="text-sm font-semibold text-ink">Diagnóstico</h3>
+        <p className="mt-0.5 text-xs text-dim">
+          Testa uma credencial contra a instância e mostra quais tabelas de chamados ela consegue ler, com o volume de cada uma.
+        </p>
+      </div>
       <InfoBanner>
         Sonda de diagnóstico: use para DESCOBRIR uma credencial ou o nome exato
         do grupo antes de salvar acima. A credencial digitada aqui vale só nesta
