@@ -6,6 +6,7 @@ import { PageSpinner } from '../../ui/Spinner'
 import { toast } from '../../ui/Toast'
 import { queryClient } from '../../../lib/queryClient'
 import { adminPost } from '../comum'
+import { LinkAdmin } from '../LinkAdmin'
 import { Save } from 'lucide-react'
 
 // ── IA › Triagem de chamados ────────────────────────────────────
@@ -16,19 +17,14 @@ import { Save } from 'lucide-react'
 // "Salvar configuração". Veio para o grupo IA com o conteúdo intacto — não
 // devolver.
 //
-// ⚠️ Gravação: não existe action própria da triagem. Ela vai pelo MESMO
-// `servicenow_set` da credencial, que SEMPRE regrava url/usuário/grupos/proxy/
-// habilitado (api/routers/admin.py) e só grava chamados_triagem_* quando o
-// campo vem no corpo. Por isso o salvar daqui:
-//   • relê o servicenow_get NA HORA de gravar (não o cache da tela) e devolve
-//     exatamente esses cinco valores — uma edição feita na aba ServiceNow
-//     depois que esta aba abriu não é desfeita;
-//   • NÃO manda `senha` (ausente = manter a atual; mesma regra de
-//     lib/servicenowConfig), então a senha cifrada não é tocada.
-// Sem URL válida o backend recusa (422) — igual a antes, quando os dois
-// blocos eram salvos juntos; a tela avisa e não deixa tentar.
+// Gravação (F5): `servicenow_set` só com os campos da triagem. Sem nenhum
+// campo da credencial no corpo (url/usuario/senha/grupos/proxy/habilitado), o
+// backend grava SÓ chamados_triagem_* e não toca a credencial — antes da F5
+// esta aba relia o servicenow_get e reenviava url/usuário/grupos/proxy/
+// habilitado a cada salvar (corrida com a aba ServiceNow). Um corpo antigo,
+// completo, continua funcionando igual (api/routers/admin.py).
 interface CfgServiceNow {
-  url: string; usuario: string; grupos: string; proxy: string; habilitado: boolean
+  url: string
   triagem_habilitada: boolean; triagem_lote: string
 }
 
@@ -47,15 +43,10 @@ export function TriagemTab() {
   const setCfgForm = (patch: Partial<typeof cfgForm>) => setEdits(e => ({ ...e, ...patch }))
 
   const salvar = useMutation({
-    mutationFn: async () => {
-      const { config: atual } = await adminPost<{ config: CfgServiceNow }>('servicenow_get')
-      return adminPost<{ mensagem?: string }>('servicenow_set', {
-        url: atual.url, usuario: atual.usuario, grupos: atual.grupos,
-        proxy: atual.proxy, habilitado: atual.habilitado,
-        triagem_habilitada: cfgForm.triagem_habilitada,
-        triagem_lote: cfgForm.triagem_lote,
-      })
-    },
+    mutationFn: () => adminPost<{ mensagem?: string }>('servicenow_set', {
+      triagem_habilitada: cfgForm.triagem_habilitada,
+      triagem_lote: cfgForm.triagem_lote,
+    }),
     onSuccess: () => {
       toast.success('Triagem de chamados salva.')
       setEdits({})
@@ -96,10 +87,11 @@ export function TriagemTab() {
         <div className="flex flex-wrap items-center justify-end gap-3 border-t border-edge pt-3">
           {semInstancia && (
             <p className="mr-auto text-xs text-dim">
-              Preencha a instância em Integrações › ServiceNow antes: a triagem é gravada junto com a integração.
+              A triagem só roda com a sincronização configurada em{' '}
+              <LinkAdmin grupo="integracoes" aba="servicenow" />.
             </p>
           )}
-          <Button size="sm" onClick={() => salvar.mutate()} loading={salvar.isPending} disabled={semInstancia || !sujo}>
+          <Button size="sm" onClick={() => salvar.mutate()} loading={salvar.isPending} disabled={!sujo}>
             <Save size={11} /> Salvar
           </Button>
         </div>

@@ -16,8 +16,12 @@
 //     espera_*, sql_preview_* e powerbi_* (nenhuma aba edita as credenciais do
 //     Power BI). A busca acha as órfãs pelas palavras-chave de Parâmetros
 //     avançados (palavra-chave terminada em "_" é prefixo).
-//   • teams_webhook_url* é da aba Teams desde a F3 (card "Webhook padrão");
-//     até a F5 ela ainda grava pela action genérica config_upsert.
+//   • teams_webhook_url* é da aba Teams desde a F3 (card "Webhook padrão"),
+//     que desde a F5 grava pela action própria teams_webhook_set.
+//   • ESPELHO NO BACKEND: api/services/admin_config_donos.py (DONOS) repete
+//     cada prefixo com o rótulo de rotuloAdmin — é o que a trava de escrita
+//     usa. tests/test_admin_config_donos.py prende as duas listas: mudou aqui,
+//     muda lá.
 import { lazy } from 'react'
 import type { ComponentType, LazyExoticComponent } from 'react'
 
@@ -224,8 +228,9 @@ export const ABAS_ADMIN: AbaAdmin[] = [
   // ── Sistema ─────────────────────────────────────────────────────────────
   {
     grupo: 'sistema', id: 'parametros', rotulo: 'Parâmetros avançados', idsAntigos: ['config'],
-    // Na F5 mostra só as chaves órfãs; aí a descrição vira a copy da spec.
-    descricao: 'Chaves de configuração do sistema (etl_app_config) e as configurações de fluxo.',
+    // F5: mostra só as chaves órfãs (donoDaChave === null), agrupadas por
+    // GRUPOS_PARAMETROS. Copy da spec §3.1.
+    descricao: 'Chaves sem tela própria. Para as demais, use a busca.',
     palavrasChave: [
       'configuração', 'parâmetro', 'chave', 'config', 'etl_app_config', 'malha', 'dependência', 'espera', 'power bi',
       // prefixos das chaves sem dono (terminados em "_": a chave inteira digitada casa)
@@ -356,6 +361,73 @@ export function rotuloAdmin(grupo: GrupoAdminId, aba: string, secao?: string): s
   return ['Admin', g?.rotulo, a?.rotulo, a ? secao : undefined].filter(Boolean).join(SEPARADOR_MIGALHA)
 }
 
+// ── Dono de cada chave de configuração (F5) ─────────────────────────────────
+// Quem POSSUI uma chave de dbo.etl_app_config: a aba cujo `chavesConfig` tem um
+// prefixo com que a chave começa. É a mesma regra da busca (chave inteira
+// digitada casa com o prefixo dono) e a mesma da trava do backend
+// (api/services/admin_config_donos.py::dono_da_chave).
+
+/** A chave (já normalizada) começa com o prefixo? Uma regra só para busca, filtro e trava. */
+function chaveCasaPrefixo(chaveNorm: string, prefixoNorm: string): boolean {
+  return prefixoNorm !== '' && chaveNorm.startsWith(prefixoNorm)
+}
+
+/**
+ * Aba que grava esta chave pela rota própria, ou null (chave órfã: só
+ * Parâmetros avançados a edita). Sem diferença de caixa nem de espaço nas
+ * pontas: o SQL Server compara config_key sem caixa, e o backend faz trim.
+ */
+export function donoDaChave(chave: string): AbaAdmin | null {
+  const k = normalizar(chave.trim())
+  if (!k) return null
+  return ABAS_ADMIN.find((a) => a.chavesConfig.some((p) => chaveCasaPrefixo(k, normalizar(p)))) ?? null
+}
+
+// Grupos de Parâmetros avançados (spec §3.4). Só famílias SEM dono entram
+// aqui; a ordem é a de exibição. Chave órfã fora de todos cai em "Outras".
+export interface GrupoParametros { rotulo: string; prefixos: string[] }
+
+export const GRUPOS_PARAMETROS: GrupoParametros[] = [
+  { rotulo: 'Aplicação', prefixos: ['app_'] },
+  { rotulo: 'Malha e dependências', prefixos: ['dependencia_', 'malha_', 'espera_'] },
+  { rotulo: 'Power BI', prefixos: ['powerbi_'] },
+  { rotulo: 'Prévia de SQL', prefixos: ['sql_preview_'] },
+]
+export const GRUPO_PARAMETROS_OUTRAS = 'Outras'
+
+export interface GrupoDeChaves { rotulo: string; chaves: [string, string][] }
+
+/** Só as chaves órfãs do config_list, agrupadas por prefixo (grupos vazios somem). */
+export function agruparChavesOrfas(config: Record<string, string>): GrupoDeChaves[] {
+  const grupos: GrupoDeChaves[] = [...GRUPOS_PARAMETROS.map((g) => g.rotulo), GRUPO_PARAMETROS_OUTRAS]
+    .map((rotulo) => ({ rotulo, chaves: [] }))
+  const orfas = Object.entries(config)
+    .filter(([k]) => donoDaChave(k) === null)
+    .sort(([a], [b]) => a.localeCompare(b))
+  for (const par of orfas) {
+    const k = normalizar(par[0])
+    const i = GRUPOS_PARAMETROS.findIndex((g) => g.prefixos.some((p) => chaveCasaPrefixo(k, p)))
+    grupos[i < 0 ? grupos.length - 1 : i].chaves.push(par)
+  }
+  return grupos.filter((g) => g.chaves.length > 0)
+}
+
+// Fragmentos de nome que marcam a chave como SEGREDO — espelho de
+// _PADROES_SEGREDO em api/routers/admin.py (o backend mascara o config_list com
+// eles; tests/test_admin_config_donos.py prende as duas listas). Na tela, a
+// chave sensível tem o campo VAZIO e só diz "configurado"/"não configurado":
+// vazio = não altera, e o valor mascarado nunca volta para o servidor.
+export const PADROES_SEGREDO = [
+  'teams_webhook', 'caixa_ia_api_key', 'ia_api_key', 'secret', 'password', 'token', 'senha',
+  'webhook', '_key', '_enc',
+] as const
+
+/** O backend (mask_secret) devolve mascarado; a tela nunca edita o valor em claro. */
+export function ehChaveSensivel(chave: string): boolean {
+  const k = chave.toLowerCase()
+  return PADROES_SEGREDO.some((p) => k.includes(p))
+}
+
 // ── Busca ─────────────────────────────────────────────────────────────────
 
 /** minúsculas e sem acento, preservando o mapa de posições para o destaque. */
@@ -441,7 +513,7 @@ function casarTermo(aba: AbaAdmin, termo: string): Casamento | null {
     const p = normalizar(prefixo)
     if (p.includes(termo)) considerar('chaveConfig', prefixo)
     // Chave inteira digitada (email_remetente) casa com o prefixo dono (email_).
-    else if (termo.startsWith(p)) {
+    else if (chaveCasaPrefixo(termo, p)) {
       candidatos.push({ campo: 'chaveConfig', trecho: { antes: '', casou: termo, depois: '' }, pontos: PESO.chaveConfig * 1.2 })
     }
   }
