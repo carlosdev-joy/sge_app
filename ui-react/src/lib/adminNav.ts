@@ -540,6 +540,29 @@ export function buscarAbas(consulta: string, abas: AbaAdmin[] = ABAS_ADMIN): Res
   return out.sort((a, b) => b.pontos - a.pontos || ordem.get(a.aba)! - ordem.get(b.aba)!)
 }
 
+// ── ⌘K (F6) ─────────────────────────────────────────────────────────────────
+// O grupo "Administração" da CommandPalette: a MESMA busca do sub-menu (nome de
+// parâmetro incluso — `teams_webhook` acha Teams), só que como atalho para o
+// endereço da aba. A permissão (tela_admin) é conferida na paleta.
+export const LIMITE_ATALHOS_PALETA = 6
+
+export interface AtalhoAdmin {
+  id: string
+  /** "Grupo › Aba" */
+  rotulo: string
+  descricao: string
+  caminho: string
+}
+
+export function atalhosDaPaleta(consulta: string, limite = LIMITE_ATALHOS_PALETA): AtalhoAdmin[] {
+  return buscarAbas(consulta).slice(0, limite).map(({ aba }) => ({
+    id: `admin-${aba.grupo}-${aba.id}`,
+    rotulo: grupoDaAba(aba).rotulo + SEPARADOR_MIGALHA + aba.rotulo,
+    descricao: aba.descricao,
+    caminho: caminhoDaAba(aba),
+  }))
+}
+
 // ── Última aba visitada ────────────────────────────────────────────────────
 export const CHAVE_ULTIMA_ABA = 'orquestra-admin-ultima-aba'
 

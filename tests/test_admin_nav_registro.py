@@ -26,6 +26,8 @@ antigos e (F5) do filtro de chaves órfãs. O que se prende aqui:
      aba gravada com um deles não tira ninguém do /admin. As migalhas
      "Admin › …" de outras telas saem do registro (LinkAdmin/rotuloAdmin) — e o
      texto literal que sobrar tem de nomear uma aba que existe.
+  6. **⌘K da F6**: a CommandPalette ganha o grupo "Administração" (por
+     último), com a MESMA busca do registro, só para quem tem `tela_admin`.
 """
 from __future__ import annotations
 
@@ -427,3 +429,53 @@ def test_f4_ds_console_abre_no_fluxo_xml_pelo_endereco():
     fonte = (FRONT / "pages" / "DsConsole.tsx").read_text(encoding="utf-8")
     assert "searchParams.get('aba') === 'seqflow' ? 'seqflow' : 'geral'" in fonte
     assert "{ id: 'seqflow', label: 'Fluxo (XML)' }" in fonte
+
+
+# ═══════════ 6. ⌘K — grupo "Administração" (F6) ═══════════════════════════
+
+PALETA = FRONT / "components" / "ui" / "CommandPalette.tsx"
+
+
+def test_f6_paleta_acha_a_aba_pela_mesma_busca(bancada):
+    p = bancada["paleta"]
+    email = p["e-mail"][0]
+    assert (email["id"], email["rotulo"], email["caminho"]) == (
+        "admin-comunicacao-email", "Comunicação › E-mail", "/admin/comunicacao/email")
+    assert email["descricao"]
+    assert p["teams_webhook"][0]["rotulo"] == "Comunicação › Teams"
+    assert p["teams_webhook"][0]["caminho"] == "/admin/comunicacao/teams"
+    assert p["email_remetente"][0]["caminho"] == "/admin/comunicacao/email"
+    assert p["agentes"][0]["rotulo"] == "Inteligência Artificial › Agentes"  # smoke §8 j
+    assert p["xyz"] == [] and p["  "] == []
+    # limite: a paleta não vira um segundo sub-menu
+    assert len(p["a"]) == bancada["paletaLimite"] == 6
+    assert bancada["paletaLimiteCustom"] == 2
+    ids = [x["id"] for x in p["a"]]
+    assert len(set(ids)) == len(ids), "id é a key do React"
+
+
+def test_f6_paleta_usa_o_registro_sem_duplicar_a_busca():
+    fonte = PALETA.read_text(encoding="utf-8")
+    assert "import { atalhosDaPaleta } from '../../lib/adminNav'" in fonte
+    assert "buscarAbas" not in fonte and "normalizar" not in fonte, "a busca mora em lib/adminNav.ts"
+    assert "href: a.caminho" in fonte and "label: a.rotulo" in fonte
+    # sem API: busca no cliente
+    bloco = fonte.split("const atalhosAdmin = useMemo(", 1)[1].split(")\n", 1)[0]
+    assert "apiFetch" not in bloco
+
+
+def test_f6_paleta_so_para_quem_tem_tela_admin():
+    fonte = PALETA.read_text(encoding="utf-8")
+    assert "const veAdmin = canAccess('tela_admin', perms)" in fonte
+    assert "(veAdmin && enabled ? atalhosDaPaleta(debounced) : [])" in fonte
+    assert "import { canAccess } from '../../lib/nav'" in fonte
+
+
+def test_f6_paleta_administracao_entra_por_ultimo():
+    fonte = PALETA.read_text(encoding="utf-8")
+    assert "const groupOrder: ResultItem['group'][] = ['Pipelines', 'Etapas', 'Catálogo', 'Administração']" in fonte
+    # a lista achatada (índice do cursor ↑/↓/Enter) segue a mesma ordem dos grupos
+    ordem = [fonte.index(m) for m in ("group: 'Pipelines'", "group: 'Etapas'", "group: 'Catálogo'",
+                                        "group: 'Administração'")]
+    assert ordem == sorted(ordem)
+    assert "Administração: <Settings size={12} />" in fonte

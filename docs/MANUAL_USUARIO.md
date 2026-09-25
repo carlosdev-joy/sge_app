@@ -1155,9 +1155,13 @@ Tudo dos demais, mais a aba **Admin** (visível apenas para administradores).
 > de **Performance**; o **guia de acessos do Power BI** virou a seção recolhível *Como liberar
 > acessos* no fim da tela **Power BI**; e o **Fluxo DS** foi retirado — o mesmo fluxo está na aba
 > *Fluxo (XML)* do **Console DataStage**. Links antigos dessas abas levam à tela nova.
+>
+> **Atalho de qualquer tela:** a busca geral (**⌘K** / **Ctrl+K**) tem o grupo **Administração**, com a
+> mesma busca do sub-menu — "e-mail" leva a Comunicação › E-mail, `teams_webhook` a Comunicação › Teams.
+> O grupo só aparece para quem tem acesso ao Admin.
 
 ### 4.1 Parâmetros avançados (Admin › Sistema › Parâmetros avançados)
-Chave/valor em `etl_app_config` (ex.: URL do webhook Teams, parâmetros de monitor). Alterações valem sem redeploy.
+Chave/valor em `etl_app_config` **sem tela própria** (ex.: `app_base_url`, parâmetros da malha e da espera). Chave que tem aba dona (e-mail, Teams, ServiceNow, IA…) é gravada nessa aba — a busca do admin leva até ela. Alterações valem sem redeploy.
 
 ### 4.2 Tipos de job
 CRUD dos tipos de job aceitos no cadastro (nome, descrição, lineage habilitado, status).
