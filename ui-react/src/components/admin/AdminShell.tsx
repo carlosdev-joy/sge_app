@@ -6,7 +6,7 @@
 // ⚠️ sticky: o sub-menu gruda no <main overflow-y-auto> do AppShellV2. Nenhum
 // ancestral entre ele e o <main> pode ter overflow-hidden/auto, senão o sticky
 // morre em silêncio.
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { ChevronDown, Link2 } from 'lucide-react'
 import { Sheet } from '../ui/Sheet'
@@ -143,16 +143,17 @@ export function AdminShell({ aba }: { aba: AbaAdmin | null }) {
         <p className="mt-0.5 text-xs text-dim">Gestão do sistema Orquestra</p>
       </div>
 
+      {/* Um pai só nos dois tamanhos e `conteudo` sempre com a MESMA key: cruzar
+          1024px (zoom, DevTools, tablet girado) não pode remontar a aba — antes,
+          div × Fragment desmontava a aba e apagava o que o usuário digitava. */}
+      <div className={desktop ? 'grid grid-cols-[240px_minmax(0,1fr)] items-start gap-6' : 'flex flex-col gap-4'}>
       {desktop ? (
-        <div className="grid grid-cols-[240px_minmax(0,1fr)] items-start gap-6">
-          {/* top-4 dentro do <main>; a altura desconta o header (52px) e as duas folgas. */}
-          <aside className="sticky top-4 flex max-h-[calc(100vh-52px-2rem)] flex-col self-start">
+          /* top-4 dentro do <main>; a altura desconta o header (52px) e as duas folgas. */
+          <aside key="menu" className="sticky top-4 flex max-h-[calc(100vh-52px-2rem)] flex-col self-start">
             <MenuAdmin abaAtiva={aba} inputRef={buscaRef} />
           </aside>
-          {conteudo}
-        </div>
       ) : (
-        <>
+        <Fragment key="menu-movel">
           <button
             type="button"
             onClick={() => setSheetAberto(true)}
@@ -172,9 +173,10 @@ export function AdminShell({ aba }: { aba: AbaAdmin | null }) {
               <MenuAdmin abaAtiva={aba} autoFocus={sheetComBusca} aoEscolher={fecharSheet} />
             </div>
           </Sheet>
-          {conteudo}
-        </>
+        </Fragment>
       )}
+        <div key="conteudo" className="min-w-0">{conteudo}</div>
+      </div>
     </div>
   )
 }

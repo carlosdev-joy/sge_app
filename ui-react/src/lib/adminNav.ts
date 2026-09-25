@@ -211,6 +211,8 @@ export const ABAS_ADMIN: AbaAdmin[] = [
       'configuração', 'parâmetro', 'chave', 'config', 'etl_app_config', 'malha', 'dependência', 'espera', 'power bi',
       // prefixos das chaves sem dono (terminados em "_": a chave inteira digitada casa)
       'app_', 'dependencia_', 'malha_', 'espera_', 'sql_preview_', 'powerbi_',
+      // chaves avulsas sem dono de famílias que TÊM dono (ver cabeçalho)
+      'servicenow_admin_perfis', 'agentes_titulo_redigido_em',
     ],
     chavesConfig: [],
     componente: carregar(() => import('../components/admin/abas/ConfigTab'), 'ConfigTab'),

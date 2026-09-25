@@ -24,7 +24,14 @@ export default function Admin() {
   const redirecionarPara = destino.tipo === 'inicio'
     ? (lerUltimaAba() ?? caminhoDaAba(ABA_PADRAO))
     : destino.tipo === 'redirecionar' ? destino.para : null
-  const abaAtual = destino.tipo === 'aba' ? destino.aba : null
+  // Durante um redirect para uma aba (ex.: clicar "Admin" na sidebar estando
+  // dentro dela: /admin → última aba) a casca segue montada COM a aba de
+  // destino — devolver null desmontava a aba e apagava o formulário em edição.
+  const abaDoRedirect = redirecionarPara
+    ? interpretarCaminhoAdmin(redirecionarPara.replace(/^\/admin\/?/, ''))
+    : null
+  const abaAtual = destino.tipo === 'aba' ? destino.aba
+    : abaDoRedirect?.tipo === 'aba' ? abaDoRedirect.aba : null
 
   useEffect(() => {
     if (redirecionarPara) navigate(redirecionarPara, { replace: true })
@@ -34,6 +41,6 @@ export default function Admin() {
     if (abaAtual) gravarUltimaAba(abaAtual)
   }, [abaAtual])
 
-  if (redirecionarPara) return null
+  if (redirecionarPara && !abaAtual) return null
   return <AdminShell aba={abaAtual} />
 }
