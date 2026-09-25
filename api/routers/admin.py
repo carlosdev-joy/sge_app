@@ -27,6 +27,7 @@ from routers.copias import _consulta_direta, _introspect_via_dag, _server_da_con
 from services import agentes as svc_agentes
 from services import agentes_registro as reg_agentes
 from services import servicenow
+from services.admin_config_donos import dono_da_chave, mensagem_chave_com_dono
 from services.conn_crypto import decrypt_password, encrypt_password
 
 log = logging.getLogger("orquestra-api")
@@ -38,8 +39,19 @@ FREEZE_MOTIVO = "Congelamento manual do ambiente"
 # Fragmentos de nome de chave que marcam um valor como segredo em
 # dbo.etl_app_config. No nível do módulo (e não dentro do handler) para poder
 # ser testado: é a única barreira entre um segredo e a listagem de config.
+#
+# F5 (docs/spec-admin-reestruturacao.md, risco 6): entram os genéricos
+# "webhook", "_key" e "_enc" — chave órfã nova com segredo (x_api_key,
+# y_webhook_url, z_senha_enc) sai mascarada sem precisar lembrar de vir aqui.
+# ESPELHO: PADROES_SEGREDO em ui-react/src/lib/adminNav.ts (a tela deixa o
+# campo vazio para essas chaves); tests/test_admin_config_donos.py prende.
 _PADROES_SEGREDO = ("teams_webhook", "caixa_ia_api_key", "ia_api_key", "secret",
-                    "password", "token", "senha")
+                    "password", "token", "senha", "webhook", "_key", "_enc")
+
+# Prefixo do valor mascarado. Um valor que comece com ele e chegue para gravar
+# é a máscara voltando por engano (campo pré-preenchido com o que o
+# config_list devolveu) — gravá-la destruiria o segredo.
+_MASCARA = "••••"
 
 
 def mask_secret(key: str, val):
@@ -139,6 +151,64 @@ def _get_app_config_value(key: str) -> str | None:
         return None
 
 
+def _recusar_chave_com_dono(chave) -> None:
+    """422 nomeando a aba dona — o front mostra o `detail` como veio."""
+    k = str(chave or "").strip()
+    rotulo = dono_da_chave(k)
+    if rotulo:
+        raise HTTPException(status_code=422, detail=mensagem_chave_com_dono(k, rotulo))
+
+
+# Webhooks do Teams fora do catálogo de canais (card "Webhook padrão" da aba
+# Comunicação › Teams). Lidos por api/routers/execucoes.py e /admin/test-webhook
+# com fallback: específico vazio → canal padrão.
+_CHAVES_TEAMS_WEBHOOK = ("teams_webhook_url", "teams_webhook_url_ack", "teams_webhook_url_resolved")
+
+
+def _teams_webhook_valido(chave: str, bruto) -> str:
+    """URL https sem espaço, cabendo em config_value VARCHAR(1000)."""
+    if not isinstance(bruto, str):
+        raise HTTPException(status_code=422, detail=f"{chave}: a URL precisa ser texto")
+    url = bruto.strip()
+    if url.startswith(_MASCARA):
+        raise HTTPException(status_code=422,
+                            detail=f"{chave}: esse valor é a máscara (••••) do webhook salvo; cole a URL real")
+    if not url.startswith("https://") or len(url) <= len("https://"):
+        raise HTTPException(status_code=422, detail=f"{chave}: a URL do webhook começa com https://")
+    if any(c.isspace() for c in url):
+        raise HTTPException(status_code=422, detail=f"{chave}: a URL não pode ter espaço no meio")
+    if len(url) > 1000:
+        raise HTTPException(status_code=422, detail=f"{chave}: URL longa demais (máximo 1000 caracteres)")
+    return url
+
+
+# Campos da CREDENCIAL no corpo do servicenow_set. Nenhum deles presente =
+# gravação só da triagem (F5).
+_CAMPOS_CREDENCIAL_SN = ("url", "usuario", "senha", "grupos", "proxy", "habilitado")
+
+
+def _triagem_valores(body: dict) -> dict[str, str]:
+    """chamados_triagem_* a gravar — só os campos que VIERAM no corpo.
+
+    Gravar "0" por ausência desligaria a triagem em silêncio a cada salvamento
+    feito por um bundle antigo em cache ou por um payload parcial — o mesmo
+    cuidado que a senha tem no servicenow_set.
+
+    O teto de quantidade NÃO garante o tempo do ciclo (o gateway pode estar
+    lento); quem protege o dagrun_timeout é o orçamento de ORCAMENTO_TRIAGEM_S
+    dentro da própria task.
+    """
+    valores: dict[str, str] = {}
+    if "triagem_habilitada" in body:
+        valores["chamados_triagem_habilitada"] = "1" if body.get("triagem_habilitada") else "0"
+    if "triagem_lote" in body:
+        try:
+            valores["chamados_triagem_lote"] = str(max(1, min(int(body.get("triagem_lote") or 20), 200)))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="triagem_lote precisa ser um número")
+    return valores
+
+
 @router.post("/admin", tags=["admin"])
 async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get_admin_user)):
     """Operações administrativas restritas (etl_admin_manage).
@@ -151,6 +221,13 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
 
     if not action:
         raise HTTPException(status_code=422, detail="action é obrigatório")
+
+    # Trava da F5: o editor genérico não grava nem apaga chave que tem aba dona
+    # (antes de abrir conexão — a recusa não toca o banco). Só estas duas
+    # actions: as rotas próprias das abas (servicenow_set, teams_webhook_set,
+    # ia_set, /email/admin/config…) gravam as chaves delas normalmente.
+    if action in ("config_upsert", "config_delete"):
+        _recusar_chave_com_dono(body.get("config_key"))
 
     try:
         conn = get_db_conn(); cur = conn.cursor()
@@ -167,6 +244,11 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             desc  = (body.get("descricao")    or "").strip() or None
             if not key or not value:
                 raise HTTPException(status_code=422, detail="config_key e config_value obrigatórios")
+            if value.startswith(_MASCARA):
+                cur.close(); conn.close()
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"O valor de {key} é a máscara (••••) de um segredo: digite o valor real.")
             cur.execute(
                 "MERGE dbo.etl_app_config AS t "
                 "USING (SELECT ? AS k, ? AS v, ? AS d) AS s ON t.config_key = s.k "
@@ -186,6 +268,61 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             cur.execute("DELETE FROM dbo.etl_app_config WHERE config_key = ?", (key,))
             conn.commit(); cur.close(); conn.close()
             return {"sucesso": True, "mensagem": f'Parâmetro "{key}" removido.'}
+
+        # ── Comunicação › Teams: webhook padrão (F5) ─────────────────────────
+        # Rota própria das três teams_webhook_url* — a genérica config_upsert
+        # passou a recusar chave com dono. Corpo:
+        #   valores: {chave: url}  — ausente/vazio = MANTÉM (a tela nunca tem o
+        #            valor em claro: o config_list devolve mascarado);
+        #   limpar:  [chave, ...]  — volta a '' (a linha fica, como a migration
+        #            014 semeou). Explícito porque "vazio" já quer dizer
+        #            "manter"; e é preciso: vazio nas específicas é o estado
+        #            legítimo "usa o padrão", que antes da F5 só se alcançava
+        #            excluindo a chave no editor genérico.
+        elif action == "teams_webhook_set":
+            valores = body.get("valores") or {}
+            limpar = body.get("limpar") or []
+            if not isinstance(valores, dict) or not isinstance(limpar, list):
+                cur.close(); conn.close()
+                raise HTTPException(status_code=422,
+                                    detail="valores deve ser objeto e limpar, lista")
+            desconhecidas = sorted({str(k) for k in list(valores) + list(limpar)}
+                                   - set(_CHAVES_TEAMS_WEBHOOK))
+            if desconhecidas:
+                cur.close(); conn.close()
+                raise HTTPException(status_code=422,
+                                    detail=f"Chave fora do webhook padrão: {', '.join(desconhecidas)}")
+            gravar: dict[str, str] = {}
+            try:
+                for k, v in valores.items():
+                    if v is None or (isinstance(v, str) and not v.strip()):
+                        continue                      # vazio = manter o atual
+                    gravar[k] = _teams_webhook_valido(k, v)
+                for k in limpar:
+                    if k in gravar:
+                        raise HTTPException(status_code=422,
+                                            detail=f"{k}: não dá para gravar e limpar ao mesmo tempo")
+                    gravar[k] = ""
+            except HTTPException:
+                cur.close(); conn.close()
+                raise
+            if not gravar:
+                cur.close(); conn.close()
+                raise HTTPException(status_code=422, detail="Nada a alterar: preencha uma URL ou peça para limpar")
+            for k, v in gravar.items():
+                cur.execute(
+                    "MERGE dbo.etl_app_config AS t "
+                    "USING (SELECT ? AS k) AS s ON t.config_key = s.k "
+                    "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
+                    "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
+                    "  VALUES (s.k, ?, 'Webhook padrão do Teams', ?, GETDATE());",
+                    [k, v, requested_by, v, requested_by])
+            conn.commit(); cur.close(); conn.close()
+            # Nunca devolve a URL (tem token): só o que foi feito.
+            return {"sucesso": True,
+                    "mensagem": "Webhook salvo." if any(gravar.values()) else "Webhook limpo.",
+                    "gravadas": sorted(k for k, v in gravar.items() if v),
+                    "limpas": sorted(k for k, v in gravar.items() if not v)}
 
         # ── Diagnóstico: bancos do mesmo servidor (mesma credencial do app) ──
         elif action == "server_databases":
@@ -506,6 +643,31 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             }}
 
         elif action == "servicenow_set":
+            # F5 — gravação SÓ da triagem (IA › Triagem de chamados): quando o
+            # corpo não traz NENHUM campo da credencial, grava só
+            # chamados_triagem_* e não toca url/usuário/senha/grupos/proxy/
+            # habilitado. Retrocompatível: até a F5 um corpo sem `url` era
+            # sempre recusado (url_valida → 422), então nenhum cliente antigo
+            # dependia desse formato; e o corpo completo (bundle antigo da aba
+            # Triagem em cache, que relia e reenviava a credencial, ou a aba
+            # ServiceNow) segue pelo caminho de sempre, com a validação toda.
+            if not any(c in body for c in _CAMPOS_CREDENCIAL_SN):
+                triagem_valores = _triagem_valores(body)
+                if not triagem_valores:
+                    cur.close(); conn.close()
+                    raise HTTPException(status_code=422,
+                                        detail="Nada a gravar: envie a credencial ou os campos da triagem")
+                for k, v in triagem_valores.items():
+                    cur.execute(
+                        "MERGE dbo.etl_app_config AS t "
+                        "USING (SELECT ? AS k) AS s ON t.config_key = s.k "
+                        "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
+                        "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
+                        "  VALUES (s.k, ?, 'Triagem de chamados por IA', ?, GETDATE());",
+                        [k, v, requested_by, v, requested_by])
+                conn.commit(); cur.close(); conn.close()
+                return {"sucesso": True, "mensagem": "Triagem de chamados salva."}
+
             url = servicenow.url_valida(body.get("url") or "")
             usuario = (body.get("usuario") or "").strip()
             grupos = (body.get("grupos") or "").strip()
@@ -527,17 +689,7 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             # O teto de quantidade NÃO garante o tempo do ciclo (o gateway
             # pode estar lento); quem protege o dagrun_timeout é o orçamento
             # de ORCAMENTO_TRIAGEM_S dentro da própria task.
-            triagem_valores = {}
-            if "triagem_habilitada" in body:
-                triagem_valores["chamados_triagem_habilitada"] = (
-                    "1" if body.get("triagem_habilitada") else "0")
-            if "triagem_lote" in body:
-                try:
-                    triagem_valores["chamados_triagem_lote"] = str(
-                        max(1, min(int(body.get("triagem_lote") or 20), 200)))
-                except (TypeError, ValueError):
-                    raise HTTPException(status_code=422,
-                                        detail="triagem_lote precisa ser um número")
+            triagem_valores = _triagem_valores(body)
 
             valores = {**triagem_valores,
                        servicenow.K_URL: url, servicenow.K_USUARIO: usuario,

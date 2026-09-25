@@ -94,6 +94,29 @@ const saida = {
     .map((s) => [s, destino(s)])),
 }
 
+// F5: dono de cada chave (espelhado em api/services/admin_config_donos.py),
+// chaves órfãs agrupadas e padrões de segredo (espelho do mask_secret).
+saida.donos = m.ABAS_ADMIN.flatMap((a) => a.chavesConfig.map((p) => [p, m.rotuloAdmin(a.grupo, a.id)]))
+const AMOSTRA_CHAVES = ['email_remetente', 'EMAIL_REMETENTE', '  email_habilitado  ', 'teams_webhook_url',
+  'teams_webhook_url_ack', 'teams_webhook_url_resolved', 'servicenow_url', 'servicenow_senha_enc',
+  'servicenow_admin_perfis', 'chamados_triagem_lote', 'maestro_enabled', 'utilitarios_arquivo_max_kb',
+  'ia_model', 'caixa_ia_api_key_enc', 'agentes_enabled', 'agentes_titulo_redigido_em', 'app_base_url',
+  'powerbi_client_secret', 'malha_corrida_ativa', 'sql_preview_timeout_s', '', '   ', 'x']
+saida.donoDaChave = Object.fromEntries(AMOSTRA_CHAVES.map((k) => {
+  const a = m.donoDaChave(k)
+  return [k, a ? m.rotuloAdmin(a.grupo, a.id) : null]
+}))
+saida.padroesSegredo = [...m.PADROES_SEGREDO]
+saida.sensivel = Object.fromEntries(['powerbi_client_secret', 'powerbi_client_id', 'app_base_url', 'x_api_key',
+  'y_webhook_url', 'z_senha_enc', 'api_token', 'malha_corrida_ativa'].map((k) => [k, m.ehChaveSensivel(k)]))
+saida.orfas = m.agruparChavesOrfas({
+  app_base_url: 'http://x', app_version: '2.3.2', email_remetente: 'a@b', teams_webhook_url: '•••• abcd',
+  dependencia_hora_virada: '06:00', malha_corrida_ativa: '1', espera_teto_minutos: '120',
+  powerbi_client_secret: '•••• 1234', powerbi_client_id: '', sql_preview_timeout_s: '60',
+  servicenow_url: 'https://x.service-now.com', servicenow_admin_perfis: 'admin', agentes_titulo_redigido_em: '2026',
+  chamados_triagem_lote: '20', maestro_enabled: '1', zzz_desconhecida: 'v',
+})
+
 // Última aba: grava, lê, ignora lixo e sobrevive a armazenamento quebrado.
 const email = m.ABAS_ADMIN.find((a) => a.id === 'email')
 m.gravarUltimaAba(email)
