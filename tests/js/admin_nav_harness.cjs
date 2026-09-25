@@ -57,6 +57,11 @@ const saida = {
     'publicar dag': caminhos('publicar dag'),
     agentes: primeiro('agentes'),
     powerbi_client_secret: caminhos('powerbi_client_secret'),
+    servicenow_: primeiro('servicenow_'),
+    agentes_: primeiro('agentes_'),
+    servicenow_admin_perfis: caminhos('servicenow_admin_perfis'),
+    agentes_titulo_redigido_em: caminhos('agentes_titulo_redigido_em'),
+    admin_perfis: caminhos('admin_perfis'),
   },
   destinos: Object.fromEntries(['', 'comunicacao/email', 'comunicacao', 'config', 'sistema/config', 'ia', 'foo',
     'foo/bar', 'comunicacao/inexistente', 'comunicacao/email/extra', '/comunicacao/email/', 'constructor', 'toString']

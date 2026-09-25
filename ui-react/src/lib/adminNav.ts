@@ -340,6 +340,10 @@ export interface ResultadoBusca {
 }
 
 const PESO: Record<CampoBusca, number> = { rotulo: 100, palavraChave: 60, chaveConfig: 55, grupo: 30, descricao: 20 }
+// Nome literal de chave (palavra-chave com "_", casada pelo começo): acima do
+// prefixo-palavra-chave (60, destaque melhor) e ABAIXO do prefixo dono casado
+// pelo começo (55 × 1.2 = 66) — a aba dona sempre vence na sua família.
+const PESO_CHAVE_LITERAL = 65
 
 function partir(texto: string, termoNorm: string): Trecho | null {
   const { norm, mapa } = normalizarComMapa(texto)
@@ -365,7 +369,17 @@ function casarTermo(aba: AbaAdmin, termo: string): Casamento | null {
   considerar('grupo', grupoDaAba(aba).rotulo)
   for (const palavra of aba.palavrasChave) {
     const p = normalizar(palavra)
-    if (p.includes(termo)) considerar('palavraChave', palavra)
+    // Palavra-chave com "_" é nome literal de chave de config (ex.: a avulsa
+    // servicenow_admin_perfis): casa só pelo começo e pesa MENOS que o prefixo
+    // dono — senão "servicenow_" abriria Parâmetros avançados em vez de
+    // ServiceNow, e "admin"/"titulo" achariam a chave pelo meio.
+    if (p.includes('_') && !p.endsWith('_')) {
+      if (p.startsWith(termo)) {
+        const t = partir(palavra, termo)
+        if (t) candidatos.push({ campo: 'palavraChave', trecho: t, pontos: PESO_CHAVE_LITERAL })
+      }
+    }
+    else if (p.includes(termo)) considerar('palavraChave', palavra)
     // Palavra-chave terminada em "_" é prefixo de chave de config: a chave
     // inteira digitada (powerbi_client_secret) casa com ela (powerbi_).
     else if (p.endsWith('_') && termo.startsWith(p)) {

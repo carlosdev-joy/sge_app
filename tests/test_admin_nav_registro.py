@@ -158,6 +158,14 @@ def test_bancada_busca(bancada):
     assert b["publicar dag"] == ["/admin/pipelines/publicar-dags"], "vários termos: todos precisam casar"
     assert b["agentes"]["caminho"] == "/admin/ia/agentes"
     assert b["powerbi_client_secret"] == ["/admin/sistema/parametros"], "chave órfã leva a Parâmetros avançados"
+    # chaves avulsas sem dono de famílias com dono (achado do QA da F2)
+    assert "/admin/sistema/parametros" in b["servicenow_admin_perfis"]
+    assert "/admin/sistema/parametros" in b["agentes_titulo_redigido_em"]
+    # ...mas o prefixo da família continua levando à aba DONA em 1º lugar
+    assert b["servicenow_"]["caminho"] == "/admin/integracoes/servicenow"
+    assert b["agentes_"]["caminho"] == "/admin/ia/agentes"
+    # nome literal de chave só casa pelo começo: pedaço do meio não acha
+    assert "/admin/sistema/parametros" not in b["admin_perfis"]
 
 
 def test_bancada_resolvedor(bancada):

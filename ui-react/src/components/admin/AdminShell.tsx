@@ -7,7 +7,6 @@
 // ancestral entre ele e o <main> pode ter overflow-hidden/auto, senão o sticky
 // morre em silêncio.
 import { Fragment, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
 import { ChevronDown, Link2 } from 'lucide-react'
 import { Sheet } from '../ui/Sheet'
 import { Skeleton } from '../ui/Skeleton'
@@ -86,7 +85,6 @@ function AbaNaoEncontrada({ aoBuscar }: { aoBuscar: () => void }) {
 
 export function AdminShell({ aba }: { aba: AbaAdmin | null }) {
   const desktop = useMediaQuery('(min-width: 1024px)')
-  const { pathname } = useLocation()
   const buscaRef = useRef<HTMLInputElement>(null)
   const tituloRef = useRef<HTMLHeadingElement>(null)
   const [sheetAberto, setSheetAberto] = useState(false)
@@ -109,15 +107,19 @@ export function AdminShell({ aba }: { aba: AbaAdmin | null }) {
     return () => document.removeEventListener('keydown', aoTeclar)
   }, [focarBusca])
 
-  // Troca de aba → foco no título (não no primeiro render da página).
-  const caminhoAnterior = useRef<string | null>(null)
+  // Troca de aba → foco no título (não no primeiro render da página). Depende
+  // da ABA, não do pathname: um redirect (/admin → última aba, /admin/config →
+  // parametros) já monta a casca com a aba de destino, e a troca de URL que vem
+  // depois não é troca de aba — não pode roubar o foco de quem acabou de chegar.
+  const abaChave = aba ? caminhoDaAba(aba) : null
+  const abaAnterior = useRef<string | null | undefined>(undefined)
   useEffect(() => {
-    const anterior = caminhoAnterior.current
-    caminhoAnterior.current = pathname
-    if (anterior === null || anterior === pathname) return
+    const anterior = abaAnterior.current
+    abaAnterior.current = abaChave
+    if (anterior === undefined || anterior === abaChave || abaChave === null) return
     const id = requestAnimationFrame(() => tituloRef.current?.focus({ preventScroll: false }))
     return () => cancelAnimationFrame(id)
-  }, [pathname])
+  }, [abaChave])
 
   const fecharSheet = () => { setSheetAberto(false); setSheetComBusca(false) }
 
