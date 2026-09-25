@@ -517,7 +517,7 @@ def listar_chamados(incluir_inativos: int = 0,
         if ciclo is None:
             resposta["alerta_fila_vazia"] = (
                 "Nenhuma sincronização registrada ainda — verifique se o sync "
-                "está habilitado em Admin > ServiceNow.")
+                "está habilitado em Admin › Integrações & Dados › ServiceNow.")
         elif ciclo["status"] != "OK":
             resposta["alerta_fila_vazia"] = (
                 "A última sincronização falhou — a fila pode não estar "
@@ -525,7 +525,7 @@ def listar_chamados(incluir_inativos: int = 0,
         else:
             resposta["alerta_fila_vazia"] = (
                 "Nenhum chamado no grupo configurado. Se isso for inesperado, "
-                "confira o grupo em Admin > ServiceNow.")
+                "confira o grupo em Admin › Integrações & Dados › ServiceNow.")
     return resposta
 
 

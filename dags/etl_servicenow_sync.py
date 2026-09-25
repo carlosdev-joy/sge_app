@@ -13,7 +13,7 @@ função deste cron (hoje ~4 ciclos). Mudar um sem o outro deixa o alerta surdo
 Desenho, e o porquê de cada escolha:
 
   1. **A credencial vem da config, não de Airflow Connection nem de env.** É a
-     credencial EXECUTORA salva em Admin > ServiceNow (`servicenow_*` em
+     credencial EXECUTORA salva em Admin › Integrações & Dados › ServiceNow (`servicenow_*` em
      etl_app_config, senha em Fernet/ORQUESTRA_CONN_KEY). Um lugar só, com
      RBAC e auditoria de quem mudou.
 
@@ -140,7 +140,7 @@ def etl_servicenow_sync():
 
         if cfg.get(K_HABILITADO) != "1":
             print("[SN] Sync desabilitado (servicenow_habilitado=0) — "
-                  "nada a fazer. Ligue em Admin > ServiceNow.")
+                  "nada a fazer. Ligue em Admin › Integrações & Dados › ServiceNow.")
             return {"status": "DESABILITADO"}
 
         url = (cfg.get(K_URL) or "").rstrip("/")
@@ -169,7 +169,7 @@ def etl_servicenow_sync():
         try:
             if not (url and usuario and senha_enc):
                 raise ValueError("ServiceNow não configurado — informe URL, "
-                                 "usuário e senha em Admin > ServiceNow.")
+                                 "usuário e senha em Admin › Integrações & Dados › ServiceNow.")
             if not grupos:
                 raise ValueError("Nenhum grupo de atribuição configurado — sem "
                                  "filtro o sync traria a fila da empresa inteira.")

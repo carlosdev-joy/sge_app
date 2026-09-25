@@ -4,7 +4,7 @@
 Tudo é lido do BANCO no `execute`, nada vem embutido na DAG gerada:
 
   * `etl_app_config` (chaves `email_*`) — interruptor, remetente, limite de
-    anexo, raízes permitidas e domínios permitidos, do Admin › E-mail;
+    anexo, raízes permitidas e domínios permitidos, do Admin › Comunicação › E-mail;
   * `etl_pipeline_job.notify_json` — a config do nó (assunto, corpo, lista
     própria, herdar a do fluxo, anexo);
   * `etl_pipeline.email_destinatarios` — a lista do fluxo.
@@ -88,7 +88,7 @@ class EmailOperator(BaseOperator):
         return MsSqlHook(mssql_conn_id=self.mssql_conn_id)
 
     def _ler_config(self, hook) -> dict:
-        """Config global do Admin › E-mail. `dags/` usa `%s` (pymssql)."""
+        """Config global do Admin › Comunicação › E-mail. `dags/` usa `%s` (pymssql)."""
         from utils import email_envio as ev
 
         linhas = hook.get_records(
@@ -150,7 +150,7 @@ class EmailOperator(BaseOperator):
                 f"Modelo {modelo_id} não pôde ser lido (migration 112 pendente?): {e}")
         if not linha or not linha[0]:
             raise RuntimeError(
-                f"O modelo {modelo_id} não existe mais no catálogo (Admin › E-mail › Modelos). "
+                f"O modelo {modelo_id} não existe mais no catálogo (Admin › Comunicação › E-mail › Modelos). "
                 "Escolha outro modelo no nó, ou recadastre o modelo.")
         return {"corpo": linha[0], "html": bool(linha[1]), "nome": linha[2]}
 
@@ -425,9 +425,9 @@ class EmailOperator(BaseOperator):
                 "E-mail indisponível: migration 111 pendente (chaves email_* em etl_app_config).")
         if not cfg["enabled"]:
             raise AirflowSkipException(
-                "Canal de e-mail desligado em Admin › E-mail — nó pulado de propósito.")
+                "Canal de e-mail desligado em Admin › Comunicação › E-mail — nó pulado de propósito.")
         if not cfg["remetente"]:
-            raise RuntimeError("Canal de e-mail ligado sem remetente configurado em Admin › E-mail.")
+            raise RuntimeError("Canal de e-mail ligado sem remetente configurado em Admin › Comunicação › E-mail.")
 
         no = self._ler_no(hook)
         if not no:

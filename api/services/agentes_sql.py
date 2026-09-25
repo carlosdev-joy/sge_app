@@ -38,7 +38,7 @@ MAX_SQL = 20_000            # o mesmo da Cópia de Dados
 MAX_CELULA = 200
 MAX_BLOCO = 15_000
 MAX_ESTRUTURA = 300
-# Tempos (configuráveis em Admin › Agentes › Gateway e limites — chaves
+# Tempos (configuráveis em Admin › Inteligência Artificial › Agentes › Gateway e limites — chaves
 # `agentes_banco_conexao_s` e `agentes_banco_consulta_s`, lidas a cada
 # pergunta; os padrões valem quando a chave não existe).
 CONEXAO_PADRAO_S, CONEXAO_MIN_S, CONEXAO_MAX_S = 10, 5, 60     # abrir a conexão (login)
@@ -1038,7 +1038,7 @@ def verificar_pares(pares: list[tuple[str, str]], conexao_s: float = CONEXAO_PAD
         except BancoIndisponivel as e:
             if "não respondeu" in str(e):
                 raise ValueError(f"a conexão '{conexao}' não abriu: o servidor não respondeu no tempo "
-                                 "configurado (Admin › Agentes › Gateway e limites)") from None
+                                 "configurado (Admin › Inteligência Artificial › Agentes › Gateway e limites)") from None
             raise ValueError(f"a conexão '{conexao}' não abriu (removida, não nativa, fora do ar ou "
                              "login recusado)") from None
         alcancaveis = {b["banco"].lower(): b for b in info["bancos"]}

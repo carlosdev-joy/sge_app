@@ -333,7 +333,7 @@ def test_config_get_e_set(ambiente):
     cfg["api_key_enc"] = ""
     r = cliente.post("/maestro/admin/config", json={"enabled": True})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "provedor_sem_chave"
-    assert "Admin › IA" in r.json()["detail"]["errors"][0] and conn.commits == 1
+    assert "Admin › Inteligência Artificial › Provedor" in r.json()["detail"]["errors"][0] and conn.commits == 1
     # desligar sem chave pode
     assert cliente.post("/maestro/admin/config", json={"enabled": False}).status_code == 200
 

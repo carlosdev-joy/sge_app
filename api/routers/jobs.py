@@ -692,7 +692,7 @@ def _normalize_notify(cfg: dict) -> dict:
 # notificação, por e-mail em vez de Teams — reusar a coluna evita uma coluna
 # por canal e o tipo do job já diz qual é qual).
 #   {assunto, corpo, html, destinatarios[], incluir_pipeline, anexo{raiz,nome}|null}
-# As RAÍZES permitidas e os DOMÍNIOS vêm do Admin › E-mail (etl_app_config): a
+# As RAÍZES permitidas e os DOMÍNIOS vêm do Admin › Comunicação › E-mail (etl_app_config): a
 # régua do cadastro é a mesma do envio, então um anexo fora da raiz ou um
 # destinatário de domínio barrado falha aqui, na tela, e não na corrida.
 
@@ -736,14 +736,14 @@ def _validate_email(cfg, raizes_permitidas=None, dominios_permitidos=None,
             modelo_id = None
         elif modelos_validos is not None and int(modelo_id) not in set(modelos_validos):
             errs.append("o modelo escolhido não existe mais no catálogo "
-                        "(Admin › E-mail › Modelos)")
+                        "(Admin › Comunicação › E-mail › Modelos)")
 
     # Com modelo escolhido, o corpo vem do catálogo NO ENVIO — o campo do nó
     # deixa de ser exigido. O texto que já estava lá é preservado, para voltar
     # ao Corpo livre não apagar o que a pessoa tinha escrito.
     if modelo_id is None:
         if exigir_modelo and no_novo:
-            errs.append("Admin › E-mail exige modelo do catálogo: escolha um modelo "
+            errs.append("Admin › Comunicação › E-mail exige modelo do catálogo: escolha um modelo "
                         "para este nó (a opção Corpo livre está desativada)")
         _, erro = _em.validar_corpo(cfg.get("corpo"))
         if erro:
@@ -813,7 +813,7 @@ def _normalize_email(cfg: dict, raizes_permitidas=None) -> dict:
 
 def _config_email_do_admin(cur) -> tuple[list[str], list[str], list[int] | None, bool]:
     """(raízes permitidas, domínios permitidos, ids dos modelos que EXISTEM,
-    exigir_modelo) do Admin › E-mail.
+    exigir_modelo) do Admin › Comunicação › E-mail.
 
     Sem a migration 111 as listas vêm vazias — e aí um anexo é recusado com a
     mensagem da régua, que é o comportamento certo: não há raiz liberada. Sem
@@ -2084,7 +2084,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         known_jobs = req_names | db_names
         # Arestas para o detector de ciclo (apenas nós presentes no request).
         cycle_adj: dict[str, set[str]] = {n: set() for n in req_names}
-        # Régua do Admin › E-mail: lida UMA vez, e só se houver nó de e-mail no
+        # Régua do Admin › Comunicação › E-mail: lida UMA vez, e só se houver nó de e-mail no
         # request (None = ainda não lida). Sem isso, um pipeline com 20 nós de
         # e-mail faria 20 leituras iguais de etl_app_config.
         _email_raizes: list[str] | None = None
@@ -2885,7 +2885,7 @@ async def save_pipeline_fluxo(
         # Valida e prepara cada nó; monta o grafo (deps + ramos) para o ciclo.
         errors: list[str] = []
         cycle_adj: dict[str, set[str]] = {n: set() for n in known_jobs}
-        # Régua do Admin › E-mail, lida uma vez e só se houver nó de e-mail.
+        # Régua do Admin › Comunicação › E-mail, lida uma vez e só se houver nó de e-mail.
         _email_raizes: list[str] | None = None
         _email_dominios: list[str] = []
         _email_modelos: list[int] | None = None
@@ -2995,7 +2995,7 @@ async def save_pipeline_fluxo(
                     errors.extend(f"{j_name}: {e}" for e in notify_errs); continue
                 notify_json_str = json.dumps(_normalize_notify(raw_notify), ensure_ascii=False)
 
-            # E-mail — mesma coluna (notify_json), régua do Admin › E-mail.
+            # E-mail — mesma coluna (notify_json), régua do Admin › Comunicação › E-mail.
             if j_type == "email":
                 if _email_raizes is None:
                     (_email_raizes, _email_dominios, _email_modelos,

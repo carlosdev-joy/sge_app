@@ -154,7 +154,7 @@ def test_anexo_do_cadastro_raiz_permitida_e_nome_livre():
     assert em.validar_anexo_cadastro("/dados/saida/", "relatorio_{odate}.xlsx", raizes) == (
         {"raiz": "/dados/saida", "nome": "relatorio_{odate}.xlsx"}, [])
     assert em.validar_anexo_cadastro("", "", raizes) == (None, [])               # sem anexo
-    assert em.validar_anexo_cadastro("/tmp", "x.csv", raizes)[1] == ["anexo: a pasta '/tmp' não está entre as permitidas no Admin › E-mail"]
+    assert em.validar_anexo_cadastro("/tmp", "x.csv", raizes)[1] == ["anexo: a pasta '/tmp' não está entre as permitidas no Admin › Comunicação › E-mail"]
     assert em.validar_anexo_cadastro("/dados/saida", "", raizes)[1] == ["anexo: informe o nome do arquivo"]
     for nome in ("sub/x.csv", "..", "../x", "x\ny", "a\\b", "."):
         _, erros = em.validar_anexo_cadastro("/dados/saida", nome, raizes)

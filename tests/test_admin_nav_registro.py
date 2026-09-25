@@ -366,6 +366,28 @@ def test_f4_nenhuma_migalha_de_texto_com_caminho_velho(bancada):
     assert not ruins, ruins
 
 
+def test_f4_backend_nao_cita_caminho_velho_do_admin(bancada):
+    """Achado do QA da F4: mensagens da API/worker chegam à tela (o front repassa
+    o `detail`) — "Admin › Utilitários" num 403 ao lado do banner com o caminho
+    novo. Todo "Admin › …" em api/ e dags/ (código E comentário) começa por um
+    caminho que existe no registro; grafia velha "Admin > X" não vale.
+    Exceção: dags/etl_dag_factory.py e o que ele gerou (dags/generated/) — o
+    texto vai para DAGs JÁ GERADAS e corrigi-lo exige republicar (Backlog, F6)."""
+    raiz = FRONT.parents[1]
+    validos = tuple(bancada["rotulos"]["todas"])
+    ruins = []
+    arquivos = [p for p in list((raiz / "api").rglob("*.py")) + list((raiz / "dags").rglob("*.py"))
+                if "wheels" not in p.parts and "generated" not in p.parts and p.name != "etl_dag_factory.py"]
+    for arq in arquivos:
+        texto = re.sub(r"\n\s*#\s*", " ", arq.read_text(encoding="utf-8"))  # junta comentário quebrado
+        for m in re.finditer(r"Admin\s*>\s*[A-Z]\w*", texto):
+            ruins.append((str(arq.relative_to(raiz)), m.group(0)))
+        for m in re.finditer(r"Admin › [^'\"`\n.;:{},—×]*", texto):
+            if not m.group(0).startswith(validos):
+                ruins.append((str(arq.relative_to(raiz)), m.group(0)))
+    assert arquivos and not ruins, ruins
+
+
 def test_f4_link_admin_respeita_permissao_e_edicao():
     fonte = (FRONT / "components" / "admin" / "LinkAdmin.tsx").read_text(encoding="utf-8")
     assert "canAccess('tela_admin', perms)" in fonte, "sem tela_admin: só o texto"

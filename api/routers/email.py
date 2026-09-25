@@ -424,7 +424,7 @@ def _listar_anexo_sync(servidor: str, caminho: str, raizes: list[str], mostrar_o
 @router.get("/email/anexo/listar", tags=["email"])
 async def email_anexo_listar(caminho: str | None = None, mostrar_ocultos: bool = False,
                              user: dict = Depends(require_perm(PERM_EDITAR))):
-    """Nível zero (sem `caminho`) = as pastas liberadas em Admin › E-mail, sem
+    """Nível zero (sem `caminho`) = as pastas liberadas em Admin › Comunicação › E-mail, sem
     tocar o SSH. Com `caminho`, as entradas da pasta — que pode ser uma
     SUBPASTA de uma raiz: é assim que se chega ao arquivo."""
     t0 = time.time()
@@ -448,11 +448,11 @@ async def email_anexo_listar(caminho: str | None = None, mostrar_ocultos: bool =
     if not raizes:
         _auditar_arquivo(usuario=usuario, servidor="datastage", acao="listar",
                          caminho=str(caminho), resultado="negado",
-                         detalhe="anexo de e-mail: nenhuma pasta liberada em Admin › E-mail",
+                         detalhe="anexo de e-mail: nenhuma pasta liberada em Admin › Comunicação › E-mail",
                          duracao_ms=_ms(t0))
         raise HTTPException(
             status_code=403,
-            detail="Nenhuma pasta liberada para anexo — cadastre as pastas em Admin › E-mail.")
+            detail="Nenhuma pasta liberada para anexo — cadastre as pastas em Admin › Comunicação › E-mail.")
     try:
         servidor = ssh_arquivos.servidor_valido("datastage")
         pasta, _raiz = ssh_arquivos.preparar_pasta(caminho, raizes)

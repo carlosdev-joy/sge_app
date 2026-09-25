@@ -313,7 +313,7 @@ async def admin_manage(body: dict = Body(default={}), _admin: dict = Depends(get
             return {"sucesso": True, "mensagem": f"Usuário {mat} removido." if n else f"Usuário {mat} não encontrado."}
 
         # ── Provedor de IA compartilhado (config ia_* em etl_app_config, Admin ›
-        # IA). Até 21/09/2026 era só dos assistentes do Caixa Seguro (config
+        # Inteligência Artificial › Provedor). Até 21/09/2026 era só dos assistentes do Caixa Seguro (config
         # caixa_ia_*) — ver docs/spec-agentes-datastage.md, F0. As ações
         # antigas `caixa_ia_*` continuam respondendo (alias) por uma versão,
         # para JS de admin em cache. ──
@@ -1433,7 +1433,7 @@ CATALOGO_DAGS: dict = {
             "Chamados; cada tabela sincroniza independente e o ciclo fica "
             "registrado em etl_chamado_sync",
         "frequencia": "a cada 15 min (só com servicenow_habilitado=1 em "
-            "Admin > ServiceNow)",
+            "Admin › Integrações & Dados › ServiceNow)",
     },
     "etl_servicenow_delta": {
         "categoria": "Monitoramento e alertas",
@@ -1442,7 +1442,7 @@ CATALOGO_DAGS: dict = {
             "tocado. É o que mantém a fila fresca sem varrer a instância "
             "inteira; o ciclo fica registrado em etl_chamado_ciclo",
         "frequencia": "a cada 15 min (só com servicenow_habilitado=1 em "
-            "Admin > ServiceNow); também sob demanda pelo Admin",
+            "Admin › Integrações & Dados › ServiceNow); também sob demanda pelo Admin",
     },
     "etl_servicenow_full": {
         "categoria": "Monitoramento e alertas",

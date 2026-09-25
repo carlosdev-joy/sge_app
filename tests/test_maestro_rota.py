@@ -216,7 +216,7 @@ def test_conversar_ligado_sem_chave_diz_qual_admin_falta(ambiente, monkeypatch):
     cliente, cur, _conn, provedor, _estado = ambiente
     monkeypatch.setattr(ia_provedor, "load_config", lambda c=None: {"api_key_enc": "", "provider": "anthropic"})
     r = cliente.post("/maestro/conversar", json=_corpo())
-    assert r.status_code == 503 and "Admin › IA" in r.json()["detail"]
+    assert r.status_code == 503 and "Admin › Inteligência Artificial › Provedor" in r.json()["detail"]
     assert "desligado" not in r.json()["detail"]
     assert provedor.chamadas == [] and cur.inseridos == []
 

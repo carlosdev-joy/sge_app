@@ -309,7 +309,7 @@ async def utilitarios_ler_arquivo(body: dict = Body(...),
         raise HTTPException(
             status_code=403,
             detail="Nenhum diretório liberado para este servidor — cadastre uma raiz em "
-                   "Admin › Utilitários.")
+                   "Admin › Integrações & Dados › Servidor DataStage (SFTP).")
 
     # Validação e conferência LEXICAL antes de qualquer SSH.
     try:
@@ -401,7 +401,7 @@ async def utilitarios_baixar_arquivo(servidor: str = Query("datastage"),
     raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
     if not raizes:
         negar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
-                   "Admin › Utilitários.", "negado")
+                   "Admin › Integrações & Dados › Servidor DataStage (SFTP).", "negado")
     # Validação e conferência LEXICAL antes de qualquer SSH (403 sem revelar existência).
     try:
         caminho, _raiz = svc.preparar_leitura(diretorio, nome, raizes)
@@ -561,7 +561,7 @@ async def utilitarios_enviar_arquivo(request: Request,
     raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
     if not raizes:
         await recusar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
-                           "Admin › Utilitários.", "negado")
+                           "Admin › Integrações & Dados › Servidor DataStage (SFTP).", "negado")
     try:
         caminho, _raiz = svc.preparar_envio(diretorio, nome, raizes, cfg["extensoes"])
     except svc.ArquivoError as e:
@@ -684,7 +684,7 @@ async def utilitarios_listar_pasta(servidor: str = Query("datastage"),
         raise HTTPException(
             status_code=403,
             detail="Nenhum diretório liberado para este servidor — cadastre uma raiz em "
-                   "Admin › Utilitários.")
+                   "Admin › Integrações & Dados › Servidor DataStage (SFTP).")
     try:
         pasta, _raiz = svc.preparar_pasta(caminho, raizes)
     except svc.ArquivoError as e:
@@ -774,7 +774,7 @@ async def utilitarios_gravar_arquivo(body: dict = Body(...),
     raizes = [r["caminho"] for r in cfg["raizes"] if r["servidor"] == servidor]
     if not raizes:
         negar(403, "Nenhum diretório liberado para este servidor — cadastre uma raiz em "
-                   "Admin › Utilitários.", "negado")
+                   "Admin › Integrações & Dados › Servidor DataStage (SFTP).", "negado")
     try:
         caminho, _raiz = svc.preparar_gravacao(diretorio, nome, extensao, raizes, cfg["extensoes"])
     except svc.ArquivoError as e:
