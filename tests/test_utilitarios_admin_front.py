@@ -27,7 +27,7 @@ import pytest
 RAIZ = Path(__file__).resolve().parents[1]
 HARNESS = RAIZ / "tests" / "js" / "utilitarios_admin_harness.cjs"
 SUCRASE = RAIZ / "ui-react" / "node_modules" / "sucrase"
-ADMIN = RAIZ / "ui-react" / "src" / "pages" / "Admin.tsx"
+ADMIN = RAIZ / "ui-react" / "src" / "lib" / "adminNav.ts"
 TAB = RAIZ / "ui-react" / "src" / "components" / "admin" / "UtilitariosTab.tsx"
 PURAS_TS = RAIZ / "ui-react" / "src" / "lib" / "utilitariosAdmin.ts"
 SERVICO_PY = RAIZ / "api" / "services" / "ssh_arquivos.py"
@@ -224,10 +224,16 @@ def test_salvar_limites_so_com_mudanca_valida(cen):
 # ═══════════ 5. anti-drift (sem Node) ══════════════════════════════════════
 
 def test_aba_registrada_e_renderizada_no_admin():
+    # F2 de docs/spec-admin-reestruturacao.md: a antiga "Utilitários" virou
+    # Integrações & Dados › Servidor DataStage (SFTP) no registro central, que
+    # carrega o UtilitariosTab e mantém o id antigo redirecionando para ela.
     fonte = ADMIN.read_text(encoding="utf-8")
-    assert re.search(r"\{\s*id:\s*'utilitarios',\s*label:\s*'Utilitários'\s*\}", fonte), "aba fora de ADMIN_GROUPS"
-    assert "tab === 'utilitarios' && <UtilitariosTab />" in fonte, "aba registrada mas nunca renderizada"
-    assert "from '../components/admin/UtilitariosTab'" in fonte
+    entrada = re.search(r"\{\s*grupo:\s*'integracoes',\s*id:\s*'servidor-datastage',"
+                        r"\s*rotulo:\s*'Servidor DataStage \(SFTP\)'.*?\n  \},", fonte, re.S)
+    assert entrada, "aba fora do registro (grupo integracoes)"
+    assert "idsAntigos: ['utilitarios']" in entrada.group(0), "o link antigo /admin/utilitarios perderia o destino"
+    assert re.search(r"import\('\.\./components/admin/UtilitariosTab'\),\s*'UtilitariosTab'", entrada.group(0)), \
+        "aba registrada mas nunca renderizada"
 
 
 def test_container_chama_os_endpoints_da_f1():

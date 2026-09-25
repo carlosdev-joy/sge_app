@@ -48,6 +48,12 @@ _SR_ONLY_CONHECIDOS = {
     "components/utilitarios/ModalEnvioArquivo.tsx": 1,
     # rótulo da busca da galeria de agentes — dentro do `relative w-full sm:w-72`
     "components/agentes/GaleriaAgentes.tsx": 1,
+    # casca do Admin (F2 de docs/spec-admin-reestruturacao.md): o ":" da migalha
+    # no título (h2 relative) e no seletor mobile (button relative), e o grupo
+    # escondido no título < 1024 px (mesmo h2)
+    "components/admin/AdminShell.tsx": 3,
+    # contagem da busca (aria-live) — dentro da raiz `relative` do MenuAdmin
+    "components/admin/casca/MenuAdmin.tsx": 1,
 }
 
 
