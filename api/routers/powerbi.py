@@ -1,6 +1,6 @@
 """api/routers/powerbi.py — Sustentação de relatórios Power BI (ORQUESTRA).
 
-Todos os endpoints usam o service principal configurado em Admin > Configurações
+Todos os endpoints usam o service principal configurado em Admin › Sistema › Parâmetros avançados
 (ver api/services/powerbi_client.py). Endpoints somente leitura (GET), pensados
 para a tela de sustentação: visão geral de workspaces/datasets, saúde de refresh,
 datasources (tipo de conexão) e gateways.
@@ -47,7 +47,7 @@ async def powerbi_status(_user: dict = Depends(get_current_user)):
     }
     if not result["configurado"]:
         result["erro"] = ("Power BI não configurado. Preencha powerbi_tenant_id, powerbi_client_id e "
-                           "powerbi_client_secret em Admin > Configurações.")
+                           "powerbi_client_secret em Admin › Sistema › Parâmetros avançados.")
         return result
 
     try:

@@ -143,7 +143,7 @@ def _teams_ack_card(pipeline: str, exec_id: str, ack_by: str, display_name: str,
         or os.getenv("TEAMS_WEBHOOK_URL_CVP", "")
     if not webhook_url:
         log.warning("[ACK] webhook do Teams não configurado — cadastre o parâmetro "
-                    "'teams_webhook_url_ack' em Admin > Configurações. Notificação ignorada.")
+                    "'teams_webhook_url_ack' em Admin › Comunicação › Teams › Webhook padrão. Notificação ignorada.")
         return
 
     identity = f"{display_name} ({ack_by})" if display_name and display_name != ack_by else ack_by
@@ -223,7 +223,7 @@ def _teams_resolved_card(pipeline: str, exec_id: str, resolved_by: str, display_
         or os.getenv(webhook_var, "")
     if not webhook_url:
         log.warning("[RESOLVE] webhook do Teams não configurado — cadastre o parâmetro "
-                    "'teams_webhook_url_resolved' em Admin > Configurações. Notificação ignorada.")
+                    "'teams_webhook_url_resolved' em Admin › Comunicação › Teams › Webhook padrão. Notificação ignorada.")
         return
 
     identity = f"{display_name} ({resolved_by})" if display_name and display_name != resolved_by else resolved_by

@@ -321,7 +321,7 @@ def etl_servicenow_sync():
 
         if not conf["habilitada"]:
             print("[TRIAGEM] desligada (chamados_triagem_habilitada=0) — "
-                  "ligue em Admin > ServiceNow.")
+                  "ligue em Admin › Inteligência Artificial › Triagem de chamados.")
             return {"status": "DESABILITADA", "triados": 0}
 
         api_key = ""

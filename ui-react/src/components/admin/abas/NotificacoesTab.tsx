@@ -327,7 +327,7 @@ function WebhookPadraoCard() {
                 <Input
                   aria-label={`${w.rotulo} (${w.chave})`}
                   type="password"
-                  autoComplete="off"
+                  autoComplete="new-password"
                   value={rascunho[w.chave] ?? ''}
                   onChange={e => setRascunho(r => ({ ...r, [w.chave]: e.target.value }))}
                   placeholder={preenchido(w.chave) ? '•••••• configurado — preencha para trocar' : 'https://… — preencha para configurar'}

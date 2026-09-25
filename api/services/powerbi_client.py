@@ -3,7 +3,7 @@
 Credenciais (tenant_id, client_id, client_secret, scope, token_url) NÃO ficam em
 código nem em variável de ambiente: são parâmetros de sistema gravados em
 dbo.etl_app_config (mesma tabela/mecanismo usado por teams_webhook_url etc.),
-editáveis em Admin > Configurações.
+editáveis em Admin › Sistema › Parâmetros avançados.
 
 Chaves esperadas em etl_app_config:
     powerbi_tenant_id      — Directory (tenant) ID do Azure AD
@@ -96,7 +96,7 @@ async def get_access_token(force_refresh: bool = False) -> str:
             raise HTTPException(
                 status_code=503,
                 detail="Power BI não configurado. Preencha powerbi_tenant_id, powerbi_client_id e "
-                       "powerbi_client_secret em Admin > Configurações.",
+                       "powerbi_client_secret em Admin › Sistema › Parâmetros avançados.",
             )
 
         token_url = _resolve_token_url(cfg)
