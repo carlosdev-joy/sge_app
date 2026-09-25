@@ -9,8 +9,9 @@ import { Modal } from '../../ui/Modal'
 import { PageSpinner } from '../../ui/Spinner'
 import { toast } from '../../ui/Toast'
 import { queryClient } from '../../../lib/queryClient'
+import { adminPost } from '../comum'
 import { ConfirmModal } from '../ComumUI'
-import { Edit2, Trash2, Plus, Save, Bell, MessageSquare } from 'lucide-react'
+import { Edit2, Trash2, Plus, Save, Bell, MessageSquare, Webhook, X } from 'lucide-react'
 
 // ── Notificações Teams — Grupos (canais) + Modelos de card ───────────────────
 interface MsgGrupoRow { id: number; nome: string; descricao: string | null; has_webhook: boolean; ativo: boolean }
@@ -218,6 +219,136 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
   )
 }
 
+// ── Webhook padrão ──────────────────────────────────────────────
+// Decisão explícita da spec (docs/spec-admin-reestruturacao.md, F3): o botão
+// "Testar Webhook" (com o quadro de diagnóstico) ficava no topo de Sistema ›
+// Configurações (abas/ConfigTab.tsx), e as três URLs abaixo só se editavam
+// cruas na tabela genérica de lá. Agora vivem aqui, no FIM da aba Teams,
+// depois de Canais e Modelos de card — não devolver nem reordenar.
+//
+// São as URLs usadas FORA do catálogo de canais (api/routers/execucoes.py e
+// POST /admin/test-webhook). Gravação: nesta fase, pela action genérica
+// `config_upsert`; a F5 troca por action dedicada. O valor é URL com token:
+// a tela só diz se está preenchido (o config_list já devolve mascarado) e o
+// campo começa vazio — vazio = não altera (o config_upsert recusa valor vazio).
+const WEBHOOKS_PADRAO: { chave: string; rotulo: string; ajuda: string; semValor: string }[] = [
+  {
+    chave: 'teams_webhook_url', rotulo: 'Canal padrão', semValor: 'não configurado',
+    ajuda: 'Usado quando o campo específico abaixo está vazio: avisos de falha assumida ou resolvida e o teste.',
+  },
+  {
+    chave: 'teams_webhook_url_ack', rotulo: 'Falha assumida', semValor: 'vazio — usa o padrão',
+    ajuda: 'Card enviado quando alguém clica em Assumir numa falha. É também o destino do teste.',
+  },
+  {
+    chave: 'teams_webhook_url_resolved', rotulo: 'Falha resolvida', semValor: 'vazio — usa o padrão',
+    ajuda: 'Card enviado quando uma falha é marcada como resolvida.',
+  },
+]
+
+// Resposta do POST /admin/test-webhook (api/routers/admin.py::_test_webhook_impl).
+interface DiagWebhook { ok?: boolean; erro?: string; http_status?: number; [campo: string]: unknown }
+
+function WebhookPadraoCard() {
+  const [webhookDiag, setWebhookDiag] = useState<DiagWebhook | null>(null)
+  const [rascunho, setRascunho] = useState<Record<string, string>>({})
+
+  const cfgQ = useQuery<{ config: Record<string, string> }>({
+    queryKey: ['admin-config'],
+    queryFn: () => adminPost('config_list'),
+  })
+  const preenchido = (chave: string) => !!cfgQ.data?.config?.[chave]
+
+  const aGravar = WEBHOOKS_PADRAO
+    .map(w => ({ chave: w.chave, valor: (rascunho[w.chave] ?? '').trim() }))
+    .filter(w => w.valor !== '')
+  const invalidos = new Set(aGravar.filter(w => !w.valor.startsWith('https://')).map(w => w.chave))
+
+  const salvar = useMutation({
+    mutationFn: async () => {
+      for (const w of aGravar) await adminPost('config_upsert', { config_key: w.chave, config_value: w.valor })
+    },
+    onSuccess: () => {
+      toast.success(aGravar.length === 1 ? 'Webhook salvo' : 'Webhooks salvos')
+      setRascunho({})
+      queryClient.invalidateQueries({ queryKey: ['admin-config'] })
+    },
+    onError: (e: Error) => {
+      toast.error(e.message)
+      queryClient.invalidateQueries({ queryKey: ['admin-config'] })
+    },
+  })
+
+  const testWebhook = async () => {
+    setWebhookDiag(null)
+    try {
+      const d = await apiFetch<DiagWebhook>('/admin/test-webhook', { method: 'POST' })
+      if (d.ok) toast.success(`Card enviado (HTTP ${d.http_status}). Verifique o canal Teams.`)
+      else { toast.error(d.erro ?? 'Falha no webhook'); setWebhookDiag(d) }
+    } catch (e) { toast.error((e as Error).message) }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Webhook size={16} className="text-[#1A5FA8] dark:text-blue-400" />
+          <h2 className="text-sm font-bold text-ink">Webhook padrão</h2>
+        </div>
+        <Button variant="secondary" size="sm" onClick={testWebhook}>🔔 Testar Webhook</Button>
+      </div>
+
+      {webhookDiag && (
+        <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-red-700 dark:text-red-300">📋 Diagnóstico do Webhook</span>
+            <button onClick={() => setWebhookDiag(null)} className="text-red-400 hover:text-red-600"><X size={14} /></button>
+          </div>
+          <pre className="text-xs text-red-700 dark:text-red-300 overflow-auto max-h-48 whitespace-pre-wrap">{JSON.stringify(webhookDiag, null, 2)}</pre>
+        </div>
+      )}
+
+      <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-4">
+        <p className="text-xs text-dim">
+          URLs usadas fora dos canais acima: os avisos de falha assumida e resolvida e o teste deste botão.
+          Ficam ocultas depois de salvas; preencha só a que quiser trocar.
+        </p>
+        {cfgQ.isLoading ? <PageSpinner /> : (
+          <div className="flex max-w-3xl flex-col gap-4">
+            {WEBHOOKS_PADRAO.map(w => (
+              <div key={w.chave} className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-ink">{w.rotulo}</span>
+                  <code className="text-[11px] text-dim">{w.chave}</code>
+                  {preenchido(w.chave)
+                    ? <Badge value="success">configurado</Badge>
+                    : <Badge value={w.chave === 'teams_webhook_url' ? 'warning' : 'neutral'}>{w.semValor}</Badge>}
+                </div>
+                <Input
+                  aria-label={`${w.rotulo} (${w.chave})`}
+                  type="password"
+                  autoComplete="off"
+                  value={rascunho[w.chave] ?? ''}
+                  onChange={e => setRascunho(r => ({ ...r, [w.chave]: e.target.value }))}
+                  placeholder={preenchido(w.chave) ? '•••••• configurado — preencha para trocar' : 'https://… — preencha para configurar'}
+                  error={invalidos.has(w.chave) ? 'A URL do webhook começa com https://' : undefined}
+                  ajuda={w.ajuda}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex justify-end border-t border-edge pt-3">
+          <Button size="sm" onClick={() => salvar.mutate()} loading={salvar.isPending}
+            disabled={aGravar.length === 0 || invalidos.size > 0}>
+            <Save size={11} /> Salvar
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function NotificacoesTab() {
   const [grupoForm, setGrupoForm] = useState<{ open: boolean; grupo: MsgGrupoRow | null }>({ open: false, grupo: null })
   const [delGrupo, setDelGrupo] = useState<MsgGrupoRow | null>(null)
@@ -346,6 +477,9 @@ export function NotificacoesTab() {
           </div>
         )}
       </div>
+
+      {/* Seção 3 — Webhook padrão (veio de Configurações na F3; ver WebhookPadraoCard) */}
+      <WebhookPadraoCard />
 
       {grupoForm.open && <GrupoFormModal grupo={grupoForm.grupo} onClose={() => setGrupoForm({ open: false, grupo: null })} />}
       {tplForm.open && <TemplateFormModal template={tplForm.template} grupos={grupos} onClose={() => setTplForm({ open: false, template: null })} />}

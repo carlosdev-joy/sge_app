@@ -6,7 +6,8 @@ Admin, em "Perfis e Permissões" e no modal de permissões extras por usuário �
 e ambos desenham seus checkboxes a partir de uma segunda lista, escrita à mão:
 `RBAC_RECURSOS` em `ui-react/src/lib/rbacRecursos.ts` (até a F1 de
 docs/spec-admin-reestruturacao.md morava em `pages/Admin.tsx`), renderizada
-pela aba `components/admin/abas/UsuariosTab.tsx`.
+pelas abas `components/admin/abas/UsuariosTab.tsx` (modal de extras) e
+`components/admin/abas/PerfisTab.tsx` (matriz de perfis — separada na F3).
 
 Duas listas, mantidas em arquivos diferentes, sem nada prendendo uma à outra.
 Foi assim que `tela_chamados` (PR #307) subiu com a tela funcionando, a migration
@@ -40,6 +41,8 @@ NAV_TS = RAIZ / "ui-react" / "src" / "lib" / "nav.ts"
 # desde a F1 de docs/spec-admin-reestruturacao.md (extração do pages/Admin.tsx).
 RBAC_TS = RAIZ / "ui-react" / "src" / "lib" / "rbacRecursos.ts"
 USUARIOS_TSX = RAIZ / "ui-react" / "src" / "components" / "admin" / "abas" / "UsuariosTab.tsx"
+# Matriz de perfis: aba própria desde a F3 de docs/spec-admin-reestruturacao.md.
+PERFIS_TSX = RAIZ / "ui-react" / "src" / "components" / "admin" / "abas" / "PerfisTab.tsx"
 
 
 def _perms_do_nav() -> set[str]:
@@ -130,7 +133,7 @@ def _variavel_do_map_que_precede(fonte: str, marcador: str, janela: int = 600) -
     o `.map()` para `RBAC_RECURSOS` cru — só conferia a EXISTÊNCIA da
     `const`, nunca quem a consome)."""
     pos = fonte.find(marcador)
-    assert pos != -1, f"marcador {marcador!r} não encontrado em UsuariosTab.tsx — o JSX mudou de forma?"
+    assert pos != -1, f"marcador {marcador!r} não encontrado — o JSX mudou de forma?"
     trecho = fonte[max(0, pos - janela):pos]
     achados = re.findall(r"(RBAC_RECURSOS(?:_PERFIS)?)\.map\(", trecho)
     assert achados, (f"nenhum '<algo>.map(' encontrado nos {janela} caracteres antes de "
@@ -142,7 +145,7 @@ def test_matriz_de_perfis_RENDERIZA_com_RBAC_RECURSOS_PERFIS():
     """Lê o `.map()` que alimenta de verdade o bloco da matriz de perfis
     (ancorado em `togglePerm(p.perfil_nome`, exclusivo desse bloco) — não a
     definição da constante isolada."""
-    fonte = USUARIOS_TSX.read_text(encoding="utf-8")
+    fonte = PERFIS_TSX.read_text(encoding="utf-8")
     variavel = _variavel_do_map_que_precede(fonte, "togglePerm(p.perfil_nome")
     assert variavel == "RBAC_RECURSOS_PERFIS", (
         f"a matriz de perfis renderiza a partir de {variavel!r}, não de 'RBAC_RECURSOS_PERFIS' — "

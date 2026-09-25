@@ -14,10 +14,10 @@
 //     agentes_titulo_redigido_em é marca de migration).
 //   • Sem dono (ficam em Parâmetros avançados): app_*, dependencia_*, malha_*,
 //     espera_*, sql_preview_* e powerbi_* (nenhuma aba edita as credenciais do
-//     Power BI) e, até a F3, teams_* (a URL do webhook ainda é editada pelo
-//     editor genérico; o "Testar Webhook" só vem para Teams na F3). A busca
-//     acha teams_webhook_url pelas palavras-chave da aba Teams, e as órfãs pelas
-//     de Parâmetros avançados (palavra-chave terminada em "_" é prefixo).
+//     Power BI). A busca acha as órfãs pelas palavras-chave de Parâmetros
+//     avançados (palavra-chave terminada em "_" é prefixo).
+//   • teams_webhook_url* é da aba Teams desde a F3 (card "Webhook padrão");
+//     até a F5 ela ainda grava pela action genérica config_upsert.
 import { lazy } from 'react'
 import type { ComponentType, LazyExoticComponent } from 'react'
 
@@ -60,12 +60,28 @@ function carregar<T extends Record<string, unknown>>(imp: () => Promise<T>, nome
 
 export const ABAS_ADMIN: AbaAdmin[] = [
   // ── Acesso ──────────────────────────────────────────────────────────────
+  // F3: "Usuários & Perfis" virou as três abas abaixo (uma por bloco, na
+  // mesma ordem em que apareciam); o id antigo `usuarios` segue em Usuários.
   {
-    grupo: 'acesso', id: 'usuarios', rotulo: 'Usuários & Perfis', idsAntigos: ['usuarios'],
-    descricao: 'Usuários, perfis com suas permissões e o mapeamento de roles do Airflow para perfis.',
-    palavrasChave: ['usuário', 'perfil', 'permissão', 'rbac', 'role', 'acesso', 'senha', 'matrícula', 'login', 'airflow'],
+    grupo: 'acesso', id: 'usuarios', rotulo: 'Usuários', idsAntigos: ['usuarios'],
+    descricao: 'Perfil de cada usuário, permissões extras além do perfil e a identidade no gateway de IA.',
+    palavrasChave: ['usuário', 'matrícula', 'login', 'acesso', 'permissão extra', 'extras', 'identidade', 'gateway', 'conceder agente'],
     chavesConfig: [],
     componente: carregar(() => import('../components/admin/abas/UsuariosTab'), 'UsuariosTab'),
+  },
+  {
+    grupo: 'acesso', id: 'perfis', rotulo: 'Perfis e Permissões',
+    descricao: 'Perfis de acesso e as telas e ações que cada um libera.',
+    palavrasChave: ['perfil', 'permissão', 'rbac', 'acesso', 'tela', 'recurso', 'admin', 'operador', 'consulta'],
+    chavesConfig: [],
+    componente: carregar(() => import('../components/admin/abas/PerfisTab'), 'PerfisTab'),
+  },
+  {
+    grupo: 'acesso', id: 'roles-airflow', rotulo: 'Roles do Airflow',
+    descricao: 'Qual perfil do Orquestra cada role do Airflow recebe no login, por prioridade.',
+    palavrasChave: ['role', 'airflow', 'mapeamento', 'perfil', 'login', 'prioridade'],
+    chavesConfig: [],
+    componente: carregar(() => import('../components/admin/abas/RolesAirflowTab'), 'RolesAirflowTab'),
   },
   // ── Inteligência Artificial ─────────────────────────────────────────────
   {
@@ -96,13 +112,21 @@ export const ABAS_ADMIN: AbaAdmin[] = [
     ],
     componente: carregar(() => import('../components/admin/AgentesTab'), 'AgentesTab'),
   },
+  // F3: saiu de Integrações › ServiceNow (grava pelo mesmo servicenow_set).
+  {
+    grupo: 'ia', id: 'triagem', rotulo: 'Triagem de chamados',
+    descricao: 'Liga a triagem dos chamados do ServiceNow por IA e define quantos ela analisa por ciclo.',
+    palavrasChave: ['triagem', 'chamado', 'servicenow', 'fila', 'lote', 'ciclo', 'classificar'],
+    chavesConfig: ['chamados_triagem_'],
+    componente: carregar(() => import('../components/admin/abas/TriagemTab'), 'TriagemTab'),
+  },
   // ── Comunicação ─────────────────────────────────────────────────────────
   {
     grupo: 'comunicacao', id: 'teams', rotulo: 'Teams', idsAntigos: ['notificacoes'],
-    descricao: 'Canais do Teams (webhooks) e modelos de card usados pelo nó de notificação.',
-    // teams_webhook_url: achável pela busca, mas ainda sem dono (ver regra no topo).
-    palavrasChave: ['teams', 'webhook', 'card', 'canal', 'notificação', 'mensagem', 'teams_webhook_url', 'teams_'],
-    chavesConfig: [],
+    descricao: 'Canais e modelos de card do nó de notificação, e o webhook padrão com o teste de envio.',
+    palavrasChave: ['teams', 'webhook', 'card', 'canal', 'notificação', 'mensagem', 'testar webhook', 'falha assumida', 'falha resolvida'],
+    // Prefixo cobre as três: teams_webhook_url, _ack e _resolved (card "Webhook padrão", F3).
+    chavesConfig: ['teams_webhook_url'],
     componente: carregar(() => import('../components/admin/abas/NotificacoesTab'), 'NotificacoesTab'),
   },
   {
@@ -129,12 +153,11 @@ export const ABAS_ADMIN: AbaAdmin[] = [
   },
   {
     grupo: 'integracoes', id: 'servicenow', rotulo: 'ServiceNow', idsAntigos: ['servicenow'],
-    descricao: 'Credencial da integração com o ServiceNow, triagem de chamados e sonda de descoberta.',
-    palavrasChave: ['servicenow', 'chamado', 'incidente', 'sonda', 'diagnóstico', 'triagem', 'fila', 'grupo'],
+    descricao: 'Credencial executora da sincronização dos chamados e o diagnóstico de acesso às tabelas.',
+    palavrasChave: ['servicenow', 'chamado', 'incidente', 'sonda', 'diagnóstico', 'credencial', 'proxy', 'fila', 'grupo'],
     chavesConfig: [
       'servicenow_url', 'servicenow_usuario', 'servicenow_senha_enc', 'servicenow_grupos',
       'servicenow_habilitado', 'servicenow_proxy',
-      'chamados_triagem_', // vai para IA › Triagem de chamados na F3
     ],
     componente: carregar(() => import('../components/admin/abas/SondaServiceNowTab'), 'SondaServiceNowTab'),
   },
@@ -145,19 +168,15 @@ export const ABAS_ADMIN: AbaAdmin[] = [
     chavesConfig: ['utilitarios_'],
     componente: carregar(() => import('../components/admin/UtilitariosTab'), 'UtilitariosTab'),
   },
+  // F3: junta "Bancos do servidor" (em cima) e "Monitoramento de tabelas"
+  // (embaixo). `monitoramento` é o slug que a F2 publicou para a 2ª — link
+  // salvo /admin/integracoes/monitoramento redireciona para cá.
   {
-    grupo: 'integracoes', id: 'bancos', rotulo: 'Bancos do servidor', idsAntigos: ['servidor'],
-    descricao: 'Bancos do mesmo servidor SQL, listados com a credencial do Orquestra.',
-    palavrasChave: ['servidor', 'banco', 'database', 'sql server', 'tamanho'],
+    grupo: 'integracoes', id: 'bancos', rotulo: 'Bancos & Monitoramento', idsAntigos: ['servidor', 'monitor', 'monitoramento'],
+    descricao: 'Bancos do servidor SQL e o monitoramento de atualização e volume das tabelas importantes.',
+    palavrasChave: ['servidor', 'banco', 'database', 'sql server', 'tamanho', 'monitoramento', 'monitor', 'tabela', 'volume', 'alerta', 'atraso', 'snapshot'],
     chavesConfig: [],
-    componente: carregar(() => import('../components/admin/abas/ServidorTab'), 'ServidorTab'),
-  },
-  {
-    grupo: 'integracoes', id: 'monitoramento', rotulo: 'Monitoramento de tabelas', idsAntigos: ['monitor'],
-    descricao: 'Última atualização e volume diário das tabelas importantes, com alerta de atraso ou queda.',
-    palavrasChave: ['monitoramento', 'monitor', 'tabela', 'volume', 'alerta', 'atraso', 'snapshot'],
-    chavesConfig: [],
-    componente: carregar(() => import('../components/admin/abas/MonitoramentoTab'), 'MonitoramentoTab'),
+    componente: carregar(() => import('../components/admin/abas/BancosTab'), 'BancosTab'),
   },
   // ── Pipelines & Ambiente ────────────────────────────────────────────────
   {
@@ -427,7 +446,14 @@ export function lerUltimaAba(): string | null {
     if (!v) return null
     const partes = v.replace(/^\/admin\//, '')
     const d = interpretarCaminhoAdmin(partes)
-    return d.tipo === 'aba' ? caminhoDaAba(d.aba) : null
+    if (d.tipo === 'aba') return caminhoDaAba(d.aba)
+    // Aba que mudou de lugar (ex.: integracoes/monitoramento → integracoes/bancos
+    // na F3): segue o redirecionamento, desde que caia numa aba do admin.
+    if (d.tipo === 'redirecionar') {
+      const r = interpretarCaminhoAdmin(d.para.replace(/^\/admin\//, ''))
+      return r.tipo === 'aba' ? caminhoDaAba(r.aba) : null
+    }
+    return null
   } catch {
     return null
   }
