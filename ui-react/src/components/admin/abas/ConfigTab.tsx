@@ -1,16 +1,31 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../../../lib/api'
 import { Button } from '../../ui/Button'
 import { Input } from '../../ui/Input'
 import { PageSpinner } from '../../ui/Spinner'
+import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toast'
 import { queryClient } from '../../../lib/queryClient'
+import { agruparChavesOrfas, donoDaChave, ehChaveSensivel } from '../../../lib/adminNav'
 import { adminPost } from '../comum'
 import { ConfirmModal } from '../ComumUI'
-import { Trash2, Plus, Save, X, Workflow } from 'lucide-react'
+import { LinkAdmin } from '../LinkAdmin'
+import { Trash2, Plus, Save, X, Workflow, AlertTriangle, RotateCw } from 'lucide-react'
 
-// ── Configurações ───────────────────────────────────────────────
+// ── Sistema › Parâmetros avançados (F5 de docs/spec-admin-reestruturacao.md) ──
+// Mostra SÓ as chaves órfãs de etl_app_config — as que nenhuma aba grava pela
+// rota própria (donoDaChave === null no registro lib/adminNav.ts) —, agrupadas
+// por prefixo (GRUPOS_PARAMETROS). Chave com dono não aparece aqui; o backend
+// também recusa gravá-la por config_upsert/config_delete (422 com a aba dona,
+// api/services/admin_config_donos.py), e o toast mostra esse `detail`.
+//
+// Segredo (ehChaveSensivel — mesmos padrões do mask_secret do backend): o
+// config_list já devolve mascarado; o campo começa VAZIO, diz só se está
+// configurado, vazio = não altera. O valor mascarado nunca é reenviado (e o
+// backend recusa valor que comece com a máscara "••••").
+const MASCARA = '••••'
+
 export function ConfigTab() {
   const [editValues, setEditValues] = useState<Record<string, string>>({})
   const [savingKey, setSavingKey] = useState<string | null>(null)
@@ -19,7 +34,7 @@ export function ConfigTab() {
   const [newDesc, setNewDesc] = useState('')
   const [delKey, setDelKey] = useState<string | null>(null)
 
-  const { data, isLoading } = useQuery<{ config: Record<string, string> }>({
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery<{ config: Record<string, string> }>({
     queryKey: ['admin-config'],
     queryFn: () => adminPost('config_list'),
   })
@@ -34,23 +49,32 @@ export function ConfigTab() {
       setSavingKey(null)
       if (!data?.config[vars.config_key]) { setNewKey(''); setNewVal(''); setNewDesc('') }
     },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: Error) => { setSavingKey(null); toast.error(e.message) },
   })
 
   const deleteMut = useMutation({
     mutationFn: (config_key: string) => adminPost('config_delete', { config_key }),
     onSuccess: () => { toast.success('Parâmetro removido'); queryClient.invalidateQueries({ queryKey: ['admin-config'] }); setDelKey(null) },
-    onError: (e: any) => toast.error(e.message),
+    onError: (e: Error) => toast.error(e.message),
   })
 
-  const entries = Object.entries(data?.config ?? {})
+  const grupos = agruparChavesOrfas(data?.config ?? {})
+  // Segredo pelo nome OU pelo valor já mascarado (defesa se as listas divergirem).
+  const sensivel = (k: string, v: string) => ehChaveSensivel(k) || String(v ?? '').startsWith(MASCARA)
 
   const handleInlineSave = (key: string) => {
     const val = editValues[key]
-    if (val === undefined) return
+    if (val === undefined || val.startsWith(MASCARA)) return
     setSavingKey(key)
     upsertMut.mutate({ config_key: key, config_value: val })
   }
+
+  const donoNova = newKey.trim() ? donoDaChave(newKey) : null
+  // Mesma regra do backend (CHAVE_VALIDA em api/services/admin_config_donos.py):
+  // letra "de largura dupla" ou invisível casaria com a chave real no SQL Server
+  // e contornaria a trava por dono.
+  const chaveNovaInvalida = !!newKey.trim() && !/^[A-Za-z0-9_.-]{1,100}$/.test(newKey.trim())
+  const novaSensivel = ehChaveSensivel(newKey)
 
   return (
     <div className="flex flex-col gap-5">
@@ -58,49 +82,88 @@ export function ConfigTab() {
           direita desta frase. Decisão explícita da spec
           (docs/spec-admin-reestruturacao.md, F3): foi para o card "Webhook
           padrão" no fim de Comunicação › Teams (abas/NotificacoesTab.tsx). */}
-      <p className="text-sm text-dim">Parâmetros do sistema. Edite o valor na célula e clique em Salvar.</p>
+      <p className="text-sm text-dim">Edite o valor na célula e clique em Salvar. Segredos ficam ocultos: preencha só o que quiser trocar.</p>
 
-      {isLoading ? <PageSpinner /> : (
+      {isLoading ? (
+        <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm flex flex-col gap-3" aria-busy="true" aria-label="Carregando parâmetros">
+          <Skeleton className="h-3 w-24" />
+          {[0, 1, 2, 3, 4].map(i => (
+            <div key={i} className="flex gap-4"><Skeleton className="h-6 w-1/3" /><Skeleton className="h-6 flex-1" /></div>
+          ))}
+        </div>
+      ) : isError ? (
+        <div role="alert" className="flex flex-wrap items-start gap-3 p-4 rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20">
+          <AlertTriangle size={16} className="text-red-600 dark:text-red-400 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-red-700 dark:text-red-300">Não foi possível carregar os parâmetros.</p>
+            <p className="text-xs text-red-700 dark:text-red-300 break-words">{(error as Error)?.message}</p>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => refetch()} loading={isFetching}><RotateCw size={12} /> Tentar de novo</Button>
+        </div>
+      ) : (
         <div className="bg-panel border border-edge rounded-lg overflow-hidden shadow-sm">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-xs text-dim border-b border-edge bg-canvas/50">
-                <th className="px-4 py-2.5 text-left font-semibold w-1/3">Chave</th>
-                <th className="px-4 py-2.5 text-left font-semibold">Valor</th>
-                <th className="px-4 py-2.5 w-28"></th>
+                <th className="px-3 sm:px-4 py-2.5 text-left font-semibold w-2/5 sm:w-1/3">Chave</th>
+                <th className="px-2 sm:px-4 py-2.5 text-left font-semibold">Valor</th>
+                <th className="px-3 sm:px-4 py-2.5 w-px" aria-label="Ações"></th>
               </tr>
             </thead>
             <tbody>
-              {entries.map(([k, v]) => {
-                const current = editValues[k] !== undefined ? editValues[k] : v
-                const isDirty = editValues[k] !== undefined && editValues[k] !== v
-                const isSaving = savingKey === k && upsertMut.isPending
-                return (
-                  <tr key={k} className="border-b border-edge/50 hover:bg-canvas/50 transition-colors">
-                    <td className="px-4 py-2"><span className="font-mono text-xs text-[#1A5FA8] dark:text-blue-400">{k}</span></td>
-                    <td className="px-4 py-2">
-                      <input
-                        value={current}
-                        onChange={e => setEditValues(prev => ({ ...prev, [k]: e.target.value }))}
-                        onKeyDown={e => { if (e.key === 'Enter' && isDirty) handleInlineSave(k) }}
-                        className="w-full font-mono text-xs text-ink bg-transparent border border-transparent rounded px-2 py-1 hover:border-edge focus:border-[#1A5FA8] focus:ring-1 focus:ring-[#1A5FA8]/30 focus:outline-none transition-colors"
-                      />
-                    </td>
-                    <td className="px-4 py-2">
-                      <div className="flex items-center gap-1 justify-end">
-                        {isDirty && (
-                          <>
-                            <button onClick={() => setEditValues(prev => { const n = { ...prev }; delete n[k]; return n })} className="text-slate-400 hover:text-slate-600 dark:hover:text-dim p-1 rounded" title="Descartar"><X size={12} /></button>
-                            <Button size="sm" onClick={() => handleInlineSave(k)} loading={isSaving}><Save size={11} /> Salvar</Button>
-                          </>
-                        )}
-                        <button onClick={() => setDelKey(k)} className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded" title="Excluir parâmetro"><Trash2 size={13} /></button>
-                      </div>
-                    </td>
+              {grupos.map(g => (
+                <Fragment key={g.rotulo}>
+                  <tr className="border-b border-edge/50">
+                    <th scope="colgroup" colSpan={3} className="px-3 sm:px-4 pt-4 pb-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-dim">{g.rotulo}</th>
                   </tr>
-                )
-              })}
-              {entries.length === 0 && <tr><td colSpan={3} className="px-4 py-6 text-center text-xs text-dim">Nenhuma configuração encontrada.</td></tr>}
+                  {g.chaves.map(([k, v]) => {
+                    const oculto = sensivel(k, v)
+                    const rascunho = editValues[k]
+                    const current = rascunho !== undefined ? rascunho : (oculto ? '' : v)
+                    const isDirty = oculto
+                      ? rascunho !== undefined && rascunho.trim() !== ''
+                      : rascunho !== undefined && rascunho !== v
+                    const isSaving = savingKey === k && upsertMut.isPending
+                    return (
+                      <tr key={k} className="border-b border-edge/50 hover:bg-canvas/50 transition-colors">
+                        <td className="px-3 sm:px-4 py-2 align-middle">
+                          {/* <wbr> depois de cada "_": no celular a chave quebra na
+                              fronteira do nome, não no meio da palavra. */}
+                          <span className="font-mono text-xs text-[#1A5FA8] dark:text-blue-400">
+                            {k.split('_').map((parte, i, todas) => (
+                              <Fragment key={i}>{parte}{i < todas.length - 1 && <>_<wbr /></>}</Fragment>
+                            ))}
+                          </span>
+                        </td>
+                        <td className="px-2 sm:px-4 py-2">
+                          <input
+                            aria-label={`Valor de ${k}`}
+                            value={current}
+                            type={oculto ? 'password' : 'text'}
+                            autoComplete={oculto ? 'new-password' : 'off'}
+                            placeholder={oculto ? (v ? `${MASCARA} configurado — preencha para trocar` : 'não configurado — preencha para configurar') : undefined}
+                            onChange={e => setEditValues(prev => ({ ...prev, [k]: e.target.value }))}
+                            onKeyDown={e => { if (e.key === 'Enter' && isDirty) handleInlineSave(k) }}
+                            className="w-full min-w-0 font-mono text-xs text-ink placeholder:font-sans placeholder:text-dim bg-transparent border border-transparent rounded px-2 py-1 hover:border-edge focus:border-[#1A5FA8] focus:ring-1 focus:ring-[#1A5FA8]/30 focus:outline-none transition-colors"
+                          />
+                        </td>
+                        <td className="pl-1 pr-3 sm:px-4 py-2">
+                          <div className="flex items-center gap-1 justify-end whitespace-nowrap">
+                            {isDirty && (
+                              <>
+                                <button onClick={() => setEditValues(prev => { const n = { ...prev }; delete n[k]; return n })} className="text-slate-400 hover:text-slate-600 dark:hover:text-dim p-1 rounded" title="Descartar" aria-label={`Descartar alteração de ${k}`}><X size={12} /></button>
+                                <Button size="sm" onClick={() => handleInlineSave(k)} loading={isSaving}><Save size={11} /> Salvar</Button>
+                              </>
+                            )}
+                            <button onClick={() => setDelKey(k)} className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded" title="Excluir parâmetro" aria-label={`Excluir ${k}`}><Trash2 size={13} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </Fragment>
+              ))}
+              {grupos.length === 0 && <tr><td colSpan={3} className="px-4 py-6 text-center text-xs text-dim">Nenhuma chave sem tela própria.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -110,10 +173,24 @@ export function ConfigTab() {
         <h3 className="text-xs font-semibold text-dim uppercase tracking-wider mb-3">Adicionar Parâmetro</h3>
         <div className="flex flex-wrap gap-3 items-end">
           <Input label="Chave" value={newKey} onChange={e => setNewKey(e.target.value)} className="w-44" placeholder="NOME_CHAVE" />
-          <Input label="Valor" value={newVal} onChange={e => setNewVal(e.target.value)} className="w-52" />
+          <Input label="Valor" value={newVal} onChange={e => setNewVal(e.target.value)} className="w-52"
+            type={novaSensivel ? 'password' : 'text'} autoComplete={novaSensivel ? 'new-password' : 'off'} />
           <Input label="Descrição (opcional)" value={newDesc} onChange={e => setNewDesc(e.target.value)} className="w-56" />
-          <Button onClick={() => upsertMut.mutate({ config_key: newKey, config_value: newVal, descricao: newDesc || undefined })} loading={upsertMut.isPending && !savingKey} disabled={!newKey || !newVal}><Plus size={13} /> Adicionar</Button>
+          <Button onClick={() => upsertMut.mutate({ config_key: newKey.trim(), config_value: newVal, descricao: newDesc || undefined })} loading={upsertMut.isPending && !savingKey} disabled={!newKey.trim() || !newVal || !!donoNova || chaveNovaInvalida}><Plus size={13} /> Adicionar</Button>
         </div>
+        {/* Chave com dono: o backend recusaria (422); aqui a pessoa já vê
+            para onde ir, com o link da aba dona. */}
+        {chaveNovaInvalida && (
+          <p role="status" className="mt-3 text-xs text-ink">
+            Use só letras sem acento, números, <code className="font-mono">_ . -</code> na chave (até 100 caracteres).
+          </p>
+        )}
+        {donoNova && (
+          <p role="status" className="mt-3 text-xs text-ink">
+            A chave <code className="font-mono">{newKey.trim()}</code> é gerida em{' '}
+            <LinkAdmin grupo={donoNova.grupo} aba={donoNova.id} />.
+          </p>
+        )}
       </div>
 
       {/* Configurações de fluxo — vieram da aba NOTIFICAÇÕES, onde estavam

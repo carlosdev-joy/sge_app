@@ -227,10 +227,12 @@ function TemplateFormModal({ template, grupos, onClose }: { template: MsgTemplat
 // depois de Canais e Modelos de card — não devolver nem reordenar.
 //
 // São as URLs usadas FORA do catálogo de canais (api/routers/execucoes.py e
-// POST /admin/test-webhook). Gravação: nesta fase, pela action genérica
-// `config_upsert`; a F5 troca por action dedicada. O valor é URL com token:
+// POST /admin/test-webhook). Gravação (F5): action própria `teams_webhook_set`
+// — a genérica `config_upsert` recusa chave com dono. O valor é URL com token:
 // a tela só diz se está preenchido (o config_list já devolve mascarado) e o
-// campo começa vazio — vazio = não altera (o config_upsert recusa valor vazio).
+// campo começa vazio — vazio = não altera. "Limpar" é explícito (`limpar`):
+// volta o campo a vazio, que nas duas específicas quer dizer "usa o padrão" —
+// antes da F5 isso se fazia excluindo a chave no editor genérico.
 const WEBHOOKS_PADRAO: { chave: string; rotulo: string; ajuda: string; semValor: string }[] = [
   {
     chave: 'teams_webhook_url', rotulo: 'Canal padrão', semValor: 'não configurado',
@@ -252,6 +254,7 @@ interface DiagWebhook { ok?: boolean; erro?: string; http_status?: number; [camp
 function WebhookPadraoCard() {
   const [webhookDiag, setWebhookDiag] = useState<DiagWebhook | null>(null)
   const [rascunho, setRascunho] = useState<Record<string, string>>({})
+  const [aLimpar, setALimpar] = useState<(typeof WEBHOOKS_PADRAO)[number] | null>(null)
 
   const cfgQ = useQuery<{ config: Record<string, string> }>({
     queryKey: ['admin-config'],
@@ -266,7 +269,7 @@ function WebhookPadraoCard() {
 
   const salvar = useMutation({
     mutationFn: async () => {
-      for (const w of aGravar) await adminPost('config_upsert', { config_key: w.chave, config_value: w.valor })
+      await adminPost('teams_webhook_set', { valores: Object.fromEntries(aGravar.map(w => [w.chave, w.valor])) })
     },
     onSuccess: () => {
       toast.success(aGravar.length === 1 ? 'Webhook salvo' : 'Webhooks salvos')
@@ -277,6 +280,15 @@ function WebhookPadraoCard() {
       toast.error(e.message)
       queryClient.invalidateQueries({ queryKey: ['admin-config'] })
     },
+  })
+
+  const limpar = useMutation({
+    mutationFn: (chave: string) => adminPost('teams_webhook_set', { limpar: [chave] }),
+    onSuccess: () => {
+      toast.success('Webhook limpo')
+      queryClient.invalidateQueries({ queryKey: ['admin-config'] })
+    },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const testWebhook = async () => {
@@ -323,6 +335,12 @@ function WebhookPadraoCard() {
                   {preenchido(w.chave)
                     ? <Badge value="success">configurado</Badge>
                     : <Badge value={w.chave === 'teams_webhook_url' ? 'warning' : 'neutral'}>{w.semValor}</Badge>}
+                  {preenchido(w.chave) && (
+                    <button type="button" onClick={() => setALimpar(w)} disabled={limpar.isPending} aria-label={`Limpar ${w.rotulo}`}
+                      className="ml-auto text-[11px] text-dim hover:text-red-600 dark:hover:text-red-400 underline underline-offset-2 rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1A5FA8] disabled:opacity-50">
+                      Limpar
+                    </button>
+                  )}
                 </div>
                 <Input
                   aria-label={`${w.rotulo} (${w.chave})`}
@@ -345,6 +363,17 @@ function WebhookPadraoCard() {
           </Button>
         </div>
       </div>
+
+      <ConfirmModal
+        open={!!aLimpar}
+        title="Limpar webhook"
+        message={aLimpar?.chave === 'teams_webhook_url'
+          ? 'Limpar o canal padrão? Os avisos que dependem dele e o teste deixam de ser enviados até configurar outro.'
+          : `Limpar "${aLimpar?.rotulo}"? Os cards passam a ir para o canal padrão.`}
+        danger confirmLabel="Limpar"
+        onConfirm={() => aLimpar && limpar.mutate(aLimpar.chave)}
+        onCancel={() => setALimpar(null)}
+      />
     </div>
   )
 }

@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from db import get_db_conn
+from services.admin_config_donos import eh_chave_sensivel
 from deps import (
     PERM_EDITAR,
     get_current_user, get_admin_user, require_perm,
@@ -58,12 +59,11 @@ SENSITIVE_CONFIG_KEYS = {"teams_webhook_url", "powerbi_client_secret"}
 
 
 def _is_sensitive_config(key: str) -> bool:
-    """Webhooks (teams_webhook_*), segredos do Power BI e chaves listadas não vazam no /config público."""
-    return (
-        key in SENSITIVE_CONFIG_KEYS
-        or key.startswith("teams_webhook")
-        or key == "powerbi_client_secret"
-    )
+    """Segredo não vaza no /config público (sem login). Usa os MESMOS padrões
+    da máscara do Admin (services/admin_config_donos.PADROES_SEGREDO): a lista
+    própria que existia aqui ficou para trás e deixava sair servicenow_senha_enc
+    e ia_api_key_enc (auditoria de segurança da F5 do admin)."""
+    return key in SENSITIVE_CONFIG_KEYS or eh_chave_sensivel(key)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
