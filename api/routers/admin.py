@@ -154,7 +154,9 @@ def _get_app_config_value(key: str) -> str | None:
 
 def _recusar_chave_com_dono(chave) -> None:
     """422 nomeando a aba dona — o front mostra o `detail` como veio."""
-    k = str(chave or "").strip()
+    # Não-string (ex.: 123 no JSON) também é chave inválida — o handler faz
+    # .strip() e estourava 500 com a conexão aberta.
+    k = chave.strip() if isinstance(chave, str) else ""
     if not CHAVE_VALIDA.match(k):
         raise HTTPException(
             status_code=422,

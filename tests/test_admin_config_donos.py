@@ -372,6 +372,7 @@ def test_segredo_orfao_sai_mascarado(admin_client, banco):
     "teams＿webhook_url",        # underscore fullwidth
     "email remetente",               # espaço no meio
     "x" * 101,
+    123,                             # não-string: dava 500 no .strip() do handler
 ])
 @pytest.mark.parametrize("action", ["config_upsert", "config_delete"])
 def test_chave_fora_do_ascii_e_recusada_antes_do_banco(admin_client, banco, chave, action):
