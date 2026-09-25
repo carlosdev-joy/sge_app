@@ -72,6 +72,10 @@ export const ABAS_ADMIN: AbaAdmin[] = [
     grupo: 'ia', id: 'provedor', rotulo: 'Provedor', idsAntigos: ['ia'],
     descricao: 'Provedor, modelo e chave de API compartilhados pelo Maestro, pela triagem e pelos agentes.',
     palavrasChave: ['ia', 'llm', 'modelo', 'anthropic', 'claude', 'openai', 'gateway', 'api key', 'chave de api', 'proxy', 'assistente'],
+    // `caixa_ia_*` são as chaves LEGADAS que o `ia_set` espelha (F0 da spec de
+    // agentes; limpeza só na F0b). Declará-las aqui não é código novo de IA com
+    // nome "caixa": é o que impede o editor genérico de gravar só no espelho e
+    // dessincronizá-lo das `ia_*`. Sai junto com as chaves na F0b.
     chavesConfig: ['ia_', 'caixa_ia_'],
     componente: carregar(() => import('../components/admin/abas/IATab'), 'IATab'),
   },
