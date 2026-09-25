@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/queryClient'
@@ -6,7 +7,6 @@ import { NAV, canAccess, firstVisiblePath } from './lib/nav'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { AppShellV2 } from './components/layout/AppShellV2'
 import Login from './pages/Login'
-import Admin from './pages/Admin'
 import Malha from './pages/Malha'
 import Governanca from './pages/Governanca'
 import ImpactoCampo from './pages/ImpactoCampo'
@@ -34,6 +34,11 @@ import Portabilidades from './caixa/pages/Portabilidades'
 import PainelIA from './caixa/pages/PainelIA'
 import Acompanhamento from './caixa/pages/Acompanhamento'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
+import { PageSpinner } from './components/ui/Spinner'
+
+// Admin sob demanda (docs/spec-admin-reestruturacao.md, F2): antes entrava no
+// bundle principal com as 24 abas; agora a casca é um chunk e cada aba outro.
+const Admin = lazy(() => import('./pages/Admin'))
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -95,7 +100,7 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/finalizacao': <Finalizacao />,
   '/caixa-seguro': <CaixaSeguroFallback />,
   '/agentes': <Agentes />,
-  '/admin': <Admin />,
+  '/admin': <Suspense fallback={<PageSpinner />}><Admin /></Suspense>,
 }
 
 // Rotas que agrupam navegação interna por estado (abas) e precisam casar

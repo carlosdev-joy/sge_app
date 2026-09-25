@@ -209,6 +209,10 @@ def test_caixa_ia_so_citado_onde_e_esperado():
         "tests/test_agentes_rota.py",
         # F2: o mesmo dublê de cursor, agora no teste do endpoint de conversa.
         "tests/test_agentes_conversar_rota.py",
+        # F2 de docs/spec-admin-reestruturacao.md: o registro do Admin declara
+        # que as chaves legadas caixa_ia_* (espelhadas pelo ia_set) são da aba
+        # IA › Provedor — é dado de posse de chave, não código novo de IA.
+        "ui-react/src/lib/adminNav.ts",
     }
     inesperado = sorted(set(fora) - esperado_fora)
     assert inesperado == [], (

@@ -49,7 +49,7 @@ GRAFO = FRONT / "components" / "agentes" / "GrafoJobAgente.tsx"
 LIB = FRONT / "lib" / "agentes.ts"
 ADMIN_TAB = FRONT / "components" / "admin" / "AgentesTab.tsx"
 APP = FRONT / "App.tsx"
-ADMIN = FRONT / "pages" / "Admin.tsx"
+ADMIN_NAV = FRONT / "lib" / "adminNav.ts"
 
 ARQUIVOS_DA_TELA = [PAGINA, CHAT, AVISO, GRAFO,
                     FRONT / "components" / "agentes" / "IndicadorProjeto.tsx",
@@ -91,12 +91,15 @@ def test_item_do_menu_continua_pedindo_tela_agentes():
 
 
 def test_aba_do_admin_registrada():
-    fonte = ler(ADMIN)
-    assert "import { AgentesTab }" in fonte
-    assert re.search(r"\{\s*id:\s*'agentes',\s*label:\s*'Agentes'\s*\}", fonte), \
-        "a aba 'agentes' não está em ADMIN_GROUPS"
-    assert re.search(r"tab\s*===\s*'agentes'\s*&&\s*<AgentesTab\s*/>", fonte), \
-        "a aba 'agentes' não é renderizada"
+    # Desde a F2 de docs/spec-admin-reestruturacao.md as abas moram no registro
+    # central (lib/adminNav.ts): a entrada existe no grupo IA, com o rótulo
+    # "Agentes", e é ela que carrega (lazy) o componente AgentesTab — é o que
+    # faz a aba aparecer no sub-menu E renderizar em /admin/ia/agentes.
+    fonte = ler(ADMIN_NAV)
+    entrada = re.search(r"\{\s*grupo:\s*'ia',\s*id:\s*'agentes',\s*rotulo:\s*'Agentes'.*?\n  \},", fonte, re.S)
+    assert entrada, "a aba 'agentes' não está no registro, no grupo 'ia'"
+    assert re.search(r"import\('\.\./components/admin/AgentesTab'\),\s*'AgentesTab'", entrada.group(0)), \
+        "a entrada 'agentes' não renderiza AgentesTab"
 
 
 # ═══════════ 2. critério 3 — cadastro × gateway indisponível ═════════════
