@@ -16,9 +16,10 @@
 # O que é automatizável vira checagem com ✓/✗; o que precisa de olho humano
 # (clicar, F5, Sheet no celular) sai no fim como o checklist letrado da §8.
 #
-# Não grava nada: as duas tentativas de escrita (config_upsert/config_delete de
-# chave com dono) são RECUSADAS antes de abrir conexão com o banco — é
-# exatamente isso que se confere. Requer curl e python3.
+# Não grava nada, em NENHUM ambiente: as sondas de config_upsert vão com valor
+# vazio (recusadas com ou sem a F5) e o config_delete só é tentado depois de
+# provar que a trava está ativa, e numa chave que não existe. Requer curl e
+# python3.
 # =============================================================================
 set -uo pipefail
 
@@ -104,20 +105,39 @@ _info "${N_SENS:-0} chave(s) sensível(is) com valor conferida(s)"
 [ "${N_SENS:-0}" = "0" ] && _info "⚠ nenhuma chave sensível preenchida neste ambiente — a checagem acima não exercitou a máscara"
 
 # ── 4. Trava de escrita da F5: chave com dono → 422 ──────────────────────────
+# SEGURO EM QUALQUER AMBIENTE (achado do QA da F6): as sondas de upsert vão com
+# config_value VAZIO. Com a F5, a trava recusa pela chave ("gerida em…" /
+# "Chave inválida") antes de abrir o banco; SEM a F5 (API antiga, deploy
+# parcial), o backend recusa por "config_value obrigatório" — também sem
+# gravar. O config_delete (que a API antiga executaria de verdade) só é
+# tentado depois que a sonda PROVA que a trava está ativa.
 echo
 echo "[4] Editor genérico recusa chave que tem aba dona (422, sem tocar o banco)"
-HTTP=$(_admin '{"action":"config_upsert","config_key":"email_remetente","config_value":"smoke@exemplo.invalid"}' "$TMP/u1.json")
+HTTP=$(_admin '{"action":"config_upsert","config_key":"email_remetente","config_value":""}' "$TMP/u1.json")
 DET=$(_json "$TMP/u1.json" "d.get('detail','')")
+TRAVA_ATIVA=""
+[ "$HTTP" = "422" ] && [[ "$DET" == *"Comunicação › E-mail"* ]] && TRAVA_ATIVA=1
 _checar "config_upsert email_remetente → 422 citando Comunicação › E-mail" \
-        "$([ "$HTTP" = "422" ] && [[ "$DET" == *"Comunicação › E-mail"* ]] && echo ok)" "HTTP $HTTP — $DET"
-HTTP=$(_admin '{"action":"config_delete","config_key":"email_remetente"}' "$TMP/u2.json")
-_checar "config_delete email_remetente → 422" "$([ "$HTTP" = "422" ] && echo ok)" "HTTP $HTTP — $(_json "$TMP/u2.json" "d.get('detail','')")"
-HTTP=$(_admin '{"action":"config_upsert","config_key":"teams_webhook_url","config_value":"https://exemplo.invalid"}' "$TMP/u3.json")
-_checar "config_upsert teams_webhook_url → 422 (dono: Teams)" "$([ "$HTTP" = "422" ] && echo ok)" "HTTP $HTTP — $(_json "$TMP/u3.json" "d.get('detail','')")"
+        "$([ -n "$TRAVA_ATIVA" ] && echo ok)" "HTTP $HTTP — $DET"
+if [ -n "$TRAVA_ATIVA" ]; then
+    # Com a trava provada, o delete é recusado antes do banco. Chave com dono
+    # que NÃO existe em nenhum ambiente: mesmo num cenário imprevisto, nada some.
+    HTTP=$(_admin '{"action":"config_delete","config_key":"email_smoke_inexistente"}' "$TMP/u2.json")
+    _checar "config_delete de chave com dono → 422" "$([ "$HTTP" = "422" ] && echo ok)" "HTTP $HTTP — $(_json "$TMP/u2.json" "d.get('detail','')")"
+else
+    TOTAL=$((TOTAL + 1)); _falha "config_delete de chave com dono → NÃO testado"
+    _info "a trava da F5 não respondeu na sonda acima — esta API não tem a F5 (deploy parcial?); o delete não é tentado para não apagar nada"
+fi
+HTTP=$(_admin '{"action":"config_upsert","config_key":"teams_webhook_url","config_value":""}' "$TMP/u3.json")
+DET=$(_json "$TMP/u3.json" "d.get('detail','')")
+_checar "config_upsert teams_webhook_url → 422 (dono: Teams)" \
+        "$([ "$HTTP" = "422" ] && [[ "$DET" == *"Teams"* ]] && echo ok)" "HTTP $HTTP — $DET"
 # "ｅmail_remetente" com o ｅ FULLWIDTH (U+FF45): no SQL Server casaria com a
 # linha verdadeira; a API recusa chave fora de [A-Za-z0-9_.-].
-HTTP=$(_admin '{"action":"config_upsert","config_key":"ｅmail_remetente","config_value":"smoke@exemplo.invalid"}' "$TMP/u4.json")
-_checar "chave com caractere fullwidth → 422" "$([ "$HTTP" = "422" ] && echo ok)" "HTTP $HTTP — $(_json "$TMP/u4.json" "d.get('detail','')")"
+HTTP=$(_admin '{"action":"config_upsert","config_key":"ｅmail_remetente","config_value":""}' "$TMP/u4.json")
+DET=$(_json "$TMP/u4.json" "d.get('detail','')")
+_checar "chave com caractere fullwidth → 422 (Chave inválida)" \
+        "$([ "$HTTP" = "422" ] && [[ "$DET" == *"Chave inválida"* ]] && echo ok)" "HTTP $HTTP — $DET"
 HTTP=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$ORQ_API/admin" -H 'Content-Type: application/json' \
             --data '{"action":"config_list"}' 2>/dev/null || echo "000")
 _checar "POST /admin sem sessão → 401" "$([ "$HTTP" = "401" ] && echo ok)" "HTTP $HTTP"

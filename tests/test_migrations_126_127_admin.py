@@ -149,3 +149,21 @@ def test_smoke_usa_os_mesmos_padroes_de_segredo_do_backend():
     assert smoke.count("$SEGREDO") == 3 and "'_enc')" not in smoke.replace(linha, "")
     # senha só pelo ambiente: toda atribuição é placeholder ou repasse da variável
     assert set(re.findall(r"ORQ_SENHA=(\S+)", smoke)) <= {"'…'", "…", '"$ORQ_SENHA"'}
+
+
+def test_smoke_admin_nao_grava_nem_sem_a_f5():
+    """Achado do QA da F6: contra uma API SEM a trava (produção antes do deploy,
+    deploy parcial), o smoke gravava de verdade — trocava o webhook do Teams e
+    apagava o remetente de e-mail. Toda sonda de config_upsert vai com valor
+    VAZIO (a API antiga recusa por "obrigatório", sem gravar) e o config_delete
+    só roda dentro do bloco que exige a trava provada."""
+    import re as _re
+    fonte = (Path(__file__).resolve().parents[1] / "scripts" / "smoke_admin.sh").read_text(encoding="utf-8")
+    upserts = _re.findall(r'"action":"config_upsert"[^}]*\}', fonte)
+    assert upserts, "o smoke deveria sondar config_upsert"
+    for u in upserts:
+        assert '"config_value":""' in u, f"sonda de escrita com valor real: {u}"
+    deletes = [m.start() for m in _re.finditer(r'"action":"config_delete"', fonte)]
+    guarda = fonte.index('if [ -n "$TRAVA_ATIVA" ]; then')
+    fim = fonte.index("\nfi\n", guarda)
+    assert deletes and all(guarda < d < fim for d in deletes), "config_delete fora do bloco guardado pela trava"

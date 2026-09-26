@@ -106,7 +106,7 @@ SELECT config_value FROM dbo.etl_app_config WHERE config_key = 'app_version';   
 SELECT COUNT(*) FROM dbo.etl_backlog WHERE tags = N'admin-reestruturacao';      -- 10
 ```
 
-**Smoke automatizado** (só leitura e recusas; senha pelo ambiente):
+**Smoke automatizado** (só leitura e recusas — seguro mesmo contra uma API sem a F5: as sondas de escrita vão com valor vazio e o delete só roda com a trava provada; senha pelo ambiente):
 
 ```bash
 ORQ_API=https://<servidor>/orquestra ORQ_UI=https://<servidor> \
