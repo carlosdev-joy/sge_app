@@ -1,5 +1,5 @@
 # Spec: Reestruturação do Admin — Orquestra
-Data: 2026-09-24 · Status: aprovada (execução autônoma QA→PR→merge até 100%)
+Data: 2026-09-24 · Status: concluída (F1–F6; ver §10 Execução)
 
 ## 1. Visão
 O Admin (`/admin`) cresceu por acréscimo até chegar a **24 abas em 4 grupos**, quase todas num único
@@ -303,3 +303,41 @@ na etapa 6c do `deploy.sh`. Ela registra a versão da entrega.
 2. **SLA em `/performance`:** seção no fim da tela, sem reordenar nada.
 3. **FlowConfigSection:** fica no fim de Parâmetros avançados (mantém decisão de 11/09).
 4. **Pendências → Backlog de PRODUÇÃO via migration** idempotente (não mais na memória). Vale para toda pendência identificada daqui em diante no Orquestra.
+
+## 10. Execução
+| Fase | PR | Entrega |
+|---|---|---|
+| F1 | #449 | Extração mecânica: `Admin.tsx` de 4.255 para 129 linhas, uma aba por arquivo |
+| F2 | #450 | `lib/adminNav.ts` + `AdminShell`: sub-menu, busca, link por aba, lazy, última aba, Sheet < 1024 px |
+| F3 | #451 | Acesso em 3 abas, Triagem em IA, Diagnóstico em ServiceNow, webhook padrão em Teams, Bancos & Monitoramento |
+| F4 | #452 | SLA em `/performance`, guia em `/powerbi`, Fluxo DS removida, migalhas viram `<LinkAdmin>`, MANUAL |
+| F5 | #453 | Parâmetros avançados só com órfãs + trava 422 de chave com dono no backend |
+| F6 | F6 (esta PR) | ⌘K "Administração", migrations 126 (versão 2.4.0) e 127 (backlog), `scripts/smoke_admin.sh`, release note `docs/release-notes/admin-reestruturacao.md` |
+
+**Achados de QA/segurança, por fase (todos corrigidos na própria PR):**
+- **F1:** nenhum defeito; 24 abas com `innerText` e nº de elementos idênticos antes/depois no DEV.
+- **F2 (2 rodadas):** a troca div × Fragment ao cruzar 1024 px desmontava a aba e apagava o digitado; `/admin` → última
+  aba devolvia `null` e desmontava a casca; chaves avulsas (`servicenow_admin_perfis`) não eram achadas; prefixo da
+  família abria Parâmetros avançados em vez da aba dona; redirect roubava o foco.
+- **F3:** textos em outras telas, na DAG de sync e nas notificações ainda citavam "Admin > Configurações"/"Admin >
+  ServiceNow"; o Chrome oferecia a senha de login nos campos do webhook.
+- **F4:** mensagens da API e do worker com o caminho velho ("Admin › Utilitários") — normalizadas e presas por teste,
+  com exceção de `etl_dag_factory.py`/`dags/generated` (exige republicar → Backlog d).
+- **F5 (QA + auditoria de segurança, 2 rodadas):** chave *fullwidth*/BOM/NUL contornava a trava (casava no SQL Server
+  CI_AS) → só ASCII; `GET /config` público devolvia `servicenow_senha_enc` e `ia_api_key_enc` → padrões de segredo
+  em fonte única; o proxy de dagRuns deixava qualquer executor disparar `etl_admin_manage` como admin → só admin;
+  `config_upsert` ecoava o valor; `config_key` não-string dava 500.
+- **F6:** ⌘K reusa a busca do registro (`atalhosDaPaleta`), sem lógica duplicada; migrations aplicadas 2× no DEV sem
+  duplicar (versão 2.4.0; 10 itens de backlog).
+
+**Pendências → Backlog de produção** (migration `127_backlog_admin_reestruturacao.sql`, tag `admin-reestruturacao`):
+- a. [bug/backend/P2] `servicenow.url_valida` aceita outro host via `#`/`?` e a senha vai por Basic auth.
+- b. [debt/backend/P2] `/admin/test-webhook`: allowlist de hosts do Teams/Power Automate; sem `url_usada` (`sig`) nem traceback.
+- c. [bug/backend/P2] DAG `etl_admin_manage` confia em `conf.requested_by` (rerun por `clearTaskInstances`, role Op).
+- d. [debt/datastage/P3] DAGs geradas citam "Admin > Acessos e Comunicacao > Notificacoes" — republicar e tirar a exceção do teste.
+- e. [feature/frontend/P3] RBAC por aba (OUT §2).
+- f. [debt/frontend/P3] Concessão de agente em dois lugares via `user_perm_set` (OUT §2).
+- g. [bug/frontend/P3] Clicar "Admin" na sidebar dentro de uma aba empilha entrada no histórico.
+- h. [bug/frontend/P3] Chunk do Admin removido por deploy cai no ErrorBoundary global com erro cru.
+- i. [bug/frontend/P3] Badge "Canal padrão: não configurado" ignora a env `TEAMS_WEBHOOK_URL_CVP`.
+- j. [debt/backend/P3] `servicenow_proxy` em claro e aceitando `usuário:senha@`.

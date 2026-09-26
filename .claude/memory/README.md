@@ -23,6 +23,7 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 ## Regras gerais, ambiente de DEV e gotchas
 - [Preferência de idioma: português](preferencia-idioma-portugues.md) — sempre responder em pt-BR
 - [Biblioteca de Skills](biblioteca-skills.md) — 11 skills + 2 agents globais em ~/.claude
+- [⚠️ REGRA: pendências do Orquestra → Backlog de produção via migration](regra-orquestra-pendencias-no-backlog.md) — não guardar lista de pendências na memória
 - [⚠️ REGRA: não mudar a ordem dos objetos na tela](regra-nao-mudar-ordem-da-tela.md) — sem pedido claro, não reordena; na dúvida, perguntar ANTES
 - [VPS: pkill atinge containers](vps-pkill-atinge-containers.md) — ⚠️ processo de container aparece no host; matar por PID, nunca por nome
 - [Ambiente DEV do Orquestra](vps-ambiente-dev-orquestra.md) — ▶️ NO AR (2026-08-31); UI :8090, credenciais em `.env.dev`; ⚠️ `dist/` é VOLUME — build local aparece na hora
@@ -74,6 +75,7 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [⚠️ GOTCHA: worker cacheia dags/utils](orquestra-worker-cacheia-dags-utils.md) — mudança só em `dags/utils/` exige restart do worker; task VERDE com código antigo
 - [⚠️ GOTCHA: índice filtrado × QUOTED_IDENTIFIER](orquestra-indice-filtrado-quoted-identifier.md) — falha no sqlcmd (Msg 1934) e quebra todo DML pelo sqlcmd
 - [⚠️ GOTCHA: proxy só no orquestra-api, não no worker](orquestra-proxy-worker-vs-api.md) — sonda passa e DAG morre; solução = rota na config
+- [Spec Reestruturação do Admin](orquestra-spec-admin-reestruturacao.md) — ✅ concluída 25/09/2026 (#449–#454, v2.4.0); registro `lib/adminNav.ts` + donos espelhados em `api/services/admin_config_donos.py`
 - [⚠️ GOTCHA: RBAC_RECURSOS é uma 2ª lista à mão](orquestra-rbac-recursos-lista-dupla.md) — tela só no NAV vira permissão sem interruptor; PR #310 com teste anti-drift
 - [⚠️ GOTCHA: permissão nova exige relogin](orquestra-permissao-nova-exige-relogin.md) — permissões vivem no localStorage e só atualizam no login
 - [⚠️ GOTCHA: placeholder SQL por árvore](orquestra-placeholder-pyodbc-pymssql.md) — `dags/` usa `%s`, `api/` usa `?`; trocar dá zero gravação com task VERDE

@@ -137,4 +137,10 @@ let lancou = false
 try { m.gravarUltimaAba(email) } catch { lancou = true }
 saida.ultima.quebradoGravarLancou = lancou
 
+// F6: atalhos do ⌘K (grupo "Administração" da CommandPalette)
+saida.paleta = Object.fromEntries(['e-mail', 'teams_webhook', 'agentes', 'email_remetente', 'xyz', '  ', 'a']
+  .map((q) => [q, m.atalhosDaPaleta(q)]))
+saida.paletaLimite = m.LIMITE_ATALHOS_PALETA
+saida.paletaLimiteCustom = m.atalhosDaPaleta('a', 2).length
+
 process.stdout.write(JSON.stringify(saida))

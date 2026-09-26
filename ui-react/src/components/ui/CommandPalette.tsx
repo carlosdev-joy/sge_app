@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
-import { GitBranch, Briefcase, Database, Search } from 'lucide-react'
+import { atalhosDaPaleta } from '../../lib/adminNav'
+import { canAccess } from '../../lib/nav'
+import { useAuthStore } from '../../store/auth'
+import { GitBranch, Briefcase, Database, Search, Settings } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -27,7 +30,7 @@ interface ResultItem {
   id: string
   label: string
   sub: string
-  group: 'Pipelines' | 'Etapas' | 'Catálogo'
+  group: 'Pipelines' | 'Etapas' | 'Catálogo' | 'Administração'
   href: string
 }
 
@@ -41,6 +44,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const [query, setQuery] = useState('')
   const [debounced, setDebounced] = useState('')
   const [cursor, setCursor] = useState(0)
+  const perms = useAuthStore((s) => s.user?.permissoes) ?? []
+  const veAdmin = canAccess('tela_admin', perms)
 
   // Debounce
   useEffect(() => {
@@ -90,7 +95,14 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     }),
   })
 
-  // Build flat result list
+  // Abas do admin: busca local no registro (lib/adminNav.ts), sem API.
+  const atalhosAdmin = useMemo(
+    () => (veAdmin && enabled ? atalhosDaPaleta(debounced) : []),
+    [veAdmin, enabled, debounced],
+  )
+
+  // Build flat result list — na MESMA ordem de groupOrder (o cursor é o índice
+  // nesta lista achatada).
   const items: ResultItem[] = []
 
   if (pipelinesData?.data) {
@@ -129,6 +141,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     }
   }
 
+  for (const a of atalhosAdmin) {
+    items.push({ id: a.id, label: a.rotulo, sub: a.descricao, group: 'Administração', href: a.caminho })
+  }
+
   // Keyboard navigation
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -164,11 +180,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   if (!open) return null
 
-  const groupOrder: ResultItem['group'][] = ['Pipelines', 'Etapas', 'Catálogo']
+  const groupOrder: ResultItem['group'][] = ['Pipelines', 'Etapas', 'Catálogo', 'Administração']
   const groupIcons: Record<ResultItem['group'], React.ReactNode> = {
     Pipelines: <GitBranch size={12} />,
     Etapas: <Briefcase size={12} />,
     Catálogo: <Database size={12} />,
+    Administração: <Settings size={12} />,
   }
 
   let flatIdx = 0
@@ -194,7 +211,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Buscar pipelines, jobs, catálogo…"
+            placeholder={veAdmin ? 'Buscar pipelines, jobs, catálogo, admin…' : 'Buscar pipelines, jobs, catálogo…'}
             className="flex-1 bg-transparent text-sm text-ink placeholder:text-dim outline-none"
           />
           <kbd className="text-[10px] text-dim border border-edge rounded px-1.5 py-0.5 shrink-0">ESC</kbd>
@@ -238,8 +255,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                           onMouseEnter={() => setCursor(idx)}
                           onClick={() => { navigate(item.href); onClose() }}
                         >
-                          <span className="text-sm font-medium truncate flex-1">{item.label}</span>
-                          <span className="text-xs text-dim truncate max-w-[40%]">{item.sub}</span>
+                          {/* Admin: "Grupo › Aba" é o que importa — o rótulo tem a
+                              largura de que precisa, a frase da aba fica com a sobra e,
+                              no celular, sai (senão truncaria o nome da aba). */}
+                          <span className={`text-sm font-medium truncate ${
+                            item.group === 'Administração' ? 'shrink-0 max-w-full' : 'flex-1'
+                          }`}>{item.label}</span>
+                          <span className={`text-xs text-dim truncate ${
+                            item.group === 'Administração' ? 'hidden sm:block flex-1 min-w-0 text-right' : 'max-w-[40%]'
+                          }`}>{item.sub}</span>
                         </button>
                       </li>
                     )

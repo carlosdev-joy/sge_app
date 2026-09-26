@@ -1,11 +1,8 @@
 ---
 name: orquestra-rbac-recursos-lista-dupla
-description: "⚠️ GOTCHA Orquestra: o cadastro de perfis desenha os checkboxes de RBAC_RECURSOS (Admin.tsx), uma SEGUNDA lista à mão — tela nova que só entra no NAV vira permissão sem interruptor, que o admin não consegue conceder nem revogar"
+description: "⚠️ GOTCHA Orquestra: o cadastro de perfis desenha os checkboxes de RBAC_RECURSOS (lib/rbacRecursos.ts), uma SEGUNDA lista à mão — tela nova que só entra no NAV vira permissão sem interruptor, que o admin não consegue conceder nem revogar"
 metadata: 
-  node_type: memory
   type: project
-  originSessionId: b6fa286c-27e3-404c-8ac0-af606e0cefb3
-  modified: 2026-08-13T18:59:09.519Z
 ---
 
 **Sintoma:** a tela nova aparece e funciona para quem a migration contemplou,
@@ -18,7 +15,7 @@ lista curta se apresenta como se fosse a lista inteira.
 | lista | arquivo | papel |
 |---|---|---|
 | `NAV` | `ui-react/src/lib/nav.ts` | declara `perm: 'tela_x'` por rota — **exige** o recurso |
-| `RBAC_RECURSOS` | `ui-react/src/pages/Admin.tsx` (topo) | pares `['recurso','Rótulo']` — **concede** o recurso |
+| `RBAC_RECURSOS` | `ui-react/src/lib/rbacRecursos.ts` (desde 25/09/2026; antes no topo do `pages/Admin.tsx`) | pares `['recurso','Rótulo']` — **concede** o recurso |
 
 `RBAC_RECURSOS` alimenta os **dois** pontos de concessão: o card de cada perfil
 e o modal de permissões extras por usuário. Recurso ausente dali não tem
@@ -27,7 +24,7 @@ interruptor em lugar nenhum.
 **Checklist de tela nova atrás de permissão — são QUATRO lugares, não dois:**
 1. `NAV` (`lib/nav.ts`) — item + `perm`
 2. `App.tsx` — elemento da rota
-3. **`RBAC_RECURSOS` (`pages/Admin.tsx`) — o esquecido**
+3. **`RBAC_RECURSOS` (`lib/rbacRecursos.ts`) — o esquecido**
 4. migration concedendo o recurso aos perfis-semente (`etl_perfil_permissao`)
 
 **Aconteceu com `tela_chamados`** (PR #307 + migration 088, 2026-08-13):
