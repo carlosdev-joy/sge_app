@@ -320,7 +320,15 @@ def test_data_logica_vem_do_ds_do_contexto():
 
 
 def test_sem_migration_107_comando_de_sempre_com_aviso(caplog):
-    hook = _Hook(erro_records=Exception("(207, b\"Invalid column name 'param_source'\")"))
+    # A 107 altera a tabela da etapa; sem a 108 o catálogo nem existe.
+    # Não simular a mesma coluna ausente em TODAS as consultas: esse estado
+    # artificial escondia uma falha real de schema no catálogo do pipeline.
+    class HookSem107(_Hook):
+        def get_records(self, sql, parameters=None):
+            if "dbo.etl_pipeline_job_param " in sql:
+                raise Exception("(207, b\"Invalid column name 'param_source'\")")
+            return super().get_records(sql, parameters)
+    hook = HookSem107()
     op = _op(hook)
     op._exec = _exec_ok()
     with caplog.at_level(logging.WARNING):

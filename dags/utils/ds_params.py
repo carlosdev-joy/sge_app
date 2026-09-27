@@ -219,9 +219,17 @@ def carregar_pipeline(hook, pipeline_name: str, log=None) -> list[dict]:
     honesta é "nenhum", em debug (é o estado normal até a F4 ir para
     produção). Qualquer OUTRO erro de banco propaga, como em carregar_etapa."""
     try:
-        rows = hook.get_records(SQL_PIPELINE, parameters=(pipeline_name,))
+        sql = SQL_PIPELINE.replace(" ORDER BY", " AND param_destino='datastage' ORDER BY")
+        try:
+            rows = hook.get_records(sql, parameters=(pipeline_name,))
+        except Exception as exc:
+            # Somente coluna 129 ausente permite fallback legado. Não mascarar
+            # falha de conexão/permissão como catálogo vazio.
+            if not re.search(r"invalid column name ['\"]param_destino['\"]", str(exc), re.I):
+                raise
+            rows = hook.get_records(SQL_PIPELINE, parameters=(pipeline_name,))
     except Exception as e:
-        if _SEM_107_RE.search(str(e)):
+        if re.search(r"invalid object name ['\"]dbo\.etl_pipeline_param['\"]", str(e), re.I):
             if log is not None:
                 log.debug("[DS] etl_pipeline_param ausente (migration 108) — sem defaults do pipeline (%s)", e)
             return []
