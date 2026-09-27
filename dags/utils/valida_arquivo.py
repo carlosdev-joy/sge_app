@@ -197,3 +197,8 @@ def parse_dataset(saida):
     if len(totais)!=1 or totais[0]>MAX_CONTAGEM:
         raise ValueError('Formato de contagem DataStage não reconhecido; certifique o parser com a versão instalada.')
     return totais[0]
+
+
+def estrutura_validadores(configs):
+    return sorted([[no,c['ssh_conn_id'],sorted([[e['entrada_id'],e['alvo']] for e in c['entradas']])]
+                   for no,c in configs.items()],key=lambda x:x[0])

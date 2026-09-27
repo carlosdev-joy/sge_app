@@ -20,6 +20,8 @@ from services.conn_crypto import encrypt_password
 from services import job_params as jp
 from services import param_vinculos as pv
 from services import param_snapshot as ps
+from services import valida_arquivo_fluxo as vf
+from services import valida_arquivo_store as vs
 from deps import (
     PERM_EDITAR,
     get_current_user, require_perm,
@@ -40,7 +42,7 @@ def _fmt_dt(v):
 
 
 VALID_JOB_TYPES = {"datastage", "shell", "python", "storedproc", "http", "decisao", "notificacao", "sql", "aguarde",
-                   "email"}
+                   "email", "valida_arquivo"}
 VALID_PARAM_TYPES = {"INT", "VARCHAR", "DATE", "BIT", "DECIMAL", "DATETIME"}
 _PARAM_NAME_RE = re.compile(r"^@?[A-Za-z_][A-Za-z0-9_]*$")
 # job_name vira literal de string no código da DAG gerada e argumento de shell no
@@ -1816,6 +1818,11 @@ async def rename_pipeline_job(
                     detail="o pipeline tem execução em andamento — aguarde (ou use a "
                            "Finalização) antes de renomear")
 
+        if vs.disponivel(cur):
+            cur.execute('SELECT TOP 1 task_id FROM dbo.etl_valida_arquivo_config WHERE pipeline_name=? AND (task_id=? OR alvo=?)', (pipe, antigo, antigo))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail='Remova as referências no canvas e salve antes de renomear o destino. Para renomear um validador salvo, recrie o nó.')
+
         # 1) A própria linha.
         if so_caixa:
             # Caminho SÓ-CAIXA: UPDATE in-place. A cópia não serve — sob colação
@@ -1903,6 +1910,11 @@ async def rename_pipeline_job(
                 "UPDATE dbo.etl_ds_job_log SET job_name=? "
                 "WHERE pipeline_name=? AND job_name=?", (novo, pipe, antigo))
             hist_ds = max(0, cur.rowcount or 0)
+
+        try:
+            ps.validar_estrutura(cur, pipe)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
 
         # Auditoria (quem/quando) — mesma trilha da finalização manual.
         if _tem_tabela("etl_pipeline_audit"):
@@ -2132,6 +2144,8 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
             if j_name not in db_names and not _JOB_NAME_STRICT_RE.match(j_name):
                 erros.append(f"Item {idx} ({j_name}): nome de job novo não pode ter espaço "
                              "(vira task_id no Airflow, que o rejeita no import da DAG)"); continue
+            if j_type == "valida_arquivo" or any(nome.casefold() == j_name.casefold() and tipo == "valida_arquivo" for nome, tipo in db_types.items()):
+                erros.append(f"Item {idx}: configure Valida Arquivo pelo canvas."); continue
             if j_type not in VALID_JOB_TYPES:
                 erros.append(f"Item {idx} ({j_name}): job_type '{j_type}' inválido"); continue
             # Nó de Decisão é roteador, Notificação é efeito colateral e o nó SQL
@@ -2649,6 +2663,11 @@ async def delete_pipeline_job(
     conn = cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
+        if vs.disponivel(cur):
+            cur.execute('SELECT TOP 1 task_id FROM dbo.etl_valida_arquivo_config WHERE pipeline_name=? AND (task_id=? OR alvo=?)', (pipeline_name, job_name, job_name))
+            if cur.fetchone():
+                conn.rollback()
+                raise HTTPException(status_code=409, detail='Exclua pelo canvas, atualizando as referências de Valida Arquivo no mesmo salvamento.')
         # Remove a lineage associada antes do job (evita órfãos e respeita FK, se existir).
         cur.execute(
             "DELETE FROM dbo.etl_job_lineage WHERE pipeline_name = ? AND job_name = ?",
@@ -2827,7 +2846,14 @@ def get_pipeline_fluxo(
         except Exception:
             cur.close(); conn.close()
             raise HTTPException(status_code=503, detail="Não foi possível ler os vínculos de parâmetros. Recarregue antes de editar.") from None
+        try:
+            validadores = vs.ler_todos(cur, pipeline_name, nodes)
+        except Exception:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=503, detail='Não foi possível ler Valida Arquivo. Recarregue antes de editar.') from None
         for node in nodes:
+            if node['job_type'] == 'valida_arquivo':
+                node['valida_arquivo'] = validadores[node['job_name']]
             node['param_vinculos'] = vinculos.get(node['job_name'], {})
         cur.close(); conn.close()
         return {"nodes": nodes}
@@ -2870,6 +2896,13 @@ async def save_pipeline_fluxo(
     nodes = body.get("nodes")
     if not isinstance(nodes, list):
         raise HTTPException(status_code=422, detail="nodes deve ser uma lista")
+    if len(nodes) > 500 or any(not isinstance(n, dict) or not isinstance(n.get('job_name'), str)
+                               or not n['job_name'].strip() or len(n['job_name'].strip()) > 200
+                               or ('job_type' in n and not isinstance(n['job_type'], (str, type(None)))) for n in nodes):
+        raise HTTPException(status_code=422, detail='Informe até 500 nós com nomes válidos de até 200 caracteres.')
+    nomes_ci = [n['job_name'].strip().casefold() for n in nodes]
+    if len(set(nomes_ci)) != len(nomes_ci):
+        raise HTTPException(status_code=422, detail='Nomes de nós duplicados, inclusive por maiúsculas/minúsculas.')
     deleted_raw = body.get("deleted")
     deleted = ({str(d).strip() for d in deleted_raw if str(d).strip()}
                if isinstance(deleted_raw, list) else set())
@@ -3139,6 +3172,16 @@ async def save_pipeline_fluxo(
                 status_code=400,
                 detail="ciclo detectado entre as etapas (dependências/ramos da decisão)")
 
+        try:
+            plano_valida = vf.preparar(cur, pipeline_name, nodes, deleted)
+        except vf.Indisponivel as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except vs.Conflito as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={'errors': [str(exc)]}) from None
+        vf.antes_de_excluir(cur, pipeline_name, plano_valida)
+
         # ── Aplica (transacional) ─────────────────────────────────────────────
         # 1) Remove os jobs marcados (e a lineage) — só os que ainda existem e
         #    não voltaram no fluxo (proteção contra remoção acidental).
@@ -3251,6 +3294,18 @@ async def save_pipeline_fluxo(
                             "WHERE pipeline_name=? AND job_name=?",
                             (lx, ly, pipeline_name, j_name))
 
+        try:
+            revisoes_valida = vf.aplicar(cur, pipeline_name, plano_valida)
+            if plano_valida is not None:
+                from services import valida_arquivo as va
+                oficial, persistidos, catalogo = _contexto_valida(cur, pipeline_name)
+                for nome, cfg in vs.ler_todos(cur, oficial, persistidos).items():
+                    va.impacto(cfg, persistidos, nome, catalogo)
+        except vs.Conflito as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={'errors': [str(exc)]}) from None
+
         if refs_preparados and pv.disponivel(cur):
             for nome, raw in refs_preparados.items():
                 pv.gravar(cur, pipeline_name, nome, raw)
@@ -3260,7 +3315,7 @@ async def save_pipeline_fluxo(
             raise HTTPException(status_code=409, detail=str(exc))
         conn.commit()
         cur.close(); conn.close()
-        return {"ok": True, "saved": len(prepared), "deleted": removed}
+        return {"ok": True, "saved": len(prepared), "deleted": removed, "validadores": revisoes_valida}
     except HTTPException:
         try:
             conn.rollback(); cur.close(); conn.close()
@@ -3283,7 +3338,7 @@ def get_valida_arquivo(pipeline_name: str, task_id: str, _auth: dict = Depends(r
         conn=get_db_conn();cur=conn.cursor()
         if not store.disponivel(cur):
             return {'disponivel':False,'runtime_disponivel':False,'config':None}
-        return {'disponivel':True,'runtime_disponivel':False,'config':store.ler(cur,pipeline_name,task_id)}
+        return {'disponivel':True,'runtime_disponivel':vf.runtime_disponivel(cur),'config':store.ler(cur,pipeline_name,task_id)}
     finally:
         if cur is not None:cur.close()
         if conn is not None:conn.close()
@@ -3334,6 +3389,11 @@ def put_valida_arquivo(pipeline_name: str, task_id: str, body: dict = Body(defau
         config=va.normalizar(body.get('config'),cat)
         previa=va.impacto(config,jobs,task_id,cat)
         result=store.salvar(cur,oficial,task_id,config,body.get('revisao'))
+        try:
+            ps.validar_estrutura(cur,oficial)
+        except ValueError as exc:
+            raise store.Conflito(str(exc)) from None
+        cur.execute('UPDATE dbo.etl_pipeline SET param_snapshot_ativo=1 WHERE pipeline_name=?',(oficial,))
         conn.commit()
         return dict(ok=True,previa=previa,**result)
     except store.Conflito as exc:
@@ -3345,6 +3405,22 @@ def put_valida_arquivo(pipeline_name: str, task_id: str, body: dict = Body(defau
     except Exception:
         if conn is not None:conn.rollback()
         raise
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()
+
+
+@router.get('/pipelines/{pipeline_name}/validacao-execucao', tags=['jobs'])
+def get_validacao_execucao(pipeline_name: str, run_id: str, _auth: dict = Depends(get_current_user)):
+    from services import valida_arquivo as va
+    from services import valida_arquivo_execucao as ve
+    conn=cur=None
+    try:
+        pipeline_name=va.texto(pipeline_name,'Pipeline',200);run_id=va.texto(run_id,'Execução',250)
+        conn=get_db_conn();cur=conn.cursor()
+        if not ve.disponivel(cur):raise HTTPException(status_code=503,detail=ve.MIGRATION)
+        return ve.ler(cur,pipeline_name,run_id)
+    except ValueError as exc:raise HTTPException(status_code=409,detail=str(exc)) from None
     finally:
         if cur is not None:cur.close()
         if conn is not None:conn.close()

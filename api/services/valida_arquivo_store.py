@@ -49,3 +49,22 @@ def salvar(cur,pipeline,no,config,revisao):
         cur.execute('INSERT dbo.etl_valida_arquivo_config(pipeline_name,task_id,'+','.join(CAMPOS)+') VALUES('+','.join('?' for _ in range(12))+')',
                     (pipeline,no,*(e[k] for k in CAMPOS)))
     return dict(revisao=novo,exige_publicacao=estrutura(old)!=estrutura(config))
+
+
+def ler_todos(cur,pipeline,jobs):
+    nomes=[j['job_name'] for j in jobs if j.get('job_type')=='valida_arquivo']
+    if not nomes:return {}
+    if not disponivel(cur):raise ValueError(MIGRATION)
+    out={}
+    for nome in nomes:
+        cfg=ler(cur,pipeline,nome)
+        if not cfg:raise ValueError('Validador sem configuração: '+nome)
+        out[nome]=cfg
+    return out
+
+
+def validar_catalogo(cur,pipeline,catalogo):
+    if not disponivel(cur):return
+    cur.execute("SELECT job_name,job_type FROM dbo.etl_pipeline_job WHERE pipeline_name=? AND job_type='valida_arquivo'",(pipeline,))
+    jobs=[dict(job_name=r[0],job_type=r[1]) for r in cur.fetchall()]
+    for cfg in ler_todos(cur,pipeline,jobs).values():va.normalizar(cfg,catalogo)

@@ -1821,3 +1821,43 @@ def get_malha():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/pipelines/{pipeline_name}/politica-sem-movimento', tags=['pipelines'])
+def get_politica_sem_movimento(pipeline_name: str, _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    from services import valida_arquivo_execucao as ve
+    conn=cur=None
+    try:
+        conn=get_db_conn();cur=conn.cursor()
+        if not ve.disponivel(cur):return dict(disponivel=False)
+        cur.execute('SELECT liberar_dependentes_sem_movimento,notificar_sem_movimento,politica_sem_movimento_revisao FROM dbo.etl_pipeline WHERE pipeline_name=?',(pipeline_name,))
+        row=cur.fetchone()
+        if not row:raise HTTPException(status_code=404,detail='Pipeline não encontrado.')
+        return dict(disponivel=True,liberar_dependentes=bool(row[0]),notificar=bool(row[1]),revisao=row[2])
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()
+
+
+@router.put('/pipelines/{pipeline_name}/politica-sem-movimento', tags=['pipelines'])
+def put_politica_sem_movimento(pipeline_name: str, body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    from services import valida_arquivo_execucao as ve
+    if type(body.get('revisao')) is not int or body['revisao']<0:
+        raise HTTPException(status_code=422,detail='Informe a revisão esperada da política.')
+    if type(body.get('liberar_dependentes')) is not bool or type(body.get('notificar')) is not bool:
+        raise HTTPException(status_code=422,detail='Informe as opções de liberação e notificação como booleanos.')
+    conn=cur=None
+    try:
+        conn=get_db_conn();cur=conn.cursor()
+        if not ve.disponivel(cur):raise HTTPException(status_code=503,detail=ve.MIGRATION)
+        cur.execute('UPDATE dbo.etl_pipeline SET liberar_dependentes_sem_movimento=?,notificar_sem_movimento=?,politica_sem_movimento_revisao=politica_sem_movimento_revisao+1 WHERE pipeline_name=? AND politica_sem_movimento_revisao=?',
+                    (body['liberar_dependentes'],body['notificar'],pipeline_name,body['revisao']))
+        if cur.rowcount==0:raise HTTPException(status_code=409,detail='Política mudou ou pipeline não existe. Recarregue antes de salvar.')
+        conn.commit()
+        return dict(ok=True,revisao=body['revisao']+1,aplica_em='novas_execucoes')
+    except Exception:
+        if conn is not None:conn.rollback()
+        raise
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()

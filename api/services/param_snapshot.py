@@ -48,20 +48,25 @@ def validar_estrutura(cur, pipeline):
     cur.execute("""SELECT s.payload_cifrado FROM dbo.etl_parametro_snapshot s
         WHERE s.pipeline_name=? AND NOT EXISTS (
           SELECT 1 FROM dbo.etl_pipeline_execucao e
-          WHERE e.pipeline_name COLLATE Latin1_General_BIN2=s.pipeline_name AND e.run_id COLLATE Latin1_General_BIN2=s.run_id
+          WHERE e.pipeline_name COLLATE Latin1_General_BIN2=s.pipeline_name AND e.execution_id COLLATE Latin1_General_BIN2=s.run_id
           AND e.status IN ('SUCESSO','PULADO','CANCELADO'))""", (pipeline,))
     tokens=[r[0] for r in cur.fetchall()]
     if not tokens:
         return
     cur.execute('SELECT * FROM dbo.etl_pipeline_job WHERE pipeline_name=?', (pipeline,))
     cols=[c[0] for c in cur.description]
-    atual=estrutura([dict(zip(cols,r)) for r in cur.fetchall()])
+    jobs=[dict(zip(cols,r)) for r in cur.fetchall()]
+    atual=estrutura(jobs)
+    from services import valida_arquivo_store as vs
+    from services.valida_arquivo import estrutura_validadores
+    validadores=estrutura_validadores(vs.ler_todos(cur,pipeline,jobs))
     cur.execute('SELECT project_name FROM dbo.etl_pipeline WHERE pipeline_name=?',(pipeline,))
     row=cur.fetchone(); projeto=row[0] if row else None
     for token in tokens:
         try:
             p=json.loads(decrypt_password(token))
-            igual=atual==estrutura(p['jobs']) and p.get('project')==projeto
+            igual=(atual==estrutura(p['jobs']) and p.get('project')==projeto
+                   and validadores==estrutura_validadores(p.get('validadores') or {}))
         except Exception:
             raise ValueError('Não foi possível conferir a configuração original; alteração estrutural bloqueada.') from None
         if not igual:
@@ -71,10 +76,15 @@ def validar_estrutura(cur, pipeline):
 def validar_retomada(cur, payload):
     cur.execute('SELECT * FROM dbo.etl_pipeline_job WHERE pipeline_name=?', (payload['pipeline'],))
     cols=[c[0] for c in cur.description]
-    atual=estrutura([dict(zip(cols,r)) for r in cur.fetchall()])
+    jobs=[dict(zip(cols,r)) for r in cur.fetchall()]
+    atual=estrutura(jobs)
+    from services import valida_arquivo_store as vs
+    from services.valida_arquivo import estrutura_validadores
+    validadores=estrutura_validadores(vs.ler_todos(cur,payload['pipeline'],jobs))
     cur.execute('SELECT project_name FROM dbo.etl_pipeline WHERE pipeline_name=?',(payload['pipeline'],))
     row=cur.fetchone()
-    if atual != estrutura(payload['jobs']) or (row[0] if row else None) != payload.get('project'):
+    if (atual != estrutura(payload['jobs']) or (row[0] if row else None) != payload.get('project')
+            or validadores != estrutura_validadores(payload.get('validadores') or {})):
         raise ValueError('Esta corrida tem estrutura ou servidor diferente do cadastro atual. Preserve seu histórico e inicie uma nova execução após publicar a DAG.')
 
 

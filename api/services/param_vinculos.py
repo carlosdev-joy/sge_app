@@ -97,3 +97,6 @@ def validar_catalogo(cur, pipeline, catalogo):
                 (pipeline,))
     for tipo, py, refs in cur.fetchall():
         normalizar(json.loads(refs), tipo, catalogo, json.loads(py) if py else None)
+
+    from services import valida_arquivo_store as vs
+    vs.validar_catalogo(cur,pipeline,catalogo)

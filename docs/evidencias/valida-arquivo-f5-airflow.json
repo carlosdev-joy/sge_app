@@ -1,0 +1,156 @@
+{
+  "diagnosticos": [],
+  "migration_twice": true,
+  "cases": [
+    {
+      "case": "todos_pulados",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "skipped",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "skipped"
+      },
+      "conclusao": "SEM_MOVIMENTO"
+    },
+    {
+      "case": "todos_pulados_libera",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "success",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "skipped"
+      },
+      "conclusao": "SEM_MOVIMENTO"
+    },
+    {
+      "case": "sequencia_parcial",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "success",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "success"
+      },
+      "conclusao": "COM_MOVIMENTO"
+    },
+    {
+      "case": "ambos_dados",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "success",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "log_start_A": "success",
+        "A": "success",
+        "log_end_A": "success",
+        "B": "success"
+      },
+      "conclusao": "COM_MOVIMENTO"
+    },
+    {
+      "case": "erro_tecnico",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "upstream_failed",
+        "flow_close": "failed",
+        "registrar_falha": "success",
+        "V": "failed",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "skipped"
+      },
+      "conclusao": "FALHA"
+    },
+    {
+      "case": "branch",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "success",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "C": "success",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "success"
+      },
+      "conclusao": "COM_MOVIMENTO"
+    },
+    {
+      "case": "decisao_pulada",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "skipped",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "C": "skipped",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "skipped"
+      },
+      "conclusao": "SEM_EXECUCAO"
+    },
+    {
+      "case": "ramos_sem_controle_direto",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "skipped",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "X": "success",
+        "C": "skipped",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "skipped"
+      },
+      "conclusao": "SEM_MOVIMENTO"
+    },
+    {
+      "case": "multival",
+      "states": {
+        "check_agenda": "success",
+        "publish_dataset": "skipped",
+        "flow_close": "success",
+        "registrar_falha": "skipped",
+        "V": "success",
+        "V2": "success",
+        "log_start_A": "skipped",
+        "A": "skipped",
+        "log_end_A": "skipped",
+        "B": "skipped"
+      },
+      "conclusao": "SEM_MOVIMENTO"
+    }
+  ],
+  "aguarde_scheduler_not_empty": true,
+  "partial_replay_stale_consumers_blocked": true,
+  "success": true,
+  "real_airflow": true,
+  "real_sql": true,
+  "real_sftp": true,
+  "consumer_side_effects": "Shell true no servidor SSH de amostra; Aguarde real",
+  "generated_factory": true,
+  "reparse": true,
+  "scratch_removed": true
+}
