@@ -3334,6 +3334,11 @@ def put_valida_arquivo(pipeline_name: str, task_id: str, body: dict = Body(defau
         config=va.normalizar(body.get('config'),cat)
         previa=va.impacto(config,jobs,task_id,cat)
         result=store.salvar(cur,oficial,task_id,config,body.get('revisao'))
+        try:
+            ps.validar_estrutura(cur,oficial)
+        except ValueError as exc:
+            raise store.Conflito(str(exc)) from None
+        cur.execute('UPDATE dbo.etl_pipeline SET param_snapshot_ativo=1 WHERE pipeline_name=?',(oficial,))
         conn.commit()
         return dict(ok=True,previa=previa,**result)
     except store.Conflito as exc:
@@ -3345,6 +3350,22 @@ def put_valida_arquivo(pipeline_name: str, task_id: str, body: dict = Body(defau
     except Exception:
         if conn is not None:conn.rollback()
         raise
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()
+
+
+@router.get('/pipelines/{pipeline_name}/validacao-execucao', tags=['jobs'])
+def get_validacao_execucao(pipeline_name: str, run_id: str, _auth: dict = Depends(get_current_user)):
+    from services import valida_arquivo as va
+    from services import valida_arquivo_execucao as ve
+    conn=cur=None
+    try:
+        pipeline_name=va.texto(pipeline_name,'Pipeline',200);run_id=va.texto(run_id,'Execução',250)
+        conn=get_db_conn();cur=conn.cursor()
+        if not ve.disponivel(cur):raise HTTPException(status_code=503,detail=ve.MIGRATION)
+        return ve.ler(cur,pipeline_name,run_id)
+    except ValueError as exc:raise HTTPException(status_code=409,detail=str(exc)) from None
     finally:
         if cur is not None:cur.close()
         if conn is not None:conn.close()

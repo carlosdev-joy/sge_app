@@ -30,3 +30,5 @@ F3 implementada em `feat/valida-arquivo-f3`, código fd50581, sobre F2b #457. Mi
 Usuário confirmou: teste de datasets reais somente no ambiente Caixa. Não há acesso local para certificação de parser/integração DataStage; preparar roteiro de aplicação assistida e manter essa validação explicitamente pendente. Continuação F4–F7 autorizada sem pedir confirmação de implementação por fase. F4 iniciada em `/root/orquestra-valida-f4`.
 
 F3: [PR #458 aberta](https://github.com/carlosdev-joy/sge_app/pull/458), base `feat/parametros-globais-f2b` (#457). Sem merge/deploy. F4 segue em desenvolvimento.
+
+F4 implementada: migration132, snapshot de validadores/política e diagnóstico durável por tentativa. 7042 passed/51 skipped/mesmas8 falhas; SQL isolado concorrência/rollback/migration2x aprovado; tsc/lint/build aprovados, dist inalterado; QA e segurança sem defeito restante. Docs: validacao-valida-arquivo-f4.md e release-notes/valida-arquivo-f4.md. Runtime F5 e interface F6 ainda pendentes.

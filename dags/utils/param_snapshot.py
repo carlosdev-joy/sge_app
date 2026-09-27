@@ -24,7 +24,7 @@ def _lista(cur, sql, args):
     return [dict(zip([c[0] for c in cur.description], row)) for row in cur.fetchall()]
 
 
-def capturar(hook, pipeline, run_id, primeira_tentativa=True, estrutura_esperada=None, projeto_esperado=None, ssh_esperado=None):
+def capturar(hook, pipeline, run_id, primeira_tentativa=True, estrutura_esperada=None, projeto_esperado=None, ssh_esperado=None, validadores_esperados=None):
     """Uma transação serializa inicializações e copia catálogo/configuração completos."""
     _chave(pipeline, run_id)
     cipher = _cipher()
@@ -38,6 +38,10 @@ def capturar(hook, pipeline, run_id, primeira_tentativa=True, estrutura_esperada
             original = json.loads(cipher.decrypt(row[0].encode()))
             if estrutura_esperada is not None and (estrutura(original['jobs']) != estrutura_esperada or original.get('project') != projeto_esperado or (ssh_esperado is not None and original.get('pipeline_ssh', 'ssh_lnxprd021') != ssh_esperado)):
                 raise ValueError(ERRO)
+            if validadores_esperados is not None:
+                from utils.valida_arquivo import estrutura_validadores
+                if estrutura_validadores(original.get('validadores') or {}) != validadores_esperados:
+                    raise ValueError(ERRO)
             conn.commit()
             return
         if not primeira_tentativa:
@@ -52,7 +56,12 @@ def capturar(hook, pipeline, run_id, primeira_tentativa=True, estrutura_esperada
         pipeline_ssh = ssh_esperado or 'ssh_lnxprd021'
         if estrutura_esperada is not None and (estrutura(jobs) != estrutura_esperada or project != projeto_esperado):
             raise ValueError('Estrutura mudou; publique a DAG antes de iniciar nova execução.')
-        payload = dict(project=project, pipeline_ssh=pipeline_ssh, versao=1, pipeline=pipeline, run_id=run_id, catalogo=catalogo,
+        validadores,politica = configuracoes_validacao(cur,pipeline,jobs,catalogo)
+        if validadores_esperados is not None:
+            from utils.valida_arquivo import estrutura_validadores
+            if estrutura_validadores(validadores) != validadores_esperados:
+                raise ValueError(ERRO)
+        payload = dict(validadores=validadores, politica_sem_movimento=politica, project=project, pipeline_ssh=pipeline_ssh, versao=1, pipeline=pipeline, run_id=run_id, catalogo=catalogo,
                        jobs=jobs, etapa=etapa, overrides=overrides, data_execucao=datetime.now().date().isoformat())
         token = cipher.encrypt(json.dumps(payload, ensure_ascii=False, default=str).encode()).decode()
         cur.execute('INSERT INTO dbo.etl_parametro_snapshot (pipeline_name,run_id,payload_cifrado) VALUES (%s,%s,%s)',
@@ -132,7 +141,7 @@ def estrutura(jobs):
 
 
 
-def validar_publicacao(hook, pipeline, projeto, jobs):
+def validar_publicacao(hook, pipeline, projeto, jobs, validadores=None):
     rows = hook.get_records("""SELECT s.payload_cifrado FROM dbo.etl_parametro_snapshot s
         WHERE s.pipeline_name=%s AND NOT EXISTS (
           SELECT 1 FROM dbo.etl_pipeline_execucao e
@@ -142,7 +151,9 @@ def validar_publicacao(hook, pipeline, projeto, jobs):
     for row in rows:
         try:
             p=json.loads(_cipher().decrypt(row[0].encode()))
-            igual=p.get('project')==projeto and estrutura(p['jobs'])==atual
+            from utils.valida_arquivo import estrutura_validadores
+            igual=(p.get('project')==projeto and estrutura(p['jobs'])==atual
+                   and estrutura_validadores(p.get('validadores') or {})==estrutura_validadores(validadores or {}))
         except Exception:
             raise ValueError('Configuração original ilegível; publicação bloqueada.') from None
         if not igual:
@@ -157,3 +168,27 @@ def validar_servidor(payload, job, tipo, ssh, projeto=None):
     original_ssh = payload.get('pipeline_ssh', 'ssh_lnxprd021') if tipo == 'datastage' else (cfg.get('ssh_conn_id') or 'ssh_lnxprd021')
     if original_ssh != ssh or (projeto is not None and payload.get('project') != projeto):
         raise ValueError('Servidor/projeto diferente da configuração original; nenhum comando executado.')
+
+
+def configuracoes_validacao(cur,pipeline,jobs,catalogo):
+    nomes={j['job_name'] for j in jobs if j.get('job_type')=='valida_arquivo'}
+    if not nomes:return {},{}
+    from utils.valida_arquivo import normalizar
+    headers=_lista(cur,'SELECT * FROM dbo.etl_valida_arquivo_no WITH (HOLDLOCK) WHERE pipeline_name=%s',(pipeline,))
+    entradas=_lista(cur,'SELECT * FROM dbo.etl_valida_arquivo_config WITH (HOLDLOCK) WHERE pipeline_name=%s ORDER BY ordem',(pipeline,))
+    cfgs={}
+    for h in headers:
+        nome=h['task_id']
+        if nome not in nomes:continue
+        rows=[]
+        for e in entradas:
+            if e['task_id']==nome:
+                e=dict(e,entrada_id=str(e['entrada_id']),ignorar_cabecalho=bool(e['ignorar_cabecalho']))
+                rows.append(e)
+        cfg=normalizar(dict(h,entradas=rows),catalogo)
+        cfg['revisao']=h['revisao'];cfgs[nome]=cfg
+    if set(cfgs)!=nomes:raise ValueError('Validador sem configuração original.')
+    cur.execute('SELECT liberar_dependentes_sem_movimento,notificar_sem_movimento,politica_sem_movimento_revisao FROM dbo.etl_pipeline WITH (HOLDLOCK) WHERE pipeline_name=%s',(pipeline,))
+    p=cur.fetchone()
+    if p is None:raise ValueError(ERRO)
+    return cfgs,dict(liberar_dependentes=bool(p[0]),notificar=bool(p[1]),revisao=p[2])
