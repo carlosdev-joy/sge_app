@@ -1,0 +1,1 @@
+{"migrations_twice": true, "new_graph_config_same_transaction": true, "stale_revision_rejected": true, "rollback_restores_graph_config": true, "fk_target_replacement": true, "legacy_preserves_config": true, "fk_validator_removal": true, "success": true, "scratch_removed": true}
