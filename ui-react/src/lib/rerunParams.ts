@@ -18,6 +18,7 @@ export interface ItemParametroRerun {
 }
 
 export interface ParametrosRerunEtapa {
+  original?: boolean
   job_name: string
   itens: ItemParametroRerun[]
 }

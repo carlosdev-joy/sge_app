@@ -129,6 +129,7 @@ interface FluxoNode {
   mssql_database?: string | null
   params?: JobParamApi[]
   // Nó python v2 (chave `python` da API) — null/ausente = modo legado 'modulo'.
+  param_vinculos?: Record<string, string>
   python?: PythonNodeApi | null
 }
 interface FluxoResp { nodes: FluxoNode[] }
@@ -212,6 +213,7 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       mssql_database: n.mssql_database ?? null,
       // storedproc e datastage (origem/cálculo/Encrypted mascarado) — lib/dsParams.
       params: paramsFromApi(n.params),
+      param_vinculos: n.param_vinculos ?? {},
       // Nó python v2: draft local a partir da API (null/ausente = 'modulo' —
       // nó existente sem python pré-seleciona o modo legado).
       python: pythonFromApi(n.python),
@@ -1649,6 +1651,7 @@ function FluxoEditorInner({
           mssql_database: (d.mssql_database as string | null) ?? '',
           params: (d.params as JobParam[] | undefined) ?? [],
           python: d.python as PythonDraft | undefined,
+          param_vinculos: d.param_vinculos as Record<string, string> | undefined,
         })
         etapaErros.push(...errs.map(e => `${n.id}: ${e}`))
       }
@@ -1829,6 +1832,7 @@ function FluxoEditorInner({
           // storedproc: nome/tipo/valor; datastage: origem + cálculo + Encrypted
           // (*** = manter). A chave vai SEMPRE (presença = autoriza o replace-all).
           params: paramsToApi(jobType, rawParams),
+          param_vinculos: ['datastage', 'python'].includes(jobType) ? d.param_vinculos ?? {} : {},
           // Nó python: a chave `python` vai SEMPRE (mesmo null) — é a presença
           // da chave que permite voltar ao legado ('modulo' → python: null
           // limpa o python_json no backend). Envia só o modo ativo do draft.
@@ -2023,6 +2027,7 @@ function FluxoEditorInner({
           mssql_database: (d.mssql_database as string | null) ?? '',
           params: (d.params as JobParam[] | undefined) ?? [],
           python: d.python as PythonDraft | undefined,
+          param_vinculos: d.param_vinculos as Record<string, string> | undefined,
         }))
       } else if (n.type === 'decisao') {
         if (!nRamos.get(n.id)) errs.push('nenhum ramo ligado (arraste das saídas)')

@@ -1294,3 +1294,9 @@ def test_candidatos_declaram_a_corrida_aposentada(cliente):
     por_run = {c["run_id"]: c for c in cands}
     assert por_run[_RUN_A]["substituida_em"].startswith("2026-08-03")
     assert por_run[_RUN_B]["substituida_em"] is None
+
+
+@pytest.fixture(autouse=True)
+def _banco_legado_sem_snapshot_130(monkeypatch):
+    # Estes dublês representam o schema anterior; F2b é coberta em teste próprio.
+    monkeypatch.setattr('services.param_snapshot.ativo', lambda cur, pipeline: False)

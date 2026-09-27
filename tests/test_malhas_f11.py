@@ -861,3 +861,9 @@ def test_estado_sem_a_075_nao_tem_a_chave(client, auth_editor):
     assert r.status_code == 200
     item = next(i for i in r.json()["data"] if i["pipeline_name"] == "PIPE_A")
     assert all("compilada_por" not in p for p in item["predecessores"])
+
+
+@pytest.fixture(autouse=True)
+def _banco_legado_sem_snapshot_130(monkeypatch):
+    # Estes dublês representam o schema anterior; F2b é coberta em teste próprio.
+    monkeypatch.setattr('services.param_snapshot.ativo', lambda cur, pipeline: False)

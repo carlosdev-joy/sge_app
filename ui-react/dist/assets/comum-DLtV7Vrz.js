@@ -1,1 +1,0 @@
-import{Jt as e}from"./index-Br7WkcVb.js";var t=[`BI_CVP`,`BI_VIDA`,`BI_PREVIDENCIA`,`BI_PRESTAMISTA`],n=(t,n={})=>e(`/admin`,{method:`POST`,body:JSON.stringify({action:t,...n})});export{n,t};

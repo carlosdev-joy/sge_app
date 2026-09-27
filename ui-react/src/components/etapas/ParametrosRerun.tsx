@@ -22,7 +22,7 @@ export function ParametrosRerun({ parametros, valores, onChange, indisponiveis, 
   if (indisponiveis) {
     return (
       <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400" data-parametros-rerun="indisponiveis">
-        Não foi possível calcular os parâmetros das etapas — a reexecução segue com os valores cadastrados.
+        Não foi possível consultar os parâmetros. A execução verificará a configuração exigida antes de iniciar; valores originais ausentes bloqueiam a retomada.
       </p>
     )
   }
@@ -31,15 +31,16 @@ export function ParametrosRerun({ parametros, valores, onChange, indisponiveis, 
   return (
     <div className="flex flex-col gap-2" data-parametros-rerun="lista" data-sobrepostos={n}>
       {cabecalho}
+      {parametros.some(p => p.original) && <p className="text-xs text-dim">Esta retomada usa a configuração original. Para usar alterações, preserve a falha e inicie uma nova execução.</p>}
       {parametros.map(e => (
         <div key={e.job_name} className="rounded-lg border border-edge bg-canvas px-3 py-2" data-etapa-params={e.job_name}>
           <p className="mb-1 font-mono text-[11px] font-semibold text-ink">{e.job_name}</p>
-          <table className="w-full text-[11px]">
+          {e.itens.length > 0 ? <table className="w-full table-fixed text-[11px] break-words">
             <thead>
               <tr className="text-dim">
                 <th className="pb-0.5 text-left font-medium">Parâmetro</th>
                 <th className="pb-0.5 text-left font-medium">Valor nesta corrida</th>
-                <th className="pb-0.5 text-left font-medium">Novo valor (só agora)</th>
+                <th className="pb-0.5 text-left font-medium">{e.original ? 'Configuração' : 'Novo valor (só agora)'}</th>
               </tr>
             </thead>
             <tbody>
@@ -79,14 +80,14 @@ export function ParametrosRerun({ parametros, valores, onChange, indisponiveis, 
                           className={`w-full min-w-0 rounded-md border bg-panel px-2 py-1 font-mono text-[11px] text-ink placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 ${mudou ? 'border-amber-400 dark:border-amber-500' : 'border-edge'}`}
                         />
                       ) : (
-                        <span className="text-[10px] text-dim" data-nao-editavel={it.param_name}>Encrypted — não sobrepõe</span>
+                        <span className="text-[10px] text-dim" data-nao-editavel={it.param_name}>{it.param_type === 'Encrypted' ? 'Encrypted — não sobrepõe' : 'Configuração original'}</span>
                       )}
                     </td>
                   </tr>
                 )
               })}
             </tbody>
-          </table>
+          </table> : <p className="text-xs text-dim">Caminho e código Python preservados da execução original.</p>}
         </div>
       ))}
       {n > 0 && (

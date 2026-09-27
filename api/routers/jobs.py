@@ -18,6 +18,8 @@ from services.notify import add_notificacao
 from services.conn_native import abrir_conexao_nativa
 from services.conn_crypto import encrypt_password
 from services import job_params as jp
+from services import param_vinculos as pv
+from services import param_snapshot as ps
 from deps import (
     PERM_EDITAR,
     get_current_user, require_perm,
@@ -299,7 +301,7 @@ _PY_ARQ_RE = re.compile(r"^[A-Za-z0-9._\-]+\.py$")
 _PY_INTERP_RE = re.compile(r"^[A-Za-z0-9._/\-]+$")
 
 
-def _validate_python_node(cfg, ssh_conn_id) -> list[str]:
+def _validate_python_node(cfg, ssh_conn_id, refs=None) -> list[str]:
     """Valida a config (python_json) do nó Python v2. None = legado (ok).
     Retorna lista de erros (vazia = ok). Modos novos exigem o Servidor SSH do
     próprio job (é nele que o script roda)."""
@@ -316,12 +318,12 @@ def _validate_python_node(cfg, ssh_conn_id) -> list[str]:
                     + ("'script no servidor'" if modo == "arquivo" else "'código embutido'"))
     if modo == "arquivo":
         sp = str(cfg.get("script_path") or "").strip()
-        if not _PY_PATH_RE.match(sp):
+        if not _PY_PATH_RE.fullmatch(sp) and not (not sp and (refs or {}).get("script_path")):
             errs.append("caminho do script inválido — absoluto, terminando em .py, "
                         "sem espaço/aspas (ex.: /opt/scripts/carga.py)")
     else:
         dd = str(cfg.get("destino_dir") or "").strip()
-        if not _PY_DIR_RE.match(dd):
+        if not _PY_DIR_RE.fullmatch(dd) and not (not dd and (refs or {}).get("destino_dir")):
             errs.append("diretório de destino inválido — absoluto, sem espaço/aspas "
                         "(ex.: /opt/scripts)")
         arq = str(cfg.get("arquivo") or "").strip()
@@ -346,7 +348,9 @@ def _normalize_python_node(cfg: dict) -> dict:
     if modo == "arquivo":
         out["script_path"] = str(cfg.get("script_path") or "").strip()
     else:
-        out["destino_dir"] = (str(cfg.get("destino_dir") or "").strip().rstrip("/") or "/")
+        out["destino_dir"] = str(cfg.get("destino_dir") or "").strip()
+        if out["destino_dir"]:
+            out["destino_dir"] = out["destino_dir"].rstrip("/") or "/"
         out["arquivo"] = str(cfg.get("arquivo") or "").strip()
         out["codigo"] = cfg.get("codigo") if isinstance(cfg.get("codigo"), str) else ""
     return out
@@ -2009,6 +2013,8 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         # autoriza mexer nos parâmetros gravados (mesma regra do POST /fluxo).
         if "params" in body:
             jobs[0]["params"] = body.get("params")
+        if "param_vinculos" in body:
+            jobs[0]["param_vinculos"] = body.get("param_vinculos")
 
     mssql_conn_ids = await _list_mssql_conn_ids()
 
@@ -2064,6 +2070,16 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
         _has_aguarde_col = bool(cur.fetchone()[0])
         _has_param_calc = _tem_colunas_param_calc(cur)
 
+        refs_preparados = {}
+        for node in jobs:
+            try:
+                effective = pv.preparar(cur, pipeline_name, node)
+                if effective and 'param_vinculos' not in node:
+                    node['param_vinculos'] = json.loads(effective)
+                if 'param_vinculos' in node:
+                    refs_preparados[node.get('job_name', '').strip()] = effective
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail={'errors': [str(exc)]})
         # Jobs conhecidos do pipeline (request + já existentes) — usado para
         # validar os ramos da decisão e detectar ciclos incluindo as arestas
         # do branch.
@@ -2242,7 +2258,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                         raw_py = json.loads(rp) if rp else None
                     except (ValueError, TypeError):
                         raw_py = None
-                py_errs = _validate_python_node(raw_py, job.get("ssh_conn_id"))
+                py_errs = _validate_python_node(raw_py, job.get("ssh_conn_id"), job.get('param_vinculos'))
                 if py_errs:
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in py_errs); continue
                 if raw_py is not None:
@@ -2382,6 +2398,14 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                     except Exception as e:
                         erros.append(f"Item {idx} ({j_name}) {direction} '{obj_name}': {e}")
 
+        if not erros and refs_preparados and pv.disponivel(cur):
+            for nome, raw in refs_preparados.items():
+                pv.gravar(cur, pipeline_name, nome, raw)
+
+        try:
+            ps.validar_estrutura(cur, pipeline_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         # Ciclo no grafo do pipeline (deps + arestas do branch) — só faz sentido
         # quando o request traz o conjunto de jobs (wizard envia jobs[]).
         if not erros and jobs_raw and _graph_has_cycle(cycle_adj):
@@ -2440,6 +2464,7 @@ async def reorder_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Dep
     if erros:
         raise HTTPException(status_code=422, detail={"errors": erros})
 
+    conn = cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
         for j in jobs:
@@ -2447,10 +2472,23 @@ async def reorder_pipeline_jobs(body: dict = Body(default={}), _auth: dict = Dep
                 "EXEC dbo.sp_etl_pipeline_job_reorder @pipeline_name=?, @job_name=?, @execution_order=?",
                 (pipeline_name, j["job_name"].strip(), int(j["execution_order"])),
             )
+        try:
+            ps.validar_estrutura(cur, pipeline_name)
+        except ValueError as exc:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail=str(exc))
         conn.commit()
-        cur.close(); conn.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail="Não foi possível reordenar as etapas.") from None
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
     return {"ok": True, "pipeline_name": pipeline_name, "jobs_reordered": len(jobs)}
 
 
@@ -2574,8 +2612,10 @@ def get_pipeline_job(
         email_node = None
         if (row[3] or "").lower().strip() == "email":
             email_node, notify = notify, None
+        vinculos = pv.ler_todos(cur, pipeline_name).get(job_name, {})
         cur.close(); conn.close()
         return {
+            "param_vinculos": vinculos,
             "pipeline_name": row[0], "job_name": row[1], "execution_order": row[2],
             "job_type": row[3], "job_command": row[4] or None, "active": bool(row[5]),
             "ssh_conn_id": row[6] or None, "verbose_log": bool(row[7]),
@@ -2606,6 +2646,7 @@ async def delete_pipeline_job(
     job_name = job_name.strip()
     if not pipeline_name or not job_name:
         raise HTTPException(status_code=422, detail="pipeline_name e job_name são obrigatórios")
+    conn = cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
         # Remove a lineage associada antes do job (evita órfãos e respeita FK, se existir).
@@ -2620,14 +2661,24 @@ async def delete_pipeline_job(
         rows = cur.rowcount
         if rows == 0:
             conn.rollback()
-            cur.close(); conn.close()
             raise HTTPException(status_code=404, detail=f"Job '{job_name}' não encontrado no pipeline '{pipeline_name}'")
+        try:
+            ps.validar_estrutura(cur, pipeline_name)
+        except ValueError as exc:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail=str(exc))
         conn.commit()
-        cur.close(); conn.close()
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail="Não foi possível excluir a etapa.") from None
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
     return {"ok": True, "pipeline_name": pipeline_name, "job_name": job_name}
 
 
@@ -2771,8 +2822,17 @@ def get_pipeline_fluxo(
                 "mssql_database": r[11] or None,
                 "params": params_by_job.get(r[0], []),
             })
+        try:
+            vinculos = pv.ler_todos(cur, pipeline_name)
+        except Exception:
+            cur.close(); conn.close()
+            raise HTTPException(status_code=503, detail="Não foi possível ler os vínculos de parâmetros. Recarregue antes de editar.") from None
+        for node in nodes:
+            node['param_vinculos'] = vinculos.get(node['job_name'], {})
         cur.close(); conn.close()
         return {"nodes": nodes}
+    except HTTPException:
+        raise
     except Exception as e:
         log.warning("get_pipeline_fluxo erro inesperado (%s): %s", pipeline_name, e)
         return {"nodes": []}
@@ -2890,6 +2950,16 @@ async def save_pipeline_fluxo(
         _email_dominios: list[str] = []
         _email_modelos: list[int] | None = None
         _email_exigir = False
+        refs_preparados = {}
+        for node in nodes:
+            try:
+                effective = pv.preparar(cur, pipeline_name, node)
+                if effective and 'param_vinculos' not in node:
+                    node['param_vinculos'] = json.loads(effective)
+                if 'param_vinculos' in node:
+                    refs_preparados[node.get('job_name', '').strip()] = effective
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail={'errors': [str(exc)]})
         prepared = []  # (j_name, is_new, order, type, cmd, ssh, verbose, mssql, mdb, params_present, params, dep_csv, cond_json|None, notify_json|None, sql_json|None, python_json|None, aguarde_json|None, lx, ly)
         raw_by_name: dict[str, dict] = {}  # nó cru por nome (checa presença de chave no UPDATE)
         seen: set[str] = set()
@@ -3022,7 +3092,7 @@ async def save_pipeline_fluxo(
                 raw_py = node.get("python")
                 if raw_py is not None and not isinstance(raw_py, dict):
                     errors.append(f"{j_name}: configuração do nó Python inválida"); continue
-                py_errs = _validate_python_node(raw_py, j_ssh)
+                py_errs = _validate_python_node(raw_py, j_ssh, node.get("param_vinculos"))
                 if py_errs:
                     errors.extend(f"{j_name}: {e}" for e in py_errs); continue
                 if raw_py is not None:
@@ -3181,6 +3251,13 @@ async def save_pipeline_fluxo(
                             "WHERE pipeline_name=? AND job_name=?",
                             (lx, ly, pipeline_name, j_name))
 
+        if refs_preparados and pv.disponivel(cur):
+            for nome, raw in refs_preparados.items():
+                pv.gravar(cur, pipeline_name, nome, raw)
+        try:
+            ps.validar_estrutura(cur, pipeline_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         conn.commit()
         cur.close(); conn.close()
         return {"ok": True, "saved": len(prepared), "deleted": removed}

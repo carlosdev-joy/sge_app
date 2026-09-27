@@ -14,3 +14,10 @@ Validação: `docs/validacao-parametros-globais-f1.md`; deploy e contrato: `docs
 
 
 F2a: release e smoke em docs/release-notes/parametros-globais-f2a.md; evidências em docs/validacao-parametros-globais-f2a.md. Importação real dsjob ainda não certificada: saída da versão instalada deve ser validada, sem segredos. Parser recusa formato não reconhecido e multilinha; preview é somente leitura. Não habilitar referências de nós antes de F2b.
+
+
+F2b preparada em `feat/parametros-globais-f2b`, sobre F2a ainda aberta. Referências DS/Python, migration 130 e snapshot imutável cifrado antecipado de F4. Release: `docs/release-notes/parametros-globais-f2b.md`; validação: `docs/validacao-parametros-globais-f2b.md`. QA adversarial e auditoria de segurança concluídos sem defeito confirmado restante. Testes de navegador e SQL Server isolado passaram. Não certifica DataStage real; sem deploy. Migrações planejadas de F3/F4 renumeradas para 131/132.
+
+Autorização posterior do usuário em 27/09/2026: executar toda a spec com QA/docs e sinalizar ao terminar; não parar para pedir confirmação de implementação a cada fase. Manter PRs para decisão explícita de merge. Próximas fases F3–F7 continuam obrigatórias; este marco não conclui a spec.
+
+F2b validação final: pytest 6957 passed/51 skipped/mesmas 8 falhas; 54 direcionados aprovados; tsc, lint comparado e build final aprovados; fonte sem NUL.

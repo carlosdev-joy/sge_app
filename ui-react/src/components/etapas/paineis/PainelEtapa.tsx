@@ -64,6 +64,7 @@ export function PainelEtapa({ node, pipeline, sshConns, mssqlConns, onRename, on
     mssql_database: d.mssql_database ?? '',
     params: (d.params as JobParam[] | undefined) ?? [],
     python: d.python,
+    param_vinculos: d.param_vinculos,
   }
 
   // Patch do JobTypeFields → mapeia job_command de volta p/ `command` (nullável).
@@ -132,7 +133,7 @@ export function PainelEtapa({ node, pipeline, sshConns, mssqlConns, onRename, on
               value={d.type}
               disabled={!isNew}
               // Parâmetros são do TIPO: trocar o tipo do nó novo zera a lista.
-              onChange={e => onPatchData(node.id, { type: e.target.value as EtapaType, params: [] })}
+              onChange={e => onPatchData(node.id, { type: e.target.value as EtapaType, params: [], param_vinculos: {} })}
               className={`text-xs ${!isNew ? 'opacity-60' : ''}`}
             >
               {CREATABLE_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t].label}</option>)}

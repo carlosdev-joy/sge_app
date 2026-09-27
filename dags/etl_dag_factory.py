@@ -32,6 +32,7 @@ Liberação por condição e disparo push (F3 — docs/retomada-f3-desenho.md):
 """
 from __future__ import annotations
 import os
+import json
 import re
 import ast
 from collections import defaultdict
@@ -388,6 +389,7 @@ def _task_block(job, project, pipeline, branch_reachable=False):
             # por (pipeline, job) em runtime — explícito, sem depender do
             # fallback dag_id == pipeline_name. NENHUM parâmetro entra aqui.
             f'    pipeline_name=PIPELINE_NAME,',
+            "    snapshot_parametros=True," if job.get("_snapshot_parametros") else "",
             verbose_line,
             f')',
         ]))
@@ -429,6 +431,9 @@ def _task_block(job, project, pipeline, branch_reachable=False):
                 linhas.append(f'    destino_dir={str(pyc.get("destino_dir") or "")!r},')
                 linhas.append(f'    arquivo={str(pyc.get("arquivo") or "")!r},')
                 linhas.append(f'    codigo={str(pyc.get("codigo") or "")!r},')
+            if job.get("_snapshot_parametros"):
+                linhas += ["    snapshot_parametros=True,", "    pipeline_name=PIPELINE_NAME,",
+                           f"    job_name={name!r},", "    mssql_conn_id=MSSQL_CONN_ID,"]
             interp = str(pyc.get("interpretador") or "").strip()
             if interp and interp != "python3":
                 linhas.append(f'    interpretador={interp!r},')
@@ -829,6 +834,9 @@ def _generate_dag_source(pipeline, jobs):
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
     sorted_jobs = sorted(jobs, key=lambda j: j["execution_order"])
+    snapshot_parametros = any(j.get("_snapshot_habilitado") or json.loads(j.get("param_vinculos_json") or "{}") for j in sorted_jobs)
+    for j in sorted_jobs:
+        j["_snapshot_parametros"] = snapshot_parametros
     # Group by execution_order — same order → parallel execution
     _grp_key = lambda j: j["execution_order"]
     job_groups = []
@@ -2483,6 +2491,18 @@ def _generate_dag_source(pipeline, jobs):
         "    _registrar_execucao('EXECUTANDO' if ok else 'PULADO', context, motivo=motivo)",
         "    return ok",
     ]
+    if snapshot_parametros:
+        # Capture before check_agenda releases any consumer; no payload in XCom.
+        from utils.param_snapshot import estrutura
+        estrutura_snapshot = estrutura(sorted_jobs)
+        pos = helpers_lines.index("    return ok")
+        helpers_lines[pos:pos] = [
+            "    if ok:",
+            "        from utils.param_snapshot import capturar",
+            "        capturar(MsSqlHook(mssql_conn_id=MSSQL_CONN_ID), PIPELINE_NAME, context['run_id'],",
+            "                 primeira_tentativa=context['ti'].try_number <= 1,",
+            f"                 estrutura_esperada={estrutura_snapshot!r}, projeto_esperado=PROJECT_NAME, ssh_esperado=SSH_CONN_ID)",
+        ]
     helpers_str = "\n".join(helpers_lines)
 
     # Bloco with DAG
@@ -3098,6 +3118,17 @@ def gerar_dags(**context):
         print(f"[FACTORY] sql_json supplement ignorado: {_sqe}")
 
     # Supplement: nó Python v2 (degrada se a coluna não existir — migration 059)
+    cursor.execute("SELECT COL_LENGTH('dbo.etl_pipeline_job','param_vinculos_json')")
+    _refs_col = cursor.fetchone()
+    if _refs_col and _refs_col[0]:
+        cursor.execute("SELECT pipeline_name, job_name, param_vinculos_json FROM dbo.etl_pipeline_job")
+        _refs_map = {(r[0], r[1]): r[2] for r in cursor.fetchall()}
+        cursor.execute("SELECT pipeline_name FROM dbo.etl_pipeline WHERE param_snapshot_ativo=1")
+        _snap_pipes = {r[0] for r in cursor.fetchall()}
+        for j in jobs_all:
+            j["param_vinculos_json"] = _refs_map.get((j["pipeline_name"], j["job_name"]))
+            j["_snapshot_habilitado"] = j["pipeline_name"] in _snap_pipes
+
     try:
         cursor.execute(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' "
@@ -3307,6 +3338,9 @@ def gerar_dags(**context):
             continue
 
         try:
+            if any(j.get("_snapshot_habilitado") or j.get("param_vinculos_json") for j in jobs):
+                from utils.param_snapshot import validar_publicacao
+                validar_publicacao(MsSqlHook(mssql_conn_id=MSSQL_CONN_ID), pname, project, jobs)
             source = _generate_dag_source(pipeline, jobs)
         except Exception as e:
             if _pendencia_de_terceiro(pname):
