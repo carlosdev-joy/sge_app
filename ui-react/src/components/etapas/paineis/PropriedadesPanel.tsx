@@ -15,6 +15,7 @@ import { PainelDecisao } from './PainelDecisao'
 import { PainelNotificacao } from './PainelNotificacao'
 import { PainelSql } from './PainelSql'
 import { PainelAguarde } from './PainelAguarde'
+import { PainelValidaArquivo } from './PainelValidaArquivo'
 import { PainelEmail } from './PainelEmail'
 import { sqlDiretosDoEmail } from '../../../lib/emailTabelaOrigem'
 
@@ -97,6 +98,8 @@ export function PropriedadesPanel({
           onPatchNotify={onPatchNotify}
           onDelete={onDelete}
         />
+      ) : node.type === 'valida_arquivo' ? (
+        <PainelValidaArquivo key={node.id} node={node} pipeline={pipeline} nodes={nodes} edges={edges} sshConns={sshConns} onPatchData={onPatchData} onRename={onRename} onDelete={onDelete} />
       ) : node.type === 'aguarde' ? (
         <PainelAguarde
           key={node.id}

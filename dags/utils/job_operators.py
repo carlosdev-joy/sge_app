@@ -275,7 +275,7 @@ class PythonScriptOperator(SSHOperator):
     template_ext = ()
 
     def __init__(self, *, modo, script_path=None, destino_dir=None, arquivo=None,
-                 codigo=None, interpretador=None, **kwargs):
+                 codigo=None, interpretador=None, snapshot_parametros=False, pipeline_name="", job_name="", mssql_conn_id="SQL14_DMDB41", **kwargs):
         import shlex
         interp = (interpretador or "python3").strip() or "python3"
         if modo == "codigo":
@@ -284,6 +284,10 @@ class PythonScriptOperator(SSHOperator):
         else:
             command = f"{interp} {shlex.quote(script_path or '')}"
         super().__init__(command=command, **kwargs)
+        self.snapshot_parametros = snapshot_parametros
+        self.pipeline_name = pipeline_name
+        self.job_name = job_name
+        self.mssql_conn_id = mssql_conn_id
         self.modo = modo
         self.script_path = script_path
         self.destino_dir = destino_dir
@@ -292,6 +296,33 @@ class PythonScriptOperator(SSHOperator):
         self.interpretador = interp
 
     def execute(self, context):
+        if getattr(self, 'snapshot_parametros', False):
+            import re
+            import shlex
+            from utils.param_snapshot import carregar, python_config, validar_servidor
+            original = carregar(MsSqlHook(mssql_conn_id=self.mssql_conn_id),
+                                self.pipeline_name, context['run_id'])
+            validar_servidor(original, self.job_name, 'python', self.ssh_conn_id)
+            py = python_config(original, self.job_name)
+            self.modo = py.get('modo')
+            if self.modo not in ('arquivo', 'codigo'):
+                raise ValueError('Modo Python incompatível com a configuração original.')
+            self.script_path = py.get('script_path')
+            self.destino_dir = py.get('destino_dir')
+            self.arquivo = py.get('arquivo')
+            self.codigo = py.get('codigo')
+            self.interpretador = py.get('interpretador') or 'python3'
+            path = self.script_path if self.modo == 'arquivo' else self.destino_dir
+            if not isinstance(path, str) or not re.fullmatch(r"/[^\s'\"]+", path) or (self.modo == 'arquivo' and not path.endswith('.py')):
+                raise ValueError('Caminho Python resolvido inválido; nenhum comando executado.')
+            if not re.fullmatch(r'[A-Za-z0-9._/\-]+', self.interpretador):
+                raise ValueError('Interpretador inválido na configuração original.')
+            if self.modo == 'codigo':
+                if not isinstance(self.arquivo, str) or not re.fullmatch(r'[A-Za-z0-9._\-]+\.py', self.arquivo):
+                    raise ValueError('Nome de arquivo inválido na configuração original.')
+                self.command = f"cd {shlex.quote(path)} && {shlex.quote(self.interpretador)} {shlex.quote(self.arquivo)}"
+            else:
+                self.command = f"{shlex.quote(self.interpretador)} {shlex.quote(path)}"
         if self.modo == "codigo":
             self._publicar_arquivo()
         return super().execute(context)

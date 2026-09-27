@@ -204,6 +204,8 @@ class CatalogoDb(FakePipeDb):
 
 class CatalogoCur(FakePipeCur):
     def execute(self, sql, params=()):
+        if "SELECT COL_LENGTH('dbo.etl_pipeline_job','param_vinculos_json')" in sql:
+            self._rows = [(None,)]; return
         if 'COLUMN_NAME IN' in sql and 'etl_pipeline_param' in sql:
             self._rows = [(self.db.colunas,)]; return
         if 'INFORMATION_SCHEMA.TABLES' in sql and 'etl_pipeline_param' in sql:
@@ -273,3 +275,9 @@ def test_register_v2_sem_tabela_retorna_503(editor, monkeypatch):
             parametros_versao=2, parametros=[raw(param_destino='orquestra')]))
     assert r.status_code == 503 and '129' in r.text
     assert db.deletes == 0 and db.commits == 0
+
+
+@pytest.fixture(autouse=True)
+def _banco_legado_sem_snapshot_130(monkeypatch):
+    # Estes dublês representam o schema anterior; F2b é coberta em teste próprio.
+    monkeypatch.setattr('services.param_snapshot.ativo', lambda cur, pipeline: False)

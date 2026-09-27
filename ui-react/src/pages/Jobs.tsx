@@ -106,6 +106,7 @@ interface JobFormData {
   mssql_database: string
   params: JobParam[]
   // Nó python v2 — draft local com TODOS os modos (o payload envia só o ativo).
+  param_vinculos: Record<string, string>
   python: PythonDraft
   // Campos da etapa de notificação (job_type === 'notificacao').
   grupo_id: number | null
@@ -130,6 +131,7 @@ function JobFormModal({
     mssql_conn_id: '',
     mssql_database: '',
     params: [],
+    param_vinculos: {},
     // Nó NOVO → python v2 default 'arquivo'; job existente → 'modulo' até o
     // GET do job devolver o `python` salvo (carregado no useEffect abaixo).
     python: defaultPythonDraft(job ? 'modulo' : 'arquivo'),
@@ -194,6 +196,7 @@ function JobFormModal({
       mssql_database?: string | null
       params?: JobParamApi[]
       notify?: { grupo_id: number | null; template_id: number | null; mensagem: string } | null
+      param_vinculos?: Record<string, string>
       python?: PythonNodeApi | null
     }>(`/pipelines/jobs/${encodeURIComponent(pipeline)}/${encodeURIComponent(job.job_name)}`)
       .then(d => {
@@ -205,6 +208,7 @@ function JobFormModal({
           mssql_database: d.mssql_database ?? '',
           // storedproc e datastage (origem/cálculo/Encrypted mascarado) — lib/dsParams.
           params: paramsFromApi(d.params),
+          param_vinculos: d.param_vinculos ?? {},
           // python v2: null/ausente = legado 'modulo' (pré-seleciona o modo certo).
           python: pythonFromApi(d.python),
           grupo_id: notify.grupo_id ?? null,
@@ -283,6 +287,7 @@ function JobFormModal({
         // storedproc: nome/tipo/valor; datastage: origem + cálculo + Encrypted
         // (*** = manter); demais tipos: lista vazia (a chave sempre vai).
         params: paramsToApi(form.job_type, form.params),
+        param_vinculos: form.param_vinculos,
         ...(form.job_type === 'notificacao'
           ? {
               notify: {
@@ -357,6 +362,7 @@ function JobFormModal({
     mssql_conn_id: form.mssql_conn_id,
     mssql_database: form.mssql_database,
     params: form.params,
+    param_vinculos: form.param_vinculos,
     python: form.python,
   }
   function patchTypeFields(patch: Partial<JobTypeFieldsValue>) {
@@ -420,7 +426,7 @@ function JobFormModal({
             // Parâmetros são do TIPO (storedproc guarda @p VARCHAR; datastage guarda
             // pData String + origem): trocar o tipo zera a lista — senão o select
             // de tipo DS mostraria "String" com VARCHAR no estado.
-            onChange={e => { const t = e.target.value as JobType; setForm(prev => ({ ...prev, job_type: t, params: [] })); setErr([]) }}>
+            onChange={e => { const t = e.target.value as JobType; setForm(prev => ({ ...prev, job_type: t, params: [], param_vinculos: {} })); setErr([]) }}>
             {JOB_TYPES.map(t => <option key={t}>{t}</option>)}
           </Select>
         </div>

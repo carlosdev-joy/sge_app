@@ -29,6 +29,7 @@ from services import execucao_identidade as ident_svc
 from services import malha_corrida as mc
 # Cascata, reabertura de corrida e auditoria do rerun (F4 — §4 e decisão 1 §7).
 from services import rerun as rerun_svc
+from services import param_snapshot as ps
 from services import rerun_params
 # Pausa de etapa em runtime, liberação e cancelamento (F5 — §5 Bloco C, decisão 3).
 from services import espera as espera_svc
@@ -1158,14 +1159,16 @@ async def previa_rerun(
     # que iria ao DataStage nesta referência. Best-effort: sem eles a prévia
     # continua servindo para o gesto (e diz que não conseguiu).
     parametros: list = []
+    original = None
     parametros_indisponiveis = False
     sobreposicoes_anteriores: list = []
     if etapas_info.get("etapas"):
         conn = cur = None
         try:
             conn = get_db_conn(); cur = conn.cursor()
-            parametros = rerun_params.parametros_da_previa(
-                cur, oficial, list(etapas_info["etapas"]), data_ref)
+            original = ps.original(cur, oficial, dag_run_id)
+            parametros = (ps.previa(original, list(etapas_info["etapas"])) if original else
+                          rerun_params.parametros_da_previa(cur, oficial, list(etapas_info["etapas"]), data_ref))
         except Exception as e:  # noqa: BLE001 — prévia degrada, nunca derruba
             parametros_indisponiveis = True
             log.warning("[RERUN] parametros da previa de %s falharam: %s", oficial, e)
@@ -1178,7 +1181,7 @@ async def previa_rerun(
     # O gesto novo descarta a sobreposição de um rerun ANTERIOR desta corrida —
     # a prévia diz quais existem, para o operador redigitar. Best-effort à
     # parte: falhar aqui não pode marcar os parâmetros como indisponíveis.
-    if dag_run_id:
+    if dag_run_id and not original:
         conn = cur = None
         try:
             conn = get_db_conn(); cur = conn.cursor()
@@ -1433,8 +1436,29 @@ async def rerun_from_task(body: dict = Body(default={}),
     # revisão da F5). Com a corrida conhecida, antes do clear; no caminho
     # histórico (só execution_id) o run_id nasce dentro do clear e o desfazer
     # acontece logo depois dele.
+    original_parametros = None
+    conn_original = cur_original = None
+    try:
+        conn_original = get_db_conn(); cur_original = conn_original.cursor()
+        if not dag_run_id and exec_id and ps.ativo(cur_original, oficial):
+            oficial, ident, data_ref = await _resolve_alvo_rerun(
+                pipeline, exec_id=exec_id, dag_run_id='', data_referencia=data_ref_s)
+            dag_id = oficial
+            dag_run_id = ident.get('dag_run_id') or ident.get('run_id') or ''
+            if not dag_run_id:
+                raise HTTPException(status_code=409, detail=ps.ERRO)
+        original_parametros = ps.original(cur_original, oficial, dag_run_id)
+        if original_parametros:
+            ps.validar_retomada(cur_original, original_parametros)
+        if original_parametros and parametros_raw:
+            raise HTTPException(status_code=409, detail=ps.ERRO)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    finally:
+        if cur_original is not None: cur_original.close()
+        if conn_original is not None: conn_original.close()
     overrides_limpos_antes = False
-    if dag_run_id and not parametros_raw:
+    if dag_run_id and not parametros_raw and not original_parametros:
         _apagar_overrides_silencioso(oficial, dag_run_id)
         overrides_limpos_antes = True
     if parametros_raw:

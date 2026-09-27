@@ -1,8 +1,8 @@
 # Spec: Parâmetros de pipeline e Valida Arquivo — Orquestra
 
-Data: 2026-09-27 · Status: aprovada; em execução (F1)
+Data: 2026-09-27 · Status: aprovada; implementação local F1–F6 preparada; documentação F7 preparada; aceite DataStage na Caixa pendente
 
-Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, validada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), aguardando merge; F2–F7 ainda não implementadas.
+Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, validada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), mergeado em 27/09/2026 (8cf356b). F2a implementa cadastro e prévia de importação no [PR #456](https://github.com/carlosdev-joy/sge_app/pull/456), aguardando autorização de merge; F2b ([PR #457](https://github.com/carlosdev-joy/sge_app/pull/457), aberta sobre F2a) implementa referências aos nós DataStage/Python e antecipa a fundação do snapshot exigida para retomadas. F3 implementada no [PR #458](https://github.com/carlosdev-joy/sge_app/pull/458), aberta sobre F2b; F4 implementada no PR#459; F5 implementada no [PR #460](https://github.com/carlosdev-joy/sge_app/pull/460), com validação integrada local; F6 implementada no [PR #461](https://github.com/carlosdev-joy/sge_app/pull/461), com revisão/QA; F7 documental preparada no [PR #462](https://github.com/carlosdev-joy/sge_app/pull/462). Aceite operacional F7 ainda pendente exclusivamente na Caixa. Sem deploy nesta sessão.
 
 ## 1. Visão
 
@@ -79,14 +79,16 @@ Proposta de migrations; confirmar numeração na main antes de cada fase. Base a
 
 - `128_backlog_validacao_frescor_arquivo.sql`: item no `etl_backlog`, título único, sobre garantia de arquivo da execução e concorrência. Não implementa validação de frescor.
 - `129_parametros_pipeline_origem.sql`: ampliar `etl_pipeline_param` com procedência/destino e metadados de importação. Preservar `param_name VARCHAR(128) COLLATE Latin1_General_BIN2`, valor NVARCHAR(MAX) cifrado quando Encrypted, fontes/cálculos já existentes, FK e nomes por caixa exata. Tipos adicionais só com validação equivalente API/runtime.
-- `130_valida_arquivo_config.sql`: `etl_valida_arquivo_config` com id BIGINT, pipeline NVARCHAR(200), nó NVARCHAR(200), entrada estável UNIQUEIDENTIFIER, ordem INT, tipo VARCHAR(16), modo_diretorio VARCHAR(16), param_name compatível com cadastro, diretorio_literal NVARCHAR(2000), arquivo NVARCHAR(300), alvo NVARCHAR(200), políticas VARCHAR(32), ignorar_cabecalho BIT, revisão BIGINT e datas. Um modo de diretório por entrada; CHECKs/FKs e alvo pertencente ao mesmo pipeline; alteração de alvo é estrutural.
-- `131_valida_arquivo_execucao.sql`: snapshot por pipeline/run com revisão/configuração NVARCHAR(MAX) e segredos protegidos; resultados por nó/entrada/tentativa com estado observado, contagens BIGINT anuláveis, decisão, motivo, alvo, instante e revisão. JSON validado; índices por execução/nó. Chave de run deve adotar o contrato real existente sem truncamento. Persistência idempotente por tentativa.
+- `130_parametros_vinculos_snapshot.sql`: referências JSON por nó, flag permanente de ativação no pipeline e snapshot Fernet por pipeline/run. Antecipado de F4 para F2b: referências não podem estrear com retomada usando valores novos.
+- `131_valida_arquivo_config.sql`: `etl_valida_arquivo_no` guarda conexão, prazo, revisão BIGINT e data por nó; `etl_valida_arquivo_config` guarda pipeline/nó NVARCHAR(200), entrada estável UNIQUEIDENTIFIER (chave composta), ordem INT, tipo VARCHAR(16), param_name compatível com cadastro, diretorio_literal NVARCHAR(2000), arquivo NVARCHAR(300), alvo NVARCHAR(200), políticas VARCHAR(16) e ignorar_cabecalho BIT. Revisão é atômica para todas as entradas. Literal preenchido prevalece sobre referência; CHECKs/FKs e alvo pertencente ao mesmo pipeline; alteração de alvo, conexão ou conjunto de entradas é estrutural.
+- `132_valida_arquivo_execucao.sql`: extensão do snapshot cifrado 130 para configurações e políticas; tabelas de tentativa, entradas e conclusão por pipeline/run; resultados por nó/entrada/tentativa com estado observado, contagens BIGINT anuláveis, decisão, motivo, alvo, instante e revisão. JSON validado; índices por execução/nó. Chave de run deve adotar o contrato real existente sem truncamento. Persistência idempotente por tentativa.
+- `133_valida_arquivo_guardas.sql`: prova durável de decisão por task técnica/tentativa/início, origens de autorização e resultado SEM_EXECUCAO para ramos sem avaliação, sem confundir com falta de dados.
 - Política de conclusão sem movimento/liberação de dependentes pertence ao pipeline e é incluída no snapshot. Histórico técnico não tem interruptor; `notificar_sem_movimento BIT` controla somente a notificação e integra o snapshot. Desligá-lo não suprime auditoria, diagnóstico nem estado da execução.
 - Atualização concorrente com revisão esperada e transação; prévia não insere parâmetros nem altera configuração. Reimportação não apaga automaticamente itens ainda referenciados.
 
 ## 5. Fases
 
-Cada fase deixa a main funcional, ganha PR própria e revisão adversarial multi-agente antes da PR. Validação obrigatória em todas: pytest completo comparado com main (zero falha nova), `npx tsc -b`, eslint por arquivo/regra/mensagem contra baseline, build e dist recompilada por último quando houver front, fontes sem NUL. Mudanças em entrada/segredo passam também por revisão de segurança. Não há dependência Python nova prevista; se necessária, wheel offline deve entrar na mesma fase. Não ativar criação do nó na UI antes do suporte ao runtime.
+Cada fase deixa a main funcional, ganha PR própria e revisão adversarial multi-agente antes da PR. Validação obrigatória em todas: pytest completo comparado com main (zero falha nova), `npx tsc -b`, eslint por arquivo/regra/mensagem contra baseline, build e dist recompilada por último quando houver front, fontes sem NUL. Mudanças em entrada/segredo passam também por revisão de segurança. Autorização de 27/09/2026: seguir até concluir todas as fases, QA e documentação, sem nova confirmação de implementação a cada fase; deixar PRs para decisão de merge do usuário. Não há dependência Python nova prevista; se necessária, wheel offline deve entrar na mesma fase. Não ativar criação do nó na UI antes do suporte ao runtime.
 
 ### F1 — Contrato único de parâmetros
 - Entregável: migration 129 e extensão compatível de modelo/API; rascunho do backlog 128 incluído na PR documental ou nesta fase.
@@ -95,19 +97,21 @@ Cada fase deixa a main funcional, ganha PR própria e revisão adversarial multi
 - Revisão adversarial antes da PR `feat: evolui parâmetros compartilhados de pipeline`.
 
 ### F2 — Importação e passo de parâmetros
+
+Divisão de execução: F2a entrega catálogo v2 no wizard, seções DS/ORQ, consulta reutilizável e importação com prévia. F2b conecta referências aos campos dos nós DS/Python e ao runtime; não está disponível em F2a. A extração real via dsjob continua dependente de smoke na versão instalada.
 - Entregável: importação com prévia/conflitos, passo do wizard e seletor reutilizável; integração DS/Python pode ser dividida em PRs menores mantendo contrato funcional.
 - Aceite: cancelar importação não persiste; reimportação não apaga valor próprio; fontes DS e ORQ distinguíveis; salvar erro não perde preenchimento; teclado e temas funcionam.
 - Validação: conjunto obrigatório + dublês de comandos e smoke com saída DS real sanitizada; sem confirmar extração real apenas por fixture.
 - Revisão adversarial antes da PR `feat: importa e seleciona parâmetros do pipeline`.
 
 ### F3 — Configuração e avaliação de arquivos
-- Entregável: migration 130, serviço/API com políticas e prévia, avaliação dataset/texto e cabeçalho. Nó ainda indisponível para publicação.
+- Entregável: migration 131, serviço/API com políticas e prévia, avaliação dataset/texto e cabeçalho. Nó ainda indisponível para publicação.
 - Aceite: ausência/vazio/dados/erro técnico distintos; path literal e referência; cabeçalho e última linha sem newline; nenhum comando/caminho arbitrário; prévia informa impacto.
 - Validação: conjunto obrigatório + matriz de políticas, quoting e timeout; contratos do parser DS.
 - Revisão adversarial antes da PR `feat: avalia arquivos com políticas por entrada`.
 
 ### F4 — Snapshot e registro da validação
-- Entregável: migration 131, snapshot e resultados duráveis; sem ativação prematura da UI.
+- Entregável: migration 132, extensão do snapshot 130 para políticas e resultados duráveis; sem ativação prematura da UI.
 - Aceite: retry usa revisão original após edição; resultados de falha persistem; sem segredo em XCom; nova execução recebe configuração nova; gravação concorrente idempotente.
 - Validação: conjunto obrigatório + concorrência, restart e falha na persistência; migração duas vezes.
 - Revisão adversarial antes da PR `feat: preserva configuração e diagnóstico por execução`.
@@ -167,3 +171,12 @@ Em 27/09/2026, o usuário confirmou os dois pontos restantes:
 2. **Erro técnico sempre resulta em falha.** Falha de conexão, permissão, leitura, timeout ou interpretação não pode ser tratada como ausência/vazio nem permitir continuar sem validação. Os destinos do nó ficam bloqueados; o diagnóstico é preservado.
 
 Não restam perguntas funcionais da entrevista. Importação, guardas internas, agregação de várias entradas por destino e modelo físico são propostas técnicas desta spec, sujeitas à validação das fases; não são implementações concluídas. As decisões foram consolidadas antes do código. Em seguida o usuário autorizou iniciar as alterações; a implementação segue as fases e merges separados.
+
+Confirmação operacional do usuário: o teste com dataset DataStage real só pode ocorrer na Caixa. Implementação/QA local seguem; certificação nessa versão é etapa assistida pendente, explicitamente separada do aceite local.
+
+
+### Fechamento da preparação local
+
+F1 mergeada; F2a–F6 em PRs empilhadas #456–#461. F7 entrega manual e roteiro assistido, sem alterar código de produto. Validação F6: 7094 testes aprovados, 51 ignorados e as mesmas 8 falhas da base; tipos/lint/build, SQL real temporário e navegador aprovados. Revisões adversarial, segurança e acabamento concluídas.
+
+A spec não está certificada operacionalmente: faltam implantação autorizada, contratos dsjob/orchadmin e matriz com arquivos reais na Caixa. Configuração do caso inicial será preenchida com os nomes reais confirmados naquele ambiente. Ver [manual](manual-parametros-valida-arquivo.md), [roteiro Caixa](release-notes/parametros-valida-arquivo-caixa.md) e [fechamento F7](validacao-parametros-valida-arquivo-f7.md). Frescor/concorrência seguem no Backlog128, sem implementação nesta entrega.

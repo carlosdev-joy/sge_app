@@ -5,6 +5,10 @@
 
 ---
 
+## Parâmetros e validação de arquivos
+
+Para configurar o catálogo do pipeline, referências nos nós, Valida Arquivo e conclusão sem movimento, consulte o [guia de parâmetros e Valida Arquivo](manual-parametros-valida-arquivo.md). Administração e operação: [roteiro de aplicação assistida na Caixa](release-notes/parametros-valida-arquivo-caixa.md). A certificação DataStage real permanece pendente na Caixa; documentação preparada não indica funcionalidade já implantada.
+
 ## Perfis de acesso
 
 | Perfil | Quem é | O que pode fazer |

@@ -16,8 +16,9 @@ import {
   critColor, parseMonthDaysTimes, serializeMonthDaysTimes,
 } from './pipelineUtils'
 import { DependenciasModal } from './DependenciasModal'
-import { ParametrosPipelineSecao } from './ParametrosPipeline'
-import { dsParamErrors, dsParamsToApi, paramsFromApi, type JobParam, type JobParamApi } from '../../lib/dsParams'
+import { ParametrosGlobais } from './ParametrosGlobais'
+import { catalogoFromApi, catalogoToApi, erroCatalogo, type CatalogoParam, type CatalogoApi } from '../../lib/pipelineCatalogo'
+import { dsParamErrors } from '../../lib/dsParams'
 import { LinkAdmin } from '../admin/LinkAdmin'
 
 // ── Sub-types ─────────────────────────────────────────────────────────────────
@@ -206,12 +207,12 @@ const TITULO_HORA_INERTE =
 
 // ── Wizard stepper ────────────────────────────────────────────────────────────
 
-const STEPS = ['Identificação', 'Agendamento', 'Notificações', 'Revisão'] as const
-type Step = 0 | 1 | 2 | 3
+const STEPS = ['Identificação', 'Agendamento', 'Parâmetros Globais', 'Notificações', 'Revisão'] as const
+type Step = 0 | 1 | 2 | 3 | 4
 
 function Stepper({ step, setStep, errors }: { step: Step; setStep: (s: Step) => void; errors: Record<number, string[]> }) {
   return (
-    <div className="flex items-center gap-0 mb-1">
+    <div className="flex flex-wrap items-center gap-y-3 mb-1">
       {STEPS.map((label, i) => {
         const hasErr = (errors[i]?.length ?? 0) > 0
         const active = i === step
@@ -284,30 +285,23 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
   })
   const calendarios = calData?.calendarios ?? []
 
-  // Parâmetros DataStage do pipeline (F4). Na edição vêm do GET próprio (a
-  // linha da lista não os carrega); o que o usuário edita fica em estado
-  // separado, NULL até o primeiro toque — sem setState em effect. Não marcam a
-  // DAG como desatualizada: o operador os lê em runtime.
-  const paramsQ = useQuery<{ parametros: JobParamApi[]; disponivel: boolean }>({
-    queryKey: ['pipeline-parametros', pipeline?.pipeline_name],
-    queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline?.pipeline_name ?? '')}/parametros`),
-    enabled: isEdit,
+  // Catálogo v2 isolado do cache legado DS; draft separado até a primeira edição.
+  const paramsQ = useQuery<{ parametros: CatalogoApi[]; disponivel: boolean }>({
+    queryKey: ['pipeline-catalogo', pipeline?.pipeline_name],
+    queryFn: () => apiFetch(isEdit ? `/pipelines/${encodeURIComponent(pipeline?.pipeline_name ?? '')}/parametros?parametros_versao=2` : '/pipelines/parametros/catalogo-status'),
     // Sempre o estado GRAVADO ao abrir: com cache "fresh" o wizard reaberto
     // logo após um save mostraria a lista velha e o replace-all a gravaria de
     // volta (achado da revisão da F4). O save também invalida esta key.
     staleTime: 0,
   })
-  const [parametrosEdit, setParametrosEdit] = useState<JobParam[] | null>(null)
-  const parametrosDs = useMemo(
-    () => parametrosEdit ?? paramsFromApi(paramsQ.data?.parametros),
+  const [parametrosEdit, setParametrosEdit] = useState<CatalogoParam[] | null>(null)
+  const parametrosCatalogo = useMemo(
+    () => parametrosEdit ?? catalogoFromApi(paramsQ.data?.parametros),
     [parametrosEdit, paramsQ.data],
   )
-  // A seção (e a chave no save) só existem quando se SABE o estado gravado: na
-  // edição, depois do GET responder — editar antes da resposta faria o
-  // replace-all apagar os defaults gravados. Sem a migration 108 a API responde
-  // `disponivel: false` e a seção some (o save não manda a chave, preservando
-  // o contrato antigo); GET com erro idem.
-  const parametrosDisponiveis = !isEdit || (paramsQ.isSuccess && paramsQ.data?.disponivel !== false)
+  // Sem leitura válida, omitir o catálogo preserva os parâmetros gravados.
+  // Draft alterado com consulta em erro bloqueia o save para evitar descarte.
+  const parametrosDisponiveis = paramsQ.isSuccess && paramsQ.data?.disponivel !== false
 
   // "Dirty" cirúrgico: marca só quando muda algo que AFETA a DAG (não cadastro
   // puro). Usado para perguntar "Regenerar a DAG?" só quando precisa.
@@ -421,7 +415,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
     if (s === 2) {
       // F4 — mesmas réguas da etapa (espelham a API); o 422 do servidor ainda
       // vale como última barreira (Encrypted sem token, migration 108).
-      return parametrosDisponiveis ? dsParamErrors(parametrosDs) : []
+      if (!parametrosDisponiveis && parametrosEdit !== null) return ['Recarregue o catálogo antes de salvar os parâmetros alterados.']
+      return parametrosDisponiveis ? dsParamErrors(parametrosCatalogo) : []
     }
     return []
   }
@@ -433,7 +428,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       return
     }
     setStepErrors(prev => ({ ...prev, [step]: [] }))
-    if (step < 3) setStep((step + 1) as Step)
+    if (step < 4) setStep((step + 1) as Step)
   }
 
   function goPrev() { if (step > 0) setStep((step - 1) as Step) }
@@ -534,9 +529,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
         email_destinatarios: form.email_destinatarios.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean),
         changed_by:          user?.matricula ?? 'react-ui',
         dag_criada:          pipeline?.dag_criada ?? 0,
-        // F4 — a chave só vai quando a API tem a 108 (senão o contrato antigo,
-        // sem a chave, preserva o que houver). Replace-all na presença.
-        ...(parametrosDisponiveis ? { parametros: dsParamsToApi(parametrosDs) } : {}),
+        // v2 exige a migration 129; ausência da chave preserva o catálogo.
+        ...(parametrosDisponiveis ? { parametros_versao: 2, parametros: catalogoToApi(parametrosCatalogo) } : {}),
         ...buildSchedulePayload(),
       }
       const reg = await apiFetch<{ dag_sync?: DagSync | null; avisos?: string[] }>('/pipelines/register', { method: 'POST', body: JSON.stringify(body) })
@@ -548,6 +542,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       // F4: os defaults gravados mudaram — invalida a key que o wizard (reaberto)
       // e a linha informativa da etapa (JobTypeFields) leem.
       qc.invalidateQueries({ queryKey: ['pipeline-parametros', res.pname] })
+      qc.invalidateQueries({ queryKey: ['pipeline-catalogo', res.pname] })
       // D35: hora inválida virou NULL no servidor — o descarte nunca é mudo.
       res.avisos?.forEach(a => toast.info(`Atenção: ${a}`))
       const dag = dagSyncMsg(res.dagSync)
@@ -559,8 +554,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
       if (!isEdit || dagDirtyRef.current) { setAskGenerate(res.pname); return }
       onClose()
     },
-    onError: (e: any) => {
-      setStepErrors(prev => ({ ...prev, 3: [e?.message || 'Erro ao salvar pipeline'] }))
+    onError: (e: unknown) => {
+      setStepErrors(prev => ({ ...prev, 4: [erroCatalogo(e)] }))
     },
   })
 
@@ -592,7 +587,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
     let firstBad = -1
     // 0–2: o passo 2 tem as réguas dos parâmetros DataStage (F4) — pular pelo
     // Stepper direto à Revisão não pode contornar a validação.
-    for (const s of [0, 1, 2]) {
+    for (const s of [0, 1, 2, 3]) {
       const e = validateStep(s)
       if (e.length) { allErrors[s] = e; if (firstBad < 0) firstBad = s }
     }
@@ -1034,8 +1029,20 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
           </div>
         )}
 
-        {/* ── STEP 2: NOTIFICAÇÕES + AVANÇADO ── */}
         {step === 2 && (
+          <div className="flex flex-col gap-4 overflow-y-auto max-h-[55vh] pr-1">
+            {parametrosDisponiveis
+              ? <ParametrosGlobais params={parametrosCatalogo} onChange={setParametrosEdit}
+                  pipeline={form.pipeline_name.trim().toUpperCase() || undefined} project={form.project_name} />
+              : <div className="space-y-3 text-sm text-dim" role="status">
+                  <p>{paramsQ.isPending ? 'Carregando parâmetros…' : erroCatalogo(paramsQ.error)}</p>
+                  {!paramsQ.isPending && <Button variant="secondary" onClick={() => paramsQ.refetch()}>Tentar novamente</Button>}
+                  <p>Enquanto o catálogo estiver indisponível, salvar outros campos preserva os parâmetros existentes.</p>
+                </div>}
+          </div>
+        )}
+        {/* ── STEP 3: NOTIFICAÇÕES + AVANÇADO ── */}
+        {step === 3 && (
           <div className="flex flex-col gap-4 overflow-y-auto max-h-[55vh] pr-1">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider text-blue-400 mb-2">Notificações Teams / E-mail</p>
@@ -1078,12 +1085,6 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                 </div>
                 <Input label="Fila de execução (pool)" value={form.pool_name}
                   onChange={e => f('pool_name', e.target.value)} placeholder="padrão do Airflow" />
-                {/* F4 — defaults de parâmetro DataStage do pipeline (lidos em
-                    runtime pelo operador; não afetam a DAG publicada). */}
-                {parametrosDisponiveis && (
-                  <ParametrosPipelineSecao params={parametrosDs} onChange={setParametrosEdit}
-                    pipeline={form.pipeline_name.trim().toUpperCase() || undefined} />
-                )}
                 {/* O campo de texto "Depende de" e o checkbox "Disparar quando
                     as dependências concluírem" morreram na F5: dependência é
                     escolhida SÓ pelo modal do passo Agendamento (D33) e ter
@@ -1101,8 +1102,8 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
           </div>
         )}
 
-        {/* ── STEP 3: REVISÃO ── */}
-        {step === 3 && (
+        {/* ── STEP 4: REVISÃO ── */}
+        {step === 4 && (
           <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-1">
             <p className="text-xs text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800/30 rounded-lg px-3 py-2">
               Revise todas as informações antes de salvar. Use o stepper acima para corrigir qualquer etapa.
@@ -1186,19 +1187,19 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
               </div>
             </div>
 
-            {parametrosDs.length > 0 && (
+            {parametrosCatalogo.length > 0 && (
               <div className="border border-edge rounded-xl overflow-hidden" data-revisao-parametros>
                 <div className="bg-canvas border-b border-edge px-3 py-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Parâmetros DataStage do pipeline</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Parâmetros Globais</span>
                 </div>
                 <div className="p-3 text-xs flex flex-wrap gap-x-4 gap-y-1">
-                  {parametrosDs.filter(p => p.param_name.trim()).map(p => (
+                  {parametrosCatalogo.filter(p => p.param_name.trim()).map(p => (
                     <span key={p.param_name} className="font-mono text-ink">
-                      {p.param_name}
+                      {p.param_destino === 'datastage' ? '[DS]' : '[ORQ]'} {p.param_name}
                       <span className="text-dim font-sans"> ({p.param_type}, {p.param_source === 'fixo' ? 'fixo' : p.param_source === 'run_id' ? 'run id' : 'calculado'})</span>
                     </span>
                   ))}
-                  <span className="basis-full text-dim">Valem para toda etapa DataStage cujo job declarar o nome; a etapa pode sobrepor.</span>
+                  <span className="basis-full text-dim">Parâmetros DS são herdados pelos jobs que declaram o nome; valores definidos na etapa têm prioridade.</span>
                 </div>
               </div>
             )}
@@ -1209,7 +1210,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
 
             {saveMut.isError && (
               <div className="bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800 rounded-lg px-3 py-2 text-xs text-red-700 dark:text-red-400">
-                Erro ao salvar: {(saveMut.error as any)?.message}
+                Erro ao salvar: {erroCatalogo(saveMut.error)}
               </div>
             )}
           </div>
@@ -1220,7 +1221,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
             {step === 0 ? 'Cancelar' : '← Voltar'}
           </Button>
           <div className="flex gap-2">
-            {step < 3
+            {step < 4
               ? <Button onClick={goNext}>Próximo →</Button>
               : <Button loading={saveMut.isPending} onClick={validateAllAndSave}>
                   <Save size={13} /> {isEdit ? 'Salvar alterações' : 'Criar pipeline'}

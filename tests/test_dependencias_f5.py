@@ -1289,3 +1289,9 @@ def test_campos_que_afetam_dag_sao_os_do_desenho():
         # minutes=sla) — SLA não é cadastro puro.
         "sla_minutos",
     }
+
+
+@pytest.fixture(autouse=True)
+def _banco_legado_sem_snapshot_130(monkeypatch):
+    # Estes dublês representam o schema anterior; F2b é coberta em teste próprio.
+    monkeypatch.setattr('services.param_snapshot.ativo', lambda cur, pipeline: False)

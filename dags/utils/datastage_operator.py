@@ -201,6 +201,7 @@ class DataStageOperator(BaseOperator):
         attach_only: bool = False,
         mssql_conn_id: str = "SQL14_DMDB41",
         pipeline_name: str = "",
+        snapshot_parametros: bool = False,
         queue_name: str | None = None,
         verbose_log: bool = False,
         verbose_interval: int = 5,   # chama -logsum a cada N polls (só com verbose_log=True)
@@ -217,6 +218,7 @@ class DataStageOperator(BaseOperator):
         self.attach_only          = attach_only
         self.mssql_conn_id        = mssql_conn_id
         self.pipeline_name        = pipeline_name
+        self.snapshot_parametros = snapshot_parametros
         self.queue_name           = queue_name    # DS Workload Management queue
         self.verbose_log          = verbose_log   # logsum periódico durante execução
         self.verbose_interval     = verbose_interval
@@ -484,12 +486,19 @@ class DataStageOperator(BaseOperator):
             return []
         try:
             hook = self._db_hook()
-            etapa = ds_params.carregar_etapa(hook, ctx["pipeline"], self.job_name, log=self.log)
-            # F4 — defaults do pipeline: entram só onde o job declara o nome.
-            pipe = ds_params.carregar_pipeline(hook, ctx["pipeline"], log=self.log)
-            # F5 — sobreposição do rerun para ESTA corrida (chave = run_id).
-            overrides = ds_params.carregar_overrides(
-                hook, ctx["pipeline"], self.job_name, ctx.get("run_id") or "", log=self.log)
+            if getattr(self, 'snapshot_parametros', False):
+                from utils.param_snapshot import carregar, etapa_ds, validar_servidor
+                original = carregar(hook, ctx['pipeline'], ctx['run_id'])
+                validar_servidor(original, self.job_name, 'datastage', self.ssh_conn_id, self.project)
+                etapa, pipe, overrides = etapa_ds(original, self.job_name)
+                ctx['data_execucao_snapshot'] = original['data_execucao']
+            else:
+                etapa = ds_params.carregar_etapa(hook, ctx["pipeline"], self.job_name, log=self.log)
+                # F4 — defaults do pipeline: entram só onde o job declara o nome.
+                pipe = ds_params.carregar_pipeline(hook, ctx["pipeline"], log=self.log)
+                # F5 — sobreposição do rerun para ESTA corrida (chave = run_id).
+                overrides = ds_params.carregar_overrides(
+                    hook, ctx["pipeline"], self.job_name, ctx.get("run_id") or "", log=self.log)
         except ds_params.ParamError:
             raise
         except Exception as exc:
@@ -522,7 +531,7 @@ class DataStageOperator(BaseOperator):
         if "data_logica" in origens:
             bases["data_logica"] = ds_params.parse_data(ctx.get("ds"))
         if "data_execucao" in origens:
-            bases["data_execucao"] = datetime.now().date()   # relógio do worker
+            bases["data_execucao"] = (ds_params.parse_data(ctx["data_execucao_snapshot"]) if ctx.get("data_execucao_snapshot") else datetime.now().date())   # relógio do worker
         if "data_referencia" in origens:
             bases["data_referencia"] = self._data_referencia_do_run(hook, ctx)
         return bases
