@@ -4,6 +4,8 @@ description: >
   "deploy", "subir para produção", "roteiro de deploy", "aplicar migrations".
 ---
 
+> **Orquestra — regra atual:** seguir `docs/fluxo-desenvolvimento.md`: PR para `develop`, deploy e validação no DEV com migration de versão por entrega, depois PR de promoção para `main` com autorização explícita. Esta regra substitui abaixo a integração direta na main e a exigência de nova autorização para merge em develop dentro de uma spec já autorizada.
+
 # Deploy — ORQUESTRA
 
 > O deploy real roda no servidor. Esta skill é o roteiro/checklist a seguir e validar.

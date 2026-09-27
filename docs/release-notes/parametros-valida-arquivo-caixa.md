@@ -2,7 +2,7 @@
 
 ## Estado e limite de autorização
 
-Código, QA local e documentação preparados. **Nenhum deploy foi feito nesta entrega.** Certificação de `dsjob`, `orchadmin` e arquivos DataStage reais será feita somente no ambiente Caixa, por decisão do usuário. Fixtures locais e a bancada Airflow/SQL/SFTP não comprovam compatibilidade da versão instalada.
+Código, QA local e documentação preparados. **Nenhum deploy foi feito na Caixa.** O DEV segue o [fluxo de integração](../fluxo-desenvolvimento.md); sua validação não certifica DataStage real. Certificação de `dsjob`, `orchadmin` e arquivos DataStage reais será feita somente no ambiente Caixa, por decisão do usuário. Fixtures locais e a bancada Airflow/SQL/SFTP não comprovam compatibilidade da versão instalada.
 
 Este roteiro prepara a aplicação; os campos abaixo e os resultados não estão preenchidos como se já tivessem sido executados. A configuração do pipeline real requer nomes/conexões/arquivos confirmados no ambiente Caixa. Não copiar credenciais ou conteúdo de dados para repositório, chat ou evidências.
 
@@ -11,7 +11,7 @@ Este roteiro prepara a aplicação; os campos abaixo e os resultados não estão
 1. Confirmar merges autorizados da cadeia F2a #456 → F2b #457 → F3 #458 → F4 #459 → F5 #460 → F6 #461 → F7. F1 #455 já foi mergeada. Resolver conflitos preservando o código cumulativo e recompilar dist quando necessário. Não implantar F2b sem a correção F4 que usa `execution_id` real em `etl_pipeline_execucao`.
 2. Registrar versão anterior e candidata, backup do banco/configuração e referência segura da chave Fernet existente (`ORQUESTRA_CONN_KEY`). Não trocar nem exibir a chave: snapshots dependem dela.
 3. Confirmar janela, responsável de aplicação, responsável ETL e operador de validação. Suspender novas execuções dos pipelines de ensaio até conferir o conjunto instalado. Não encerrar corridas de negócio para facilitar teste.
-4. Usar o fluxo local de `scripts/deploy.sh`; aplicar migrations pendentes 128–133 na etapa 6c e conservar as anteriores, incluindo 072 (`execution_id VARCHAR(250)`). No bloco de `config/`, manter o nginx local conforme a instrução de deploy do repositório. Instalação é offline; esta entrega não adiciona dependências Python ou wheels.
+4. Usar o fluxo local de `scripts/deploy.sh`; aplicar migrations pendentes 128–134 (134 registra a versão da entrega em Admin → Versões e sincroniza a versão exibida) na etapa 6c e conservar as anteriores, incluindo 072 (`execution_id VARCHAR(250)`). No bloco de `config/`, manter o nginx local conforme a instrução de deploy do repositório. Instalação é offline; esta entrega não adiciona dependências Python ou wheels.
 5. Atualizar API, UI/dist, fábrica e `dags/utils` como conjunto; reiniciar workers do Airflow para limpar cache dos módulos. Conferir importações da DAG e versões antes do primeiro disparo.
 6. Publicar inicialmente as DAGs que ativarem vínculos/validadores. Conferir grafo gerado, conexão efetiva, parâmetros e dependências; retirar eventuais agendamentos durante o ensaio isolado.
 7. Na conexão SSH aprovada, configurar extras administrativos `valida_dsenv`, `valida_orchadmin` e, se necessário, `valida_apt_config`, todos como caminhos absolutos da instalação local. A credencial continua na conexão. O usuário do SSH deve ter as permissões de leitura necessárias.

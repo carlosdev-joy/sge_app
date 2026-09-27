@@ -33,10 +33,11 @@ monitoramento e operação pela equipe. Backend **FastAPI + SQL Server (MSSQL)**
 - **Cores da UI**: SEMPRE par claro + escuro. Nunca `bg-*-900` ou `text-*-300` como classe base.
   Use os tokens semânticos (`bg-panel`/`text-ink`/`text-dim`/`border-edge`/`bg-canvas`).
   Padrão completo em @docs/ui-temas-cores.md. **Não reordene objetos de tela sem pedido** claro.
-- **Git**: uma branch por fase/feature a partir de `origin/main`; **nunca** push direto na `main`;
+- **Git**: uma branch por fase/feature a partir de `origin/develop`; **nunca** push direto na `main`;
+  integração em `develop` antes de `main` (ver `docs/fluxo-desenvolvimento.md`);
   commits convencionais em pt-BR (`feat:`, `fix:`, `docs:`, `chore:`) com o trailer
-  `Co-Authored-By`. **O usuário SEMPRE autoriza o merge** — a PR fica aberta até ele dizer
-  "merge autorizado" sobre aquela PR; nunca `gh pr merge` por conta própria.
+  `Co-Authored-By`. **O usuário autoriza a promoção para `main`**. A autorização para executar a spec inclui
+  integração e deploy em `develop`; a promoção fica pendente até autorização explícita.
 - **Segredos**: nunca no Git (`.env*` está ignorado); chaves de API cifradas em `etl_app_config`
   com o Fernet de `ORQUESTRA_CONN_KEY`; valores Encrypted nunca em log, tela ou provedor de IA.
 
@@ -47,11 +48,12 @@ monitoramento e operação pela equipe. Backend **FastAPI + SQL Server (MSSQL)**
 2. **Cada fase = 1 PR** (skill `organizacao`): branch, código + testes, validação (abaixo),
    **revisão adversarial obrigatória** pelo agent `qa-adversarial` (`.claude/agents/`) ANTES da PR,
    achados aplicados, PR com 3 blocos (**O que muda / Validação / Deploy**) e o rodapé do Claude
-   Code. Depois, parar e pedir a autorização de merge.
+   Code. Integrar e validar em DEV; somente depois preparar promoção para main, conforme
+   `docs/fluxo-desenvolvimento.md`.
 3. **Validação antes de toda PR** (skill `testes-automatizados`): `python3 -m pytest tests -q` na
-   raiz **comparado com a main** (há falhas pré-existentes — critério é zero falha NOVA);
+   raiz **comparado com a base da PR** (`develop` na integração; `main` na promoção) (há falhas pré-existentes — critério é zero falha NOVA);
    no front, `npx tsc -b` (⚠️ `tsc --noEmit` não checa nada neste template), `eslint` comparado
-   com o baseline da main por (arquivo, regra, 1ª linha da mensagem) — zero achado novo —,
+   com o baseline da base da PR por (arquivo, regra, 1ª linha da mensagem) — zero achado novo —,
    `npm run build` e **`dist/` recompilada por último** e commitada; checagem de bytes NUL nos
    fontes. Smoke real no ambiente de DEV quando houver (ver `.claude/memory/vps-ambiente-dev-orquestra.md`).
 4. **Ao fechar cada marco** (PR aberta/mergeada, deploy, decisão): atualizar a memória
@@ -105,3 +107,17 @@ monitoramento e operação pela equipe. Backend **FastAPI + SQL Server (MSSQL)**
 @docs/ui-temas-cores.md
 
 Outros: `docs/AUDITORIA_TECNICA.md`, `docs/SEGURANCA-DIRETRIZES.md`, `docs/MANUAL_USUARIO.md`.
+
+## Integração e entrega — DEV antes da main (decisão de 27/09/2026)
+
+Esta regra substitui o fluxo antigo de integrar a spec diretamente na `main`.
+
+1. Criar as branches de fase/feature a partir de `origin/develop`. Cada fase mantém sua PR e revisão adversarial.
+2. Após QA, integrar por PR na `develop` e publicar o candidato em DEV (`/opt/orquestra-dev`, branch `develop`). A autorização de executar a spec inclui sua integração e deploy em DEV, salvo restrição expressa do usuário.
+3. Toda entrega inclui migration idempotente de versão em `sql/migrations/`: registra em Admin → Versões e sincroniza `app_version`/`app_release_name`. Funcionalidade nova incrementa o segundo número e zera o terceiro; correção pequena incrementa o terceiro. Não basta atualizar documentação ou package.json.
+4. Fazer backup, aplicar migrations pendentes (incluindo a de versão), atualizar API, UI e DAGs e reiniciar os serviços que carregam código alterado. No DEV, todo compose usa os dois arquivos e `--env-file .env.dev`; não recriar banco/volumes nem usar `up` global.
+5. Validar o commit publicado no DEV: saúde, login, versão visível, migrations sem pendências e smoke funcional da entrega. Registrar evidências e limites. Corrigir regressões em novas PRs para `develop` e repetir as verificações afetadas.
+6. Somente com DEV validado, abrir PR `develop` → `main`, identificando o SHA validado. A promoção para `main` exige autorização explícita do usuário; desenvolvimento/deploy em DEV não autoriza produção. Se entrar código novo, revalidar o candidato antes de promover.
+7. Produção/Caixa usa `main` e autorização própria de deploy. A validação com dataset real/DataStage ocorre exclusivamente na Caixa; simulações em DEV não a substituem.
+
+A spec de parâmetros/Valida Arquivo já havia sido integrada à main antes desta decisão. Inicializar develop a partir desse estado não desfaz esses merges; o novo fluxo vale para as próximas integrações, incluindo a correção da migration de versão.
