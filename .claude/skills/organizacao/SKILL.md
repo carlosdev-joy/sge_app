@@ -3,6 +3,8 @@ name: organizacao
 description: Padrões operacionais do usuário para QUALQUER repo (web, app, automação) — fluxo git com branch por fase, commit convencional pt-BR, PR rico e merge SEMPRE autorizado pelo usuário; memória persistente por marco; migrations (T-SQL idempotente no Orquestra, MCP no Supabase); deploy com wheels offline; docs e backlog. Use ao iniciar/encerrar uma sessão de trabalho, criar branch, commitar, abrir PR, "fechar a feature", "encerrar por hoje", preparar deploy, registrar pendências, ou quando pedirem "workflow", "git flow", "commit", "pull request", "wrap up", "handoff", "checklist de encerramento". Aplica-se a Orquestra, LC Decorações, NexxaFarma e n8n LC Segurança.
 ---
 
+> **Orquestra — regra atual:** seguir `docs/fluxo-desenvolvimento.md`: PR para `develop`, deploy e validação no DEV com migration de versão por entrega, depois PR de promoção para `main` com autorização explícita. Esta regra substitui abaixo a integração direta na main e a exigência de nova autorização para merge em develop dentro de uma spec já autorizada.
+
 # Organização — padrões operacionais de qualquer repo
 
 ## Quando usar

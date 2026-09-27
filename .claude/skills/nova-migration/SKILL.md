@@ -6,6 +6,8 @@ description: >
 argument-hint: "[nome_curto]"
 ---
 
+> **Orquestra — regra atual:** seguir `docs/fluxo-desenvolvimento.md`: PR para `develop`, deploy e validação no DEV com migration de versão por entrega, depois PR de promoção para `main` com autorização explícita. Esta regra substitui abaixo a integração direta na main e a exigência de nova autorização para merge em develop dentro de uma spec já autorizada.
+
 # Nova migration — ORQUESTRA
 
 Siga exatamente o padrão de `sql/migrations/`.

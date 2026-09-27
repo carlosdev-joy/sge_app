@@ -3,6 +3,9 @@ name: gerador-spec
 description: Transforma o resultado de uma entrevista de requisitos (ou um pedido direto) numa especificação executável com fases F1..Fn mergeáveis, cada uma com PR própria, critérios de aceite e validação. Use quando o usuário pedir para "especificar", "criar spec/especificação", "planejar feature", "quebrar em fases", "write a spec", "plan this feature", "break into phases/milestones", ou quando uma entrevista de descoberta acabou de terminar e precisa virar plano. Aplica-se a projetos web e app (Orquestra, LC Decorações, NexxaFarma) e automações (n8n LC Segurança). A spec é salva em docs/spec-<feature>.md no repo do projeto e resumida na memória persistente.
 ---
 
+> **Orquestra — regra atual:** seguir `docs/fluxo-desenvolvimento.md`: PR para `develop`, deploy e validação no DEV com migration de versão por entrega, depois PR de promoção para `main` com autorização explícita. Esta regra substitui abaixo a integração direta na main e a exigência de nova autorização para merge em develop dentro de uma spec já autorizada.
+
+
 ## Quando usar
 - Ao fim de uma entrevista de descoberta de feature, para consolidar as respostas num plano executável.
 - Quando o usuário descrever uma feature nova e pedir plano, spec, fases ou "como você faria isso".
@@ -28,6 +31,7 @@ description: Transforma o resultado de uma entrevista de requisitos (ou um pedid
 
 ## Template da spec (copie na íntegra para docs/spec-<feature>.md)
 ```markdown
+
 # Spec: <Feature> — <Projeto>
 Data: AAAA-MM-DD · Status: rascunho | aprovada | em execução (Fx) | concluída
 
