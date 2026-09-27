@@ -8,7 +8,7 @@
 - QA adversarial e auditoria de segurança independentes: nenhum defeito confirmado restante após correções. Reproduções corrigidas: convergência no alvo, ramos da decisão omitidos, tipo malformado virando500 e negociação SSH sem prazo.
 - Smoke SSH/SFTP real: worker Airflow conectado ao servidor de amostra, arquivos temporários vazio/cabeçalho/dados sem newline/ausente corretos; arquivos removidos ao final. Não é DataStage.
 - Quatro testes antigos de frescor capturavam o relógio na coleta e falhavam se o runner demorasse mais de um minuto. Fixture local estabiliza somente o relógio do teste; nenhum código de Chamados alterado.
-- Não há frontend alterado; validações de TypeScript/lint mantêm contrato existente. Resultado da suíte completa registrado no marco.
+- Não há frontend alterado; validações de TypeScript/lint mantêm contrato existente. Suíte completa: **7024 aprovados, 51 pulados e as mesmas 8 falhas da main**; sem regressão nova. TypeScript, lint (178 mensagens vs180, nenhuma nova) e build aprovados, dist idêntico ao da F2b.
 
 Evidências sanitizadas em `/root/orquestra-valida-f3-evidencias/`. DataStage real ainda não certificado; testes de parser são contratos, não evidência da versão instalada. Sem merge/deploy ou alteração de arquivo de cliente.
 
