@@ -104,6 +104,16 @@ HA_5_MIN = AGORA - dt.timedelta(minutes=5)
 HA_117_H = AGORA - dt.timedelta(hours=117)
 
 
+@pytest.fixture(autouse=True)
+def relogio_estavel_do_frescor(monkeypatch):
+    # Recria os dados relativos no início de cada teste: a coleta da suíte
+    # inteira pode acontecer mais de um minuto antes de sua execução.
+    agora=dt.datetime.now()
+    monkeypatch.setitem(globals(),'AGORA',agora)
+    monkeypatch.setitem(globals(),'HA_5_MIN',agora-dt.timedelta(minutes=5))
+    monkeypatch.setitem(globals(),'HA_117_H',agora-dt.timedelta(hours=117))
+
+
 def test_o_frescor_escolhe_o_ciclo_mais_recente() -> None:
     """⚠️ O DEFEITO RELATADO. A `delta` roda a cada 5 minutos e a tela dizia
     117h porque lia a tabela da DAG antiga, desligada."""
