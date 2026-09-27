@@ -3273,3 +3273,78 @@ async def save_pipeline_fluxo(
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.get('/pipelines/{pipeline_name}/valida-arquivo/{task_id}', tags=['jobs'])
+def get_valida_arquivo(pipeline_name: str, task_id: str, _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    from services import valida_arquivo_store as store
+    conn=cur=None
+    try:
+        conn=get_db_conn();cur=conn.cursor()
+        if not store.disponivel(cur):
+            return {'disponivel':False,'runtime_disponivel':False,'config':None}
+        return {'disponivel':True,'runtime_disponivel':False,'config':store.ler(cur,pipeline_name,task_id)}
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()
+
+
+def _contexto_valida(cur,pipeline_name):
+    from services import pipeline_params as pp
+    cur.execute('SELECT pipeline_name FROM dbo.etl_pipeline WHERE pipeline_name=?',(pipeline_name,))
+    row=cur.fetchone()
+    if not row:raise HTTPException(status_code=404,detail='Pipeline não encontrado.')
+    oficial=row[0]
+    cur.execute('SELECT job_name,job_type,depends_on_jobs,condition_json FROM dbo.etl_pipeline_job WHERE pipeline_name=?',(oficial,))
+    jobs=[dict(zip(('job_name','job_type','depends_on_jobs','condition_json'),r)) for r in cur.fetchall()]
+    return oficial,jobs,pp.ler(cur,oficial)
+
+
+@router.post('/pipelines/{pipeline_name}/valida-arquivo/{task_id}/previa', tags=['jobs'])
+def preview_valida_arquivo(pipeline_name: str, task_id: str, body: dict = Body(default={}),
+                           _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    from services import valida_arquivo as va
+    from services import valida_arquivo_store as store
+    conn=cur=None
+    try:
+        conn=get_db_conn();cur=conn.cursor()
+        if not store.disponivel(cur):raise HTTPException(status_code=503,detail=store.MIGRATION)
+        _,jobs,cat=_contexto_valida(cur,pipeline_name)
+        config=va.normalizar(body.get('config'),cat)
+        # Grafo do rascunho permite prévia antes de salvar, sem nenhuma escrita.
+        return va.impacto(config,body.get('nodes',jobs),task_id,cat)
+    except ValueError as exc:raise HTTPException(status_code=422,detail={'errors':[str(exc)]}) from None
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()
+
+
+@router.put('/pipelines/{pipeline_name}/valida-arquivo/{task_id}', tags=['jobs'])
+def put_valida_arquivo(pipeline_name: str, task_id: str, body: dict = Body(default={}),
+                       _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    from services import valida_arquivo as va
+    from services import valida_arquivo_store as store
+    conn=cur=None
+    try:
+        conn=get_db_conn();cur=conn.cursor()
+        if not store.disponivel(cur):raise HTTPException(status_code=503,detail=store.MIGRATION)
+        oficial,jobs,cat=_contexto_valida(cur,pipeline_name)
+        if not any(j['job_name']==task_id and j['job_type']=='valida_arquivo' for j in jobs):
+            raise HTTPException(status_code=409,detail='O nó Valida Arquivo precisa existir no fluxo antes de gravar sua configuração.')
+        config=va.normalizar(body.get('config'),cat)
+        previa=va.impacto(config,jobs,task_id,cat)
+        result=store.salvar(cur,oficial,task_id,config,body.get('revisao'))
+        conn.commit()
+        return dict(ok=True,previa=previa,**result)
+    except store.Conflito as exc:
+        if conn is not None:conn.rollback()
+        raise HTTPException(status_code=409,detail=str(exc)) from None
+    except ValueError as exc:
+        if conn is not None:conn.rollback()
+        raise HTTPException(status_code=422,detail={'errors':[str(exc)]}) from None
+    except Exception:
+        if conn is not None:conn.rollback()
+        raise
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()
