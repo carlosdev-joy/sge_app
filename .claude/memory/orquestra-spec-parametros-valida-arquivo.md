@@ -28,3 +28,5 @@ F2b: [PR #457 aberta](https://github.com/carlosdev-joy/sge_app/pull/457), base `
 F3 implementada em `feat/valida-arquivo-f3`, código fd50581, sobre F2b #457. Migration131, configuração/revisão/CAS, prévia de impacto, avaliação de arquivo texto e contrato estrito de dataset. Criação/publicação do nó ainda desabilitada. Pytest7024 passed/51skipped/mesmas8falhas; tsc/lint/build aprovados, dist inalterado; SQL real isolado (migration2x, concorrência, FK/rollback) e SSH/SFTP real de amostra passaram. QA adversarial/segurança aprovados com ressalva operacional. Docs: release-notes/valida-arquivo-f3.md e validacao-valida-arquivo-f3.md.
 
 Usuário confirmou: teste de datasets reais somente no ambiente Caixa. Não há acesso local para certificação de parser/integração DataStage; preparar roteiro de aplicação assistida e manter essa validação explicitamente pendente. Continuação F4–F7 autorizada sem pedir confirmação de implementação por fase. F4 iniciada em `/root/orquestra-valida-f4`.
+
+F3: [PR #458 aberta](https://github.com/carlosdev-joy/sge_app/pull/458), base `feat/parametros-globais-f2b` (#457). Sem merge/deploy. F4 segue em desenvolvimento.
