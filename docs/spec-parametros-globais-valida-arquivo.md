@@ -2,7 +2,7 @@
 
 Data: 2026-09-27 · Status: aprovada; em execução (F1)
 
-Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, em validação/revisão; F2–F7 ainda não implementadas.
+Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, validada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), aguardando merge; F2–F7 ainda não implementadas.
 
 ## 1. Visão
 

@@ -4,7 +4,7 @@ description: Spec consolidada de parâmetros e Valida Arquivo; requisitos funcio
 type: project
 ---
 
-Spec: `docs/spec-parametros-globais-valida-arquivo.md`, branch local `feat/parametros-globais-f1`, base origin/main c3f2b24 conferida em 27/09/2026. Requisitos funcionais fechados pelo usuário: histórico técnico obrigatório, notificação opcional e erro técnico sempre falha e bloqueia destinos. Não restam perguntas da entrevista; §8 registra as respostas finais. Início autorizado pelo usuário em 27/09/2026. F1 implementada e validada; pronta para PR; F2–F7 pendentes. Sem merge/deploy. Migration validada somente em base temporária removida, não na base do produto.
+Spec: `docs/spec-parametros-globais-valida-arquivo.md`, branch local `feat/parametros-globais-f1`, base origin/main c3f2b24 conferida em 27/09/2026. Requisitos funcionais fechados pelo usuário: histórico técnico obrigatório, notificação opcional e erro técnico sempre falha e bloqueia destinos. Não restam perguntas da entrevista; §8 registra as respostas finais. Início autorizado pelo usuário em 27/09/2026. F1 implementada e validada; [PR #455 aberto](https://github.com/carlosdev-joy/sge_app/pull/455), aguardando autorização de merge; F2–F7 pendentes. Sem merge/deploy. Migration validada somente em base temporária removida, não na base do produto.
 
 **Why:** nó genérico de validação e parâmetros reutilizáveis, com ordem/políticas escolhidas pelo usuário e versão original preservada na retomada.
 
