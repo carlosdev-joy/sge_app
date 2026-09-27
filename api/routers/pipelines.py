@@ -10,7 +10,7 @@ from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from db import get_db_conn
 from deps import (
@@ -26,6 +26,7 @@ from routers.jobs import _preparar_params_ds, _serializar_param
 # predicado de liberação (F5/D29). services não importa routers — sem ciclo.
 from services import data_referencia as dref
 from services import dependencias as deps_svc
+from services import pipeline_params as pp
 
 log = logging.getLogger("orquestra-api")
 
@@ -1093,25 +1094,51 @@ def _gravar_parametros_pipeline(cur, pipeline_name: str, linhas: list[dict]) -> 
 
 
 @router.get("/pipelines/{pipeline_name}/parametros", tags=["pipelines"])
-def get_pipeline_parametros(pipeline_name: str, _auth: dict = Depends(get_current_user)):
-    """Defaults DataStage do pipeline, com Encrypted mascarado (`***` + tem_valor).
-    Sem a migration 108: lista vazia e `disponivel: false` (a tela esconde a seção)."""
+def get_pipeline_parametros(pipeline_name: str, parametros_versao: int = Query(1, ge=1, le=2),
+                            _auth: dict = Depends(get_current_user)):
+    """v1: defaults DS; v2: catálogo completo. Encrypted nunca sai em claro."""
+    conn = cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        if not _tem_tabela_pipeline_param(cur):
-            cur.close(); conn.close()
+        tem_tabela = _tem_tabela_pipeline_param(cur)
+        catalogo = tem_tabela and pp.tem_catalogo(cur)
+        if parametros_versao == 2 and not catalogo:
+            raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
+        if not tem_tabela:
             return {"parametros": [], "disponivel": False}
-        cur.execute(_SQL_PIPELINE_PARAMS, (pipeline_name,))
-        rows = cur.fetchall()
-        cur.close(); conn.close()
-        return {"parametros": [_serializar_param(r, True) for r in rows], "disponivel": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+        if catalogo:
+            params = []
+            for p in pp.ler(cur, pipeline_name):
+                if parametros_versao == 1 and p['param_destino'] != 'datastage':
+                    continue
+                item = _serializar_param(tuple(p[k] for k in pp.COLS), True)
+                if parametros_versao == 2:
+                    item.update({k: p[k] for k in pp.META})
+                params.append(item)
+        else:
+            cur.execute(_SQL_PIPELINE_PARAMS, (pipeline_name,))
+            params = [_serializar_param(r, True) for r in cur.fetchall()]
+        return {"parametros": params, "disponivel": True}
+    except pp.SchemaIncompleto:
+        raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
+    except HTTPException:
+        raise
+    except Exception:
+        log.error("Falha na leitura do catálogo de parâmetros")
+        raise HTTPException(status_code=503, detail="Não foi possível consultar os parâmetros do pipeline")
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 
 @router.post("/pipelines/register", tags=["pipelines"])
 async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
     """Cria ou atualiza um pipeline (etl_pipeline_register)."""
+    versao_params = body.get("parametros_versao", 1)
+    if type(versao_params) is not int or versao_params not in (1, 2):
+        raise HTTPException(status_code=422, detail="parametros_versao deve ser 1 ou 2")
     pipeline    = (body.get("pipeline_name") or "").strip()
     horario     = (body.get("scheduled_time") or "").strip()
     if not pipeline or not horario:
@@ -1255,6 +1282,7 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         # gravação; Encrypted `***` preserva o token gravado.
         tem_parametros = "parametros" in body
         parametros_ds: list = []
+        catalogo_params = False
         if tem_parametros:
             raw_parametros = body.get("parametros")
             if raw_parametros is None:
@@ -1263,14 +1291,24 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
                 raise HTTPException(status_code=422, detail="parametros deve ser uma lista")
             tem_108 = _tem_tabela_pipeline_param(cur)
             if raw_parametros and not tem_108:
-                raise HTTPException(status_code=422, detail=_ERRO_SEM_108)
-            if raw_parametros:
+                raise HTTPException(status_code=503 if versao_params == 2 else 422,
+                                    detail=pp.ERRO_MIGRATION if versao_params == 2 else _ERRO_SEM_108)
+            catalogo_params = tem_108 and pp.tem_catalogo(cur)
+            if versao_params == 2 and not catalogo_params:
+                raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
+            if catalogo_params:
+                existentes = pp.ler(cur, pipeline, bloquear=True)
+                parametros_ds, erros_p = pp.preparar(
+                    raw_parametros, existentes, versao_params, _preparar_params_ds)
+            else:
+                if any(isinstance(p, dict) and any(k in p for k in pp.META) for p in raw_parametros):
+                    raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
                 parametros_ds, erros_p = _preparar_params_ds(
-                    raw_parametros, _tokens_encrypted_pipeline(cur, pipeline))
-                if erros_p:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="Parâmetros DataStage do pipeline: " + "; ".join(erros_p))
+                    raw_parametros, _tokens_encrypted_pipeline(cur, pipeline)) if raw_parametros else ([], [])
+            if erros_p:
+                raise HTTPException(status_code=422,
+                                    detail=({"errors": erros_p} if versao_params == 2 else
+                                            "Parâmetros do pipeline: " + "; ".join(erros_p)))
             tem_parametros = tem_108   # sem a tabela e lista vazia: nada a gravar
 
         # 'monthly_days_times' com a chave AUSENTE (body parcial — achado 3):
@@ -1295,7 +1333,10 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         # F4 — depois do upsert (o pipeline novo já existe para a FK), na
         # mesma transação: replace-all dos defaults DataStage.
         if tem_parametros:
-            _gravar_parametros_pipeline(cur, pipeline, parametros_ds)
+            if catalogo_params:
+                pp.gravar(cur, pipeline, parametros_ds)
+            else:
+                _gravar_parametros_pipeline(cur, pipeline, parametros_ds)
         if tem_depends_on:
             # Chave presente: sincroniza tabela 067 E espelho CSV para o valor
             # (vazio = remoção explícita). O replace-all sobrevive AQUI porque
@@ -1530,6 +1571,9 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
             _write_audit(cur, pipeline, changed_by, old_record, new_vals)
         conn.commit()
         cur.close(); conn.close()
+    except pp.SchemaIncompleto:
+        _rollback_silencioso(locals().get("conn"))
+        raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
     except HTTPException:
         _rollback_silencioso(locals().get("conn"))
         raise

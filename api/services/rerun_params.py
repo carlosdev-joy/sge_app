@@ -77,7 +77,10 @@ def _params_por_job(cur, pipeline: str) -> dict[str, list[dict]]:
 def _defaults_pipeline(cur, pipeline: str) -> list[dict]:
     if not _tem_tabela(cur, "etl_pipeline_param"):
         return []
-    cur.execute(_SQL_PIPELINE, (pipeline,))
+    sql = _SQL_PIPELINE
+    if _tem_coluna(cur, "etl_pipeline_param", "param_destino"):
+        sql = sql.replace(" ORDER BY", " AND param_destino='datastage' ORDER BY")
+    cur.execute(sql, (pipeline,))
     return [dict(zip(COLS, r)) for r in cur.fetchall()]
 
 
