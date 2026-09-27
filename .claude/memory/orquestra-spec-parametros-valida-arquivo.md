@@ -21,3 +21,5 @@ F2b preparada em `feat/parametros-globais-f2b`, sobre F2a ainda aberta. Referên
 Autorização posterior do usuário em 27/09/2026: executar toda a spec com QA/docs e sinalizar ao terminar; não parar para pedir confirmação de implementação a cada fase. Manter PRs para decisão explícita de merge. Próximas fases F3–F7 continuam obrigatórias; este marco não conclui a spec.
 
 F2b validação final: pytest 6957 passed/51 skipped/mesmas 8 falhas; 54 direcionados aprovados; tsc, lint comparado e build final aprovados; fonte sem NUL.
+
+F2b: [PR #457 aberta](https://github.com/carlosdev-joy/sge_app/pull/457), base `feat/parametros-globais-f2` (#456). Commit de código 66bf33d. Sem merge/deploy.

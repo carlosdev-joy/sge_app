@@ -1,8 +1,8 @@
 # Spec: Parâmetros de pipeline e Valida Arquivo — Orquestra
 
-Data: 2026-09-27 · Status: aprovada; F1 mergeada; F2a PR #456 aberta
+Data: 2026-09-27 · Status: aprovada; F1 mergeada; F2a #456 e F2b #457 abertas
 
-Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, validada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), mergeado em 27/09/2026 (8cf356b). F2a implementa cadastro e prévia de importação no [PR #456](https://github.com/carlosdev-joy/sge_app/pull/456), aguardando autorização de merge; F2b implementa referências aos nós DataStage/Python e antecipa a fundação do snapshot exigida para retomadas. F3–F7 pendentes. Sem deploy nesta sessão.
+Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, validada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), mergeado em 27/09/2026 (8cf356b). F2a implementa cadastro e prévia de importação no [PR #456](https://github.com/carlosdev-joy/sge_app/pull/456), aguardando autorização de merge; F2b ([PR #457](https://github.com/carlosdev-joy/sge_app/pull/457), aberta sobre F2a) implementa referências aos nós DataStage/Python e antecipa a fundação do snapshot exigida para retomadas. F3–F7 pendentes. Sem deploy nesta sessão.
 
 ## 1. Visão
 
