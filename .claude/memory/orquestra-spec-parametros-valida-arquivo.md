@@ -4,7 +4,7 @@ description: Spec consolidada de parâmetros e Valida Arquivo; requisitos funcio
 type: project
 ---
 
-**Estado atual (fechamento local):** F1 mergeada #455; F2a–F6 abertas #456–#461. Código e QA local preparados; F7 documental preparada em `docs/parametros-valida-arquivo-f7`. Aceite operacional DataStage depende exclusivamente da Caixa. Não houve deploy nem alteração de pipeline real. As notas abaixo preservam a sequência dos marcos, não substituem este estado.
+**Estado atual (fechamento local):** F1 mergeada #455; F2a–F6 abertas #456–#461; F7 documental aberta #462 (`docs/parametros-valida-arquivo-f7`). Código, QA local e documentação preparados. Aceite operacional DataStage depende exclusivamente da Caixa. Não houve deploy nem alteração de pipeline real. As notas abaixo preservam a sequência dos marcos, não substituem este estado.
 
 Spec: `docs/spec-parametros-globais-valida-arquivo.md`, branch local `feat/parametros-globais-f2`, base origin/main c3f2b24 conferida em 27/09/2026. Requisitos funcionais fechados pelo usuário: histórico técnico obrigatório, notificação opcional e erro técnico sempre falha e bloqueia destinos. Não restam perguntas da entrevista; §8 registra as respostas finais. Início autorizado pelo usuário em 27/09/2026. F1 mergeada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), commit 8cf356b, mediante autorização. Próximo passo autorizado pelo usuário: F2a implementada no wizard e prévia DS, [PR #456 aberta](https://github.com/carlosdev-joy/sge_app/pull/456), aguardando autorização de merge. F2b referências nos nós/runtime e F3–F7 permanecem na spec. Sem deploy. Migration 129 ainda depende do fluxo de implantação no ambiente de destino.
 
@@ -46,3 +46,5 @@ F6 gate final: 7094 passed/51 skipped/mesmas8falhas; tsc/lint/build aprovados, d
 F6: [PR #461 aberta](https://github.com/carlosdev-joy/sge_app/pull/461), head13f01ec, sobreF5#460. F7 documental em /root/orquestra-valida-f7, branch docs/parametros-valida-arquivo-f7; manual + release Caixa + matriz operacional pendente. Revisão documental sem defeito confirmado. Não declarar aceite operacional: somente Caixa pode certificar DataStage e configurar caso real. Sem merge/deploy.
 
 F7 gate final: documentação revisada,7094passed/51skipped/mesmas8falhas;tsc/lint/build aprovados, dist idêntica àF6; links locais válidos. Código local e documentação preparados. Aceite operacional F7 continua pendente na Caixa, incluindo parser/arquivos reais e configuração do caso inicial.
+
+F7: [PR #462 aberta](https://github.com/carlosdev-joy/sge_app/pull/462), sobreF6#461, commit documental bf35a40. Worktree /root/orquestra-valida-f7. Nenhum merge/deploy; configuração e certificação real pendentes somente na Caixa.
