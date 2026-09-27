@@ -1,8 +1,8 @@
 # Spec: Parâmetros de pipeline e Valida Arquivo — Orquestra
 
-Data: 2026-09-27 · Status: aprovada; em execução (F1)
+Data: 2026-09-27 · Status: aprovada; F1 mergeada; F2a em validação
 
-Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, validada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), aguardando merge; F2–F7 ainda não implementadas.
+Base: documento v1.1 `/dados/bi/05_spec_parametros_globais_e_valida_dataset.md`, no container `orquestra-dev-sshd-amostra`, e respostas do usuário em 27/09/2026. O documento de entrada foi preservado. Código confrontado com `origin/main` c3f2b24, atualizado nesta sessão. Decisões do usuário prevalecem sobre os exemplos da v1.1. Implementação iniciada por autorização do usuário em 27/09/2026. F1 implementada na branch `feat/parametros-globais-f1`, validada no [PR #455](https://github.com/carlosdev-joy/sge_app/pull/455), mergeado em 27/09/2026 (8cf356b). F2a implementa cadastro e prévia de importação; F2b integrará referências aos nós DataStage/Python. F3–F7 pendentes. Sem deploy nesta sessão.
 
 ## 1. Visão
 
@@ -95,6 +95,8 @@ Cada fase deixa a main funcional, ganha PR própria e revisão adversarial multi
 - Revisão adversarial antes da PR `feat: evolui parâmetros compartilhados de pipeline`.
 
 ### F2 — Importação e passo de parâmetros
+
+Divisão de execução: F2a entrega catálogo v2 no wizard, seções DS/ORQ, consulta reutilizável e importação com prévia. F2b conecta referências aos campos dos nós DS/Python e ao runtime; não está disponível em F2a. A extração real via dsjob continua dependente de smoke na versão instalada.
 - Entregável: importação com prévia/conflitos, passo do wizard e seletor reutilizável; integração DS/Python pode ser dividida em PRs menores mantendo contrato funcional.
 - Aceite: cancelar importação não persiste; reimportação não apaga valor próprio; fontes DS e ORQ distinguíveis; salvar erro não perde preenchimento; teclado e temas funcionam.
 - Validação: conjunto obrigatório + dublês de comandos e smoke com saída DS real sanitizada; sem confirmar extração real apenas por fixture.

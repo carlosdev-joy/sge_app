@@ -310,14 +310,14 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
           return (
             <div key={p.id ?? idx} data-param-linha={p.param_name}
               className="flex flex-col gap-1 rounded-md border border-edge/70 bg-canvas/40 p-1.5">
-              <div className={`grid ${compact ? 'grid-cols-[minmax(0,1fr)_84px_128px_20px]' : 'grid-cols-[minmax(0,1fr)_96px_150px_24px]'} gap-1.5 items-center`}>
+              <div className={`grid ${compact ? 'grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_20px] sm:grid-cols-[minmax(0,1fr)_84px_128px_20px]' : 'grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_24px] sm:grid-cols-[minmax(0,1fr)_96px_150px_24px]'} gap-1.5 items-center`}>
                 <input
                   type="text"
                   value={p.param_name}
                   onChange={e => updateParam(idx, { param_name: e.target.value })}
                   placeholder="pNome ou PSet.pNome"
                   title="Nome exato do parâmetro no job (maiúsculas contam); membro de Parameter Set: PSet.Param"
-                  className={`${campo} ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`}
+                  className={`${campo} col-span-3 sm:col-span-1 ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`}
                 />
                 <select
                   value={p.param_type}

@@ -1093,6 +1093,62 @@ def _gravar_parametros_pipeline(cur, pipeline_name: str, linhas: list[dict]) -> 
              p["param_order"]))
 
 
+@router.get("/pipelines/parametros/catalogo-status", tags=["pipelines"])
+def status_catalogo_parametros(_auth: dict = Depends(get_current_user)):
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if not _tem_tabela_pipeline_param(cur) or not pp.tem_catalogo(cur):
+            raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
+        return {"parametros": [], "disponivel": True}
+    except pp.SchemaIncompleto:
+        raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Não foi possível verificar o catálogo")
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
+
+
+@router.post("/pipelines/parametros/importar-previa", tags=["pipelines"])
+def importar_parametros_previa(body: dict = Body(default={}),
+                               _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    """Consulta autorizada, sem persistência; funciona antes de criar pipeline."""
+    from services import pipeline_param_import as imp
+    try:
+        project, jobs = imp.validar_pedido(body.get('project_name'), body.get('jobs'))
+    except imp.ImportErrorDS as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    conn = cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        if not _tem_tabela_pipeline_param(cur) or not pp.tem_catalogo(cur):
+            raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
+        if project not in _get_valid_projects(cur):
+            raise HTTPException(status_code=422, detail="Projeto não habilitado no Orquestra")
+    except pp.SchemaIncompleto:
+        raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Não foi possível verificar o catálogo")
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
+    try:
+        return imp.prever(project, jobs)
+    except imp.ImportBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except imp.ImportErrorDS as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @router.get("/pipelines/{pipeline_name}/parametros", tags=["pipelines"])
 def get_pipeline_parametros(pipeline_name: str, parametros_versao: int = Query(1, ge=1, le=2),
                             _auth: dict = Depends(get_current_user)):
