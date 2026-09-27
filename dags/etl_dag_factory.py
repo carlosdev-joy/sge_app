@@ -834,7 +834,15 @@ def _generate_dag_source(pipeline, jobs):
     user_tags   = [t.strip() for t in tags_raw.split(",") if t.strip()]
     all_tags    = list(dict.fromkeys([project, domain] + user_tags))
     sorted_jobs = sorted(jobs, key=lambda j: j["execution_order"])
-    snapshot_parametros = any(j.get("_snapshot_habilitado") or json.loads(j.get("param_vinculos_json") or "{}") for j in sorted_jobs)
+    validadores = {j["job_name"]: j.get("_valida_config") for j in sorted_jobs if _alias(j) == "valida_arquivo"}
+    has_valida = bool(validadores)
+    if has_valida:
+        from utils.valida_arquivo import impacto, estrutura_validadores, grafo, descendentes
+        for no, cfg in validadores.items():
+            if not cfg: raise ValueError("Valida Arquivo sem configuração: " + no)
+            impacto(cfg, sorted_jobs, no, pipeline.get("_catalogo_valida", []))
+        manifesto_valida = estrutura_validadores(validadores)
+    snapshot_parametros = has_valida or any(j.get("_snapshot_habilitado") or json.loads(j.get("param_vinculos_json") or "{}") for j in sorted_jobs)
     for j in sorted_jobs:
         j["_snapshot_parametros"] = snapshot_parametros
     # Group by execution_order — same order → parallel execution
@@ -852,7 +860,7 @@ def _generate_dag_source(pipeline, jobs):
     # Nós de Decisão (roteador), de Notificação (sem lineage) e SQL (roda o SELECT
     # e publica o valor escalar) não têm t_start/t_end próprios — ficam fora de
     # end_tasks.
-    _SPECIAL_NODES = ("decisao", "notificacao", "sql", "aguarde", "email")
+    _SPECIAL_NODES = ("decisao", "notificacao", "sql", "aguarde", "email", "valida_arquivo")
     all_ends    = [f"t_end_{_varname(j['job_name'])}" for j in sorted_jobs if _alias(j) not in _SPECIAL_NODES]
 
     def _jtypes(jobs):
@@ -2501,9 +2509,16 @@ def _generate_dag_source(pipeline, jobs):
             "        from utils.param_snapshot import capturar",
             "        capturar(MsSqlHook(mssql_conn_id=MSSQL_CONN_ID), PIPELINE_NAME, context['run_id'],",
             "                 primeira_tentativa=context['ti'].try_number <= 1,",
-            f"                 estrutura_esperada={estrutura_snapshot!r}, projeto_esperado=PROJECT_NAME, ssh_esperado=SSH_CONN_ID)",
+            f"                 estrutura_esperada={estrutura_snapshot!r}, projeto_esperado=PROJECT_NAME, ssh_esperado=SSH_CONN_ID" + (f", validadores_esperados={manifesto_valida!r})" if has_valida else ")"),
         ]
     helpers_str = "\n".join(helpers_lines)
+
+    if has_valida:
+        _, filhos_valida, pais_valida = grafo(sorted_jobs)
+        for cfg in validadores.values():
+            for entrada in cfg['entradas']:
+                reachable.add(entrada['alvo'])
+                reachable.update(descendentes(filhos_valida, entrada['alvo']))
 
     # Bloco with DAG
     teams_tasks = []
@@ -2532,7 +2547,7 @@ def _generate_dag_source(pipeline, jobs):
         ]))
     # flow_close: só em pipelines com Decisão (única origem de skip por ramo).
     # ALL_DONE — roda no fechamento do run e registra SKIPPED de 1ª classe.
-    if has_decision:
+    if has_decision or has_valida:
         teams_tasks.append("\n".join([
             't_flow_close = PythonOperator(',
             '    task_id="flow_close",',
@@ -2570,10 +2585,19 @@ def _generate_dag_source(pipeline, jobs):
 
     # TODOS os nós sem t_start entram aqui, não só as notificações: cada um
     # é roteado pelo próprio task_id (ver _decision_block).
-    _notif_set = set(notificacao_nodes) | set(sql_nodes) | set(aguarde_nodes) | set(email_nodes)
+    _notif_set = set(notificacao_nodes) | set(sql_nodes) | set(aguarde_nodes) | set(email_nodes) | set(validadores)
     job_blocks = []
     for j in sorted_jobs:
-        if _alias(j) == "decisao":
+        if _alias(j) == "valida_arquivo":
+            job_blocks.append("\n".join([
+                f't_valida_{_varname(j["job_name"])} = PythonOperator(',
+                f'    task_id={j["job_name"]!r},',
+                '    python_callable=_avaliar_no_valida,',
+                f'    op_kwargs={{"no": {j["job_name"]!r}}},',
+                '    do_xcom_push=False,',
+                ')',
+            ]))
+        elif _alias(j) == "decisao":
             job_blocks.append(_decision_block(
                 j, decision_conditions.get(j["job_name"], {}), _job_names, _notif_set))
         elif _alias(j) == "notificacao":
@@ -2639,7 +2663,7 @@ def _generate_dag_source(pipeline, jobs):
     # sem deps explícitas/decisão continuam exatamente como antes.
     # (_job_names/_deps_of já definidos acima, junto do parsing das decisões.)
     explicit_deps = (has_decision or has_notificacao or has_sql_node or has_aguarde
-                     or has_email or any(_deps_of(j) for j in sorted_jobs))
+                     or has_email or has_valida or any(_deps_of(j) for j in sorted_jobs))
 
     notif_task_refs = []   # t_notif_* a convergir no publish_dataset
     sql_task_refs = []     # t_sql_* a convergir no publish_dataset
@@ -2654,6 +2678,8 @@ def _generate_dag_source(pipeline, jobs):
             # t_notif_<d>, a decisão roteia via t_dec_<d> e o nó SQL roda em
             # t_sql_<d>. Um job que depende desses deve referenciá-los, não
             # t_end_<d> (que seria NameError no import do Airflow).
+            if d in validadores:
+                return f"t_valida_{_varname(d)}"
             if d in notificacao_nodes:
                 return f"t_notif_{_varname(d)}"
             if d in decision_conditions:
@@ -2682,6 +2708,9 @@ def _generate_dag_source(pipeline, jobs):
             # Nó de Notificação: executável, sem t_start/t_end. Liga ao upstream
             # (deps + decisões que o citam num ramo) direto ao t_notif_*; como é
             # tipicamente ramo_falso, o skip do ramo oposto chega via t_dec_*.
+            if _alias(j) == "valida_arquivo":
+                dep_lines.append(f"{up} >> t_valida_{n}")
+                continue
             if _alias(j) == "notificacao":
                 dep_lines.append(f"{up} >> t_notif_{n}")
                 notif_task_refs.append(f"t_notif_{n}")
@@ -2803,6 +2832,90 @@ def _generate_dag_source(pipeline, jobs):
             dep_lines.append(f"{eref} >> t_flow_close")
         if f_fim:
             dep_lines.append("t_flow_close >> t_teams_end")
+
+    if has_valida:
+        # Hooks explícitos no construtor: o worker reinstala a proteção ao importar a DAG.
+        controladores = {}
+        for no, cfg in validadores.items():
+            for entrada in cfg['entradas']:
+                controladores.setdefault(entrada['alvo'], set()).add(no)
+        mapa_valida = {}
+        for j in sorted_jobs:
+            no = j['job_name']; especial = _alias(j) in _SPECIAL_NODES
+            mapa_valida[no] = dict(inicio=no if especial else 'log_start_' + no,
+                executor=no, fim=no if especial else 'log_end_' + no,
+                tipo=_alias(j), pais=sorted(pais_valida[no]),
+                controladores=sorted(controladores.get(no, [])), regra='all_success')
+        import re as _re_valida
+        for idx, j in enumerate(sorted_jobs):
+            no = j['job_name']; cfg = mapa_valida[no]
+            proteger_ramo = any(mapa_valida[pai]['tipo'] == 'decisao' for pai in cfg['pais'])
+            if not cfg['controladores'] and not proteger_ramo: continue
+            if cfg['tipo'] == 'aguarde':
+                job_blocks[idx] = job_blocks[idx].replace(' = EmptyOperator(', ' = PythonOperator(').replace(f'    task_id={no!r},', f'    task_id={no!r},\n    python_callable=_aguarde_validado,')
+            def _guardar_bloco(match):
+                corpo = match.group(2)
+                ident = _re_valida.search(r"^    task_id=(.+),$", corpo, _re_valida.M)
+                if not ident: return match.group(0)
+                import ast as _ast_valida
+                tid = _ast_valida.literal_eval(ident.group(1))
+                if tid not in (cfg['inicio'], cfg['executor']): return match.group(0)
+                if tid == cfg['inicio']:
+                    regra = _re_valida.search(r'trigger_rule=TriggerRule\.(\w+)', corpo)
+                    cfg['regra'] = regra.group(1).lower() if regra else 'all_success'
+                    corpo = _re_valida.sub(r'^    trigger_rule=.+,\n', '', corpo, flags=_re_valida.M)
+                    corpo += '    trigger_rule=TriggerRule.ALL_DONE,\n'
+                return match.group(1) + corpo + '    pre_execute=_guarda_valida,\n' + match.group(3)
+            job_blocks[idx] = _re_valida.sub(r'(?m)^(\w+ = \w+\(\n)(.*?)(^\))', _guardar_bloco, job_blocks[idx], flags=_re_valida.S)
+        helpers_str += "\n" + "\n".join([
+            'from utils.valida_arquivo_runtime import avaliar_no as _va_avaliar, guarda as _va_guarda, finalizar as _va_finalizar, permitir_publicacao as _va_publicar, permitir_notificacao as _va_notificar',
+            f'MAPA_VALIDA = {mapa_valida!r}',
+            'def _aguarde_validado(**context):',
+            '    return None',
+            'def _avaliar_no_valida(no, **context):',
+            '    return _va_avaliar(no, PIPELINE_NAME, MSSQL_CONN_ID, **context)',
+            'def _guarda_valida(context):',
+            '    _va_guarda(context, PIPELINE_NAME, MSSQL_CONN_ID, MAPA_VALIDA)',
+            '_flow_close_telemetria = _flow_close',
+            'def _flow_close(**context):',
+            '    _flow_close_telemetria(**context)',
+            '    _va_finalizar(context, PIPELINE_NAME, MSSQL_CONN_ID, MAPA_VALIDA, _data_referencia(context))',
+            'def _registrar_sucesso(**context):',
+            '    _va_publicar(context, PIPELINE_NAME, MSSQL_CONN_ID, MAPA_VALIDA, _data_referencia(context))',
+            '    _disparar_dependentes(context)',
+            'def _notificar_final_valida(context):',
+            '    _va_notificar(context, PIPELINE_NAME, MSSQL_CONN_ID)',
+        ]) + "\n"
+        # O fechamento rigoroso é a única autorização do evento. Mantém testemunha
+        # de falha terminal mesmo com notificações ALL_DONE bem-sucedidas.
+        publish_block = "\n".join([
+            't_publish_dataset = PythonOperator(',
+            '    task_id="publish_dataset",',
+            '    python_callable=_registrar_sucesso,',
+            '    outlets=[Dataset(DATASET_URI)],',
+            '    trigger_rule=TriggerRule.ALL_SUCCESS,',
+            ')',
+        ])
+        dep_lines = [line for line in dep_lines if '>> t_publish_dataset' not in line]
+        finais = []
+        for j in sorted_jobs:
+            no = j['job_name']; n = _varname(no); tipo = _alias(j)
+            if tipo == 'valida_arquivo': ref = f't_valida_{n}'
+            elif tipo == 'decisao': ref = f't_dec_{n}'
+            elif tipo == 'notificacao': ref = f't_notif_{n}'
+            elif tipo == 'sql': ref = f't_sql_{n}'
+            elif tipo == 'aguarde': ref = f't_wait_{n}'
+            elif tipo == 'email': ref = f't_email_{n}'
+            else:
+                ref = f't_end_{n}'
+                dep_lines.append(f't_job_{n} >> t_flow_close')
+                dep_lines.append(f't_start_{n} >> t_flow_close')
+            finais.append(ref)
+        for ref in finais: dep_lines.append(f'{ref} >> t_flow_close')
+        dep_lines.extend(['t_check_agenda >> t_flow_close', 't_flow_close >> t_publish_dataset', 't_flow_close >> t_reg_falha'])
+        if f_fim:
+            dep_lines.append('t_flow_close >> t_teams_end')
+            teams_tasks = [b.replace('    python_callable=teams_end,', '    python_callable=teams_end,\n    pre_execute=_notificar_final_valida,') for b in teams_tasks]
 
     with_parts = []
     with_parts.append(_ind(check_block))
@@ -3338,9 +3451,19 @@ def gerar_dags(**context):
             continue
 
         try:
+            val_configs = {}
+            if any(_alias(j) == 'valida_arquivo' for j in jobs):
+                from utils.param_snapshot import configuracoes_validacao, _lista
+                catalogo_valida = _lista(cursor, 'SELECT * FROM dbo.etl_pipeline_param WHERE pipeline_name=%s', (pname,))
+                val_configs, _ = configuracoes_validacao(cursor, pname, jobs, catalogo_valida)
+                pipeline['_catalogo_valida'] = catalogo_valida
+                for j in jobs:
+                    if j['job_name'] in val_configs:
+                        j['_valida_config'] = val_configs[j['job_name']]
+                        j['_snapshot_habilitado'] = True
             if any(j.get("_snapshot_habilitado") or j.get("param_vinculos_json") for j in jobs):
                 from utils.param_snapshot import validar_publicacao
-                validar_publicacao(MsSqlHook(mssql_conn_id=MSSQL_CONN_ID), pname, project, jobs)
+                validar_publicacao(MsSqlHook(mssql_conn_id=MSSQL_CONN_ID), pname, project, jobs, validadores=val_configs)
             source = _generate_dag_source(pipeline, jobs)
         except Exception as e:
             if _pendencia_de_terceiro(pname):
