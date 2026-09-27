@@ -25,6 +25,7 @@ export interface EtapaNodeData {
   params?: JobParam[]
   // Nó python v2 — draft local do modo de execução (todos os campos; o save
   // envia só o modo ativo). Ausente/modo 'modulo' = legado (python: null).
+  param_vinculos?: Record<string, string>
   python?: PythonDraft
   // Subtítulo derivado (calculado no FluxoEditor — etapaSublabel): para python
   // indica o modo ("script @ ssh" / "código @ ssh" / "módulo (worker)").

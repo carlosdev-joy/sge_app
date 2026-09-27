@@ -1,3 +1,4 @@
+import { VinculosParametros } from './VinculosParametros'
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Maximize2, Plus } from 'lucide-react'
@@ -101,6 +102,7 @@ export interface JobTypeFieldsValue {
   params: JobParam[]
   // Nó python v2 — draft local (todos os modos). Ausente = legado 'modulo'.
   python?: PythonDraft
+  param_vinculos?: Record<string, string>
 }
 
 export interface ConnOpt { conn_id: string; host?: string }
@@ -179,11 +181,11 @@ export function jobTypeFieldsErrors(v: JobTypeFieldsValue): string[] {
           + (py.modo === 'arquivo' ? "'Script no servidor'" : "'Código embutido'"))
       }
       if (py.modo === 'arquivo') {
-        if (!PY_SCRIPT_PATH_RE.test(py.script_path.trim())) {
+        if (!PY_SCRIPT_PATH_RE.test(py.script_path.trim()) && !(!py.script_path.trim() && v.param_vinculos?.script_path)) {
           errs.push('Caminho do script inválido — absoluto, terminando em .py, sem espaço/aspas (ex.: /opt/scripts/carga.py)')
         }
       } else {
-        if (!PY_DIR_RE.test(py.destino_dir.trim())) {
+        if (!PY_DIR_RE.test(py.destino_dir.trim()) && !(!py.destino_dir.trim() && v.param_vinculos?.destino_dir)) {
           errs.push('Diretório de destino inválido — absoluto, sem espaço/aspas (ex.: /opt/scripts)')
         }
         if (!PY_ARQUIVO_RE.test(py.arquivo.trim())) {
@@ -579,6 +581,7 @@ export function JobTypeFields({
 
   return (
     <div className={`flex flex-col ${gap}`}>
+      {['datastage', 'python'].includes(job_type) && <VinculosParametros pipeline={pipeline} value={value} onChange={onChange} />}
       {/* python (v2) → seção própria: Modo de execução + campos por modo
           (substitui o campo genérico de comando; o módulo legado mora dentro). */}
       {job_type === 'python' ? (
@@ -819,7 +822,7 @@ function PythonExecFields({ value, onChange, sshConns, onMaximizar, noteCls }: {
   noteCls: string
 }) {
   const py = value.python ?? defaultPythonDraft('modulo')
-  const patchPy = (p: Partial<PythonDraft>) => onChange({ python: { ...py, ...p } })
+  const patchPy = (p: Partial<PythonDraft>) => onChange({ python: { ...py, ...p }, ...(p.modo ? { param_vinculos: {} } : {}) })
 
   // Servidor SSH do job — o MESMO campo do modo shell (ssh_conn_id do job);
   // obrigatório nos modos novos (é nele que o script roda).

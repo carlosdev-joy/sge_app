@@ -1182,3 +1182,16 @@ def test_rerun_sem_match_mantem_fallback_legado(client, auth):
         })
     assert r.status_code == 200, r.text
     assert [c for c in cli.chamadas if c[0] == "POST"][0][2]["dag_run_id"] == "r_failed"
+
+
+@pytest.fixture(autouse=True)
+def _banco_legado_sem_snapshot_130(monkeypatch, request):
+    # Estes dublês representam o schema anterior; F2b é coberta em teste próprio.
+    monkeypatch.setattr('services.param_snapshot.ativo', lambda cur, pipeline: False)
+    if request.node.name in {
+        'test_rerun_envia_o_mesmo_corpo_de_sempre',
+        'test_rerun_com_dag_run_id_explicito_nao_resolve_corrida_no_airflow',
+        'test_rerun_sem_match_mantem_fallback_legado',
+    }:
+        from unittest.mock import MagicMock
+        monkeypatch.setattr('routers.execucoes.get_db_conn', lambda: MagicMock())

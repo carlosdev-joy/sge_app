@@ -53,7 +53,7 @@ import { Modal } from '../ui/Modal'
 import { haOverlayAberto } from '../ui/overlay'
 import { toast } from '../ui/Toast'
 import {
-  Activity,
+  Activity, FileCheck2,
   Save, RefreshCw, AlertCircle, GitBranch, Trash2, BellRing, Table2, Split, Hourglass, Mail,
   ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Maximize2, Minimize2,
   MousePointerClick, Pencil, Search, X, History, PauseCircle,
@@ -63,6 +63,9 @@ import { DecisaoNode, casoCor, type CasoSwitch, type DecisaoNodeData, type NodeC
 import { NotificacaoNode, type NotificacaoNodeData } from './NotificacaoNode'
 import { SqlNode, type SqlNodeData } from './SqlNode'
 import { AguardeNode, type AguardeNodeData } from './AguardeNode'
+import { ValidaArquivoNode } from './ValidaArquivoNode'
+import { ValidacaoExecucao } from './ValidacaoExecucao'
+import { novaValidacao, renomearAlvo, exigePublicacaoValida, type ValidaConfig } from '../../lib/validaArquivo'
 import { EmailNode, type EmailNodeData } from './EmailNode'
 import { TYPE_META, TYPE_ORDER, CREATABLE_TYPES, type EtapaType } from './types'
 import { defaultCondition, toNodeCondition, conditionLabel } from './condition'
@@ -92,7 +95,7 @@ import { ModalPausaEtapa } from './ModalPausaEtapa'
 import { useAuthStore } from '../../store/auth'
 
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode,
-                    aguarde: AguardeNode, email: EmailNode }
+                    aguarde: AguardeNode, email: EmailNode, valida_arquivo: ValidaArquivoNode }
 
 // ── Dock inferior de propriedades (fase 3 do redesign) ──────────────────────
 type DockEstado = 'colapsado' | 'aberto' | 'max'
@@ -117,6 +120,7 @@ interface FluxoNode {
   // interno do config é `sql`, a query, daí o nome externo distinto).
   sql_node: SqlConfig | null
   // Config do nó Aguarde — chave `aguarde` na API.
+  valida_arquivo?: ValidaConfig
   aguarde?: AguardeConfig | null
   // Config do nó de E-mail — chave `email` na API (guardada em notify_json).
   email?: EmailNoConfig | null
@@ -129,6 +133,7 @@ interface FluxoNode {
   mssql_database?: string | null
   params?: JobParamApi[]
   // Nó python v2 (chave `python` da API) — null/ausente = modo legado 'modulo'.
+  param_vinculos?: Record<string, string>
   python?: PythonNodeApi | null
 }
 interface FluxoResp { nodes: FluxoNode[] }
@@ -190,6 +195,9 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       const data: SqlNodeData = { name: n.job_name, sql, label: sqlLabel(sql) }
       return { id: n.job_name, type: 'sql' as const, position, data }
     }
+    if (n.job_type === 'valida_arquivo') {
+      return { id: n.job_name, type: 'valida_arquivo', position, data: { name: n.job_name, valida_arquivo: n.valida_arquivo } }
+    }
     if (n.job_type === 'aguarde') {
       const aguarde = toAguardeConfig(n.aguarde)
       const data: AguardeNodeData = { name: n.job_name, aguarde, label: aguardeLabel(aguarde) }
@@ -212,6 +220,7 @@ function buildNodes(apiNodes: FluxoNode[]): Node[] {
       mssql_database: n.mssql_database ?? null,
       // storedproc e datastage (origem/cálculo/Encrypted mascarado) — lib/dsParams.
       params: paramsFromApi(n.params),
+      param_vinculos: n.param_vinculos ?? {},
       // Nó python v2: draft local a partir da API (null/ausente = 'modulo' —
       // nó existente sem python pré-seleciona o modo legado).
       python: pythonFromApi(n.python),
@@ -391,6 +400,7 @@ const PALETA_CATEGORIAS: PaletaCategoria[] = [
       { tipo: 'notificacao', label: 'Notificação', chip: 'bg-teal-600 text-white', Icon: BellRing },
       // Hourglass, não GitMerge: o ícone precisa aderir ao NOME "Aguarde" e ser
       // o mesmo que o operador reencontra no medalhão do nó dentro do canvas.
+      { tipo: 'valida_arquivo', label: 'Valida Arquivo', chip: 'bg-cyan-700 text-white', Icon: FileCheck2 },
       { tipo: 'aguarde', label: 'Aguarde', chip: 'bg-amber-600 text-white', Icon: Hourglass },
       // Mesmo acento da Notificação: os dois avisam gente, mudando o canal.
       { tipo: 'email', label: 'E-mail', chip: 'bg-teal-600 text-white', Icon: Mail },
@@ -803,7 +813,7 @@ function FluxoEditorInner({
   // Decisões (roteadores), notificações e nós SQL (não geram linhas) ficam de fora.
   const jobNames = useMemo(
     () => nodes.filter(n => n.type !== 'decisao' && n.type !== 'notificacao'
-      && n.type !== 'sql' && n.type !== 'aguarde' && n.type !== 'email').map(n => n.id),
+      && n.type !== 'sql' && n.type !== 'aguarde' && n.type !== 'email' && n.type !== 'valida_arquivo').map(n => n.id),
     [nodes],
   )
 
@@ -816,13 +826,14 @@ function FluxoEditorInner({
   // Contagem de nós por tipo (grafo VIVO, inclui não salvos) — exibida no
   // painel do PIPELINE quando nada está selecionado no dock.
   const contagemNos = useMemo<ContagemNos>(() => {
-    const c: ContagemNos = { etapas: 0, decisoes: 0, sql: 0, notificacoes: 0, aguardes: 0, emails: 0 }
+    const c: ContagemNos = { etapas: 0, decisoes: 0, sql: 0, notificacoes: 0, aguardes: 0, emails: 0, validadores: 0 }
     for (const n of nodes) {
       if (n.type === 'decisao') c.decisoes += 1
       else if (n.type === 'sql') c.sql += 1
       else if (n.type === 'notificacao') c.notificacoes += 1
       else if (n.type === 'aguarde') c.aguardes += 1
       else if (n.type === 'email') c.emails += 1
+      else if (n.type === 'valida_arquivo') c.validadores = (c.validadores ?? 0) + 1
       else c.etapas += 1
     }
     return c
@@ -1049,6 +1060,13 @@ function FluxoEditorInner({
         setSelectedId(name)
         return
       }
+      if (tipo === 'valida_arquivo') {
+        const name = nextName('VALIDA_ARQUIVO', nameSet())
+        const node: Node = { id: name, type: tipo, position: { x, y }, selected: true,
+          data: { name, valida_arquivo: novaValidacao(), isNew: true } }
+        setNodes(nds => [...nds.map(n => ({ ...n, selected: false })), node])
+        setDirty(true); setSelectedId(name); return
+      }
       if (tipo === 'aguarde') {
         // Aguarde: cria o nó (política conservadora) e SELECIONA — o painel
         // mostra a contagem de entradas e o atalho de prender as pontas soltas.
@@ -1135,7 +1153,7 @@ function FluxoEditorInner({
     // Troca id + nome (data) e remapeia arestas.
     setNodes(nds => nds.map(n => n.id === oldName
       ? { ...n, id: name, data: { ...n.data, name } }
-      : n))
+      : renomearAlvo(n, oldName, name)))
     setEdges(eds => eds.map(e => {
       let ne = e
       if (e.source === oldName) ne = { ...ne, source: name }
@@ -1164,6 +1182,9 @@ function FluxoEditorInner({
   // a confirmação do rename transacional (backend atualiza TODAS as referências).
   function renomear(oldName: string, novo: string): boolean {
     const n = nodes.find(x => x.id === oldName)
+    if (!n?.data.isNew && nodes.some(x => x.type === 'valida_arquivo' && (x.id === oldName || (x.data.valida_arquivo as ValidaConfig).entradas.some(e => e.alvo === oldName)))) {
+      toast.error('Remova a referência de validação e salve antes de renomear um destino. Um validador salvo deve ser recriado com o novo nome.'); return false
+    }
     if ((n?.data as { isNew?: boolean } | undefined)?.isNew) return renomearNovo(oldName, novo)
     const name = novo.trim()
     if (name === oldName) return true
@@ -1649,6 +1670,7 @@ function FluxoEditorInner({
           mssql_database: (d.mssql_database as string | null) ?? '',
           params: (d.params as JobParam[] | undefined) ?? [],
           python: d.python as PythonDraft | undefined,
+          param_vinculos: d.param_vinculos as Record<string, string> | undefined,
         })
         etapaErros.push(...errs.map(e => `${n.id}: ${e}`))
       }
@@ -1667,6 +1689,7 @@ function FluxoEditorInner({
         const isSql = n.type === 'sql'
         const isAguarde = n.type === 'aguarde'
         const isEmail = n.type === 'email'
+        const isValida = n.type === 'valida_arquivo'
         let condition: Record<string, unknown> | null = null
         if (isDecisao) {
           const cur = (d.condition as NodeCondition | undefined) ?? defaultCondition()
@@ -1746,11 +1769,12 @@ function FluxoEditorInner({
           : isSql ? 'sql'
           : isAguarde ? 'aguarde'
           : isEmail ? 'email'
+          : isValida ? 'valida_arquivo'
           : ((d.type as string) || 'datastage')
         const base = {
           job_name: n.id,
           job_type: jobType,
-          job_command: (isDecisao || isNotificacao || isSql || isAguarde || isEmail)
+          job_command: (isDecisao || isNotificacao || isSql || isAguarde || isEmail || isValida)
             ? null : ((d.command as string | null) ?? null),
           execution_order: (d.order as number) ?? 1,
           depends_on_jobs: Array.from(depsByTarget.get(n.id) ?? []),
@@ -1758,6 +1782,7 @@ function FluxoEditorInner({
           layout_x: Math.round(n.position.x),
           layout_y: Math.round(n.position.y),
         }
+        if (isValida) return { ...base, valida_arquivo: d.valida_arquivo as ValidaConfig }
         if (isDecisao) return base
         if (isSql) {
           // Nó SQL: emite a chave `sql_node` (o backend lê/devolve sql_node); não
@@ -1829,6 +1854,7 @@ function FluxoEditorInner({
           // storedproc: nome/tipo/valor; datastage: origem + cálculo + Encrypted
           // (*** = manter). A chave vai SEMPRE (presença = autoriza o replace-all).
           params: paramsToApi(jobType, rawParams),
+          param_vinculos: ['datastage', 'python'].includes(jobType) ? d.param_vinculos ?? {} : {},
           // Nó python: a chave `python` vai SEMPRE (mesmo null) — é a presença
           // da chave que permite voltar ao legado ('modulo' → python: null
           // limpa o python_json no backend). Envia só o modo ativo do draft.
@@ -1838,11 +1864,12 @@ function FluxoEditorInner({
         }
       })
 
+      const precisaPublicar = exigePublicacaoValida(buildNodes(apiNodesRef.current), nodes, buildEdges(apiNodesRef.current), edges)
       const payload = {
         nodes: payloadNodes,
         deleted: Array.from(deletedRef.current),
       }
-      await apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`, {
+      const salvo = await apiFetch<{ validadores?: Record<string, { revisao: number }> }>(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`, {
         method: 'POST',
         body: JSON.stringify(payload),
       })
@@ -1853,10 +1880,11 @@ function FluxoEditorInner({
       // atrasar/falhar, um nó recém-salvo com isNew=true iria pro caminho de
       // rename local (sem transação) e duplicaria o job no próximo save.
       existingRef.current = new Set(payloadNodes.map(p => p.job_name))
-      setNodes(nds => nds.map(n =>
-        (n.data as { isNew?: boolean }).isNew ? { ...n, data: { ...n.data, isNew: false } } : n))
+      setNodes(nds => nds.map(n => ({ ...n, data: { ...n.data, isNew: false,
+        ...(n.type === 'valida_arquivo' && salvo.validadores?.[n.id] ? { valida_arquivo: {
+          ...(n.data.valida_arquivo as ValidaConfig), revisao: salvo.validadores[n.id].revisao } } : {}) } })))
       qc.invalidateQueries({ queryKey: ['fluxo', pipeline] })
-      setShowPublish(true)
+      setShowPublish(precisaPublicar)
     } catch (e: any) {
       const status: number | undefined = e?.status
       const msg = e?.message ?? ''
@@ -1904,6 +1932,7 @@ function FluxoEditorInner({
       if (node.type === 'sql') return '#8b5cf6'
       if (node.type === 'aguarde') return '#d97706'
       if (node.type === 'email') return '#0d9488'
+      if (node.type === 'valida_arquivo') return '#0e7490'
       const t = (node.data as { type?: EtapaType }).type
       return (t && TYPE_META[t]?.hex) || '#94a3b8'
     },
@@ -2023,6 +2052,7 @@ function FluxoEditorInner({
           mssql_database: (d.mssql_database as string | null) ?? '',
           params: (d.params as JobParam[] | undefined) ?? [],
           python: d.python as PythonDraft | undefined,
+          param_vinculos: d.param_vinculos as Record<string, string> | undefined,
         }))
       } else if (n.type === 'decisao') {
         if (!nRamos.get(n.id)) errs.push('nenhum ramo ligado (arraste das saídas)')
@@ -2051,6 +2081,10 @@ function FluxoEditorInner({
         const s = (n.data as SqlNodeData).sql
         if (!(s?.sql || '').trim()) errs.push('SELECT vazio')
         if (!(s?.mssql_conn_id || '').trim()) errs.push('sem conexão MSSQL')
+      } else if (n.type === 'valida_arquivo') {
+        const cfg = n.data.valida_arquivo as ValidaConfig
+        if (!cfg.ssh_conn_id) errs.push('selecione a conexão SSH')
+        if (cfg.entradas.some(e => !e.arquivo || !e.alvo || (!e.diretorio_literal && !e.param_name))) errs.push('complete arquivo, diretório e destino')
       } else if (n.type === 'aguarde') {
         // Avisos (o bloqueio de "sem entrada" mora no guard do save): um ponto
         // de encontro com uma perna só não junta nada, e sem saída não segura
@@ -2224,6 +2258,7 @@ function FluxoEditorInner({
           onCorrida={escolherCorrida}
         />
       )}
+      {emExecucao && execData?.identidade?.run_id && <ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} />}
       {/* Linha principal: paleta FIXA à esquerda (recolhível) + canvas.
           As propriedades moram no dock inferior (fase 3) — nada sobrepõe o grafo. */}
       <div className="flex min-h-0 flex-1">
@@ -2469,6 +2504,7 @@ function FluxoEditorInner({
                   : selNode.type === 'sql' ? 'Consulta SQL'
                   : selNode.type === 'aguarde' ? 'Aguarde'
                   : selNode.type === 'email' ? 'E-mail'
+                  : selNode.type === 'valida_arquivo' ? 'Valida Arquivo'
                   : (TYPE_META as Record<string, { label: string }>)[
                       String((selNode.data as { type?: string }).type ?? '')
                     ]?.label ?? 'Etapa'}

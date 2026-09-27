@@ -153,3 +153,9 @@ def test_rerun_sem_parametros_apaga_a_sobreposicao_anterior_antes_do_clear(clien
     assert [e[0] for e in eventos] == ["apagar", "clear"]
     assert eventos[0][2] == _RUN_A
     assert r.json()["parametros_sobrepostos"] == []
+
+
+@pytest.fixture(autouse=True)
+def _banco_legado_sem_snapshot_130(monkeypatch):
+    # Estes dublês representam o schema anterior; F2b é coberta em teste próprio.
+    monkeypatch.setattr('services.param_snapshot.ativo', lambda cur, pipeline: False)

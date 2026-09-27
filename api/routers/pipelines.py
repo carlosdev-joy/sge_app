@@ -1100,7 +1100,8 @@ def status_catalogo_parametros(_auth: dict = Depends(get_current_user)):
         conn = get_db_conn(); cur = conn.cursor()
         if not _tem_tabela_pipeline_param(cur) or not pp.tem_catalogo(cur):
             raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
-        return {"parametros": [], "disponivel": True}
+        from services import param_vinculos as pv
+        return {"parametros": [], "disponivel": True, "vinculos_disponiveis": pv.disponivel(cur)}
     except pp.SchemaIncompleto:
         raise HTTPException(status_code=503, detail=pp.ERRO_MIGRATION)
     except HTTPException:
@@ -1365,6 +1366,11 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
                 raise HTTPException(status_code=422,
                                     detail=({"errors": erros_p} if versao_params == 2 else
                                             "Parâmetros do pipeline: " + "; ".join(erros_p)))
+            from services import param_vinculos as pv
+            try:
+                pv.validar_catalogo(cur, pipeline, parametros_ds)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail={'errors': [str(exc)]})
             tem_parametros = tem_108   # sem a tabela e lista vazia: nada a gravar
 
         # 'monthly_days_times' com a chave AUSENTE (body parcial — achado 3):
@@ -1391,6 +1397,7 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
         if tem_parametros:
             if catalogo_params:
                 pp.gravar(cur, pipeline, parametros_ds)
+
             else:
                 _gravar_parametros_pipeline(cur, pipeline, parametros_ds)
         if tem_depends_on:
@@ -1625,6 +1632,11 @@ async def register_pipeline(body: dict = Body(default={}), _auth: dict = Depends
                 )
         else:
             _write_audit(cur, pipeline, changed_by, old_record, new_vals)
+        from services import param_snapshot as ps
+        try:
+            ps.validar_estrutura(cur, pipeline)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         conn.commit()
         cur.close(); conn.close()
     except pp.SchemaIncompleto:
@@ -1809,3 +1821,43 @@ def get_malha():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/pipelines/{pipeline_name}/politica-sem-movimento', tags=['pipelines'])
+def get_politica_sem_movimento(pipeline_name: str, _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    from services import valida_arquivo_execucao as ve
+    conn=cur=None
+    try:
+        conn=get_db_conn();cur=conn.cursor()
+        if not ve.disponivel(cur):return dict(disponivel=False)
+        cur.execute('SELECT liberar_dependentes_sem_movimento,notificar_sem_movimento,politica_sem_movimento_revisao FROM dbo.etl_pipeline WHERE pipeline_name=?',(pipeline_name,))
+        row=cur.fetchone()
+        if not row:raise HTTPException(status_code=404,detail='Pipeline não encontrado.')
+        return dict(disponivel=True,liberar_dependentes=bool(row[0]),notificar=bool(row[1]),revisao=row[2])
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()
+
+
+@router.put('/pipelines/{pipeline_name}/politica-sem-movimento', tags=['pipelines'])
+def put_politica_sem_movimento(pipeline_name: str, body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EDITAR))):
+    from services import valida_arquivo_execucao as ve
+    if type(body.get('revisao')) is not int or body['revisao']<0:
+        raise HTTPException(status_code=422,detail='Informe a revisão esperada da política.')
+    if type(body.get('liberar_dependentes')) is not bool or type(body.get('notificar')) is not bool:
+        raise HTTPException(status_code=422,detail='Informe as opções de liberação e notificação como booleanos.')
+    conn=cur=None
+    try:
+        conn=get_db_conn();cur=conn.cursor()
+        if not ve.disponivel(cur):raise HTTPException(status_code=503,detail=ve.MIGRATION)
+        cur.execute('UPDATE dbo.etl_pipeline SET liberar_dependentes_sem_movimento=?,notificar_sem_movimento=?,politica_sem_movimento_revisao=politica_sem_movimento_revisao+1 WHERE pipeline_name=? AND politica_sem_movimento_revisao=?',
+                    (body['liberar_dependentes'],body['notificar'],pipeline_name,body['revisao']))
+        if cur.rowcount==0:raise HTTPException(status_code=409,detail='Política mudou ou pipeline não existe. Recarregue antes de salvar.')
+        conn.commit()
+        return dict(ok=True,revisao=body['revisao']+1,aplica_em='novas_execucoes')
+    except Exception:
+        if conn is not None:conn.rollback()
+        raise
+    finally:
+        if cur is not None:cur.close()
+        if conn is not None:conn.close()

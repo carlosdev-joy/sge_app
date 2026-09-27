@@ -4,6 +4,7 @@
 // editados no wizard de Pipelines), a contagem de nós do fluxo e a dica de uso
 // do canvas. Layout no padrão dos demais painéis (fase 4): cabeçalho com chip +
 // nome + subtítulo, e conteúdo em colunas no dock largo.
+import { PoliticaSemMovimento } from '../PoliticaSemMovimento'
 import { useQuery } from '@tanstack/react-query'
 import { GitBranch, MousePointerClick } from 'lucide-react'
 import { apiFetch } from '../../../lib/api'
@@ -18,6 +19,7 @@ export interface ContagemNos {
   sql: number
   notificacoes: number
   aguardes: number
+  validadores?: number
   emails: number
 }
 
@@ -86,7 +88,7 @@ export function PainelPipeline({ pipeline, contagem, readOnly = false }: PainelP
 
   const ativo = meta ? !!meta.active : null
   const totalNos = contagem.etapas + contagem.decisoes + contagem.sql
-    + contagem.notificacoes + contagem.aguardes
+    + contagem.notificacoes + contagem.aguardes + contagem.emails + (contagem.validadores ?? 0)
 
   return (
     <div className="flex flex-1 flex-col">
@@ -161,11 +163,13 @@ export function PainelPipeline({ pipeline, contagem, readOnly = false }: PainelP
                   {' · '}<strong>{contagem.sql}</strong> SQL
                   {' · '}<strong>{contagem.notificacoes}</strong> notificaç{contagem.notificacoes !== 1 ? 'ões' : 'ão'}
                   {' · '}<strong>{contagem.aguardes}</strong> aguarde{contagem.aguardes !== 1 ? 's' : ''}
+                  {' · '}<strong>{contagem.validadores ?? 0}</strong> validadores
                   {' · '}<strong>{contagem.emails}</strong> e-mail{contagem.emails !== 1 ? 's' : ''}
                 </>
               )}
             </p>
           </div>
+          {!readOnly && !!contagem.validadores && <PoliticaSemMovimento key={pipeline} pipeline={pipeline} />}
           <div className="flex items-start gap-2 rounded-lg border border-edge bg-canvas/60 px-3 py-2.5">
             <MousePointerClick size={14} className="mt-0.5 shrink-0 text-dim/70" />
             <p className="text-[11px] leading-relaxed text-dim">
