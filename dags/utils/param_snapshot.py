@@ -145,7 +145,7 @@ def validar_publicacao(hook, pipeline, projeto, jobs, validadores=None):
     rows = hook.get_records("""SELECT s.payload_cifrado FROM dbo.etl_parametro_snapshot s
         WHERE s.pipeline_name=%s AND NOT EXISTS (
           SELECT 1 FROM dbo.etl_pipeline_execucao e
-          WHERE e.pipeline_name COLLATE Latin1_General_BIN2=s.pipeline_name AND e.run_id COLLATE Latin1_General_BIN2=s.run_id
+          WHERE e.pipeline_name COLLATE Latin1_General_BIN2=s.pipeline_name AND e.execution_id COLLATE Latin1_General_BIN2=s.run_id
           AND e.status IN ('SUCESSO','PULADO','CANCELADO'))""", parameters=(pipeline,))
     atual = estrutura(jobs)
     for row in rows:

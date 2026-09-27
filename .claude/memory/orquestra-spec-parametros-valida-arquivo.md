@@ -31,4 +31,6 @@ Usuário confirmou: teste de datasets reais somente no ambiente Caixa. Não há 
 
 F3: [PR #458 aberta](https://github.com/carlosdev-joy/sge_app/pull/458), base `feat/parametros-globais-f2b` (#457). Sem merge/deploy. F4 segue em desenvolvimento.
 
-F4 implementada: migration132, snapshot de validadores/política e diagnóstico durável por tentativa. 7042 passed/51 skipped/mesmas8 falhas; SQL isolado concorrência/rollback/migration2x aprovado; tsc/lint/build aprovados, dist inalterado; QA e segurança sem defeito restante. Docs: validacao-valida-arquivo-f4.md e release-notes/valida-arquivo-f4.md. Runtime F5 e interface F6 ainda pendentes.
+F4 implementada: migration132, snapshot de validadores/política e diagnóstico durável por tentativa. 7043 passed/51 skipped/mesmas8 falhas; SQL isolado concorrência/rollback/migration2x aprovado; tsc/lint/build aprovados, dist inalterado; QA e segurança sem defeito restante. Docs: validacao-valida-arquivo-f4.md e release-notes/valida-arquivo-f4.md. Runtime F5 e interface F6 ainda pendentes.
+
+F4: [PR #459 aberta](https://github.com/carlosdev-joy/sge_app/pull/459), sobre F3 #458. Revisão de integração encontrou consulta herdada de F2b usando e.run_id; corrigida para execution_id conforme migration067 e smoke atualizado para esquema efetivo. Não publicar F2b sem essa correção. Migration072 já amplia execution_id para VARCHAR(250); não criar ampliação redundante.
