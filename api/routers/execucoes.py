@@ -869,11 +869,10 @@ def _iso_data(v) -> str:
 #      "este ciclo volta a ficar ABERTO" para um gesto que não toca em corrida
 #      nenhuma. É a mesma régua de "sem certeza, sem frase" que já governa o
 #      `None`: a certeza aqui inclui poder operar;
-#   2. a CASCATA. `_efeito_na_corrida` só roda dentro de `if cascata:` e com
-#      `marcar_substituidas` tendo aposentado alguma corrida (`n > 0`) — e a
-#      opção que nasce marcada no modal é "apenas este pipeline". Sem a segunda
-#      frase, a promessa da reabertura apareceria justamente na opção em que ela
-#      nunca acontece.
+#   2. a CASCATA para dependentes. Sem cascata, `_efeito_na_corrida` roda com
+#      `alvos=[]` — só reabre o ciclo da malha do próprio pipeline, sem tocar
+#      dependentes. A prévia diz "reabre" na opção sem cascata quando o ciclo
+#      está FALHA/CONCLUIDA; sem ciclo fechado, nada muda e nada é dito.
 #
 # Por isso a prévia devolve DUAS leituras do mesmo ciclo, e quem escolhe é a
 # tela, que é quem sabe qual opção está marcada. As frases moram aqui (e não no
@@ -911,9 +910,7 @@ def _previa_da_corrida(cur, oficial: str, data_ref) -> dict | None:
                 mc.corrida_aberta(cur, c["malha_name"]) is None:
             efeito = ("reabre", "este ciclo já encerrado volta a ficar ABERTO e "
                       "fecha de novo quando o reprocesso terminar")
-            sem_cascata = ("nao_toca", "este ciclo já encerrado NÃO volta a "
-                           "abrir por este gesto — só a reexecução COM os "
-                           "dependentes o reabre; sozinha, ela roda fora dele")
+            sem_cascata = efeito
         else:
             efeito = ("fora_do_ciclo", "este ciclo NÃO volta a abrir — o "
                       "reprocesso roda fora dele, e fica registrado nele")
@@ -1291,6 +1288,14 @@ def _aplicar_cascata(oficial: str, data_ref, task_id: str, dag_run_id: str,
             except Exception as e:  # noqa: BLE001
                 saida["avisos"].append(
                     f"outros ciclos do pipeline na data não aposentadas: {e}")
+            # Reabre a corrida de malha se estiver FALHA/CONCLUIDA — mesmo sem
+            # cascata. O operador reexecutou um job e o pipeline voltou a
+            # EXECUTANDO; a corrida que o contém deve refletir isso.
+            # `alvos=[]` porque sem cascata não há dependentes a reabrir — só o
+            # próprio pipeline está sendo reexecutado, e `_efeito_na_corrida`
+            # já busca a corrida pelo `oficial` diretamente.
+            if not cascata:
+                _efeito_na_corrida(cur, oficial, [], data_ref, usuario, saida)
             if cascata:
                 info = rerun_svc.afetados(cur, oficial, data_ref)
                 alvos = info.get("com_corrida") or []

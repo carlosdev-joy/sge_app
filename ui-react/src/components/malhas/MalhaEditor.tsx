@@ -87,6 +87,7 @@ import { COMPONENTE_META, type TipoComponente } from './componenteMeta'
 // F13: painel de agendamento do nó Início — o agendamento mora na MALHA
 // (Decisão 8); o nó é a porta.
 import { NotificacaoMalhaModal } from './NotificacaoMalhaModal'
+import { FimMalhaModal } from './FimMalhaModal'
 import { AgendamentoInicioModal } from './AgendamentoInicioModal'
 import {
   STATUS_EXECUCAO, ORDEM_LEGENDA,
@@ -708,6 +709,7 @@ function MalhaEditorInner({
   const [agendaAberta, setAgendaAberta] = useState(false)
   // 087: o nó Notificação ganhou tela — canal, modelo e mensagem.
   const [notifAberta, setNotifAberta] = useState<number | null>(null)
+  const [fimAberto, setFimAberto] = useState<number | null>(null)
   const [gestoCarregando, setGestoCarregando] = useState(false)
   const [aplicandoGesto, setAplicandoGesto] = useState(false)
   const [prendendo, setPrendendo] = useState(false)
@@ -1395,6 +1397,7 @@ function MalhaEditorInner({
         toast.info('Nenhuma raiz para disparar.')
       }
       qc.invalidateQueries({ queryKey: ['malha-execucao', malha] })
+      qc.invalidateQueries({ queryKey: ['malhas'] })
     } catch (err) {
       const httpErr = err as Error & { status?: number }
       toast.error(httpErr.message || 'Erro ao disparar a malha')
@@ -2815,6 +2818,8 @@ function MalhaEditorInner({
                 // 087 — mesma porta do Início (Decisão 8): o nó É o acesso à
                 // configuração dele.
                 setNotifAberta(idNo)
+              } else if (tipo === 'fim') {
+                setFimAberto(idNo)
               }
             }}
             colorMode={colorMode}
@@ -3487,6 +3492,24 @@ function MalhaEditorInner({
             qc.invalidateQueries({ queryKey: ['malha', malha] })
           }}
           onClose={() => setNotifAberta(null)}
+        />
+      )}
+
+      {fimAberto !== null && (
+        <FimMalhaModal
+          malha={malha}
+          config={(grafo?.nos.find(n => n.id === fimAberto)?.config ?? null) as never}
+          podeEditar={!travado && !readOnly}
+          onSalvar={async cfg => {
+            await apiFetch(
+              `/malhas/${encodeURIComponent(malha)}/nos/${fimAberto}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ config: cfg }),
+              })
+            toast.success('Configuração do Fim salva — vale do próximo ciclo.')
+            qc.invalidateQueries({ queryKey: ['malha', malha] })
+          }}
+          onClose={() => setFimAberto(null)}
         />
       )}
 
