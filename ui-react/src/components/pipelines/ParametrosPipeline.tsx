@@ -69,7 +69,7 @@ export function ParametrosPipelineSecao({ params, onChange, pipeline }: {
           </label>
         )}
       </div>
-      <JobParamsEditor modo="datastage" params={params} onChange={onChange} referencia={referencia} />
+      <JobParamsEditor modo="datastage" params={params} onChange={onChange} referencia={referencia} compact />
     </div>
   )
 }

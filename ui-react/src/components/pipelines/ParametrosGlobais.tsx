@@ -17,7 +17,7 @@ export function ParametrosGlobais({ params, onChange, pipeline, project }: {
       <h3 className="text-sm font-semibold text-ink">Parâmetros Orquestra</h3>
       <p className="text-sm text-dim">Valores internos que não são enviados ao DataStage. A vinculação aos campos dos nós será disponibilizada na próxima etapa desta entrega.</p>
       <JobParamsEditor modo="datastage" params={params.filter(p => p.param_destino === 'orquestra')}
-        onChange={rows => onChange(atualizarGrupo(params, 'orquestra', rows))} />
+        onChange={rows => onChange(atualizarGrupo(params, 'orquestra', rows))} compact />
     </section>
     {params.some(p => p.param_name.trim()) && <ParametroCatalogoSelect params={params} value={consulta} onChange={setConsulta} />}
     <ImportarParametros key={project} project={project} params={params} onChange={onChange} />
