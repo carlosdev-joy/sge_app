@@ -184,14 +184,22 @@ def combinar(resultados):
 def parse_dataset(saida):
     """Contrato estrito de resumo orchadmin; formato desconhecido NUNCA vira zero.
 
-    Aceita somente uma linha de total explícito. Partições, bytes, datas ou
-    primeiro inteiro de uma linha qualquer não são contagem de registros.
-    Necessita certificação com saída sanitizada da versão instalada.
+    Suporta dois formatos conhecidos do DataStage 11.7:
+      - Bloco "Totals:" seguido de "  records : N" (formato real da versão instalada)
+      - Linha única "Total records: N" ou "Total rows: N" (formato alternativo)
+    Partições individuais, bytes, datas ou qualquer outro inteiro são ignorados.
     """
     if not isinstance(saida,str) or len(saida.encode())>65536:
         raise ValueError('Saída do dataset inválida ou excessiva.')
     totais=[]
+    em_totals=False
     for linha in saida.splitlines():
+        if re.fullmatch(r'\s*Totals\s*:\s*',linha,re.I):
+            em_totals=True;continue
+        if em_totals:
+            m=re.fullmatch(r'\s*records\s*:\s*([0-9]+)\s*',linha,re.I)
+            if m:totais.append(int(m.group(1)));em_totals=False;continue
+            if linha.strip():em_totals=False
         m=re.fullmatch(r'\s*Total (?:records|rows)\s*[:=]\s*([0-9]+)\s*',linha,re.I)
         if m:totais.append(int(m.group(1)))
     if len(totais)!=1 or totais[0]>MAX_CONTAGEM:
