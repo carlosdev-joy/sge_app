@@ -11,12 +11,12 @@ export function ParametrosGlobais({ params, onChange, pipeline, project }: {
   const [consulta, setConsulta] = useState('')
   return <div className="space-y-5">
     <p className="text-sm text-dim">Parâmetros compartilhados por este pipeline. Valores definidos na etapa prevalecem sobre seus defaults.</p>
-    <ParametrosPipelineSecao params={params.filter(p => p.param_destino === 'datastage')}
+    <ParametrosPipelineSecao params={params.filter(p => p.param_destino === 'datastage' && p.param_type !== 'Encrypted')}
       onChange={rows => onChange(atualizarGrupo(params, 'datastage', rows))} pipeline={pipeline} />
     <section className="space-y-2 border-t border-edge pt-4">
       <h3 className="text-sm font-semibold text-ink">Parâmetros Orquestra</h3>
       <p className="text-sm text-dim">Valores internos que não são enviados ao DataStage. A vinculação aos campos dos nós será disponibilizada na próxima etapa desta entrega.</p>
-      <JobParamsEditor modo="datastage" params={params.filter(p => p.param_destino === 'orquestra')}
+      <JobParamsEditor modo="datastage" params={params.filter(p => p.param_destino === 'orquestra' && p.param_type !== 'Encrypted')}
         onChange={rows => onChange(atualizarGrupo(params, 'orquestra', rows))} compact />
     </section>
     {params.some(p => p.param_name.trim()) && <ParametroCatalogoSelect params={params} value={consulta} onChange={setConsulta} />}
