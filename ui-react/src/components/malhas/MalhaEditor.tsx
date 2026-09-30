@@ -174,6 +174,9 @@ interface MalhaArestaApi {
   // F11 (§7.4): linha COMPILADA por nó de OUTRA malha — desenha com cadeado,
   // somente leitura aqui (a exclusão é 422 nomeando a dona).
   compilada_por?: CompiladaPor
+  // Linha ÓRFÃ: assinada por um Aguarde DESTA malha que não tem a ligação. É
+  // dependência real (o motor obedece) — desenhada como seta direta marcada.
+  orfa?: { no: number }
 }
 // Nó especial do desenho (F10 — etl_malha_no).
 interface MalhaNoApi {
@@ -543,6 +546,20 @@ function depEdge(a: MalhaArestaApi): Edge {
     target: a.pipeline_name,
     type: 'smoothstep',
     markerEnd: EDGE_ARROW,
+  }
+  if (a.orfa) {
+    e.data = { orfa: a.orfa }
+    e.style = { strokeDasharray: '6 3', stroke: '#d97706' }
+    e.label = (
+      <span
+        title={`Dependência real atribuída ao Aguarde #${a.orfa.no}, que não `
+          + 'tem essa ligação no desenho. Puxe a seta de novo entre os dois '
+          + 'pipelines para assumi-la como manual, ou exclua-a.'}
+        className="inline-flex items-center justify-center rounded-full border border-amber-400 bg-panel p-0.5 text-amber-600"
+      >
+        <AlertTriangle size={10} />
+      </span>
+    )
   }
   if (a.compilada_por) {
     e.data = { compiladaPor: a.compilada_por }
@@ -1814,18 +1831,33 @@ function MalhaEditorInner({
   // ── Criar dependência (conectar) ──────────────────────────────────────────
   const criarDep = useMutation({
     mutationFn: (body: { pipeline_name: string; depende_de: string }) =>
-      apiFetch<{ ok: boolean; ja_existia: boolean; dag_config_pendente?: boolean }>('/dependencias', {
+      apiFetch<{
+        ok: boolean; ja_existia: boolean; dag_config_pendente?: boolean
+        adotada?: boolean; compilada_por?: CompiladaPor
+      }>('/dependencias', {
         method: 'POST',
         body: JSON.stringify(body),
       }),
     onSuccess: (r, body) => {
       const id = `dep:${body.depende_de}->${body.pipeline_name}`
+      if (r.compilada_por) {
+        // O par já é garantido por um Aguarde: desenhar a seta aqui e vê-la
+        // sumir na recarga era o defeito. Nada é desenhado; a tela diz quem
+        // garante.
+        toast.info(`${body.pipeline_name} já espera ${body.depende_de} pelo `
+          + `Aguarde #${r.compilada_por.no} da malha '${r.compilada_por.malha}' `
+          + '— a ligação passa pelo nó, não há seta direta a criar.')
+        qc.invalidateQueries({ queryKey: ['malha'] })
+        return
+      }
       setEdges(eds => eds.some(e => e.id === id)
         ? eds
         : [...eds, depEdge(body)])
-      toast.success(r.ja_existia
-        ? 'Essa dependência já existia — nada foi alterado.'
-        : `Dependência criada: ${body.depende_de} → ${body.pipeline_name}`)
+      toast.success(r.adotada
+        ? `Dependência assumida como manual: ${body.depende_de} → ${body.pipeline_name}`
+        : r.ja_existia
+          ? 'Essa dependência já existia — nada foi alterado.'
+          : `Dependência criada: ${body.depende_de} → ${body.pipeline_name}`)
       // Decisão 6/D30: a DAG do DEPENDENTE ficou para trás (o schedule dela
       // muda) — o servidor persistiu a pendência; aqui só se avisa o gesto.
       if (r.dag_config_pendente) toast.info(msgRepublicar(body.pipeline_name))
@@ -1853,7 +1885,10 @@ function MalhaEditorInner({
           toast.error(MSG_SELF)
           return
         }
-        if (edgesRef.current.some(e => e.source === origem && e.target === alvo)) {
+        // Seta ÓRFÃ já desenhada não barra o gesto: puxar de novo é como o
+        // operador a assume como manual.
+        if (edgesRef.current.some(e => e.source === origem && e.target === alvo
+          && !(e.data as { orfa?: unknown } | undefined)?.orfa)) {
           toast.info('Essa dependência já está no diagrama.')
           return
         }
