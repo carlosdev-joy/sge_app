@@ -955,7 +955,12 @@ def test_linha_assinada_por_outra_malha_vira_aresta_com_compilada_por(client, au
     assert d1["arestas"] == [{
         "pipeline_name": "PIPE_B", "depende_de": "PIPE_A",
         "compilada_por": {"malha": "M2", "no": w_m2}}]
-    assert d2["arestas"] == []             # desenho do nó de M2, não aresta direta
+    # Em M2 a linha é do Aguarde de lá — mas este Aguarde NÃO tem ligação
+    # nenhuma (linha semeada sem desenho): é ÓRFÃ, e órfã aparece marcada em
+    # vez de sumir (tests/test_malha_dependencia_orfa.py).
+    assert d2["arestas"] == [{
+        "pipeline_name": "PIPE_B", "depende_de": "PIPE_A",
+        "orfa": {"no": w_m2}}]
 
 
 def test_linha_manual_da_067_segue_sem_anotacao(client, auth_editor):
