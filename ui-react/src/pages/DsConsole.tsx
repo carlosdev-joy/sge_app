@@ -11,7 +11,7 @@ import { DsRunGraphModal, type DsGraphStatus, type DsGraphNode, type DsRunGraph 
 import { DsSeqFlowGraph, type SeqFlowNode, type SeqFlowEdge } from '../components/console/DsSeqFlowGraph'
 import { SupervisaoTab } from '../components/console/SupervisaoTab'
 import { dsTimeInfo, dsParseTime } from '../lib/dsTime'
-import { Terminal, Copy, Network, Crosshair, AlertTriangle, ChevronDown, ChevronUp, Layers, SlidersHorizontal, FileText, ListTree, GitBranch, RefreshCw } from 'lucide-react'
+import { Terminal, Copy, Network, Crosshair, AlertTriangle, ChevronDown, ChevronUp, Layers, SlidersHorizontal, FileText, ListTree, GitBranch, RefreshCw, Search } from 'lucide-react'
 
 // Lista de projetos usada apenas como fallback se a API não retornar projetos.
 const PROJETOS = ['BI_CVP', 'BI_VIDA', 'BI_PREVIDENCIA', 'BI_PRESTAMISTA']
@@ -510,7 +510,7 @@ export default function DsConsole() {
   const busy = batchLoading
   const canRun = !!project.trim() && !!job.trim() && configured && !busy
 
-  // Botão Executar: dispara o LOTE único (todas as abas viram visões dele).
+  // Botão Consultar: dispara o LOTE único (só leitura) (todas as abas viram visões dele).
   const run = () => {
     if (!canRun) return
     runBatch(project.trim(), job.trim())
@@ -994,7 +994,7 @@ export default function DsConsole() {
   // Saída crua (terminal colorizado, fundo fixo escuro — exceção da seção 4).
   const rawOutput = (r: DsConsoleResult) => {
     if (!r.stdout && !r.stderr) {
-      return <p className="text-xs text-dim">Comando executado (exit {r.exit_code}) sem saída.</p>
+      return <p className="text-xs text-dim">Consulta concluída sem retorno (código de saída {r.exit_code}).</p>
     }
     return (
       <div className="relative">
@@ -1028,7 +1028,7 @@ export default function DsConsole() {
   const hasBatch = !!batchJob && Object.keys(batch).length > 0
   // Hint de estado vazio reusável por aba.
   const emptyHint = (
-    <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Executar</strong>.</p>
+    <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Consultar</strong>.</p>
   )
 
   return (
@@ -1043,7 +1043,7 @@ export default function DsConsole() {
       <div className="flex items-start gap-3 p-4 rounded-lg bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800">
         <Terminal size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
         <div className="text-sm text-blue-800 dark:text-blue-300">
-          Informe o <strong>projeto</strong> e o <strong>job</strong> e clique em <strong>Executar</strong> uma única vez: a consulta roda em paralelo (status, log, stages, parâmetros e relatório). As abas abaixo são visões do mesmo resultado.
+          Informe o <strong>projeto</strong> e o <strong>job</strong> e clique em <strong>Consultar</strong> uma única vez: status, log, stages, parâmetros e relatório são lidos em paralelo, e as abas abaixo são visões do mesmo resultado. <strong>Somente leitura</strong>: nenhum job é disparado no DataStage por esta tela.
           Ex.: <code className="font-mono text-xs">dsjob -jobinfo BI_VIDA SeqSsdVida7Peps</code>.
         </div>
       </div>
@@ -1057,7 +1057,7 @@ export default function DsConsole() {
         </div>
       )}
 
-      {/* Consulta única — Projeto + Job + Executar (dispara o lote de comandos) */}
+      {/* Consulta única — Projeto + Job + Consultar (dispara o lote de comandos de leitura) */}
       <div className="bg-panel border border-edge rounded-lg p-4 shadow-sm">
         <div className="flex flex-wrap gap-3 items-end">
           <Select label="Projeto" value={project} onChange={e => setProject(e.target.value)} className="w-48">
@@ -1072,7 +1072,10 @@ export default function DsConsole() {
           </datalist>
           <Input label="Máx. linhas (log)" type="number" value={maxLines}
             onChange={e => setMaxLines(e.target.value)} className="w-32" />
-          <Button onClick={run} loading={busy} disabled={!canRun}>Executar</Button>
+          <Button onClick={run} loading={busy} disabled={!canRun}
+            title="Lê status, log e detalhes do job — não dispara o job">
+            <Search size={14} className="mr-1" /> Consultar
+          </Button>
           <Button variant="secondary" onClick={() => setShowCodes(v => !v)}
             title="Tabela de códigos de status do job (de-para)">
             <ListTree size={14} className="mr-1" /> Códigos de status
@@ -1116,7 +1119,7 @@ export default function DsConsole() {
         {/* 1. Visão geral — status do job (jobinfo) + resumo de runs (logsum) */}
         {activeTab === 'geral' && (
           <>
-            {!hasBatch && <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Executar</strong> para ver o status e o resumo do log.</p>}
+            {!hasBatch && <p className="text-xs text-dim">Selecione projeto e job e clique em <strong>Consultar</strong> para ver o status e o resumo do log.</p>}
             {jobinfoResult && resultHeader(jobinfoResult)}
             {jobinfoResult && errorBox(jobinfoResult)}
             {jobinfoCard()}
