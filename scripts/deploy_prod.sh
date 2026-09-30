@@ -84,7 +84,9 @@ echo ""
 # ── 3. Rebuild e restart ──────────────────────────────────────
 echo "[3/4] Aplicando mudanças nos containers..."
 
-if [ "$API_CHANGED" = "true" ]; then
+# docker-compose.yaml também conta: mount/variável nova da API só vale com o
+# container recriado, e o `up -d` é quem recria.
+if [ "$API_CHANGED" = "true" ] || [ "$COMPOSE_CHANGED" = "true" ]; then
   echo "      → Rebuild orquestra-api..."
   docker compose build orquestra-api
   docker compose up -d --no-deps orquestra-api

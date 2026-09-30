@@ -57,6 +57,11 @@ x-airflow-common:
 
     PYTHONPATH: /opt/airflow/dags/Orquestrador:/opt/airflow
 
+    # ── ORQUESTRA: binário do MTA no servidor do DataStage (nó de e-mail) ──
+    # O EmailOperator roda no WORKER, então a variável precisa chegar aqui —
+    # a mesma do container da API, que só cobre o botão Testar do Admin.
+    EMAIL_SENDMAIL_BIN: "${EMAIL_SENDMAIL_BIN:-/usr/sbin/sendmail}"
+
     # ── ORQUESTRA: caminho dos arquivos .dsx no container ──────────────────
     # Deve coincidir com o volume montado em: ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx
     DSX_BASE_DIR: /opt/airflow/dsx
@@ -195,6 +200,11 @@ services:
       # aceita qualquer (paridade com o Console). Em produção, defina.
       DS_SSH_KNOWN_HOSTS: "${DS_SSH_KNOWN_HOSTS:-}"
       DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
+      # E-mail (spec docs/spec-notificacao-email.md): binário do MTA no servidor
+      # do DataStage. Config de SERVIDOR, nunca entrada de usuário. Em alguns
+      # hosts o Postfix instala como /usr/sbin/sendmail.postfix. Tem de estar
+      # nos DOIS containers: aqui (botão Testar) e no worker (as corridas).
+      EMAIL_SENDMAIL_BIN: "${EMAIL_SENDMAIL_BIN:-/usr/sbin/sendmail}"
       # ── Lineage ISX (spec docs/spec-lineage-isx.md) ────────────────────────
       # API REST do DataStage (serviços, porta 9443) e istool no servidor do
       # engine (pelo mesmo SSH das DS_SSH_*). Sem DS_ENGINE/DS_API_*, a
@@ -224,17 +234,25 @@ services:
       HTTPS_PROXY:      "${HTTPS_PROXY:-}"
       HTTP_PROXY:       "${HTTP_PROXY:-}"
       NO_PROXY:         "${NO_PROXY:-localhost,127.0.0.1,orquestra-api,airflow-webserver}"
+      # O código vem do bind mount somente-leitura abaixo: sem isto o Python
+      # tentaria gravar __pycache__ na árvore do host a cada import.
+      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags:ro
       - ${AIRFLOW_PROJ_DIR:-.}/dsx:/opt/airflow/dsx:ro
-      - ${AIRFLOW_PROJ_DIR:-.}/api/services:/app/services
-      - ${AIRFLOW_PROJ_DIR:-.}/api/routers:/app/routers
+      # Código da API INTEIRO pelo host (correção no servidor = editar o
+      # arquivo + `docker compose restart orquestra-api`, sem rebuild).
+      # Montar só services/ e routers/ deixava main.py, deps.py e db.py
+      # presos à imagem: um processo que renascesse entre a cópia dos arquivos
+      # e o rebuild carregava metade nova, metade velha. Os pacotes pip ficam
+      # em site-packages, fora de /app — a montagem não os encobre; só mudança
+      # em requirements.txt exige rebuild.
+      - ${AIRFLOW_PROJ_DIR:-.}/api:/app:ro
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    # Sem depends_on, de propósito: a API não usa Postgres nem Redis, e o
+    # Airflow ela alcança por REST a cada chamada (tolera ele fora do ar).
+    # Qualquer dependência aqui faz um `up -d orquestra-api` recriar o serviço
+    # apontado quando a configuração dele mudou — arrastando o Airflow junto.
 
 
   airflow-webserver:

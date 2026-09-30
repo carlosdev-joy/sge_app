@@ -19,7 +19,7 @@ interface Props {
   onClose: () => void
 }
 
-export function FimMalhaModal({ malha: _, config, podeEditar, onSalvar, onClose }: Props) {
+export function FimMalhaModal({ config, podeEditar, onSalvar, onClose }: Props) {
   const [notificar, setNotificar] = useState<boolean>(config?.notificar_teams === true)
   const [salvando, setSalvando] = useState(false)
 

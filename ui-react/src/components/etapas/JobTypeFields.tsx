@@ -341,7 +341,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
                     const ehData = ehOrigemData(origem)
                     const previa = p.param_name.trim() ? previaPorNome.get(p.param_name.trim()) : undefined
                     return (
-                      <tr key={p.id ?? visIdx} className="border-b border-edge/40 last:border-0 hover:bg-panel/30">
+                      <tr key={p.id ?? visIdx} data-param-linha={p.param_name} className="border-b border-edge/40 last:border-0 hover:bg-panel/30">
                         <td className="px-2 py-1">
                           <div className="flex flex-col gap-0.5">
                             <input type="text" value={p.param_name}
@@ -350,7 +350,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
                               className={`${campo} ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`}
                             />
                             {previa && (
-                              <span className="text-[10px] text-dim font-mono">
+                              <span className="text-[10px] text-dim font-mono" data-previa={previa.valor}>
                                 Prévia: <span className="text-ink">{previa.valor}</span>
                               </span>
                             )}
@@ -378,7 +378,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
                         </td>
                         <td className="px-2 py-1">
                           {ehData ? (
-                            <div className="grid grid-cols-2 gap-1">
+                            <div className="grid grid-cols-2 gap-1" data-calculo>
                               <input type="text" inputMode="numeric" value={p.param_offset_meses ?? ''}
                                 onChange={e => updateVisible(visIdx, { param_offset_meses: e.target.value })}
                                 placeholder="meses" title="Deslocamento em meses" className={`${campo} border-edge`} />
@@ -417,7 +417,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
             {DS_FORMATOS_SUGERIDOS.map(f => <option key={f} value={f} />)}
           </datalist>
           {errosPrevia.length > 0 && (
-            <div className="flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 dark:border-amber-800/40 dark:bg-amber-900/20">
+            <div className="flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 dark:border-amber-800/40 dark:bg-amber-900/20" data-previa-erros>
               {errosPrevia.map(e => <p key={e} className="text-[11px] text-amber-800 dark:text-amber-300">{e}</p>)}
             </div>
           )}

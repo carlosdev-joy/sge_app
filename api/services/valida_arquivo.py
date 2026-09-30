@@ -194,12 +194,15 @@ def parse_dataset(saida):
     totais=[]
     em_totals=False
     for linha in saida.splitlines():
+        # Formato 1: bloco "Totals:" + "  records : N"
         if re.fullmatch(r'\s*Totals\s*:\s*',linha,re.I):
             em_totals=True;continue
         if em_totals:
             m=re.fullmatch(r'\s*records\s*:\s*([0-9]+)\s*',linha,re.I)
             if m:totais.append(int(m.group(1)));em_totals=False;continue
+            # Qualquer linha não em branco encerra o bloco sem captura
             if linha.strip():em_totals=False
+        # Formato 2: "Total records: N" ou "Total rows: N" em linha única
         m=re.fullmatch(r'\s*Total (?:records|rows)\s*[:=]\s*([0-9]+)\s*',linha,re.I)
         if m:totais.append(int(m.group(1)))
     if len(totais)!=1 or totais[0]>MAX_CONTAGEM:
