@@ -932,8 +932,15 @@ def _diff_compilacao(cur, malha, nos_l, arestas_l):
                    re-assinada, nunca removida — dentro da própria malha isso
                    também é obrigatório, senão a FK da 075 travaria o DELETE
                    do nó e a proveniência mentiria
-      remover    — linha assinada por nó DESTA malha que expansão nenhuma
-                   produz mais
+      remover    — linha assinada por nó DESTA malha que o desenho ATUAL
+                   produzia e o gesto deixou de produzir
+      adotar     — linha assinada por nó DESTA malha que NEM o desenho atual
+                   produz (órfã: a assinatura já não correspondia a ligação
+                   nenhuma antes do gesto). É dependência REAL que o motor
+                   obedece — apagá-la de carona num gesto alheio mudaria a
+                   ordem de execução em silêncio. Vira MANUAL (origem_no
+                   NULL): passa a aparecer como seta direta e a ser do
+                   operador, com aviso no gesto
       avisos     — par desejado já compilado por OUTRA malha (Decisão 4: não
                    re-assinado; quem manda é a dona — se ela descompilar, a
                    transferência §7.3 o traz para cá)
@@ -943,6 +950,9 @@ def _diff_compilacao(cur, malha, nos_l, arestas_l):
     """
     expansao = malha_nos_svc.expandir(nos_l, arestas_l)
     desejado = _pares_expansao(expansao["dependencias"])
+    # O que o desenho GRAVADO (antes do gesto) produz — separa "o gesto tirou"
+    # (remover) de "já estava solta" (adotar).
+    atual = _pares_produzidos(cur, malha)
     nos_info = _nos_globais(cur)
     linhas = _linhas_067(cur)
     malha_cf = malha.casefold()
@@ -952,6 +962,7 @@ def _diff_compilacao(cur, malha, nos_l, arestas_l):
         return (info["malha"] if info else "").casefold()
 
     criar, remover, transferir, manuais, avisos = [], [], [], [], []
+    adotar = []
 
     # 1) pares que a expansão PROSPECTIVA desta malha produz
     for ch in sorted(desejado):
@@ -999,6 +1010,13 @@ def _diff_compilacao(cur, malha, nos_l, arestas_l):
                                "predecessor": linha["predecessor"],
                                "para_malha": destino[0], "para_no": destino[1],
                                "origem_no": linha["origem_no"]})
+        elif ch not in atual:
+            adotar.append({"dependente": linha["dependente"],
+                           "predecessor": linha["predecessor"],
+                           "origem_no": linha["origem_no"]})
+            avisos.append(_msg_orfa_adotada(linha["dependente"],
+                                            linha["predecessor"],
+                                            linha["origem_no"]))
         else:
             remover.append({"dependente": linha["dependente"],
                             "predecessor": linha["predecessor"],
@@ -1024,8 +1042,47 @@ def _diff_compilacao(cur, malha, nos_l, arestas_l):
                                                        item["predecessor"])
 
     return {"criar": criar, "remover": remover, "transferir": transferir,
-            "manuais": manuais, "avisos": avisos, "republicar": republicar,
-            "pares_pos": pares_pos}
+            "adotar": adotar, "manuais": manuais, "avisos": avisos,
+            "republicar": republicar, "pares_pos": pares_pos}
+
+
+def _pares_produzidos(cur, malha) -> dict:
+    """Pares que o desenho GRAVADO da malha compila hoje (chave CI, o formato
+    de _pares_expansao). É a régua da linha ÓRFÃ: assinada por nó desta malha
+    e fora deste conjunto = a assinatura não corresponde a ligação nenhuma."""
+    expansao = malha_nos_svc.expandir(_nos_da_malha(cur, malha),
+                                      _arestas_da_malha(cur, malha))
+    return _pares_expansao(expansao["dependencias"])
+
+
+def _msg_orfa_adotada(dependente, predecessor, origem_no) -> str:
+    return (f"'{predecessor}' → '{dependente}' estava atribuída ao Aguarde "
+            f"#{origem_no} sem ligação correspondente no desenho — mantida "
+            "como dependência manual (seta direta)")
+
+
+def _adotar_linha(cur, dependente, predecessor, origem_no) -> bool:
+    """Órfã vira MANUAL. UPDATE pela ASSINATURA: se um gesto concorrente já a
+    re-assinou ou removeu, não faz nada. O motor não lê origem_no — nada a
+    republicar nem a espelhar no CSV (a dependência em si não mudou)."""
+    cur.execute(
+        "UPDATE dbo.etl_pipeline_dependencia SET origem_no = NULL "
+        "WHERE pipeline_name = ? AND depende_de = ? AND tipo = 'PIPELINE' "
+        "AND origem_no = ?", (dependente, predecessor, origem_no))
+    return (cur.rowcount or 0) > 0
+
+
+def _assinatura_orfa(cur, ass, dependente, predecessor) -> bool:
+    """True se a linha assinada `ass` (deps_svc.assinatura) é órfã: o desenho
+    da malha dona não produz o par. Nó sem malha (dono inexistente) NÃO conta
+    como órfã aqui — segue pela regra de sempre (422 da Decisão 4)."""
+    if not ass.get("malha"):
+        return False
+    malha = _malha_oficial(cur, ass["malha"])
+    if malha is None:
+        return False
+    return ((dependente.casefold(), predecessor.casefold())
+            not in _pares_produzidos(cur, malha))
 
 
 def _transferencia_externa(cur, ch, malha_cf, nos_info, cache):
@@ -1084,6 +1141,11 @@ def _aplicar_compilacao(cur, diff, criado_por):
             "UPDATE dbo.etl_pipeline_dependencia SET origem_no = ? "
             "WHERE pipeline_name = ? AND depende_de = ? AND tipo = 'PIPELINE'",
             (item["para_no"], item["dependente"], item["predecessor"]))
+    # Órfãs ANTES de qualquer DELETE de nó (mesma razão da transferência: a
+    # FK da 075 travaria o nó dono).
+    for item in diff.get("adotar", []):
+        _adotar_linha(cur, item["dependente"], item["predecessor"],
+                      item["origem_no"])
     afetados = {i["dependente"] for i in diff["criar"]}
     for item in diff["remover"]:
         # DELETE pela ASSINATURA: linha manual coincidente (origem_no NULL)
@@ -3875,6 +3937,7 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
         # migration_067_pendente é o sinal para o front avisar e travar a edição.
         tem_067 = _tabela_067(cur)
         arestas = []
+        assinadas_aqui = []     # (dependente, predecessor, no) assinadas por nó DESTA malha
         if tem_067:
             # Mapa casefold → grafia OFICIAL (a dos nós do diagrama). Linhas
             # legadas da 067 podem carregar grafia divergente (o register da F1
@@ -3909,7 +3972,10 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
                 if origem_no is not None and malha_do_no is not None and \
                         str(malha_do_no).strip().casefold() == \
                         malha["malha_name"].casefold():
-                    continue    # desenho do nó desta malha, não aresta direta
+                    # Desenho do nó desta malha, não aresta direta — SE o nó
+                    # de fato a desenha. Conferido abaixo, com a expansão.
+                    assinadas_aqui.append((a, b, int(origem_no)))
+                    continue
                 item = {"pipeline_name": a, "depende_de": b}
                 if origem_no is not None:
                     item["compilada_por"] = {"malha": malha_do_no,
@@ -3941,6 +4007,23 @@ def get_malha_detalhe(malha_name: str, _auth: dict = Depends(get_current_user)):
             } for n in nos_l]
             arestas_no_payload = arestas_l
             avisos = _avisos_desenho(nos_l, arestas_l)
+            # Linha ÓRFÃ: assinada por nó desta malha que NÃO a desenha. Pular
+            # a seta direta "porque o nó desenha" deixava uma dependência real
+            # invisível. Aparece como seta direta marcada, com aviso.
+            produzidos = _pares_expansao(expansao["dependencias"])
+            for dep_a, pred_b, no_dono in assinadas_aqui:
+                if (dep_a.casefold(), pred_b.casefold()) in produzidos:
+                    continue
+                arestas.append({"pipeline_name": dep_a, "depende_de": pred_b,
+                                "orfa": {"no": no_dono}})
+                avisos.append({
+                    "no": no_dono, "nivel": "forte", "tipo": "orfa",
+                    "mensagem": (
+                        f"'{pred_b}' → '{dep_a}' é dependência real atribuída "
+                        f"ao Aguarde #{no_dono}, que não tem essa ligação — "
+                        "o motor a obedece. Puxe a seta direta para assumi-la "
+                        "como manual, ou exclua-a")})
+            arestas.sort(key=lambda x: (x["pipeline_name"], x["depende_de"]))
             # F13: o agendamento da MALHA (Decisão 8) + os avisos de agenda —
             # Início ligado sem agendamento configurado (aviso forte enquanto
             # durar) e o badge de contradição da raiz assinada que ganhou
@@ -7664,7 +7747,8 @@ def add_aresta_no(malha_name: str, body: dict = Body(default={}),
                  destino["no"], destino["pipeline"]))
             novo_id = int(cur.fetchone()[0])
         tem_efeito = diff is not None and (diff["criar"] or diff["remover"]
-                                           or diff["transferir"])
+                                           or diff["transferir"]
+                                           or diff["adotar"])
         if tem_efeito:
             criado_por = None
             if isinstance(_auth, dict):
@@ -7837,6 +7921,20 @@ def add_dependencia(body: dict = Body(default={}),
             "WHERE pipeline_name = ? AND depende_de = ? AND tipo = 'PIPELINE'",
             (pipeline, depende_de))
         ja_existia = cur.fetchone() is not None
+        # Par que já existe ASSINADO por Aguarde: o gesto de puxar a seta não
+        # pode "dar certo" e sumir na recarga. Órfã (o desenho dono não a
+        # produz) é assumida como manual — é o que o operador acabou de pedir.
+        # Compilada de verdade fica como está e a resposta diz quem a garante.
+        adotada, compilada_por = False, None
+        if ja_existia and _coluna_origem_no(cur):
+            ass = deps_svc.assinatura(cur, pipeline, depende_de)
+            if ass is not None:
+                if _assinatura_orfa(cur, ass, pipeline, depende_de):
+                    adotada = _adotar_linha(cur, pipeline, depende_de,
+                                            ass["origem_no"])
+                else:
+                    compilada_por = {"malha": ass["malha"],
+                                     "no": ass["origem_no"]}
         if not ja_existia:
             # BFS da F1 sobre TODAS as dependências — ValueError vira 422 com a
             # mensagem do servidor (o aceite exige cliente e servidor iguais).
@@ -7853,11 +7951,16 @@ def add_dependencia(body: dict = Body(default={}),
         # pendência de publicação na MESMA transação (Decisão 6/D30). Aresta
         # que já existia não mudou configuração — não liga nada.
         dag_pendente = _ligar_dag_config_pendente(cur, pipeline) if not ja_existia else False
-        if not ja_existia or mudou_csv:
+        if not ja_existia or mudou_csv or adotada:
             conn.commit()
         cur.close(); conn.close()
-        return {"ok": True, "ja_existia": ja_existia,
+        resp = {"ok": True, "ja_existia": ja_existia,
                 "dag_config_pendente": dag_pendente}
+        if adotada:
+            resp["adotada"] = True
+        if compilada_por is not None:
+            resp["compilada_por"] = compilada_por
+        return resp
     except HTTPException:
         raise
     except ValueError as e:
@@ -7893,7 +7996,10 @@ def remove_dependencia(body: dict = Body(default={}),
         _exigir_tabela_067(cur, conn)
         if _coluna_origem_no(cur):
             ass = deps_svc.assinatura(cur, nome_dep, nome_pred)
-            if ass is not None:
+            # Órfã não tem desenho dono para "editar pela malha": recusar aqui
+            # a deixaria sem porta nenhuma de exclusão.
+            if ass is not None and not _assinatura_orfa(cur, ass, nome_dep,
+                                                        nome_pred):
                 _fechar_silencioso(conn)
                 raise HTTPException(
                     status_code=422,
