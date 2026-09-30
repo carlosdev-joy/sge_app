@@ -47,7 +47,7 @@ BEGIN
     INSERT INTO dbo.etl_versao_ferramenta (versao, titulo, descricao_md, criado_por)
     VALUES (@nova, @titulo, N'## Console DataStage: botão Consultar
 
-- O botão Executar passou a se chamar Consultar, com ícone de busca: a tela apenas lê status, log e detalhes do job e nunca dispara execução no DataStage.
+- O botão Executar passou a se chamar Consultar, com ícone de busca: a consulta apenas lê do DataStage o status, o log e os detalhes do job, sem disparar execução.
 - O texto de orientação da tela deixa isso explícito (somente leitura).', 'deploy');
 
     -- O mesmo que o "Nova Versão" da aba faz.
