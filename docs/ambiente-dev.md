@@ -234,3 +234,18 @@ dos pipelines de smoke ficam de fora.
 Proxy (§7 l da spec): o worker chama `http://orquestra-api:8000` direto (`trust_env=False`
 na sessão); conferir com `docker exec <worker> python -c "import requests;
 print(requests.get('http://orquestra-api:8000/health', timeout=5).status_code)"`.
+
+## A API roda o código da árvore de trabalho
+
+Desde a versão 2.5.1 o `orquestra-api` monta `./api` inteiro em `/app`, somente leitura
+(`docker-compose.yaml`). Consequências no DEV:
+
+- O código que a API carrega é o do **checkout atual** de `/opt/orquestra-dev`, não o da imagem.
+  Trocar de branch com a API de pé não muda nada na hora (o uvicorn não recarrega), mas qualquer
+  restart — ou um worker que renasça — passa a servir a outra branch. Depois de trocar de branch
+  ou editar `api/`: `docker compose … restart orquestra-api`.
+- Rebuild da imagem só é necessário quando `api/requirements.txt` muda.
+- `restart` mantém o IP do container. **Recriar** (`up -d`) troca o IP: rode em seguida
+  `docker exec airflow-ui nginx -s reload`, ou `/orquestra/…` responde 502.
+- `config/nginx.conf` é bind mount de **arquivo único**: um checkout troca o inode e o container
+  continua lendo o arquivo antigo. Mudou o `nginx.conf` → `up -d --no-deps --force-recreate ui-nginx`.

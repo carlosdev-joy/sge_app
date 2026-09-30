@@ -685,8 +685,11 @@ def test_o_dashboard_MOSTRA_a_corrida_e_o_clique_cai_nela(painel):
     assert nomes[3:] == [f"OK_{i:02d}" for i in range(CONCLUIDAS)]
     # O resumo do cabeçalho conta pelo MESMO predicado que pinta as linhas, e
     # os ÂMBARES contam junto (o molde é o COM_ALERTA da Supervisão): não
-    # abriu + falhou + a RODANDO que está "sem sinal" há horas = 3.
-    assert "3 de 15 com problema" in (c["cabecalho"] or "")
+    # abriu + falhou = 2. A RODANDO "sem sinal" há horas NÃO conta: ela tem
+    # membro vivo, e desde a correção de produção de 28/09 (ddefbce)
+    # SEM_PROGRESSO com alguém rodando é job longo no DataStage, não problema
+    # — a pílula âmbar fica na linha, o contador não sobe.
+    assert "2 de 15 com problema" in (c["cabecalho"] or "")
     # Na linha "não abriu", o ciclo ANTERIOR entra ROTULADO ("↳ anterior: …")
     # — nunca o horário dele solto na ponta direita, que se leria como o ciclo
     # de hoje na linha que afirma que hoje não abriu.

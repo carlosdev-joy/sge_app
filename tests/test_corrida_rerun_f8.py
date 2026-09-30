@@ -340,8 +340,8 @@ def previa(E, monkeypatch):
 
 @pytest.mark.parametrize("status,aberta,efeito,sem_cascata", [
     ("ABERTA",    None, "em_andamento", "em_andamento"),
-    ("CONCLUIDA", None, "reabre", "nao_toca"),
-    ("FALHA",     None, "reabre", "nao_toca"),
+    ("CONCLUIDA", None, "reabre", "reabre"),
+    ("FALHA",     None, "reabre", "reabre"),
     ("CONCLUIDA", "outra", "fora_do_ciclo", "nao_toca"),
     ("EXPIRADA",  None, "fora_do_ciclo", "nao_toca"),
 ])
@@ -352,15 +352,16 @@ def test_previa_do_ciclo_diz_o_efeito_certo(previa, status, aberta, efeito,
     assert p["efeito"] == efeito
     assert p["malha"] == "M1" and p["data_referencia"] == "2026-08-04"
     assert p["mensagem"]
-    # ⚠️ A SEGUNDA leitura do mesmo ciclo. `_efeito_na_corrida` só roda dentro
-    # de `if cascata:` e com dependente aposentado — e a opção que nasce marcada
-    # no modal é "apenas este pipeline". Sem este par, a tela prometeria
-    # "volta a ficar ABERTO" justamente na opção em que a reabertura nunca
-    # acontece.
+    # ⚠️ A SEGUNDA leitura do mesmo ciclo — a da opção "apenas este pipeline",
+    # que nasce marcada no modal. Desde a correção de produção de 28/09
+    # (b45be9e) a reexecução SEM cascata também reabre o ciclo encerrado do
+    # próprio pipeline (`_efeito_na_corrida` com `alvos=[]`), então as duas
+    # leituras dizem "reabre"; fora do ciclo continua "nao_toca".
     assert p["efeito_sem_cascata"] == sem_cascata
     assert p["mensagem_sem_cascata"]
     if efeito == "reabre":
-        assert "NÃO volta a abrir" in p["mensagem_sem_cascata"]
+        assert p["mensagem_sem_cascata"] == p["mensagem"]
+        assert "volta a ficar ABERTO" in p["mensagem_sem_cascata"]
 
 
 def test_previa_sem_corrida_nenhuma_e_None_e_o_modal_fica_como_antes(previa):
