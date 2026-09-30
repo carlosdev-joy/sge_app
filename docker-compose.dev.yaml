@@ -24,6 +24,9 @@ x-dev-env:
   _AIRFLOW_WWW_USER_USERNAME: "${DEV_AIRFLOW_USER:-admin}"
   _AIRFLOW_WWW_USER_PASSWORD: "${DEV_AIRFLOW_PASSWORD:-admin123}"
   AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+  # O compose base fixa 50 (dimensionamento de produção). A VPS é compartilhada
+  # com outros produtos: o DEV fica no padrão do Airflow.
+  AIRFLOW__CELERY__WORKER_CONCURRENCY: "${DEV_WORKER_CONCURRENCY:-16}"
 
 services:
 

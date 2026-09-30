@@ -233,6 +233,8 @@ export interface JobParamsEditorProps {
   modo?: 'storedproc' | 'datastage'
   // Só no modo datastage: a data com que a prévia é calculada ("Simular com").
   referencia?: string
+  // Oculta params Encrypted da renderização visual (dados intactos no array).
+  hideEncrypted?: boolean
 }
 
 function genParamId() {
@@ -265,7 +267,7 @@ function useDsParamsPreview(params: JobParam[], referencia: string, ativo: boole
   })
 }
 
-export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc', referencia = '' }: JobParamsEditorProps) {
+export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc', referencia = '', hideEncrypted = false }: JobParamsEditorProps) {
   const txt = compact ? 'text-xs' : 'text-sm'
   const inputCls = `bg-panel border text-ink rounded-md ${compact ? 'px-2 py-1 text-xs' : 'px-3 py-1.5 text-sm'} font-mono placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500`
   const selectCls = `bg-panel border border-edge text-ink rounded-md ${compact ? 'px-1.5 py-1 text-xs' : 'px-2 py-1.5 text-sm'} focus:outline-none focus:ring-1 focus:ring-blue-500`
@@ -303,6 +305,129 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
     // largura intrínseca (size=20) e transbordaria (achado da revisão da F3).
     const campo = `${inputCls} min-w-0 w-full`
     const sel = `${selectCls} min-w-0 w-full`
+
+    // Layout tabela — usado no wizard Parâmetros Globais (hideEncrypted=true).
+    // Params Encrypted ficam no array mas não são exibidos; onChange envolve
+    // a lista completa para não perder os dados ocultos.
+    if (hideEncrypted) {
+      const visiveis = params.filter(p => p.param_type !== 'Encrypted')
+      function updateVisible(visIdx: number, patch: Partial<JobParam>) {
+        const realIdx = params.indexOf(visiveis[visIdx])
+        if (realIdx === -1) return
+        onChange(params.map((p, i) => i === realIdx ? { ...p, ...patch } : p))
+      }
+      function removeVisible(visIdx: number) {
+        const realIdx = params.indexOf(visiveis[visIdx])
+        if (realIdx === -1) return
+        onChange(params.filter((_, i) => i !== realIdx))
+      }
+      return (
+        <div className="flex flex-col gap-1.5" data-editor-params="datastage-tabela">
+          {visiveis.length > 0 && (
+            <div className="overflow-x-auto rounded-md border border-edge">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-edge bg-panel/60">
+                    <th className="px-2 py-1.5 text-left font-medium text-dim">Parâmetro</th>
+                    <th className="w-24 px-2 py-1.5 text-left font-medium text-dim">Tipo</th>
+                    <th className="w-24 px-2 py-1.5 text-left font-medium text-dim">Origem</th>
+                    <th className="px-2 py-1.5 text-left font-medium text-dim">Valor</th>
+                    <th className="w-6 px-1 py-1.5" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {visiveis.map((p, visIdx) => {
+                    const origem = p.param_source || 'fixo'
+                    const ehData = ehOrigemData(origem)
+                    const previa = p.param_name.trim() ? previaPorNome.get(p.param_name.trim()) : undefined
+                    return (
+                      <tr key={p.id ?? visIdx} data-param-linha={p.param_name} className="border-b border-edge/40 last:border-0 hover:bg-panel/30">
+                        <td className="px-2 py-1">
+                          <div className="flex flex-col gap-0.5">
+                            <input type="text" value={p.param_name}
+                              onChange={e => updateVisible(visIdx, { param_name: e.target.value })}
+                              placeholder="pNome"
+                              className={`${campo} ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`}
+                            />
+                            {previa && (
+                              <span className="text-[10px] text-dim font-mono" data-previa={previa.valor}>
+                                Prévia: <span className="text-ink">{previa.valor}</span>
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-2 py-1">
+                          <select value={p.param_type}
+                            onChange={e => {
+                              const tipo = e.target.value
+                              const patch: Partial<JobParam> = { param_type: tipo }
+                              if (ehData && !['String', 'Date', 'Timestamp'].includes(tipo)) patch.param_source = 'fixo'
+                              if (origem === 'run_id' && tipo !== 'String') patch.param_source = 'fixo'
+                              updateVisible(visIdx, patch)
+                            }}
+                            className={`${sel} w-full`}>
+                            {DS_PARAM_TYPES.map(t => t !== 'Encrypted' && <option key={t}>{t}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1">
+                          <select value={origem}
+                            onChange={e => updateVisible(visIdx, { param_source: e.target.value })}
+                            className={`${sel} w-full`}>
+                            {DS_PARAM_SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1">
+                          {ehData ? (
+                            <div className="grid grid-cols-2 gap-1" data-calculo>
+                              <input type="text" inputMode="numeric" value={p.param_offset_meses ?? ''}
+                                onChange={e => updateVisible(visIdx, { param_offset_meses: e.target.value })}
+                                placeholder="meses" title="Deslocamento em meses" className={`${campo} border-edge`} />
+                              <select value={p.param_ancora ?? ''} onChange={e => updateVisible(visIdx, { param_ancora: e.target.value })}
+                                title="Âncora" className={`${sel} w-full`}>
+                                {DS_PARAM_ANCORAS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                              </select>
+                              <input type="text" inputMode="numeric" value={p.param_offset_dias ?? ''}
+                                onChange={e => updateVisible(visIdx, { param_offset_dias: e.target.value })}
+                                placeholder="dias" className={`${campo} border-edge`} />
+                              <input type="text" list="ds-param-formatos" value={p.param_formato ?? ''}
+                                onChange={e => updateVisible(visIdx, { param_formato: e.target.value })}
+                                placeholder="%Y-%m-%d" className={`${campo} border-edge`} />
+                            </div>
+                          ) : origem === 'run_id' ? (
+                            <span className="italic text-dim text-[11px]">run_id</span>
+                          ) : (
+                            <input type="text" value={p.param_value}
+                              onChange={e => updateVisible(visIdx, { param_value: e.target.value })}
+                              placeholder={p.param_type === 'Pathname' ? '/caminho' : p.param_type === 'Date' ? 'YYYY-MM-DD' : 'valor padrão'}
+                              className={`${campo} border-edge`} />
+                          )}
+                        </td>
+                        <td className="px-1 py-1 text-center">
+                          <button type="button" onClick={() => removeVisible(visIdx)}
+                            className="text-dim hover:text-red-500 text-xs" title="Remover">✕</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <datalist id="ds-param-formatos">
+            {DS_FORMATOS_SUGERIDOS.map(f => <option key={f} value={f} />)}
+          </datalist>
+          {errosPrevia.length > 0 && (
+            <div className="flex flex-col gap-0.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 dark:border-amber-800/40 dark:bg-amber-900/20" data-previa-erros>
+              {errosPrevia.map(e => <p key={e} className="text-[11px] text-amber-800 dark:text-amber-300">{e}</p>)}
+            </div>
+          )}
+          <Button size="sm" variant="ghost" onClick={addParam} className="self-start">
+            <Plus size={compact ? 10 : 12} /> Adicionar parâmetro
+          </Button>
+        </div>
+      )
+    }
+
     return (
       <div className="flex flex-col gap-1.5" data-editor-params="datastage">
         {params.map((p, idx) => {

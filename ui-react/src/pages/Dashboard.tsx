@@ -601,12 +601,15 @@ const TEM_PROBLEMA = (m: ApiMalha): boolean => {
   const c = m.corrida
   if (!c) return false                                   // ausência ≠ incidente
   if (DESFECHO_RUIM.has(c.status)) return true
-  // ABERTA com qualquer saúde ruim: falha detectada, fora do prazo (o par
-  // saude/teto é o MESMO do contador "Fora do prazo" da lista,
-  // `corridasDaLista`) ou sem sinal. "N sem problema" verde sobre uma malha
-  // com pílula âmbar seria o badge desmentindo a linha de baixo.
+  // ABERTA com saúde ruim: falha detectada, fora do prazo ou sem sinal.
+  // SEM_PROGRESSO com membros vivos é job longo rodando normalmente no
+  // DataStage — o Orquestra não recebe pulso interno do job, só o último
+  // update da sequence. Nesses casos a pílula âmbar permanece na linha mas
+  // não incrementa o contador: só é "problema" quando não há ninguém vivo
+  // (corrida órfã, nada se move de verdade).
+  const semProgressoReal = c.saude === 'SEM_PROGRESSO' && (c.membros_vivos ?? 0) === 0
   if (c.status === 'ABERTA' && (c.saude === 'COM_FALHA'
-    || c.saude === 'ATRASADA' || c.saude === 'SEM_PROGRESSO'
+    || c.saude === 'ATRASADA' || semProgressoReal
     || c.teto_vencido === true)) return true
   // SEM_TRABALHO num dia que costuma ter trabalho (Decisão 68): a malha "sem
   // nada para fazer" numa terça em que as últimas terças rodaram é

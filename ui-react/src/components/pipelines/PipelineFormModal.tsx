@@ -1193,7 +1193,7 @@ export function PipelineFormModal({ pipeline, onClose }: { pipeline?: Pipeline; 
                   <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Parâmetros Globais</span>
                 </div>
                 <div className="p-3 text-xs flex flex-wrap gap-x-4 gap-y-1">
-                  {parametrosCatalogo.filter(p => p.param_name.trim()).map(p => (
+                  {parametrosCatalogo.filter(p => p.param_name.trim() && p.param_type !== 'Encrypted').map(p => (
                     <span key={p.param_name} className="font-mono text-ink">
                       {p.param_destino === 'datastage' ? '[DS]' : '[ORQ]'} {p.param_name}
                       <span className="text-dim font-sans"> ({p.param_type}, {p.param_source === 'fixo' ? 'fixo' : p.param_source === 'run_id' ? 'run id' : 'calculado'})</span>

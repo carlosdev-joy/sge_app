@@ -1952,9 +1952,16 @@ _SQL_DENOMINADOR = (
     " WHERE ev.pipeline_name = e.pipeline_name "
     " AND ev.data_referencia = e.data_referencia "
     " AND ev.tipo = '" + mc.EVENTO_ORFA + "') THEN 1 ELSE 0 END AS orfa, "
-    "DATEDIFF(MINUTE, COALESCE(e.fim, e.inicio, e.criado_em), SYSDATETIME()) "
-    "AS sem_sinal_min, "
-    "COALESCE(e.fim, e.inicio, e.criado_em) AS movimento_em, "
+    # Pipeline EXECUTANDO é sinal de vida imediato: sem_sinal=0, movimento=agora.
+    # Sem essa guarda, um job DataStage que roda 3h dentro de um pipeline
+    # EXECUTANDO acumula sem_sinal=180 (e.inicio fixo no disparo), disparando
+    # SEM_PROGRESSO incorretamente mesmo com trabalho em voo no DataStage.
+    "CASE WHEN e.status = 'EXECUTANDO' THEN 0 "
+    "     ELSE DATEDIFF(MINUTE, COALESCE(e.fim, e.inicio, e.criado_em), SYSDATETIME()) "
+    "END AS sem_sinal_min, "
+    "CASE WHEN e.status = 'EXECUTANDO' THEN SYSDATETIME() "
+    "     ELSE COALESCE(e.fim, e.inicio, e.criado_em) "
+    "END AS movimento_em, "
     # F9 (§9.1) — `quiescencia_ate`: quando esta corrida fecharia sozinha se
     # NADA mais se mexesse. `DATEADD` no BANCO (Decisão 10), com os minutos
     # entrando por PARÂMETRO já validados no domínio da config: somar minutos a
@@ -1968,8 +1975,11 @@ _SQL_DENOMINADOR = (
     # calar (e o operador reportar bug às 04:03, com o último pipeline verde e a
     # malha ainda "em andamento") ou dizer "concluída" antes do fechamento — que
     # é exatamente a mentira que esta spec existe para matar.
-    "DATEADD(MINUTE, ?, COALESCE(e.fim, e.inicio, e.criado_em)) "
-    "AS quiescencia_ate, "
+    # Pipeline EXECUTANDO: quiescencia_ate=NULL (não há como dizer quando fecha;
+    # o pipeline ainda está em voo).
+    "CASE WHEN e.status = 'EXECUTANDO' THEN NULL "
+    "     ELSE DATEADD(MINUTE, ?, COALESCE(e.fim, e.inicio, e.criado_em)) "
+    "END AS quiescencia_ate, "
     "CASE WHEN EXISTS (SELECT 1 FROM dbo.etl_pipeline_execucao o "
     " WHERE o.malha_execucao_id = me.id "
     " AND o.pipeline_name = mm.pipeline_name "
