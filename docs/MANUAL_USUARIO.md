@@ -480,6 +480,7 @@ Os dois aceitam marcadores, trocados na hora do envio:
 | `{odate}` | Data de referência da corrida no formato AAAAMMDD — a mesma que o DataStage recebe e que costuma nomear os arquivos. **Não é a data do relógio**: numa corrida que atravessa a meia-noite, ou num fluxo com hora de virada, ela continua sendo o dia do processamento. |
 | `{linhas}` | Linhas processadas pelas etapas logo antes do nó. Quando não há etapa com contagem antes dele — um nó de e-mail logo depois de uma consulta SQL, por exemplo — aparece `—`, e não em branco |
 | `{tabela}` | **O resultado da consulta do nó SQL ligado logo antes deste e-mail** (ver abaixo) |
+| `{coluna:ALIAS}` | **O valor de uma coluna** desse resultado, quando a consulta devolve uma única linha (ver abaixo) |
 | `{status}` | Como o fluxo terminou: `SUCCESS`, `FAILED`, `WARNING`, `SKIPPED` — ou `INFO`, quando não há etapa registrada até ali |
 | `{inicio}` · `{duracao}` | Quando a corrida começou · quanto tempo levou |
 | `{execution_id}` | Identificador da execução, o mesmo que aparece na tela de Execuções |
@@ -497,7 +498,7 @@ Nos modelos reutilizáveis, o nome SQL pode ser informado manualmente. Ao seleci
 
 Evite nomes SQL iniciados por `log_end_` ou `log_start_`: o envio atual pode não localizar o resultado desses nós. O painel avisa quando o marcador usa uma dessas origens; renomeie sem esses prefixos e republique.
 
-A seção **Tabela do SQL** lista as origens diretas e mostra os pré-requisitos. Os avisos indicam ausência de SQL, possível ambiguidade de `{tabela}` com várias origens ou qualificador incompatível. Eles não alteram ligações nem condições de envio.
+A seção **Tabela do SQL** lista as origens diretas e mostra os pré-requisitos. Os avisos indicam ausência de SQL, possível ambiguidade de `{tabela}` ou `{coluna:…}` com várias origens ou qualificador incompatível. Eles não alteram ligações nem condições de envio.
 
 #### `{tabela}` — o resultado de uma consulta dentro do aviso
 
@@ -534,6 +535,51 @@ faz o e-mail sair **sem anexo**, com apenas um aviso no log da etapa.
 
 ⚠️ Um fluxo que já existia precisa ser **publicado de novo** para o nó SQL passar
 a oferecer a tabela.
+
+#### `{coluna:ALIAS}` — um valor da consulta em qualquer ponto do texto
+
+Quando o aviso precisa de **valores soltos** — um número num card, o mês numa
+frase, uma tabela com layout próprio — use `{coluna:ALIAS}`. O `ALIAS` é o nome
+da coluna no SELECT (o `AS`):
+
+```sql
+SELECT FORMAT(TotalInserido, 'N0', 'pt-BR') AS total,
+       FORMAT(QtdAtivos,     'N0', 'pt-BR') AS ativos
+FROM ...
+```
+
+```html
+<td>Total carregado</td><td><b>{coluna:total}</b></td>
+<p>Foram {coluna:ativos} contratos ativos.</p>
+```
+
+O e-mail chega com `<b>17.326.307</b>` e a frase preenchida. No seletor,
+escolha **Coluna de um SQL: informar alias…**, digite o nome da coluna e
+clique em **Inserir**. A prévia mostra `‹total›` no lugar do valor — a tela não
+roda a consulta.
+
+O que vale saber:
+
+- **a consulta precisa devolver exatamente uma linha.** Com nenhuma ou com
+  várias, o marcador sai **como está** no e-mail e o log da etapa diz quantas
+  linhas vieram. Para listas, use `{tabela}`.
+- **com mais de um nó SQL antes do e-mail, diga qual:**
+  `{coluna:NOME_DO_NO.ALIAS}`. Sem o nome, o Orquestra não escolhe.
+- **o alias é exato**, inclusive maiúsculas e minúsculas, e só aceita letras sem
+  acento, números e `_`. Se diferir só na caixa, o log sugere a grafia certa.
+- **quem formata é o SELECT** — casas decimais, separador de milhar, máscara de
+  data. O marcador entrega o valor como veio do banco. Valor vazio (`NULL`)
+  vira vazio.
+- valem os mesmos limites da tabela: só as **15 primeiras colunas** chegam ao
+  e-mail, e cada valor é cortado em **200 caracteres**.
+- no **corpo HTML** o valor chega protegido (um `<` ou `&` vindo do banco não
+  quebra o layout). No **assunto** também vale; se as colunas deixarem o assunto
+  vazio ou longo demais, ele sai com o marcador literal ou cortado em 500
+  caracteres, e o log registra.
+- no **nome do anexo** `{coluna:…}` **não vale**, pelo mesmo motivo do `{tabela}`.
+- o valor que a **Decisão** lê do nó SQL continua sendo a primeira célula da
+  primeira linha. Ao reorganizar as colunas do SELECT para o e-mail, confira se
+  há uma Decisão `valor_sql` depois do SQL.
 
 ⚠️ Use `{status}` quando o e-mail puder sair depois de uma falha — é o caso de
 um nó ligado a um **Aguarde** com a política "mesmo com falha". Um assunto fixo
@@ -1239,6 +1285,10 @@ Lembretes:
   publicação do resultado vive no código gerado da DAG, e fluxo não republicado
   continua rodando igual, só sem oferecer a tabela. Roteiro consolidado,
   conferência e reversão em `docs/release-notes/email-tabela-sql.md`.
+- **Valor de cada coluna do SQL no e-mail (2.6.0)**: migration **138** na etapa
+  6c (só registra a versão); `dags/utils/` mudou → **reiniciar o worker** do
+  Airflow; `dist/` novo. Nada a republicar. Roteiro e diagnóstico em
+  `docs/release-notes/email-coluna-sql.md`.
 
 ### 4.7 Utilitários (Admin › Integrações & Dados › Servidor DataStage (SFTP))
 É aqui que se decide **o que** a tela Utilitários (§2.5, §3.7 e §3.8) alcança

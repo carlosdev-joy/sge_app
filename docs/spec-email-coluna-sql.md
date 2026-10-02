@@ -1,5 +1,5 @@
 # Spec: Valor de cada coluna do SQL no e-mail (`{coluna:…}`) — Orquestra
-Data: 2026-10-02 · Status: 🔵 **aprovada** (sintaxe `{coluna:…}` e seletor por nome informado — usuário, 02/10)
+Data: 2026-10-02 · Status: 🏁 **CONCLUÍDA** — F1 #472, F2 (esta) · ⏳ deploy em produção pendente · versão 2.6.0 (migration 138)
 
 Substitui o rascunho `/dados/bi/spec-email-placeholders-coluna-sql.md` (container
 `orquestra-dev-sshd-amostra`), cuja sintaxe `{NO:ALIAS}` / `{:ALIAS}` não casava com o
