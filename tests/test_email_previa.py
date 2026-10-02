@@ -107,7 +107,11 @@ def _chaves_do_operador() -> set[str]:
     # `_marcadores_do_assunto`, já sabendo o destino. Declarar aqui mantém a
     # âncora útil: chave nova fora do mapa sem passar por esta lista faz a
     # paridade com a prévia e com o seletor quebrar, que é o ponto.
-    fora_do_mapa = {"tabela"}
+    #
+    # `{coluna:…}` idem: só existe qualificada (`coluna:NO.ALIAS`), montada em
+    # `_marcadores_de_coluna` a partir da mesma tabela (spec-email-coluna-sql).
+    fora_do_mapa = {"tabela", "coluna"}
+    so_qualificadas = {"coluna"}
     # E o inverso: toda chave montada no estilo `marcadores["x"] = …` tem de
     # estar declarada acima. Sem esta volta, uma chave futura criada do mesmo
     # jeito passaria despercebida e os três conjuntos divergiriam com o teste
@@ -117,7 +121,8 @@ def _chaves_do_operador() -> set[str]:
         f"chave montada fora do `_mapa` e não declarada no teste: "
         f"{sorted(montadas - fora_do_mapa)}")
     for chave in sorted(fora_do_mapa):
-        assert f'marcadores["{chave}"]' in fonte, (
+        montagem = f'f"{chave}:' if chave in so_qualificadas else f'marcadores["{chave}"]'
+        assert montagem in fonte, (
             f"`{chave}` declarada como chave de fora do mapa, mas não está no "
             "operador — a lista e o código divergiram")
     return chaves | fora_do_mapa

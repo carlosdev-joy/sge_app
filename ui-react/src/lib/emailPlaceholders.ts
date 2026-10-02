@@ -20,9 +20,30 @@ export function nomeSqlParaPlaceholderValido(nome: string): boolean {
   return /^[A-Za-z0-9_.-]{1,128}$/.test(nome)
 }
 
+/** Alias do SELECT aceito em `{coluna:…}` — o mesmo teste do operador
+ *  (dags/utils/email_operator.py). Sem ponto nem hífen: o qualificador é
+ *  separado no ÚLTIMO ponto, porque o nome do nó pode ter ponto. */
+export function aliasColunaValido(alias: string): boolean {
+  return /^[A-Za-z0-9_]{1,64}$/.test(alias)
+}
+
+/** `coluna:ALIAS` ou `coluna:NO.ALIAS` (sem chaves), ou null se não cabe no
+ *  qualificador de 128 caracteres do PLACEHOLDER_RE. */
+export function marcadorDeColuna(alias: string, no = ''): string | null {
+  if (!aliasColunaValido(alias) || (no && !nomeSqlParaPlaceholderValido(no))) return null
+  const qualificador = no ? `${no}.${alias}` : alias
+  return qualificador.length <= 128 ? `coluna:${qualificador}` : null
+}
+
+export const DESCRICAO_COLUNA =
+  'Valor de uma coluna do SQL imediatamente anterior, quando a consulta devolve uma única linha. O nome é o alias (AS) do SELECT.'
+
 export function emailPlaceholderCatalogo(campo: EmailPlaceholderCampo) {
   // data/inicio incluem barras, recusadas pelo caminho_do_anexo após interpolar.
-  return EMAIL_PLACEHOLDERS.filter(nome => campo !== 'anexo' || !['tabela', 'data', 'inicio'].includes(nome)).map(nome => ({
+  // `coluna` não entra na lista: sozinho ele não resolve — o seletor tem a
+  // opção própria, que pede o alias e monta `{coluna:ALIAS}`.
+  return EMAIL_PLACEHOLDERS.filter(nome => nome !== 'coluna'
+    && (campo !== 'anexo' || !['tabela', 'data', 'inicio'].includes(nome))).map(nome => ({
     nome,
     descricao: nome === 'tabela'
       ? campo === 'assunto'

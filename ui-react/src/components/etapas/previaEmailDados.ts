@@ -130,6 +130,9 @@ export const VALORES_EXEMPLO: Record<string, string> = {
   // renderiza a tabela de verdade; aqui vale um exemplo com a MESMA aparência,
   // para a prévia mostrar como o aviso fica e não um espaço vazio.
   tabela: tabelaExemploHtml(),
+  // `{coluna:ALIAS}` — só existe qualificada; `interpolarExemplo` mostra o
+  // alias (`‹total›`). Este valor é o rótulo genérico do catálogo.
+  coluna: '‹coluna›',
 }
 
 /** Mesma regra do backend: `{chave}` conhecida vira valor, desconhecida fica
@@ -138,7 +141,11 @@ export function interpolarExemplo(texto: string, html = true): string {
   // `{tabela:NO_SQL}` (com qualificador) também resolve na prévia: ela mostra a
   // MESMA tabela de exemplo, porque na tela não há corrida para saber qual nó
   // trouxe o quê — o que importa é ver como o aviso fica com uma tabela dentro.
-  return (texto ?? '').replace(/\{([a-z_]+)(?::[A-Za-z0-9_.-]{1,128})?\}/g, (achado, chave: string) => {
+  return (texto ?? '').replace(/\{([a-z_]+)(?::([A-Za-z0-9_.-]{1,128}))?\}/g, (achado, chave: string, qualificador?: string) => {
+    // `{coluna:…}` — a tela não roda o SQL, então a prévia mostra QUAL coluna
+    // entra ali (`‹total›`). Sem qualificador ou com alias inválido, o envio
+    // deixa o marcador literal; a prévia também.
+    if (chave === 'coluna') return exemploDeColuna(qualificador) ?? achado
     if (!Object.prototype.hasOwnProperty.call(VALORES_EXEMPLO, chave)) return achado
     // `{tabela}` tem DOIS formatos no envio: markup no corpo HTML e tabela
     // alinhada no "Corpo livre" em texto (que é o default do nó novo). Mostrar
@@ -147,6 +154,19 @@ export function interpolarExemplo(texto: string, html = true): string {
     if (chave === 'tabela' && !html) return tabelaExemploTexto()
     return VALORES_EXEMPLO[chave]
   })
+}
+
+/** Alias de `{coluna:ALIAS}` / `{coluna:NO.ALIAS}` — separado no ÚLTIMO ponto,
+ *  como no operador (o nome do nó pode ter ponto; o alias, não). */
+export function aliasDoQualificadorDeColuna(qualificador?: string): string | null {
+  if (!qualificador) return null
+  const alias = qualificador.slice(qualificador.lastIndexOf('.') + 1)
+  return /^[A-Za-z0-9_]{1,64}$/.test(alias) ? alias : null
+}
+
+function exemploDeColuna(qualificador?: string): string | null {
+  const alias = aliasDoQualificadorDeColuna(qualificador)
+  return alias ? `‹${alias}›` : null
 }
 
 /** Marcadores usados no texto que o operador NÃO conhece. Alimenta o aviso do
