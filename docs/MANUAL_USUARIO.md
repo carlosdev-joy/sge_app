@@ -568,8 +568,10 @@ O que vale saber:
 - **o alias é exato**, inclusive maiúsculas e minúsculas, e só aceita letras sem
   acento, números e `_`. Se diferir só na caixa, o log sugere a grafia certa.
 - **quem formata é o SELECT** — casas decimais, separador de milhar, máscara de
-  data. O marcador entrega o valor como veio do banco. Valor vazio (`NULL`)
-  vira vazio.
+  data. Sem isso, o valor passa pela mesma conversão da tabela: data em formato
+  ISO (`2026-10-02 00:00:00`), `BIT` como `True`/`False`, quebras de linha e
+  espaços repetidos viram um espaço só. Use `FORMAT`/`CONVERT` no SELECT para
+  outro formato. Valor vazio (`NULL`) vira vazio.
 - valem os mesmos limites da tabela: só as **15 primeiras colunas** chegam ao
   e-mail, e cada valor é cortado em **200 caracteres**.
 - no **corpo HTML** o valor chega protegido (um `<` ou `&` vindo do banco não

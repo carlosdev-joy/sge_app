@@ -54,6 +54,7 @@ f) **Regressão:** fluxo com `{tabela}` inalterado; Decisão `valor_sql`
 | literal com `não tem a coluna x (colunas: …)` | alias diferente do `AS` (caixa conta) ou coluna além da 15ª |
 | literal com `N nós SQL a montante` | usar `{coluna:NOME_DO_NO.x}` |
 | literal com `nenhum nó SQL imediatamente a montante` | e-mail não ligado direto no SQL (Decisão no meio) ou pipeline não republicado |
+| literal com `a montante existem: …` (forma `{coluna:NO.x}`) | nome do nó diferente dos listados no log, pipeline não republicado, ou o SQL falhou/foi pulado nesta corrida (sem resultado publicado) |
 | valor terminando em `…` | célula acima de 200 caracteres (corte do resultado) |
 
 ## Reversão
@@ -61,3 +62,6 @@ f) **Regressão:** fluxo com `{tabela}` inalterado; Decisão `valor_sql`
 Reverter o merge da PR #472 e reiniciar o worker; o `dist/` anterior volta com
 o deploy. A migration 138 só registra a versão — não há dado a desfazer.
 Marcadores `{coluna:…}` já gravados em nós/modelos passam a sair literais.
+O rótulo da versão **não volta sozinho**: `app_version` continua 2.6.0 e
+`app_release_name` continua "E-mail: valor de cada coluna do SQL". Ajuste em
+Admin › Versões, se a reversão for definitiva.
