@@ -27,7 +27,7 @@ import {
 import { PreviaEmail } from '../PreviaEmail'
 import { dicaDoMarcador, marcadoresDesconhecidos } from '../previaEmailDados'
 import { NomeField } from './shared'
-import { avisosTabelaEmail } from '../../../lib/emailTabelaOrigem'
+import { avisosColunaEmail, avisosTabelaEmail } from '../../../lib/emailTabelaOrigem'
 import { LinkAdmin } from '../../admin/LinkAdmin'
 import { rotuloAdmin } from '../../../lib/adminNav'
 
@@ -147,11 +147,12 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
   // separação, a chave nova passaria a ser aceita em silêncio nos três campos.
   const textoEmail = `${cfg.assunto} ${cfg.modelo_id != null ? (corpoDoModelo ?? '') : cfg.corpo}`
   const desconhecidos = marcadoresDesconhecidos(textoEmail)
-  const avisosTabela = sqlNames === undefined ? [] : avisosTabelaEmail(textoEmail, sqlNames)
+  const avisosTabela = sqlNames === undefined ? []
+    : [...avisosTabelaEmail(textoEmail, sqlNames), ...avisosColunaEmail(textoEmail, sqlNames)]
   // O anexo tem aviso próprio porque seu catálogo permitido é menor que o
   // do assunto/corpo. Ele continua visível quando o nó usa um modelo.
   const desconhecidosNoAnexo = marcadoresDesconhecidos(
-    cfg.anexo?.nome ?? '', EMAIL_PLACEHOLDERS.filter(p => p !== 'tabela'))
+    cfg.anexo?.nome ?? '', EMAIL_PLACEHOLDERS.filter(p => p !== 'tabela' && p !== 'coluna'))
 
   const anexoLigado = cfg.anexo != null
   function alternarAnexo(ligado: boolean) {
@@ -283,7 +284,7 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
                 {desconhecidosNoAnexo.length > 0 && (
                   <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                     {desconhecidosNoAnexo.map(m => `{${m}}`).join(', ')}
-                    {desconhecidosNoAnexo.includes('tabela')
+                    {desconhecidosNoAnexo.includes('tabela') || desconhecidosNoAnexo.includes('coluna')
                       ? ' não vale no nome do anexo (o arquivo é procurado por nome no servidor) — o e-mail sairia SEM anexo.'
                       : ' não é um marcador conhecido — vai sair assim mesmo no nome do arquivo.'}
                   </p>
@@ -475,6 +476,9 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
                 {' '}as DAGs, reiniciar o worker e republicar os pipelines antigos. Confira os logs do SQL e do e-mail.</p>
               <p className="mt-1">No corpo, a tabela segue o formato HTML ou texto escolhido; no assunto, aparece um resumo.
                 {' '}O envio mostra até 50 linhas e 15 colunas. {'{linhas}'} não conta as linhas do resultado SQL.</p>
+              <p className="mt-1">Para usar um valor solto no texto, escolha <em>Coluna de um SQL</em> no seletor:
+                {' '}{'{coluna:ALIAS}'} vira o valor da coluna com esse alias (AS) quando o SELECT devolve uma única linha.
+                {' '}Com outra quantidade de linhas, o marcador sai literal e o log do e-mail explica o motivo.</p>
             </details>
           </div>
           {cfg.modelo_id != null && (catalogoSemResposta || modeloForaDaLista) && (

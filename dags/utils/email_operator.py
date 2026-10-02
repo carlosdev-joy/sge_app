@@ -32,6 +32,10 @@ import re as _re
 # `{tabela:NOME}` — o mesmo alfabeto de `PLACEHOLDER_RE` (utils/email_envio.py),
 # usado só para avisar sobre marcador que não resolve.
 _QUALIFICADOS_RE = _re.compile(r"\{tabela:([A-Za-z0-9_.\-]{1,128})\}")
+# `{coluna:ALIAS}` / `{coluna:NO.ALIAS}` — mesmo alfabeto; o qualificador é
+# separado no ÚLTIMO ponto, porque nome de nó pode ter ponto e alias não.
+_COLUNAS_RE = _re.compile(r"\{coluna:([A-Za-z0-9_.\-]{1,128})\}")
+_ALIAS_RE = _re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
 MSSQL_CONN_ID = "SQL14_DMDB41"
 PIPELINE_TESTE = "_teste_admin"
@@ -414,6 +418,91 @@ class EmailOperator(BaseOperator):
         saida["tabela"] = sq.resumo_curto(next(iter(tabelas.values())) if len(tabelas) == 1 else {})
         return saida
 
+    # ── coluna do nó SQL (spec docs/spec-email-coluna-sql.md) ───────────────
+    def _marcadores_de_coluna(self, context, html: bool, texto: str = "") -> dict:
+        """As chaves `coluna:<NO>.<ALIAS>` (e `coluna:<ALIAS>` com UM nó SQL a
+        montante), lidas da MESMA tabela que alimenta `{tabela}`.
+
+        Só resolve tabela de UMA linha: com zero não há valor, com várias
+        escolher uma seria adivinhar — o marcador sai literal e o log diz por
+        quê. Só os marcadores ESCRITOS em `texto` entram (e geram aviso).
+
+        ⚠️ O valor vem de `valor_publicavel`, que NÃO escapa HTML (quem escapa
+        a tabela é `sql_node._celula`). Dado de banco é o primeiro texto de fora
+        no e-mail: no corpo HTML ele é escapado aqui (aspas incluídas). Assunto e corpo em texto
+        recebem o valor cru. `None` vira vazio — `interpolar` deixaria o
+        marcador literal, e coluna NULL é resultado, não erro de digitação."""
+        pedidos = sorted(set(_COLUNAS_RE.findall(texto or "")))
+        if not pedidos:
+            return {}
+        from html import escape
+
+        from utils import sql_node as sq
+
+        tabelas = self._tabelas_a_montante(context)
+        unico = next(iter(tabelas)) if len(tabelas) == 1 else None
+        saida = {}
+        for qualificador in pedidos:
+            no, ponto, alias = qualificador.rpartition(".")
+            marcador = "{coluna:%s}" % qualificador
+            if ponto and not no:
+                # `{coluna:.x}` — ponto sem nó. Ler como forma curta seria
+                # aceitar algo que a tela denuncia; fica literal, como lá.
+                self.log.warning("[EMAIL] %s não resolve — falta o nome do nó antes do ponto "
+                                 "(use {coluna:%s} ou {coluna:NOME_DO_NO.%s}).", marcador, alias, alias)
+                continue
+            if not _ALIAS_RE.match(alias):
+                self.log.warning("[EMAIL] %s não resolve — \"%s\" não é alias válido "
+                                 "(letras sem acento, números ou _).", marcador, alias)
+                continue
+            if not no:
+                if unico is None:
+                    self.log.warning(
+                        "[EMAIL] %s não resolve — %s. Use {coluna:NOME_DO_NO.%s}.", marcador,
+                        f"{len(tabelas)} nós SQL a montante ({', '.join(sorted(tabelas))})"
+                        if tabelas else "nenhum nó SQL imediatamente a montante "
+                        f"(vizinhos: {', '.join(self._jobs_a_montante()) or 'nenhum'})", alias)
+                    continue
+                no = unico
+            dados = tabelas.get(no)
+            if dados is None:
+                self.log.warning("[EMAIL] %s não resolve — a montante existem: %s.", marcador,
+                                 ", ".join(sorted(tabelas)) or "nenhum nó SQL")
+                continue
+            colunas = [str(c) for c in dados.get("columns") or []]
+            linhas = dados.get("rows") or []
+            total = dados.get("total", len(linhas))
+            if total != 1 or len(linhas) != 1:
+                self.log.warning("[EMAIL] %s não resolve — %s trouxe %s linha(s) "
+                                 "(esperado: 1).", marcador, no,
+                                 f"mais de {total}" if dados.get("havia_mais") else total)
+                continue
+            if colunas.count(alias) != 1:
+                if colunas.count(alias) > 1:
+                    motivo = f"{no} tem {colunas.count(alias)} colunas chamadas {alias}"
+                else:
+                    motivo = f"{no} não tem a coluna {alias} (colunas: {', '.join(colunas) or 'nenhuma'})"
+                    parecida = [c for c in colunas if c.lower() == alias.lower()]
+                    if parecida:
+                        motivo += f" — seria {{coluna:{qualificador[:-len(alias)]}{parecida[0]}}}?"
+                    elif dados.get("colunas_ocultas"):
+                        motivo += (f"; {dados['colunas_ocultas']} coluna(s) além da "
+                                   f"{sq.LIMITE_COLUNAS}ª não chegam ao e-mail")
+                self.log.warning("[EMAIL] %s não resolve — %s.", marcador, motivo)
+                continue
+            valor = linhas[0][colunas.index(alias)]
+            texto_valor = "" if valor is None else str(valor)
+            if isinstance(valor, str) and len(valor) >= sq.LIMITE_CELULA and valor.endswith("…"):
+                self.log.warning("[EMAIL] %s chegou cortado em %d caracteres.",
+                                 marcador, sq.LIMITE_CELULA)
+            # `quote=True`: o modelo pode usar o valor dentro de um atributo
+            # (`title="{coluna:x}"`); aspa crua fecharia o atributo.
+            saida[f"coluna:{qualificador}"] = escape(texto_valor, quote=True) if html else texto_valor
+            # ⚠️ Linha de SUCESSO, sem o valor (pode ser dado sensível): é por
+            # ela que o smoke sabe que o worker não está com código em cache.
+            self.log.info("[EMAIL] coluna %s.%s resolvida", no, alias)
+        return saida
+
     # ── execução ────────────────────────────────────────────────────────────
     def execute(self, context):
         from utils import email_envio as ev
@@ -459,10 +548,17 @@ class EmailOperator(BaseOperator):
         mapa = self._mapa(hook, context)
         # A tabela entra por último e em DUAS versões: no corpo ela é HTML (ou
         # texto, se o corpo não for HTML) e no assunto vira resumo.
+        # `{coluna:…}` entra nos dois: escapada no corpo HTML, crua no assunto.
+        # O anexo continua só com o `mapa` — dado de banco não vira caminho.
         corpo = ev.interpolar(corpo_bruto,
-                              {**mapa, **self._marcadores_de_tabela(context, html, corpo_bruto)})
-        assunto = ev.interpolar(str(no.get("assunto") or ""),
-                                {**mapa, **self._marcadores_do_assunto(context)})
+                              {**mapa, **self._marcadores_de_tabela(context, html, corpo_bruto),
+                               **self._marcadores_de_coluna(context, html, corpo_bruto)})
+        assunto_bruto = str(no.get("assunto") or "")
+        assunto = ev.interpolar(assunto_bruto,
+                                {**mapa, **self._marcadores_do_assunto(context),
+                                 **self._marcadores_de_coluna(context, False, assunto_bruto)})
+        if "{coluna:" in assunto_bruto:
+            assunto = self._assunto_com_coluna(ev, assunto, assunto_bruto, mapa, context)
         assunto_ok, erro = ev.validar_assunto(assunto)
         if erro:
             raise RuntimeError(f"Assunto inválido depois de resolver os placeholders: {erro}")
@@ -528,6 +624,24 @@ class EmailOperator(BaseOperator):
         self.log.info("[EMAIL] enviado para: %s (anexo: %s)", ", ".join(destinatarios),
                       anexo_path if anexo_bytes else (aviso or "nenhum"))
         return {"destinatarios": destinatarios, "status": status, "anexo": anexo_path if anexo_bytes else None}
+
+    def _assunto_com_coluna(self, ev, assunto: str, assunto_bruto: str, mapa: dict, context) -> str:
+        """O assunto com `{coluna:…}` depende do RESULTADO do SQL — e a régua do
+        assunto (obrigatório, até LIMITE_ASSUNTO) derrubaria a task antes do
+        envio e antes do `etl_email_log` por causa de um dado, não de um erro de
+        quem montou o fluxo. Coluna NULL deixando o assunto vazio: volta o
+        marcador literal (a regra de todo marcador que não resolve). Valor
+        longo: corta com reticências. As duas saídas ficam no log."""
+        if not assunto.strip():
+            self.log.warning("[EMAIL] assunto ficou vazio com as colunas resolvidas — "
+                             "enviado com os marcadores {coluna:…} literais.")
+            return ev.interpolar(assunto_bruto, {**mapa, **self._marcadores_do_assunto(context)})
+        limite = ev.LIMITE_ASSUNTO
+        if len(assunto.strip().encode("utf-16-le")) // 2 > limite:
+            self.log.warning("[EMAIL] assunto passou de %d caracteres com as colunas resolvidas "
+                             "— cortado.", limite)
+            return _cortar_utf16(assunto.strip(), limite - 1) + "…"
+        return assunto
 
     def _gravar_log(self, hook, context, **campos) -> None:
         """Uma linha em etl_email_log. NUNCA derruba a task: o log é rastro, e

@@ -190,7 +190,11 @@ export const EMAIL_PLACEHOLDERS = ['pipeline', 'job', 'data', 'odate', 'linhas',
                                    // montante; com mais de um, qualifique: {tabela:NOME_DO_NO}.
                                    // No assunto ele vira um resumo ("3 linhas × 2 colunas"),
                                    // porque tabela não cabe em cabeçalho de e-mail.
-                                   'tabela']
+                                   'tabela',
+                                   // `{coluna:ALIAS}` / `{coluna:NO.ALIAS}` = valor de UMA
+                                   // coluna do SQL a montante (resultado de 1 linha). Só
+                                   // existe qualificado — o seletor monta o marcador.
+                                   'coluna']
 
 // Resumo curto p/ o card: quem recebe, que é o que se quer ver sem abrir.
 export function emailNoLabel(cfg: EmailNoConfig): string {
