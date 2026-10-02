@@ -191,3 +191,27 @@ def test_contexto_sem_ti_nao_quebra(mod):
     op._tabelas_a_montante = lambda ctx: mod.EmailOperator._tabelas_a_montante(op, ctx)
     op._jobs_a_montante = lambda: []
     assert mod.EmailOperator._marcadores_de_coluna(op, {}, True, "{coluna:x}") == {}
+
+
+def test_ponto_sem_no_fica_literal_como_na_tela(mod, monkeypatch):
+    """`{coluna:.total}` — o painel denuncia; o envio não pode resolver calado."""
+    corpo, _, log = _enviar(mod, monkeypatch, corpo="[{coluna:.total}]",
+                            tabelas={"SQL_1": CVP}, upstream={"SQL_1"})
+    assert "[{coluna:.total}]" in corpo
+    assert "falta o nome do nó antes do ponto" in log.texto()
+
+
+def test_assunto_vazio_por_coluna_null_nao_derruba_o_envio(mod, monkeypatch):
+    t = _tabela(["obs"], [[None]])
+    _, assunto, log = _enviar(mod, monkeypatch, corpo="x", assunto="{coluna:obs}",
+                              tabelas={"S": t}, upstream={"S"})
+    assert assunto == "{coluna:obs}"
+    assert "assunto ficou vazio" in log.texto()
+
+
+def test_assunto_longo_por_coluna_e_cortado(mod, monkeypatch):
+    t = _tabela(["a", "b", "c"], [["x" * 200, "y" * 200, "z" * 200]])
+    _, assunto, log = _enviar(mod, monkeypatch, corpo="x", assunto="{coluna:a}{coluna:b}{coluna:c}",
+                              tabelas={"S": t}, upstream={"S"})
+    assert len(assunto) == 500 and assunto.endswith("…")
+    assert "assunto passou de 500 caracteres" in log.texto()

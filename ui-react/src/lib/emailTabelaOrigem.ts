@@ -53,7 +53,9 @@ export function avisosColunaEmail(texto: string, sqlNames: readonly string[]): s
     const ponto = qualificador.lastIndexOf('.')
     const no = ponto >= 0 ? qualificador.slice(0, ponto) : ''
     const alias = qualificador.slice(ponto + 1)
-    if (!/^[A-Za-z0-9_]{1,64}$/.test(alias)) {
+    if (ponto === 0) {
+      avisos.push(`{coluna:${qualificador}}: falta o nome do nó antes do ponto — use {coluna:${alias}} ou {coluna:NOME_DO_NO.${alias}}.`)
+    } else if (!/^[A-Za-z0-9_]{1,64}$/.test(alias)) {
       avisos.push(`{coluna:${qualificador}}: "${alias}" não é um alias válido — use letras sem acento, números ou sublinhado.`)
     } else if (ponto < 0 && origens.size === 0) {
       avisos.push(`{coluna:${qualificador}}: não há SQL ligado diretamente a este e-mail. A coluna não atravessa Decisão ou outros nós.`)

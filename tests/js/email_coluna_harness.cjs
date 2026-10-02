@@ -42,6 +42,9 @@ try {
   assert.equal(previa.interpolarExemplo('{coluna} {coluna:a-b} {coluna:X.}', false), '{coluna} {coluna:a-b} {coluna:X.}')
   assert.deepEqual(previa.marcadoresDesconhecidos('{coluna:total} {coluna:S.x}'), [])
   assert.deepEqual(previa.marcadoresDesconhecidos('{Coluna:total}'), ['Coluna'])
+  assert.equal(previa.dicaDoMarcador('Coluna'), '{coluna:ALIAS}')
+  assert.equal(previa.interpolarExemplo('{coluna:.total}'), '{coluna:.total}')
+  assert.match(avisos('{coluna:.total}', ['SQL_1'])[0], /falta o nome do nó/)
 
   // Avisos contra o grafo.
   assert.deepEqual(avisos('{coluna:total} {coluna:SQL_1.mes}', ['SQL_1']), [])

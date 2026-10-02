@@ -443,8 +443,14 @@ class EmailOperator(BaseOperator):
         unico = next(iter(tabelas)) if len(tabelas) == 1 else None
         saida = {}
         for qualificador in pedidos:
-            no, _, alias = qualificador.rpartition(".")
+            no, ponto, alias = qualificador.rpartition(".")
             marcador = "{coluna:%s}" % qualificador
+            if ponto and not no:
+                # `{coluna:.x}` — ponto sem nó. Ler como forma curta seria
+                # aceitar algo que a tela denuncia; fica literal, como lá.
+                self.log.warning("[EMAIL] %s não resolve — falta o nome do nó antes do ponto "
+                                 "(use {coluna:%s} ou {coluna:NOME_DO_NO.%s}).", marcador, alias, alias)
+                continue
             if not _ALIAS_RE.match(alias):
                 self.log.warning("[EMAIL] %s não resolve — \"%s\" não é alias válido "
                                  "(letras sem acento, números ou _).", marcador, alias)
@@ -551,6 +557,8 @@ class EmailOperator(BaseOperator):
         assunto = ev.interpolar(assunto_bruto,
                                 {**mapa, **self._marcadores_do_assunto(context),
                                  **self._marcadores_de_coluna(context, False, assunto_bruto)})
+        if "{coluna:" in assunto_bruto:
+            assunto = self._assunto_com_coluna(ev, assunto, assunto_bruto, mapa, context)
         assunto_ok, erro = ev.validar_assunto(assunto)
         if erro:
             raise RuntimeError(f"Assunto inválido depois de resolver os placeholders: {erro}")
@@ -616,6 +624,24 @@ class EmailOperator(BaseOperator):
         self.log.info("[EMAIL] enviado para: %s (anexo: %s)", ", ".join(destinatarios),
                       anexo_path if anexo_bytes else (aviso or "nenhum"))
         return {"destinatarios": destinatarios, "status": status, "anexo": anexo_path if anexo_bytes else None}
+
+    def _assunto_com_coluna(self, ev, assunto: str, assunto_bruto: str, mapa: dict, context) -> str:
+        """O assunto com `{coluna:…}` depende do RESULTADO do SQL — e a régua do
+        assunto (obrigatório, até LIMITE_ASSUNTO) derrubaria a task antes do
+        envio e antes do `etl_email_log` por causa de um dado, não de um erro de
+        quem montou o fluxo. Coluna NULL deixando o assunto vazio: volta o
+        marcador literal (a regra de todo marcador que não resolve). Valor
+        longo: corta com reticências. As duas saídas ficam no log."""
+        if not assunto.strip():
+            self.log.warning("[EMAIL] assunto ficou vazio com as colunas resolvidas — "
+                             "enviado com os marcadores {coluna:…} literais.")
+            return ev.interpolar(assunto_bruto, {**mapa, **self._marcadores_do_assunto(context)})
+        limite = ev.LIMITE_ASSUNTO
+        if len(assunto.strip().encode("utf-16-le")) // 2 > limite:
+            self.log.warning("[EMAIL] assunto passou de %d caracteres com as colunas resolvidas "
+                             "— cortado.", limite)
+            return _cortar_utf16(assunto.strip(), limite - 1) + "…"
+        return assunto
 
     def _gravar_log(self, hook, context, **campos) -> None:
         """Uma linha em etl_email_log. NUNCA derruba a task: o log é rastro, e

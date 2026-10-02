@@ -159,7 +159,8 @@ export function interpolarExemplo(texto: string, html = true): string {
 /** Alias de `{coluna:ALIAS}` / `{coluna:NO.ALIAS}` — separado no ÚLTIMO ponto,
  *  como no operador (o nome do nó pode ter ponto; o alias, não). */
 export function aliasDoQualificadorDeColuna(qualificador?: string): string | null {
-  if (!qualificador) return null
+  // `.total` (ponto sem nó) não resolve no envio — nem aqui.
+  if (!qualificador || qualificador.lastIndexOf('.') === 0) return null
   const alias = qualificador.slice(qualificador.lastIndexOf('.') + 1)
   return /^[A-Za-z0-9_]{1,64}$/.test(alias) ? alias : null
 }
@@ -191,6 +192,8 @@ export function marcadoresDesconhecidos(texto: string, permitidos?: string[]): s
  *  ganha a sugestão pronta. */
 export function dicaDoMarcador(chave: string): string | null {
   const minusculo = chave.toLowerCase()
+  // `{coluna}` sozinho também não resolve: a dica já vem qualificada.
+  if (minusculo === 'coluna' && chave !== minusculo) return '{coluna:ALIAS}'
   if (chave !== minusculo && Object.prototype.hasOwnProperty.call(VALORES_EXEMPLO, minusculo)) {
     return `{${minusculo}}`
   }
