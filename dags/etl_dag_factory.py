@@ -3453,11 +3453,12 @@ def gerar_dags(**context):
                 if _alvos_ci and _chave_ci(pname) in _alvos_ci:
                     erros.append(f"{pname}: pipeline gerido; publique pelo workspace")
                 continue
-            cursor.execute("EXEC dbo.sp_workspace_active_hash @name=%s", (pname,))
-            if cursor.fetchone()[0] != managed[4]:
+            # A leitura do lote já fechou cursor/conn; usar uma conexão própria.
+            observed_hash = hook.get_first("EXEC dbo.sp_workspace_active_hash @name=%s", parameters=(pname,))
+            if not observed_hash or observed_hash[0] != managed[4]:
                 erros.append(f"{pname}: hash de projeção divergente")
                 continue
-            pipeline["_workspace"] = {"workspace_version_id": str(managed[2]),
+            pipeline["_workspace"] = {"workspace_version_id": str(managed[2]).lower(),
                 "workspace_content_hash": managed[3], "workspace_projection_hash": managed[4]}
 
         if not jobs:

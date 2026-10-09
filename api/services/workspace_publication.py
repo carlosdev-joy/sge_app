@@ -200,7 +200,10 @@ def sync_rows(cur,table,name,desired):
 def load_operation(cur,id):
  cur.execute('SELECT o.operation_id,o.draft_id,o.version_id,o.pipeline_name,o.revision,o.ator,o.expected_active_hash,o.projection_hash,o.estado,o.factory_run_id,v.definition_json,v.layout_json,v.content_hash FROM dbo.etl_workspace_publicacao o JOIN dbo.etl_workspace_versao v ON v.version_id=o.version_id WHERE o.operation_id=?',(str(id),));r=cur.fetchone()
  if r is None:raise PublicationBlocked('not_found','Publicação não encontrada')
- return dict(zip(('id','draft','version','name','revision','actor','expected','projected','state','run','definition','layout','content_hash'),r))
+ result=dict(zip(('id','draft','version','name','revision','actor','expected','projected','state','run','definition','layout','content_hash'),r))
+ # pyodbc retorna UUID uppercase; pymssql retorna uuid.UUID. Canonizar fronteira.
+ result['version']=str(uuid.UUID(str(result['version'])))
+ return result
 async def airflow_idle(client,name):
  response=await client.get('/api/v1/dags/'+name+'/dagRuns',params={'state':['running','queued'],'limit':100})
  if response.status_code==404:return True
