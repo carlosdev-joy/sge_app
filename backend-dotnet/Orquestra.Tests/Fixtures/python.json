@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "identity": {
+    "pipelineName": "Teste_python",
+    "displayName": null
+  },
+  "metadata": {},
+  "schedule": {
+    "mode": "on_demand"
+  },
+  "parameters": [],
+  "nodes": [
+    {
+      "id": "Etapa_Á",
+      "type": "python",
+      "configuration": {
+        "python": {
+          "modo": "script",
+          "codigo": "print(1)"
+        },
+        "param_vinculos": {
+          "data_referencia": {
+            "origem": "pipeline"
+          }
+        }
+      }
+    }
+  ],
+  "edges": []
+}

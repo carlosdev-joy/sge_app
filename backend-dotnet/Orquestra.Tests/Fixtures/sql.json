@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "identity": {
+    "pipelineName": "Teste_sql",
+    "displayName": null
+  },
+  "metadata": {},
+  "schedule": {
+    "mode": "on_demand"
+  },
+  "parameters": [],
+  "nodes": [
+    {
+      "id": "Etapa_Á",
+      "type": "sql",
+      "configuration": {
+        "mssql_conn_id": "sql_sintetico",
+        "sql": {
+          "query": "SELECT 1 AS valor",
+          "timeout": 60
+        },
+        "omittedExample": null
+      }
+    }
+  ],
+  "edges": []
+}

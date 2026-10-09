@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "identity": {
+    "pipelineName": "Teste_datastage",
+    "displayName": null
+  },
+  "metadata": {},
+  "schedule": {
+    "mode": "on_demand"
+  },
+  "parameters": [],
+  "nodes": [
+    {
+      "id": "Etapa_Á",
+      "type": "datastage",
+      "configuration": {
+        "ssh_conn_id": "ssh_sintetico",
+        "params": [
+          {
+            "param_name": "Senha",
+            "param_type": "Encrypted",
+            "param_value": "***"
+          }
+        ],
+        "verbose_log": true
+      }
+    }
+  ],
+  "edges": []
+}

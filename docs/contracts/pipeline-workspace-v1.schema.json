@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orquestra:pipeline-workspace:v1",
+  "title": "Pipeline workspace v1",
+  "description": "Documento de definição v1; $defs contém layout, leitura e capacidades F1. Tipos desconhecidos são transportados somente leitura. Não valida ou redige segredos.",
+  "$ref": "#/$defs/definition",
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "properties": {
+        "pipelineName": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pipelineName"
+      ],
+      "additionalProperties": true
+    },
+    "node": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "configuration": {}
+      },
+      "required": [
+        "id",
+        "type",
+        "configuration"
+      ],
+      "additionalProperties": true
+    },
+    "edge": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "target"
+      ],
+      "additionalProperties": true
+    },
+    "definition": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "metadata": {},
+        "schedule": {},
+        "parameters": {},
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/edge"
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "identity",
+        "nodes",
+        "edges"
+      ],
+      "additionalProperties": true
+    },
+    "position": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "additionalProperties": true
+    },
+    "layout": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "nodes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/position"
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "nodes"
+      ],
+      "additionalProperties": true
+    },
+    "readResult": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/definition"
+        },
+        "layout": {
+          "$ref": "#/$defs/layout"
+        },
+        "readOnlyReasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "definition",
+        "layout",
+        "readOnlyReasons"
+      ],
+      "additionalProperties": true
+    },
+    "actions": {
+      "type": "object",
+      "properties": {
+        "consultDefinition": {
+          "type": "boolean"
+        },
+        "consultStages": {
+          "type": "boolean"
+        },
+        "consultLogs": {
+          "type": "boolean"
+        },
+        "editDraft": {
+          "const": false
+        },
+        "publish": {
+          "const": false
+        },
+        "execute": {
+          "const": false
+        },
+        "cancel": {
+          "const": false
+        },
+        "reprocess": {
+          "const": false
+        },
+        "administer": {
+          "const": false
+        }
+      },
+      "required": [
+        "consultDefinition",
+        "consultStages",
+        "consultLogs",
+        "editDraft",
+        "publish",
+        "execute",
+        "cancel",
+        "reprocess",
+        "administer"
+      ],
+      "additionalProperties": true
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "actions": {
+          "$ref": "#/$defs/actions"
+        },
+        "knownNodeTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "enabled",
+        "actions",
+        "knownNodeTypes"
+      ],
+      "additionalProperties": true
+    },
+    "executionContext": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string"
+        },
+        "publishedVersionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engine": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pool": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queue": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attemptId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "dependenciesReleasedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "queuedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "startedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "correlationId",
+        "publishedVersionId",
+        "engine",
+        "pool",
+        "queue",
+        "executor",
+        "attemptId",
+        "expectedAt",
+        "dependenciesReleasedAt",
+        "queuedAt",
+        "startedAt",
+        "completedAt",
+        "sources"
+      ],
+      "additionalProperties": true
+    }
+  }
+}

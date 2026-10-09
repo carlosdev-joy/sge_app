@@ -19,6 +19,14 @@ __pycache__/
 venv/
 env/
 
+## .NET — artefatos e configuração local
+backend-dotnet/**/bin/
+backend-dotnet/**/obj/
+backend-dotnet/TestResults/
+backend-dotnet/artifacts/
+backend-dotnet/.nuget/
+backend-dotnet/**/*.local.json
+
 ## Node (se futuramente for usado)
 node_modules/
 npm-debug.log*

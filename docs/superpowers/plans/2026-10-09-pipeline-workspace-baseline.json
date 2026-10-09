@@ -1,0 +1,1153 @@
+{
+  "commit": "6e711e54e5883fb6d66edf13dfc1fe229df19c45",
+  "pytest": {
+    "passed": 7131,
+    "failed": [
+      "tests/test_api_v2_4.py::test_factory_preview_not_found",
+      "tests/test_api_v2_4.py::test_dashboard_requires_auth",
+      "tests/test_api_v2_4.py::test_register_pipeline_missing_fields",
+      "tests/test_api_v2_4.py::test_malha_requires_auth",
+      "tests/test_kanban_rodape_card.py::test_o_prazo_aparece_no_card[novo_parado]",
+      "tests/test_kanban_rodape_card.py::test_o_prazo_aparece_no_card[andamento]",
+      "tests/test_kanban_rodape_card.py::test_o_prazo_aparece_no_card[aguardando]",
+      "tests/test_smoke.py::test_pipelines_unauthenticated"
+    ],
+    "skipped_count": 51,
+    "skipped_cases_observed": [
+      "tests/test_admin_identidade_agentes.py::test_formato_invalido_e_422[]",
+      "tests/test_chamados_janela_prazo.py::test_a_proxima_sexta_no_banco[2026-08-24-segunda-2026-08-28]",
+      "tests/test_chamados_janela_prazo.py::test_a_proxima_sexta_no_banco[2026-08-25-ter\\xe7a-2026-08-28]",
+      "tests/test_chamados_janela_prazo.py::test_a_proxima_sexta_no_banco[2026-08-26-quarta-2026-08-28]",
+      "tests/test_chamados_janela_prazo.py::test_a_proxima_sexta_no_banco[2026-08-27-quinta-2026-08-28]",
+      "tests/test_chamados_janela_prazo.py::test_a_proxima_sexta_no_banco[2026-08-28-sexta-2026-09-04]",
+      "tests/test_chamados_janela_prazo.py::test_a_proxima_sexta_no_banco[2026-08-29-s\\xe1bado-2026-09-04]",
+      "tests/test_chamados_janela_prazo.py::test_a_proxima_sexta_no_banco[2026-08-30-domingo-2026-09-04]",
+      "tests/test_chamados_janela_prazo.py::test_a_janela_nunca_e_hoje",
+      "tests/test_dag_compile.py::test_dag_compiles[NOTSET]",
+      "tests/test_dashboard_rodando_agora_f9.py::test_o_defeito_existe_neste_cenario",
+      "tests/test_dashboard_rodando_agora_f9.py::test_dois_de_tres_jobs_concluidos_deixam_de_exibir_zero",
+      "tests/test_dashboard_rodando_agora_f9.py::test_a_colisao_de_ts_nodash_nao_mistura_dois_pipelines",
+      "tests/test_dashboard_rodando_agora_f9.py::test_job_que_falhou_conta_no_total_e_nunca_como_ok",
+      "tests/test_dashboard_rodando_agora_f9.py::test_execucao_que_terminou_nao_aparece_no_rodando_agora",
+      "tests/test_dashboard_rodando_agora_f9.py::test_o_decorrido_passa_a_ser_o_da_execucao_inteira",
+      "tests/test_dashboard_rodando_agora_f9.py::test_o_filtro_de_projeto_continua_recortando",
+      "tests/test_dependencias_f6_vivo.py::test_pai_dentro_da_janela_mas_antes_da_abertura_NAO_libera",
+      "tests/test_dependencias_f6_vivo.py::test_pai_concluido_DEPOIS_da_abertura_libera",
+      "tests/test_dependencias_f6_vivo.py::test_pai_que_terminou_NO_INSTANTE_da_abertura_conta",
+      "tests/test_dependencias_f6_vivo.py::test_dependencia_avulsa_continua_cortada_pela_janela_de_12h",
+      "tests/test_dependencias_f6_vivo.py::test_dependencia_avulsa_com_pai_FORA_da_janela_continua_segurando",
+      "tests/test_dependencias_f6_vivo.py::test_corte_resolvido_POR_LINHA_na_mesma_consulta",
+      "tests/test_dependencias_f6_vivo.py::test_corrida_que_atravessa_a_virada_o_filho_da_01h_ve_o_pai_das_23h30",
+      "tests/test_dependencias_f6_vivo.py::test_corrida_que_FECHA_entre_duas_avaliacoes_nao_muda_o_corte",
+      "tests/test_dependencias_f6_vivo.py::test_a_corrida_da_LINHA_ganha_da_corrida_aberta_AGORA",
+      "tests/test_dependencias_f6_vivo.py::test_degrau_2_usa_a_malha_que_ASSINOU_a_linha_e_nao_qualquer_uma",
+      "tests/test_dependencias_f6_vivo.py::test_degrau_2_ignora_corrida_ja_FECHADA",
+      "tests/test_dependencias_f6_vivo.py::test_aguarde_RETIDO_continua_segurando_no_corte_novo",
+      "tests/test_dependencias_f6_vivo.py::test_sucesso_SUBSTITUIDO_nao_conta_no_corte_novo",
+      "tests/test_dependencias_f6_vivo.py::test_status_diferente_de_sucesso_nao_conta",
+      "tests/test_dependencias_f6_vivo.py::test_com_o_modo_DESLIGADO_a_corrida_nao_muda_nada",
+      "tests/test_dependencias_f6_vivo.py::test_o_SQL_GEMEO_da_api_responde_igual_no_banco",
+      "tests/test_lineage_isx_engine.py::TestParseReal::test_isx_reais_parseiam_sem_calar",
+      "tests/test_malha_corrida_f11_vivo.py::test_a_fila_resolve_a_malha_do_marcador_de_no",
+      "tests/test_malha_corrida_f11_vivo.py::test_a_corrida_tem_precedencia_sobre_o_no_na_malha_do_evento",
+      "tests/test_malha_corrida_f11_vivo.py::test_evento_de_no_APAGADO_continua_fora_do_canal",
+      "tests/test_malha_corrida_f11_vivo.py::test_data_divergente_de_pipeline_SEM_CADASTRO_nao_vira_card",
+      "tests/test_malha_corrida_f11_vivo.py::test_o_MESMO_evento_com_cadastro_vira_card",
+      "tests/test_malha_corrida_f11_vivo.py::test_a_chave_app_base_url_EXISTE_no_banco",
+      "tests/test_malha_corrida_f11_vivo.py::test_app_base_url_existe_e_o_default_e_SEM_BOTAO",
+      "tests/test_malha_corrida_f11_vivo.py::test_a_malha_do_dependente_e_NULL_quando_ele_esta_em_DUAS",
+      "tests/test_malha_corrida_f8_vivo.py::test_a_segunda_conclusao_do_dia_e_engolida_ANTES_e_gravada_DEPOIS[observador do no Fim-#no:38-False]",
+      "tests/test_malha_corrida_f8_vivo.py::test_a_segunda_conclusao_do_dia_e_engolida_ANTES_e_gravada_DEPOIS[guardia sem no Fim-#corrida:-True]",
+      "tests/test_malha_corrida_f8_vivo.py::test_a_reabertura_zera_a_memoria_e_registra_o_desfecho_ANULADO",
+      "tests/test_malha_corrida_f8_vivo.py::test_o_descarte_nao_alcanca_evento_de_MEMBRO_nem_de_outra_corrida",
+      "tests/test_malha_corrida_f8_vivo.py::test_com_outra_corrida_aberta_a_reabertura_devolve_False_sem_estourar",
+      "tests/test_malha_corrida_f8_vivo.py::test_a_corrida_de_fim_de_linha_nao_volta_nem_sozinha",
+      "tests/test_malha_corrida_f8_vivo.py::test_a_linha_aposentada_que_ainda_EXECUTA_continua_viva",
+      "tests/test_malha_corrida_f8_vivo.py::test_a_linha_aposentada_em_SUCESSO_continua_FORA",
+      "tests/test_malha_corrida_f8_vivo.py::test_corridas_das_linhas_responde_pelo_vinculo_e_nao_pela_data"
+    ],
+    "warnings": 28,
+    "seconds": 83.19,
+    "sql_live_enabled": false
+  },
+  "tsc": "passou",
+  "build": "passou; aviso de chunks maiores que 500 kB",
+  "eslint": {
+    "errors": 166,
+    "warnings": 12,
+    "assinaturas": [
+      {
+        "arquivo": "ui-react/src/caixa/contexts/ProfileContext.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/AgendamentoTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/AgendamentoTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/AgendamentoTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/AgendamentoTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/AgendamentoTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ConexoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ConexoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ConexoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ConexoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ConexoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ConexoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ConfigTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/DeletePipelineTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/DeletePipelineTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/DeletePipelineTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/DeletePipelineTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/DeletePipelineTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/NotificacoesTab.tsx",
+        "regra": "react-hooks/refs",
+        "mensagem": "Error: Cannot access refs during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/NotificacoesTab.tsx",
+        "regra": "react-hooks/refs",
+        "mensagem": "Error: Cannot access refs during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/NotificacoesTab.tsx",
+        "regra": "react-hooks/refs",
+        "mensagem": "Error: Cannot access refs during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ProjetosTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/ProjetosTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/RegenDagsTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/RegenDagsTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/RegenDagsTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/TiposJobTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/TiposJobTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/UsuariosTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/UsuariosTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/UsuariosTab.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/VersoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/VersoesTab.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/admin/abas/VersoesTab.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/console/DsRunGraphModal.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/console/DsRunGraphModal.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/console/DsRunGraphModal.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/console/DsRunGraphModal.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaProgressoModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaProgressoModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/copias/CopiaWizard.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/DecisaoNode.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/DecisaoNode.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "no-useless-escape",
+        "mensagem": "Unnecessary escape character: \\-.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'grupos' logical expression could make the dependencies of useMemo Hook (at line 771) change on every render. To fix this, wrap the initialization of 'grupos' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'salvar' function makes the dependencies of useEffect Hook (at line 2031) change on every render. To fix this, wrap the definition of 'salvar' in its own useCallback() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "react-hooks/refs",
+        "mensagem": "Error: Cannot access refs during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/FluxoEditor.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/JobTypeFields.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/JobTypeFields.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/JobTypeFields.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/JobTypeFields.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/JobTypeFields.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/JobTypeFields.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/JobTypeFields.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/paineis/PainelDecisao.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/paineis/PainelDecisao.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/paineis/PainelSql.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/paineis/shared.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/etapas/paineis/shared.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/execucao/ExecucaoDetailModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/layout/AppShellV2.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/layout/header/HeaderControls.tsx",
+        "regra": "no-empty",
+        "mensagem": "Empty block statement.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/malhas/CatalogoPipelines.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'allPipelines' logical expression could make the dependencies of useMemo Hook (at line 276) change on every render. To fix this, wrap the initialization of 'allPipelines' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/malhas/CatalogoPipelines.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'allPipelines' logical expression could make the dependencies of useMemo Hook (at line 281) change on every render. To fix this, wrap the initialization of 'allPipelines' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/malhas/CatalogoPipelines.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'allPipelines' logical expression could make the dependencies of useMemo Hook (at line 299) change on every render. To fix this, wrap the initialization of 'allPipelines' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineFormModal.tsx",
+        "regra": "react-hooks/use-memo",
+        "mensagem": "Error: Expected the dependency list to be an array of simple expressions (e.g. `x`, `x.y.z`, `x?.y?.z`)",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineFormModal.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineModals.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'rows' logical expression could make the dependencies of useMemo Hook (at line 202) change on every render. To fix this, wrap the initialization of 'rows' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineModals.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'jobs' logical expression could make the dependencies of useMemo Hook (at line 238) change on every render. To fix this, wrap the initialization of 'jobs' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineModals.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'jobs' logical expression could make the dependencies of useMemo Hook (at line 247) change on every render. To fix this, wrap the initialization of 'jobs' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineModals.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineModals.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/PipelineModals.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/pipelineUtils.ts",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/pipelines/pipelineUtils.ts",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/ui/Autocomplete.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/ui/CommandPalette.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/ui/CommandPalette.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'items' array makes the dependencies of useCallback Hook (at line 169) change on every render. To fix this, wrap the initialization of 'items' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/components/ui/CommandPalette.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/ui/Toast.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/components/ui/Toast.tsx",
+        "regra": "react-refresh/only-export-components",
+        "mensagem": "Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/CopiaDados.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/CopiaDados.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/DsConsole.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/DsConsole.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/DsConsole.tsx",
+        "regra": "react-hooks/refs",
+        "mensagem": "Error: Cannot access refs during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/DsConsole.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/DsConsole.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/DsConsole.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Finalizacao.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Fluxos.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "no-useless-assignment",
+        "mensagem": "The value assigned to 'detail' is not used in subsequent statements.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'jobs' logical expression could make the dependencies of useEffect Hook (at line 234) change on every render. To fix this, wrap the initialization of 'jobs' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Governanca.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/ImpactoCampo.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/ImpactoCampo.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/ImpactoCampo.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/ImpactoCampo.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/ImpactoCampo.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Inventario.tsx",
+        "regra": "react-hooks/refs",
+        "mensagem": "Error: Cannot access refs during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Inventario.tsx",
+        "regra": "react-hooks/refs",
+        "mensagem": "Error: Cannot access refs during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Inventario.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Inventario.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Inventario.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Inventario.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Inventario.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "react-hooks/static-components",
+        "mensagem": "Error: Cannot create components during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "react-hooks/static-components",
+        "mensagem": "Error: Cannot create components during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "react-hooks/static-components",
+        "mensagem": "Error: Cannot create components during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Jobs.tsx",
+        "regra": "react-hooks/static-components",
+        "mensagem": "Error: Cannot create components during render",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "react-hooks/set-state-in-effect",
+        "mensagem": "Error: Calling setState synchronously within an effect can trigger cascading renders",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Logs.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Pipelines.tsx",
+        "regra": "no-useless-assignment",
+        "mensagem": "The value assigned to 'total' is not used in subsequent statements.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Pipelines.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/Pipelines.tsx",
+        "regra": "@typescript-eslint/no-unused-expressions",
+        "mensagem": "Expected an assignment or function call and instead saw an expression.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PlanosAjuste.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PlanosAjuste.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PlanosAjuste.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PlanosAjuste.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "@typescript-eslint/no-explicit-any",
+        "mensagem": "Unexpected any. Specify a different type.",
+        "severidade": 2
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'datasets' logical expression could make the dependencies of useMemo Hook (at line 377) change on every render. To fix this, wrap the initialization of 'datasets' in its own useMemo() Hook.",
+        "severidade": 1
+      },
+      {
+        "arquivo": "ui-react/src/pages/PowerBI.tsx",
+        "regra": "react-hooks/exhaustive-deps",
+        "mensagem": "The 'datasets' logical expression could make the dependencies of useMemo Hook (at line 388) change on every render. To fix this, wrap the initialization of 'datasets' in its own useMemo() Hook.",
+        "severidade": 1
+      }
+    ]
+  },
+  "dependencias_node": "copiadas do checkout DEV; instalacao limpa nao ensaiada",
+  "nul_preexistente": [
+    "ui-react/src/lib/lineageIsx.ts"
+  ]
+}

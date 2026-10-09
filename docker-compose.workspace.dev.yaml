@@ -1,0 +1,31 @@
+# Exclusivo DEV. Carregar depois de docker-compose.yaml e docker-compose.dev.yaml.
+services:
+  workspace-api:
+    image: orquestra-workspace:${WORKSPACE_IMAGE_TAG:-f1}
+    build:
+      context: ./backend-dotnet
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Workspace__Enabled: "${WORKSPACE_ENABLED:-false}"
+      Workspace__LegacyApiUrl: http://orquestra-api:8000/
+      Workspace__Sql__Server: sqlserver-dev,1433
+      Workspace__Sql__Database: "${WORKSPACE_SQL_DATABASE:-orquestra_dev}"
+      Workspace__Sql__User: "${WORKSPACE_SQL_USER:?Defina usuário SQL somente leitura do workspace}"
+      Workspace__Sql__Password: "${WORKSPACE_SQL_PASSWORD:?Defina senha SQL por canal seguro}"
+      Workspace__Sql__TrustServerCertificate: "true"
+    expose:
+      - "8080"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: 1.0
+  ui-nginx:
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/config/nginx.workspace.dev.conf:/etc/nginx/nginx.conf:ro

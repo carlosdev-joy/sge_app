@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../Orquestra.Application/Orquestra.Application.csproj" />
+    <ProjectReference Include="../Orquestra.Infrastructure/Orquestra.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>
