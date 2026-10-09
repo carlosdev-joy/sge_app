@@ -157,7 +157,9 @@ from services.dag_reconcile import enqueue as enqueue_dag_pendente
 
 log = logging.getLogger("orquestra-api")
 
-router = APIRouter()
+from services.workspace_legacy_guard import legacy_workspace_guard
+
+router = APIRouter(dependencies=[Depends(legacy_workspace_guard)])
 
 _MSG_SEM_MIGRATION = (
     "Recurso de malhas indisponível: a migration 070 (etl_malha/"

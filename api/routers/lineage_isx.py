@@ -32,7 +32,9 @@ from services import lineage_isx as svc
 
 log = logging.getLogger("orquestra-api")
 
-router = APIRouter()
+from services.workspace_legacy_guard import legacy_workspace_guard
+
+router = APIRouter(dependencies=[Depends(legacy_workspace_guard)])
 
 # Executor só do ISX, POR PROCESSO do uvicorn: 2 extrações simultâneas por worker
 # (produção roda `--workers 2` → 4 JVMs do istool no servidor do DataStage, o teto

@@ -1,0 +1,7 @@
+# F4 — autoridade e fronteiras
+
+Publicação exige acao_publicar própria, inicialmente concedida ao recurso do perfil admin na migration; o código não decide por nome de perfil. Bearer/RBAC vigente, edição, lease/revisão e base hash são obrigatórios. .NET escreve somente versão/intenção/gerência/auditoria; nenhuma escrita etl_* de configuração. Adaptador FastAPI lê o snapshot imutável por operation_id persistido, resolve encrypted somente no servidor e projeta com nomes internos de tabelas/colunas e valores parametrizados.
+
+Gerência durável bloqueia escrita legada por triggers SQL, inclusive rotas em lote e SPs. Operação pendente impede entrada no motor. Política Airflow verifica antes da execução de qualquer tarefa e amarra versão/hash do artefato; DAG antiga sem versão não executa pipeline gerido. Registros de execução duráveis e consulta do Airflow bloqueiam publicação durante corridas/filas; falha de dependência recusa progresso, sem declarar Publicado. Factory e reconciliação usam run_id determinístico, artefato marcado e hash projetado verificado. Reinício retoma o estado persistido.
+
+Eventos guardam ator/identificadores/códigos, não payload secreto. Comparação retorna somente definições sanitizadas. Referência encrypted precisa corresponder à sua própria localização (pipeline/job/parâmetro); referência deslocada é inválida. Valores cifrados existentes não são recriados nem enviados ao navegador.

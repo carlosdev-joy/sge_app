@@ -136,6 +136,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.dag_reconcile import reconcile_loop
+from services.workspace_publication import reconcile_loop as workspace_reconcile_loop
+from routers import workspace_publication
 from services.monitor_capture import capture_loop as monitor_capture_loop
 
 from routers import (
@@ -144,7 +146,7 @@ from routers import (
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
     inventario, finalizacao, caixa_chat, ds_supervisao, malhas,
-    chamados, pio, utilitarios, lineage_isx, maestro, email, agentes,
+    chamados, pio, utilitarios, lineage_isx, maestro, email, agentes, workspace_publication,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -170,10 +172,11 @@ async def lifespan(app: FastAPI):
     # Reconciliador do Gerar-DAG: conclui despause/notificação a partir da fila
     # persistida (etl_dag_pendente), retomando itens deixados por um restart.
     reconcile_task = asyncio.create_task(reconcile_loop())
+    workspace_task = asyncio.create_task(workspace_reconcile_loop())
     # Observabilidade de tabelas: captura snapshots periódicos (frescor/volume).
     monitor_task = asyncio.create_task(monitor_capture_loop())
     yield
-    for _t in (reconcile_task, monitor_task):
+    for _t in (reconcile_task, monitor_task, workspace_task):
         _t.cancel()
         try:
             await _t
@@ -204,6 +207,6 @@ for _router_module in [
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
     inventario, finalizacao, caixa_chat, ds_supervisao, malhas,
-    chamados, pio, utilitarios, lineage_isx, maestro, email, agentes,
+    chamados, pio, utilitarios, lineage_isx, maestro, email, agentes, workspace_publication,
 ]:
     app.include_router(_router_module.router)

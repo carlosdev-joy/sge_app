@@ -81,3 +81,9 @@ Consulta básica (`tela_pipelines`) recebe resumo sem nós. Fluxo exige também 
 Aliases query `/workspace/pipeline-context?name=...`, `/workspace/pipeline-drafts?name=...` e `/workspace/executions?name=...&date=...` preservam identidades com slash, percentual, Unicode e espaços. O último encaminha leitura GET ao FastAPI `/pipeline-execution?pipeline_name=...`, com RBAC em ambos os serviços, timeout de 5 segundos, limite de 2 MiB e erros sanitizados. Nenhum endpoint aceita URL de destino do cliente.
 
 Dados locais sujos são mantidos somente na memória da aba e limpos na troca de sessão; recarregar a página perde esse conteúdo e há aviso de saída. Consulta não persiste posição/zoom nem faz renovação de lease. O ambiente mostrado vem da configuração do servidor, nunca de inferência da URL.
+
+## Publicação F4
+
+Habilitação integrada por `WORKSPACE_PUBLICATIONS_ENABLED=true`, migrations144/145 e política de motor carregada nos quatro serviços Airflow. Workspace consult-only continua sem comandos para Basic; publicação possui recurso `acao_publicar` separado. Ver [contrato](contracts/workspace-publications-v1.md) e [roteiro DEV](release-notes/workspace-pipeline-f4.md).
+
+O SQL .NET continua sem escrita ativa; add grants somente nas tabelas de intenção/gestão e leitura de reservas/EXEC hash. Não habilitar flag apenas no frontend/backend nem desligar o gate para desbloquear uma projeção incompleta. Confirmação é por artefato/DAG/hash, com relógios UTC sincronizados. Menus legados serão tratados na F5; servidor já recusa alterações em pipelines geridos.

@@ -2947,6 +2947,7 @@ def _generate_dag_source(pipeline, jobs):
     else:
         schedule_line = f'    schedule="{cron}",'
 
+    workspace_markers = pipeline.get("_workspace")
     dag_header_lines = [
         "with DAG(",
         "    dag_id=DAG_ID,",
@@ -2957,6 +2958,8 @@ def _generate_dag_source(pipeline, jobs):
         "    catchup=False,",
         f"    max_active_runs={max_active_runs_val},",
     ]
+    if workspace_markers:
+        dag_header_lines.append(f"    params={workspace_markers!r},")
     if sla_minutos_val is not None:
         dag_header_lines.append(f"    dagrun_timeout=timedelta(minutes={int(sla_minutos_val)}),")
     dag_header_lines += [
@@ -2975,6 +2978,7 @@ def _generate_dag_source(pipeline, jobs):
         f"# Pipeline: {pname} | Projeto: {project} | Dominio: {domain}",
         sep,
         consts_str,
+        *(["WORKSPACE_MARKERS = " + repr(workspace_markers)] if workspace_markers else []),
         "",
         helpers_str,
         "",
@@ -3070,6 +3074,21 @@ def gerar_dags(**context):
     # ── Tudo na mesma conexão: reset + SP rodam na mesma sessão após commit ──
     conn   = hook.get_conn()
     cursor = conn.cursor()
+    workspace_operation = conf.get("workspace_operation_id")
+    workspace_managed = {}
+    if os.getenv("WORKSPACE_PUBLICATIONS_ENABLED", "false").lower() == "true":
+        cursor.execute("SELECT p.pipeline_name,p.pending_operation_id,o.version_id,v.content_hash,o.projection_hash,o.estado,o.factory_run_id FROM dbo.etl_workspace_pipeline p LEFT JOIN dbo.etl_workspace_publicacao o ON o.operation_id=p.pending_operation_id LEFT JOIN dbo.etl_workspace_versao v ON v.version_id=o.version_id")
+        workspace_managed = {_chave_ci(row[0]): row for row in cursor.fetchall()}
+        if workspace_operation:
+            selected = workspace_managed.get(_chave_ci(pipeline_name))
+            if (not selected or str(selected[1]).lower() != str(workspace_operation).lower()
+                    or selected[5] not in {"projetado", "gerando"} or selected[6] != dag_run_id
+                    or len(alvos_nomes) != 1 or force_all):
+                cursor.close(); conn.close()
+                raise RuntimeError("Operação de publicação não corresponde à intenção persistida")
+    elif workspace_operation:
+        cursor.close(); conn.close()
+        raise RuntimeError("Publicação workspace desabilitada")
 
     if alvos_nomes:
         # Um UPDATE por alvo (em vez de IN com N marcadores): mantém o mesmo
@@ -3132,6 +3151,14 @@ def gerar_dags(**context):
     if cursor.nextset():
         params_rows = cursor.fetchall()
         params_cols = [d[0].lower() for d in cursor.description]
+
+    if workspace_operation:
+        cursor.execute("SELECT * FROM dbo.etl_pipeline WHERE pipeline_name=%s", (pipeline_name,))
+        pipelines_rows = cursor.fetchall(); pipeline_cols = [d[0].lower() for d in cursor.description]
+        cursor.execute("SELECT * FROM dbo.etl_pipeline_job WHERE pipeline_name=%s ORDER BY execution_order", (pipeline_name,))
+        jobs_rows = cursor.fetchall(); jobs_cols = [d[0].lower() for d in cursor.description]
+        cursor.execute("SELECT * FROM dbo.etl_pipeline_job_param WHERE pipeline_name=%s", (pipeline_name,))
+        params_rows = cursor.fetchall(); params_cols = [d[0].lower() for d in cursor.description]
 
     if not pipelines_rows:
         cursor.close(); conn.close()
@@ -3420,6 +3447,19 @@ def gerar_dags(**context):
         domain  = pipeline["domain"]
         jobs    = jobs_by_pipeline.get(_chave_ci(pname), [])
 
+        managed = workspace_managed.get(_chave_ci(pname))
+        if managed:
+            if not workspace_operation or str(managed[1]).lower() != str(workspace_operation).lower():
+                if _alvos_ci and _chave_ci(pname) in _alvos_ci:
+                    erros.append(f"{pname}: pipeline gerido; publique pelo workspace")
+                continue
+            cursor.execute("EXEC dbo.sp_workspace_active_hash @name=%s", (pname,))
+            if cursor.fetchone()[0] != managed[4]:
+                erros.append(f"{pname}: hash de projeção divergente")
+                continue
+            pipeline["_workspace"] = {"workspace_version_id": str(managed[2]),
+                "workspace_content_hash": managed[3], "workspace_projection_hash": managed[4]}
+
         if not jobs:
             # Antes isto era só um print: o pipeline sumia da geração sem
             # aparecer na tela, e quem pediu a DAG ficava esperando um arquivo
@@ -3486,8 +3526,17 @@ def gerar_dags(**context):
             continue
 
         try:
-            with open(dest_file, "w", encoding="utf-8") as f:
-                f.write(source)
+            import tempfile
+            fd, temporary_file = tempfile.mkstemp(prefix=".workspace-", suffix=".tmp", dir=dest_dir)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(source)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temporary_file, dest_file)
+            finally:
+                if os.path.exists(temporary_file):
+                    os.unlink(temporary_file)
             # O ALVO do pedido fura a fila na hora, não no fim do lote: a SP de
             # pendentes é GLOBAL, então o clique "Gerar DAG" de um pipeline entra
             # num lote que pode ter dezenas de pendentes de terceiros à frente —
@@ -3510,19 +3559,22 @@ def gerar_dags(**context):
             continue
 
         try:
-            hook.run(
-                "EXEC dbo.sp_etl_pipeline_upsert "
-                "@pipeline_name=%s, @scheduled_time=%s, @active=%s, "
-                "@envia_msg_inicio=%s, @envia_msg_fim=%s, @envia_msg_erro=%s, "
-                "@dag_criada=1, @project_name=%s, @domain=%s, @tags=%s",
-                parameters=(
-                    pname, pipeline["scheduled_time"], 1,
-                    int(pipeline["envia_msg_inicio"]),
-                    int(pipeline["envia_msg_fim"]),
-                    int(pipeline["envia_msg_erro"]),
-                    project, domain, pipeline.get("tags", ""),
-                ),
-            )
+            if managed:
+                hook.run("UPDATE dbo.etl_pipeline SET dag_criada=1,updated_at=GETDATE() WHERE pipeline_name=%s", parameters=(pname,))
+            else:
+                hook.run(
+                    "EXEC dbo.sp_etl_pipeline_upsert "
+                    "@pipeline_name=%s, @scheduled_time=%s, @active=%s, "
+                    "@envia_msg_inicio=%s, @envia_msg_fim=%s, @envia_msg_erro=%s, "
+                    "@dag_criada=1, @project_name=%s, @domain=%s, @tags=%s",
+                    parameters=(
+                        pname, pipeline["scheduled_time"], 1,
+                        int(pipeline["envia_msg_inicio"]),
+                        int(pipeline["envia_msg_fim"]),
+                        int(pipeline["envia_msg_erro"]),
+                        project, domain, pipeline.get("tags", ""),
+                    ),
+                )
             print(f"[FACTORY] dag_criada=1 -> '{pname}'")
             steps_log.append({"tipo": "banco", "msg": f"Pipeline '{pname}' marcado como criado no cadastro"})
             # F6 — fecha o falso-pendente do force_all fora da API (pendência

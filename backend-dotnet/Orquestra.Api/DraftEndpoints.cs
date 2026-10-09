@@ -42,7 +42,7 @@ internal static class DraftEndpoints
         group.MapDelete("/drafts/{id:guid}", async (Guid id, HttpContext c, IDraftRepository repository, CancellationToken ct) => { await repository.DiscardAsync(id, await Body<RevisionFence>(c, ct), Actor(c), ct); return Results.NoContent(); });
     }
     private static WorkspacePrincipal Actor(HttpContext c) => (WorkspacePrincipal)c.Items["workspaceActor"]!;
-    private static async Task<T> Body<T>(HttpContext c, CancellationToken ct)
+    internal static async Task<T> Body<T>(HttpContext c, CancellationToken ct)
     {
         const int limit = 1024 * 1024;
         if (!c.Request.HasJsonContentType()) throw new WorkspaceException(422, "draft_invalid", "Corpo JSON obrigatório");

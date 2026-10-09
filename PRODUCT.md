@@ -15,7 +15,7 @@ Construir, consultar e operar pipelines de dados com governança sobre o motor A
 Aplicação corporativa em português do Brasil, React e FastAPI com SQL Server. Workspace .NET piloto em DEV; rascunhos persistidos separados da configuração publicada. Produção/Caixa possui autorização e validação próprias.
 
 ## Capabilities and Constraints
-F1/F2 entregues: contratos, autenticação/RBAC, rascunhos, importação, revisão, lease e auditoria. F3 adiciona interface e criação. Publicação/execução pelo workspace pertencem às fases seguintes. Preservar identidade técnica, todos os campos de configuração e segredos somente por referência. Mostrar apenas estados/métricas sustentados pela API.
+F1/F2 entregues: contratos, autenticação/RBAC, rascunhos, importação, revisão, lease e auditoria. F3 adiciona interface e criação. F4 adiciona validação funcional, publicação durável com confirmação no Airflow, histórico imutável, comparação e restauração para rascunho. Publicar exige permissão própria; execução operacional unificada pelo workspace pertence à F5. Preservar identidade técnica, todos os campos de configuração e segredos somente por referência. Mostrar apenas estados/métricas sustentados pela API.
 
 ## Brand Commitments
 Preservar marca ORQUESTRA, idioma e tokens semânticos claros/escuros existentes. Referências aprovadas: docs/mockups/pipeline-workspace; dados dessas imagens são ilustrativos.
