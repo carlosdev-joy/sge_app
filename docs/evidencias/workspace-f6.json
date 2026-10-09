@@ -489,8 +489,8 @@
     ]
   },
   "offline": {
-    "package": "/root/orquestra-f6-evidencias/offline",
-    "checksumFilesVerified": 132,
+    "package": "/root/orquestra-f6-evidencias/offline-final",
+    "checksumFilesVerified": 133,
     "nugetPackages": 68,
     "buildNetwork": "none",
     "restoreLocked": true,
@@ -500,8 +500,10 @@
     "separateSqlTestsPassed": 76,
     "saveLoadSucceeded": true,
     "consumerRebuildSucceeded": true,
-    "consumerImageId": "sha256:540cae38bb46074ac943cfece33516d8a63d352501df1cea30dfbaaa4f9ade3d",
-    "runtimeImageId": "sha256:af8cb699ed0a2c1127791f6bfdcf7c8eef9ecafd0f098ad9b019972409fcd563",
+    "consumerImageId": "sha256:943fd3b535a98f5338dfdd18cc344bd3096a5e6065d4e6a771158d3c9f56963b",
+    "runtimeImageId": "sha256:3301e0027aaa5dd645e2908ea06d387b420060cfbb3fb9daf4e2a5d4a838ddf8",
+    "sourceGitHead": "123f582ee3fd7797c8a1d67ebc903a7ac2703f60",
+    "migration149Sha256": "46ee03ae8c654a9e62bc779bc9aac182636d81f1c10256a91511206298764fac",
     "migrationsIncluded": [
       "140_versao_workspace_pipeline_f1.sql",
       "141_workspace_rascunhos.sql",
@@ -511,7 +513,8 @@
       "145_versao_workspace_pipeline_f4.sql",
       "146_workspace_comandos.sql",
       "147_versao_workspace_pipeline_f5.sql",
-      "148_versao_workspace_fluxo_referencia.sql"
+      "148_versao_workspace_fluxo_referencia.sql",
+      "149_versao_workspace_pipeline_f6.sql"
     ],
     "limits": [
       "linux/amd64 DEV; Information Server/Caixa não ensaiado",
@@ -520,7 +523,7 @@
     ]
   },
   "evidenceSha256": {
-    "offline-validation.json": "acc7cf84151177cad2fd1ca858437ddf8b9c1c6416c241ae4e1ef048b155ad7e",
+    "offline-validation.json": "4cad0896be06bf91cd19f83d13a4ea325fdb9d14431fbd5a4cbcc6dc1093affa",
     "performance-api.json": "e02c8e6adf7c0340bc16a2cde4fce44e69c90bbd16b9185b3cf8497fc2152eaf",
     "smoke-dev.json": "cd2b0cfa73b4ab0a6b4a5d4d2a5abadd977834c3264439a78791c2a317f084cb",
     "performance-browser.json": "5c37c96945d6905842186ac4f48185751a92959ce9f595f7c2e38293d681674d",
@@ -530,7 +533,8 @@
     "browser-negative.json": "50be98d2ad3a87df4b7d971fe6e5e2a3c2f4830cee43a1d31b1c6c894e2f1da5",
     "eslint-comparison.json": "4d8271ed5b5c93327f8bd29be71329ee6b337b06cef6cd47f3947d56faa36a2b",
     "browser-validation.json": "3e31915d7704758540dfa54cfe16423f739e008c1f663504a3b153a047d625f3",
-    "validation.json": "81d00a51452c502de3417c4ff41089779981168cf237a33a829d0b5fc480b047"
+    "validation.json": "81d00a51452c502de3417c4ff41089779981168cf237a33a829d0b5fc480b047",
+    "manifest-offline-final.json": "618487d53d5bacfb7200551948737107c671d2eebc60db53e858c90a5618fe54"
   },
   "nulCheck": {
     "newFiles": [],
