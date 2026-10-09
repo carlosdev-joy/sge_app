@@ -5,7 +5,7 @@ Data: 2026-10-09
 Criar a nova experiência de Pipeline e depois Malha, conforme mockups da conversa. Consolidar Etapas e Fluxos no Pipeline. Manter frontend React, migrar a gestão para .NET e preservar Airflow, DataStage, SQL e jobs Python/PySpark.
 
 ## Artefatos preparados
-- docs/spec-pipeline-workspace-dotnet.md: especificação em rascunho para revisão.
+- docs/spec-pipeline-workspace-dotnet.md: especificação atualizada com direção e continuidade autorizadas.
 - Branch documental docs/pipeline-workspace-dotnet, criada de develop 6e711e54e5883fb6d66edf13dfc1fe229df19c45.
 - Quatro mockups ilustrativos: workspace em execução, montagem, malha com edição bloqueada e criação.
 - Nenhum código de produto, migration, runtime ou configuração de servidor foi alterado nesta sessão.
@@ -22,7 +22,7 @@ A UI e API usam bind mounts: um build ou restart no checkout servido pode altera
 5. Instruções locais AGENTS.md, se presentes no servidor.
 
 ## Estado e limites
-O usuário aprovou a direção geral e pediu início. A especificação escrita ainda precisa de revisão explícita antes do plano detalhado e da implementação, conforme o processo do projeto.
+O usuário autorizou atualizar a documentação e iniciar os próximos passos em 2026-10-09. Preservar essa autorização: inspecionar DEV, conferir divergências e detalhar o plano F1. Não pedir novamente autorização para a direção geral; apresentar para revisão o plano concreto antes de implementação conforme o processo do projeto.
 A próxima etapa é revisar esta spec, conferir os contratos reais e preparar o plano de F1. Não apresentar a documentação como implementação concluída.
 Não promover main nem implantar produção. Fases são PRs para develop, com revisão adversarial e validação no DEV.
 Não reproduzir credenciais de memórias/documentos, não imprimir .env e não incluir segredos nos prompts.
@@ -36,4 +36,7 @@ Não reproduzir credenciais de memórias/documentos, não imprimir .env e não i
 - Escolher pipeline de teste e registrar limitações dos simuladores DataStage.
 
 ## Prompt para iniciar a próxima sessão
-Estamos iniciando a evolução do ORQUESTRA conforme docs/spec-pipeline-workspace-dotnet.md. Leia CLAUDE.md e docs/fluxo-desenvolvimento.md, confira o estado do checkout e revise a especificação antes de implementar. A direção aprovada é manter React, criar o espaço de trabalho de Pipeline, incorporar os menus Etapas/Fluxos, migrar gestão para .NET e manter Airflow e jobs Python/PySpark. Trabalhe por fases em branches de origin/develop, com testes, revisão adversarial e validação DEV. Preserve dados e serviços compartilhados, não faça deploy de produção e não exponha segredos. A spec ainda está em rascunho: apresente divergências e solicite sua aprovação antes do plano de implementação.
+Estamos iniciando a evolução do ORQUESTRA conforme docs/spec-pipeline-workspace-dotnet.md. Leia CLAUDE.md e docs/fluxo-desenvolvimento.md, confira o estado do checkout e revise a especificação antes de implementar. A direção aprovada é manter React, criar o espaço de trabalho de Pipeline, incorporar os menus Etapas/Fluxos, migrar gestão para .NET e manter Airflow e jobs Python/PySpark. Trabalhe por fases em branches de origin/develop, com testes, revisão adversarial e validação DEV. Preserve dados e serviços compartilhados, não faça deploy de produção e não exponha segredos. A continuidade foi autorizada. Considere três experiências (desenvolvimento, consulta e sustentação), monitores estratégico/operacional, capacidade por horário e Academy como evoluções documentadas. Comece pela inspeção e plano F1; apresente divergências e o plano concreto antes de implementar, sem reabrir decisões já aprovadas.
+
+## Próxima entrega imediata
+Usar docs/inicio-dev-pipeline-workspace-dotnet.md para inspeção segura e evidências. Acesso SSH não foi fornecido nesta sessão. Nenhuma conexão ou validação no servidor foi realizada.
