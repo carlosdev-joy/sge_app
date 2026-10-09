@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 
 from db import get_db_conn
 from deps import (
@@ -1424,6 +1424,10 @@ async def rerun_from_task(body: dict = Body(default={}),
                                      "deste ciclo no Airflow — sem ele o clear "
                                      "atingiria todos os ciclos da DAG.")})
 
+    from services.workspace_operations import check_managed_run, reserve_run, acknowledge_run
+    check_managed_run(oficial, dag_run_id, reprocess=True, cascata=cascata)
+    command_token, _ = reserve_run(oficial, dag_run_id, body, str((auth or {}).get("matricula") or "?"), reprocess=True)
+
     # F5 — a sobreposição é gravada ANTES do clear (o operador a lê no disparo;
     # gravar depois abriria a janela em que a task já rodou sem ela) e
     # desfeita se o clear for recusado. Exige a corrida identificada: sem
@@ -1507,6 +1511,7 @@ async def rerun_from_task(body: dict = Body(default={}),
             _apagar_overrides_silencioso(oficial, dag_run_id)
         raise
     dag_run_id = tasks_limpas["dag_run_id"]
+    acknowledge_run(oficial, dag_run_id, command_token)
     tasks_limpas = tasks_limpas["tasks_limpas"]
     if not overrides_limpos_antes and not overrides_nomes and dag_run_id:
         # Caminho histórico: o run_id só existe agora. Best-effort, logo após o
@@ -3215,10 +3220,90 @@ def sla_report(
 async def get_workspace_pipeline_execution(
     pipeline_name: str,
     data_referencia: str | None = None,
+    run_id: str | None = None,
     _auth: dict = Depends(get_current_user),
 ):
-    """Leitura contextual por query preserva slash/Unicode na identidade. F3."""
+    """Leitura contextual por query preserva slash/Unicode na identidade."""
     required = {"tela_pipelines", "tela_jobs", "tela_logs"}
     if not required.issubset(set(_auth.get("permissoes", []))):
         raise HTTPException(status_code=403, detail="Permissão de consulta da execução necessária")
-    return await get_pipeline_execucao(pipeline_name, data_referencia=data_referencia, _auth=_auth)
+    if run_id is not None:
+        result = await get_pipeline_execucao(pipeline_name, data_referencia=data_referencia, run_id=run_id, _auth=_auth)
+    else:
+        result = await get_pipeline_execucao(pipeline_name, data_referencia=data_referencia, _auth=_auth)
+    from services.workspace_operations import execution_version
+    identity = result.get("identidade") or {}
+    version = execution_version(pipeline_name, identity.get("dag_run_id") or identity.get("run_id") or "")
+    if version: result["workspaceVersion"] = version
+    return result
+
+
+def _workspace_read_permissions(auth):
+    if not {"tela_pipelines", "tela_jobs", "tela_logs"}.issubset(set(auth.get("permissoes", []))):
+        raise HTTPException(403, "Permissão de consulta contextual necessária")
+
+
+@router.post("/pipeline-runs", tags=["execucoes"])
+async def workspace_pipeline_run(pipeline_name: str, body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR)), authorization: str | None = Header(default=None)):
+    """Alias fixo por query; mantém o disparo legado e não publica configuração."""
+    import json
+    from routers.airflow import trigger_dag_run
+    from services.workspace_operations import reserve_run, acknowledge_run
+    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Sessão Bearer necessária para operar")
+    _workspace_read_permissions(auth)
+    if set(body) - {"conf", "logical_date", "dag_run_id"} or not isinstance(body.get("conf", {}), dict):
+        raise HTTPException(422, "Configuração de execução inválida")
+    if len(json.dumps(body).encode()) > 65536:
+        raise HTTPException(422, "Configuração de execução excede o limite")
+    for key in ("logical_date", "dag_run_id"):
+        if key in body and (not isinstance(body[key], str) or not body[key] or len(body[key]) > 300 or any(ord(c) < 32 for c in body[key])):
+            raise HTTPException(422, "Identidade ou data de execução inválida")
+    if "dag_run_id" not in body:
+        raise HTTPException(422, "Informe uma identidade de comando para evitar disparos duplicados")
+    token, existing = reserve_run(pipeline_name, body["dag_run_id"], body, str(auth.get("matricula") or "?"))
+    if existing:
+        return {"dag_run_id": body["dag_run_id"], "state": "reserved"}
+    try:
+        result = await trigger_dag_run(pipeline_name, body, user=auth)
+        acknowledge_run(pipeline_name, body["dag_run_id"], token)
+        return result
+    except HTTPException as error:
+        raise HTTPException(error.status_code if error.status_code in {400, 401, 403, 409, 422} else 503, "Execução recusada; confira a publicação e o estado do pipeline") from None
+
+
+@router.get("/pipeline-task-log", tags=["execucoes"])
+async def workspace_task_log(pipeline_name: str, run_id: str, task_id: str, try_number: int = 1, auth: dict = Depends(get_current_user)):
+    """Log contextual de uma etapa comprovada na corrida; sem caminho livre."""
+    from urllib.parse import quote
+    from fastapi.responses import PlainTextResponse
+    from routers.airflow import get_airflow_client
+    _workspace_read_permissions(auth)
+    if not run_id or len(run_id) > 300 or not task_id or len(task_id) > 250 or not 1 <= try_number <= 10000:
+        raise HTTPException(422, "Etapa, corrida ou tentativa inválida")
+    data = await get_pipeline_execucao(pipeline_name, run_id=run_id, _auth=auth)
+    identity = data.get("identidade") or {}
+    actual = identity.get("dag_run_id") or identity.get("run_id")
+    if not identity.get("resolvido") or actual != run_id or not any(step.get("task_id") == task_id for step in data.get("etapas", [])):
+        raise HTTPException(404, "Etapa não encontrada nesta corrida")
+    # Codificação de cada segmento impede que run_id/task_id controlem o proxy.
+    path = "/api/v1/dags/{}/dagRuns/{}/taskInstances/{}/logs/{}".format(quote(pipeline_name, safe=""), quote(run_id, safe=""), quote(task_id, safe=""), try_number)
+    try:
+        async with get_airflow_client() as client:
+            async with client.stream("GET", path, headers={"Accept": "text/plain"}) as response:
+                if not response.is_success:
+                    raise HTTPException(503, "Log desta tentativa indisponível")
+                parts = []; size = 0; limited = False
+                async for block in response.aiter_bytes():
+                    available = 2 * 1024 * 1024 - size
+                    parts.append(block[:available]); size += min(len(block), available)
+                    if len(block) > available:
+                        limited = True; break
+                content = b"".join(parts).decode("utf-8", errors="replace")
+                if limited:
+                    content += "\n[Exibição limitada a 2 MiB. Consulte o Airflow para o log completo.]"
+                return PlainTextResponse(content, headers={"Cache-Control": "no-store"})
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Log desta tentativa indisponível") from None

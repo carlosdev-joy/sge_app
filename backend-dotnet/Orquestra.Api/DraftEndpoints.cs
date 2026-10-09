@@ -30,7 +30,7 @@ internal static class DraftEndpoints
         });
         group.MapGet("/pipeline-context", async (string name, HttpContext c, IDraftRepository repository, IConfiguration configuration, CancellationToken ct) => Results.Json((await repository.ContextAsync(name, Actor(c), Actor(c).Permissions.Contains("tela_jobs"), ct)) with { EnvironmentLabel = configuration["Workspace:EnvironmentLabel"] ?? "Workspace" }));
         group.MapPost("/pipeline-drafts", async (string name, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.ImportAsync(name, Actor(c), ct), statusCode: 201));
-        group.MapGet("/executions", async (string name, string? date, HttpContext c, PublishedExecutionClient client, CancellationToken ct) => Results.Json(await client.ReadAsync(name, date, c.Request.Headers.Authorization[0]!, ct)));
+        group.MapGet("/executions", async (string name, string? date, string? runId, HttpContext c, PublishedExecutionClient client, CancellationToken ct) => Results.Json(await client.ReadAsync(name, date, c.Request.Headers.Authorization[0]!, ct, runId)));
         group.MapGet("/pipelines/{name}", async (string name, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.ContextAsync(name, Actor(c), Actor(c).Permissions.Contains("tela_jobs"), ct)));
         group.MapGet("/drafts/{id:guid}", async (Guid id, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.GetAsync(id, Actor(c), ct)));
         group.MapPost("/pipelines", async (HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.CreateAsync(await Body<CreateDraft>(c, ct), Actor(c), ct), statusCode: 201));

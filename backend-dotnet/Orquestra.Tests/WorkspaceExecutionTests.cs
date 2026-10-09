@@ -44,7 +44,7 @@ public sealed class WorkspaceExecutionTests
   }
  }
 }
-internal sealed class ExecutionApp(string permissions):WebApplicationFactory<Program>
+internal class ExecutionApp(string permissions):WebApplicationFactory<Program>
 {
  public ExecutionHandler Handler {get;}=new();
  protected override void ConfigureWebHost(IWebHostBuilder b){b.ConfigureAppConfiguration((_,c)=>c.AddInMemoryCollection(new Dictionary<string,string?>{["Workspace:Enabled"]="true",["Workspace:LegacyApiBaseUrl"]="http://localhost/"}));b.ConfigureServices(s=>{s.RemoveAll<ISessionRepository>();s.AddSingleton<ISessionRepository>(new FakeSessions{Principal=SecurityTests.Principal(permissions.Split(','))});s.AddHttpClient("workspace-read",c=>c.BaseAddress=new Uri("http://localhost/")).ConfigurePrimaryHttpMessageHandler(()=>Handler);});}

@@ -4,15 +4,16 @@ using Orquestra.Application.Drafts;
 // Leitura somente após RBAC do grupo workspace. Sem caminho/comando escolhido pelo cliente.
 internal sealed class PublishedExecutionClient(IHttpClientFactory factory)
 {
- public async Task<JsonElement> ReadAsync(string name, string? date, string authorization, CancellationToken ct)
+ public async Task<JsonElement> ReadAsync(string name, string? date, string authorization, CancellationToken ct, string? runId = null)
  {
   DraftValidation.Name(name);
   if (date is not null && !DateOnly.TryParseExact(date,"yyyy-MM-dd",out _)) DraftValidation.Invalid("Data operacional inválida");
+  if (runId is not null && (runId.Length > 300 || runId.Any(char.IsControl))) DraftValidation.Invalid("Corrida inválida");
   using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);deadline.CancelAfter(TimeSpan.FromSeconds(5));
   try
   {
    using var client=factory.CreateClient("workspace-read");
-   using var request=new HttpRequestMessage(HttpMethod.Get,"pipeline-execution?pipeline_name="+Uri.EscapeDataString(name)+(date is null?"":"&data_referencia="+Uri.EscapeDataString(date)));
+   using var request=new HttpRequestMessage(HttpMethod.Get,"pipeline-execution?pipeline_name="+Uri.EscapeDataString(name)+(runId is not null?"&run_id="+Uri.EscapeDataString(runId):date is null?"":"&data_referencia="+Uri.EscapeDataString(date)));
    request.Headers.TryAddWithoutValidation("Authorization",authorization);
    using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token);
    if (!response.IsSuccessStatusCode) throw new WorkspaceException((int)response.StatusCode is 401 or 403 ? (int)response.StatusCode : 503,"execution_unavailable","Consulta de execução indisponível");

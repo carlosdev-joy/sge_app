@@ -7,7 +7,7 @@ export interface WorkspaceLayout { schemaVersion: number; nodes: Record<string, 
 export interface WorkspaceLease { holderUser: string; fence: number; expiresAt: string; heldBySession: boolean }
 export interface WorkspaceDraft { draftId: string; pipelineName: string; baseVersionId: string | null; definition: WorkspaceDefinition; layout: WorkspaceLayout; revision: number; state: string; createdBy: string; responsible: string; createdAt: string; updatedAt: string; readOnlyReasons: string[]; lease: WorkspaceLease | null }
 export interface WorkspaceContext { pipelineName: string; draftsAvailable: boolean; environmentLabel?: string; summary?: JsonObject; published: { definition: WorkspaceDefinition; layout: WorkspaceLayout; readOnlyReasons: string[] } | null; draft: WorkspaceDraft | null }
-export interface WorkspaceCapabilities { schemaVersion: number; enabled: boolean; knownNodeTypes: string[]; actions: { consultDefinition: boolean; consultStages: boolean; consultLogs: boolean; consultVersions?: boolean; editDraft: boolean; administer: boolean; publish: boolean; execute: boolean } }
+export interface WorkspaceCapabilities { schemaVersion: number; enabled: boolean; knownNodeTypes: string[]; actions: { consultDefinition: boolean; consultStages: boolean; consultLogs: boolean; consultVersions?: boolean; editDraft: boolean; administer: boolean; publish: boolean; execute: boolean; reprocess?: boolean; pauseStages?: boolean; contextualNavigation?: boolean } }
 export type WorkspaceExperience = 'desenvolvimento' | 'consulta' | 'sustentacao'
 export function object(value: unknown): JsonObject { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {} }
 export function text(value: unknown): string { return typeof value === 'string' ? value : '' }
@@ -18,6 +18,23 @@ export function patchLegacy(node: WorkspaceNode, key: string, value: unknown): W
  return { ...node, configuration: { ...node.configuration, legacyJob: { ...object(node.configuration.legacyJob), [key]: value } } }
 }
 export function nodeLabel(node: WorkspaceNode): string { return text(node.displayName) || node.id }
+export function renameWorkspaceNode(definition: WorkspaceDefinition, layout: WorkspaceLayout, id: string, nextId: string): { definition: WorkspaceDefinition; layout: WorkspaceLayout } {
+ const node = definition.nodes.find(n => n.id === id)
+ if (!node || !/^[A-Za-z0-9_.-]+$/.test(nextId) || nextId.length > 200 || definition.nodes.some(n => n.id !== id && n.id.toLowerCase() === nextId.toLowerCase())) throw new Error('Informe um identificador único, sem espaços.')
+ if (Array.isArray(node.configuration.etl_pipeline_job_param) && node.configuration.etl_pipeline_job_param.some(r => encryptedParameter(object(r)))) throw new Error('Esta etapa possui parâmetros protegidos vinculados ao identificador. Preserve o identificador até migrar as referências na origem.')
+ const replaceList = (v: unknown) => Array.isArray(v) ? v.map(x => x === id ? nextId : x) : v
+ const nodes = definition.nodes.map(n => {
+  const configuration = cloneFlow(n.configuration); const job = object(configuration.legacyJob)
+  if (n.id === id) { job.job_name = nextId; for (const table of ['etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config']) if (Array.isArray(configuration[table])) configuration[table] = configuration[table].map(r => ({...object(r),[table === 'etl_pipeline_job_param' ? 'job_name' : 'task_id']:nextId})) }
+  if (typeof job.depends_on_jobs === 'string') job.depends_on_jobs = job.depends_on_jobs.split(',').map(v => v.trim() === id ? nextId : v).join(',')
+  if (typeof job.condition_json === 'string') { try { const condition = object(JSON.parse(job.condition_json)); for(const key of ['job_name','source_job']) if(typeof condition[key]==='string' && text(condition[key]).toLowerCase()===id.toLowerCase()) condition[key]=nextId; for (const key of ['ramo_verdadeiro','ramo_falso','ramo_senao']) if (key in condition) condition[key] = replaceList(condition[key]); if (Array.isArray(condition.casos)) condition.casos = condition.casos.map(c => ({...object(c),ramo:replaceList(object(c).ramo)})); job.condition_json = JSON.stringify(condition) } catch { throw new Error('Corrija a configuração da decisão antes de renomear uma etapa.') } }
+  if(Array.isArray(configuration.etl_valida_arquivo_config)) configuration.etl_valida_arquivo_config=configuration.etl_valida_arquivo_config.map(r=>{const row=object(r);return typeof row.alvo==='string'&&text(row.alvo).toLowerCase()===id.toLowerCase()?{...row,alvo:nextId}:row})
+  configuration.legacyJob = job
+  return {...n,id:n.id === id ? nextId : n.id,configuration}
+ })
+ const positions = {...layout.nodes}; if (positions[id]) { positions[nextId] = positions[id]; if (nextId !== id) delete positions[id] }
+ return {definition:{...definition,nodes,edges:definition.edges.map(e=>({...e,source:e.source===id?nextId:e.source,target:e.target===id?nextId:e.target}))},layout:{...layout,nodes:positions}}
+}
 export function definitionLabel(definition: WorkspaceDefinition): string { return text(definition.identity.displayName) || text(object(definition.metadata).displayName) || definition.identity.pipelineName }
 export function pipelineMetadata(definition: WorkspaceDefinition): JsonObject { return object(object(definition.metadata).legacyPipeline) }
 export function pipelineParameters(definition: WorkspaceDefinition): JsonObject[] {

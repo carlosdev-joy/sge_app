@@ -10,6 +10,8 @@ services:
       Workspace__EnvironmentLabel: Desenvolvimento
       Workspace__DraftsEnabled: "${WORKSPACE_DRAFTS_ENABLED:-false}"
       Workspace__PublicationsEnabled: "${WORKSPACE_PUBLICATIONS_ENABLED:-false}"
+      Workspace__OperationsEnabled: "${WORKSPACE_OPERATIONS_ENABLED:-false}"
+      Workspace__NavigationPilotUsers: "${WORKSPACE_NAVIGATION_PILOT_USERS:-}"
       Workspace__Enabled: "${WORKSPACE_ENABLED:-false}"
       Workspace__LegacyApiUrl: http://orquestra-api:8000/
       Workspace__Sql__Server: sqlserver-dev,1433

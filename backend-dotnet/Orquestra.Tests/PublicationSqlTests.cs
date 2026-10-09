@@ -33,7 +33,7 @@ public sealed class PublicationSqlTests
     INSERT dbo.etl_pipeline_param VALUES('PUB','SEGREDO','Encrypted','cipher-never-return'),('PUB','segredo','Encrypted','other-cipher');
     """);
    var folder=Path.GetDirectoryName(Environment.GetEnvironmentVariable("WORKSPACE_TEST_SCHEMA_PATH"))!;
-   foreach(var name in new[]{"141_workspace_rascunhos.sql","144_workspace_publicacao.sql","144_workspace_publicacao.sql"})foreach(var batch in Regex.Split(await File.ReadAllTextAsync(Path.Combine(folder,name)),@"^\s*GO\s*$",RegexOptions.Multiline|RegexOptions.IgnoreCase))if(!string.IsNullOrWhiteSpace(batch))await Execute(c,batch);
+   foreach(var name in new[]{"141_workspace_rascunhos.sql","144_workspace_publicacao.sql","144_workspace_publicacao.sql","146_workspace_comandos.sql","146_workspace_comandos.sql"})foreach(var batch in Regex.Split(await File.ReadAllTextAsync(Path.Combine(folder,name)),@"^\s*GO\s*$",RegexOptions.Multiline|RegexOptions.IgnoreCase))if(!string.IsNullOrWhiteSpace(batch))await Execute(c,batch);
    var repository=new SqlDraftRepository(options);Assert.True(await repository.PublicationSchemaAsync(default));
    var draft=await repository.ImportAsync("pub",Actor(),default);Assert.DoesNotContain("cipher-never",JsonSerializer.Serialize(draft,DraftValidation.Json));
    var lease=await repository.LeaseAsync(draft.DraftId,new(),Actor(),default);var command=new PublicationCommand(Guid.NewGuid(),draft.Revision,lease.Fence);
@@ -60,6 +60,19 @@ public sealed class PublicationSqlTests
    var epoch=(long)(await Scalar(c,"SELECT activity_epoch FROM dbo.etl_workspace_execucao WHERE run_id='run'"))!;await Execute(c,"UPDATE dbo.etl_workspace_execucao SET ativa=0 WHERE run_id='run'");await Execute(c,guard);
    await Execute(c,$"UPDATE dbo.etl_workspace_execucao SET ativa=0 WHERE run_id='run' AND activity_epoch={epoch}");Assert.Equal(true,await Scalar(c,"SELECT ativa FROM dbo.etl_workspace_execucao WHERE run_id='run'"));
    Assert.Equal(51145,(await Assert.ThrowsAsync<SqlException>(()=>Execute(c,$"EXEC dbo.sp_workspace_guard_run @name='PUB',@run_id='run',@version='{Guid.NewGuid()}',@hash='{version.ContentHash}'"))).Number);
+   // F5: duas conexões reais disputam uma única reserva durável.
+   await Execute(c,"UPDATE dbo.etl_workspace_execucao SET ativa=0 WHERE pipeline_name='PUB';UPDATE dbo.etl_workspace_pipeline SET active_hash=REPLICATE('b',64) WHERE pipeline_name='PUB'");
+   async Task<int> Reserve(string runId) { await using var other=new SqlConnection(options.ConnectionString());await other.OpenAsync();try{await Execute(other,$"EXEC dbo.sp_workspace_reserve_run @name='PUB',@run_id='{runId}',@request_hash='{new string('c',64)}',@actor='ALICE'");return 0;}catch(SqlException e){return e.Number;} }
+   var races=await Task.WhenAll(Reserve("workspace__first"),Reserve("workspace__second"));Assert.Single(races,v=>v==0);Assert.Single(races,v=>v==51146);
+   Assert.Equal(1,(int)(await Scalar(c,"SELECT COUNT(*) FROM dbo.etl_workspace_comando WHERE pipeline_name='PUB' AND ativa=1"))!);
+   var selected=(string)(await Scalar(c,"SELECT run_id FROM dbo.etl_workspace_comando WHERE pipeline_name='PUB' AND ativa=1"))!;
+   Assert.Equal(51146,(await Assert.ThrowsAsync<SqlException>(()=>Execute(c,$"UPDATE dbo.etl_workspace_pipeline SET pending_operation_id='{op.OperationId}' WHERE pipeline_name='PUB'"))).Number);
+   var commandGuard=$"DECLARE @queued DATETIME2=SYSUTCDATETIME();EXEC dbo.sp_workspace_guard_run @name='PUB',@run_id='{selected}',@version='{op.VersionId}',@hash='{version.ContentHash}',@queued_at=@queued";
+   await Execute(c,commandGuard);await Execute(c,"UPDATE dbo.etl_workspace_execucao SET ativa=0 WHERE pipeline_name='PUB';UPDATE dbo.etl_workspace_comando SET estado='erro',ativa=0 WHERE pipeline_name='PUB'");
+   Assert.Equal(51146,(await Assert.ThrowsAsync<SqlException>(()=>Execute(c,commandGuard))).Number);
+   Assert.Equal(51146,(await Assert.ThrowsAsync<SqlException>(()=>Execute(c,$"EXEC dbo.sp_workspace_reserve_run @name='PUB',@run_id='{selected}',@request_hash='{new string('d',64)}',@actor='ALICE',@reprocess=1"))).Number);
+   await Execute(c,$"EXEC dbo.sp_workspace_reserve_run @name='PUB',@run_id='run',@request_hash='{new string('d',64)}',@actor='ALICE',@reprocess=1");
+   Assert.Equal(true,await Scalar(c,"SELECT ativa FROM dbo.etl_workspace_comando WHERE run_id='run'"));await Execute(c,"UPDATE dbo.etl_workspace_comando SET ativa=0,estado='success' WHERE pipeline_name='PUB'");
    var restored=await repository.RestoreAsync("PUB",op.VersionId,Actor(),default);Assert.Equal("true",restored.Definition.Nodes[0].Configuration.GetProperty("legacyJob").GetProperty("job_command").GetString());
    await Execute(c,"INSERT dbo.etl_pipeline VALUES('FIX','Projeto','Dominio','on_demand',1,1,NULL,NULL);INSERT dbo.etl_pipeline_job VALUES('FIX','Etapa','shell','true',1,NULL,10,20)");
    var broken=await repository.ImportAsync("FIX",Actor(),default);var fixLease=await repository.LeaseAsync(broken.DraftId,new(),Actor(),default);var first=await repository.PublishAsync(broken.DraftId,new(Guid.NewGuid(),broken.Revision,fixLease.Fence),Actor(),default);

@@ -251,6 +251,7 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
         }
         catch (SqlException e) when (e.Number is 208 or 207) { throw Missing(); }
         catch (SqlException e) when (e.Number is 2601 or 2627 or 1205) { throw Conflict("draft_conflict", "Rascunho concorrente; recarregue e tente novamente"); }
+        catch (SqlException e) when(e.Number is 51145 or 51146) { throw Conflict("execution_conflict", "Existe execução ou comando pendente; aguarde antes de publicar"); }
         catch (SqlException) { throw new DependencyUnavailableException(); }
         catch (InvalidOperationException) { throw new DependencyUnavailableException(); }
     }
