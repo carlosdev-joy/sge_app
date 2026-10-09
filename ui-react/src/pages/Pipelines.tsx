@@ -1,3 +1,6 @@
+import { useNavigate } from 'react-router-dom'
+import { useWorkspaceCapabilities } from '../components/workspace/useWorkspaceCapabilities'
+import { workspacePath } from '../lib/workspace'
 import { useState, useMemo, useCallback } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
@@ -20,6 +23,8 @@ import {
 } from '../components/pipelines/PipelineModals'
 
 export default function Pipelines() {
+  const navigate=useNavigate()
+  const workspace=useWorkspaceCapabilities()
   const user    = useAuthStore(s => s.user)
   const isViewer = user?.perfil === 'consulta'
   const airflowUiUrl = useAirflowUrl()
@@ -166,8 +171,8 @@ export default function Pipelines() {
             <Button variant="secondary" size="sm" onClick={exportModeloCsv} title="Baixar modelo CSV para importação em massa">
               ↓ Exportar modelo
             </Button>
-            {!isViewer && (
-              <Button size="sm" onClick={() => setShowNew(true)}>
+            {(workspace.data?.enabled ? workspace.data.actions.editDraft : !isViewer) && (
+              <Button size="sm" onClick={() => workspace.data?.actions.editDraft ? navigate('/pipelines/novo') : setShowNew(true)}>
                 <Plus size={13} /> Novo pipeline
               </Button>
             )}
@@ -230,6 +235,7 @@ export default function Pipelines() {
                   </button>
                   {isDomOpen && domPipelines.map(p => (
                     <PipelineRow
+                      onWorkspace={workspace.data?.enabled&&workspace.data.actions.consultDefinition?()=>navigate(workspacePath(p.pipeline_name,workspace.data.actions.editDraft?'fluxo':'visao-geral',workspace.data.actions.editDraft?'desenvolvimento':'consulta')):undefined}
                       key={p.pipeline_name}
                       pipeline={p}
                       isViewer={isViewer}

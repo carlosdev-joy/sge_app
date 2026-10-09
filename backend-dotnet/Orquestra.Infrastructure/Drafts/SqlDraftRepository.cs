@@ -40,20 +40,27 @@ public sealed class SqlDraftRepository(WorkspaceSqlOptions options, WorkspaceLea
             if (draft is not null && stages) draft = draft with { Lease = await ReadLease(c, t, draft.DraftId, actor, false, ct) };
         }
         JsonElement? published = null;
+        var summary = new Dictionary<string, object?> { ["responsible"] = draft?.Responsible, ["draftRevision"] = draft?.Revision };
         string canonical = draft?.PipelineName ?? name;
         if (stages)
         {
-            try { var source = await LegacyFlowReader.ReadAsync(c, t, name, ct); canonical = source.Definition.Identity.PipelineName; published = JsonSerializer.SerializeToElement(new { source.Definition, source.Layout, readOnlyReasons = source.Reasons }, DraftValidation.Json); }
+            try { var source = await LegacyFlowReader.ReadAsync(c, t, name, ct); canonical = source.Definition.Identity.PipelineName; published = JsonSerializer.SerializeToElement(new { source.Definition, source.Layout, readOnlyReasons = source.Reasons }, DraftValidation.Json); if (source.Definition.Metadata.TryGetProperty("legacyPipeline", out var row)) foreach (var field in new[] { "project_name", "domain", "descricao" }) if (row.TryGetProperty(field, out var value)) summary[field] = value.Clone(); }
             catch (WorkspaceException e) when (e.StatusCode == 404 && draft is not null) { }
         }
         else
         {
-            await using var cmd = Command(c, t, "SELECT pipeline_name FROM dbo.etl_pipeline WHERE pipeline_name=@name", ("@name", name));
-            canonical = (await cmd.ExecuteScalarAsync(ct) as string) ?? draft?.PipelineName ?? throw new WorkspaceException(404, "pipeline_not_found", "Pipeline não encontrado");
+            await using var cmd = Command(c, t, "SELECT * FROM dbo.etl_pipeline WHERE pipeline_name=@name", ("@name", name));
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                canonical = reader.GetString(reader.GetOrdinal("pipeline_name"));
+                for (var i = 0; i < reader.FieldCount; i++) if (new[] { "project_name", "domain", "descricao" }.Contains(reader.GetName(i))) { var value = reader.IsDBNull(i) ? null : reader.GetValue(i); summary[reader.GetName(i)] = DraftValidation.ContainsSecret(JsonSerializer.SerializeToElement(value, DraftValidation.Json)) ? "[conteúdo protegido]" : value; }
+            }
+            else canonical = draft?.PipelineName ?? throw new WorkspaceException(404, "pipeline_not_found", "Pipeline não encontrado");
             // Nenhuma configuração de nós é devolvida sem tela_jobs.
             draft = null;
         }
-        return new(canonical, available, published, draft);
+        return new(canonical, available, published, draft, Summary: JsonSerializer.SerializeToElement(summary, DraftValidation.Json));
     }, ct);
     public Task<Draft> GetAsync(Guid id, WorkspacePrincipal actor, CancellationToken ct) => Run(async (c, t) =>
     {

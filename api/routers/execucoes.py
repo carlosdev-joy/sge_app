@@ -3207,3 +3207,16 @@ def sla_report(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro DB: {e}")
+
+
+@router.get("/pipeline-execution", tags=["execucoes"])
+async def get_workspace_pipeline_execution(
+    pipeline_name: str,
+    data_referencia: str | None = None,
+    _auth: dict = Depends(get_current_user),
+):
+    """Leitura contextual por query preserva slash/Unicode na identidade. F3."""
+    required = {"tela_pipelines", "tela_jobs", "tela_logs"}
+    if not required.issubset(set(_auth.get("permissoes", []))):
+        raise HTTPException(status_code=403, detail="Permissão de consulta da execução necessária")
+    return await get_pipeline_execucao(pipeline_name, data_referencia=data_referencia, _auth=_auth)

@@ -15,8 +15,9 @@ internal static class DraftEndpoints
             if (context.Request.Headers.Authorization.Count != 1) throw new SessionRejectedException(401, "session_invalid", "Autenticação necessária");
             var actor = await context.RequestServices.GetRequiredService<SessionAuthenticator>().AuthenticateAsync(context.Request.Headers.Authorization[0], context.RequestAborted);
             if (!actor.Permissions.Contains("tela_pipelines")) throw new WorkspaceException(403, "permission_denied", "Permissão de consulta necessária");
+            if (context.Request.Path.StartsWithSegments("/workspace/executions") && !actor.Permissions.Contains("tela_logs")) throw new WorkspaceException(403, "permission_denied", "Permissão de consulta dos logs necessária");
             var mutation = context.Request.Method != "GET";
-            var pipelineContext = context.Request.Method == "GET" && context.Request.Path.StartsWithSegments("/workspace/pipelines");
+            var pipelineContext = context.Request.Method == "GET" && (context.Request.Path.StartsWithSegments("/workspace/pipelines") || context.Request.Path.StartsWithSegments("/workspace/pipeline-context"));
             if (!pipelineContext && !actor.Permissions.Contains("tela_jobs")) throw new WorkspaceException(403, "permission_denied", "Permissão de consulta das etapas necessária");
             if (mutation)
             {
@@ -27,6 +28,9 @@ internal static class DraftEndpoints
             context.Items["workspaceActor"] = actor;
             return await next(invocation);
         });
+        group.MapGet("/pipeline-context", async (string name, HttpContext c, IDraftRepository repository, IConfiguration configuration, CancellationToken ct) => Results.Json((await repository.ContextAsync(name, Actor(c), Actor(c).Permissions.Contains("tela_jobs"), ct)) with { EnvironmentLabel = configuration["Workspace:EnvironmentLabel"] ?? "Workspace" }));
+        group.MapPost("/pipeline-drafts", async (string name, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.ImportAsync(name, Actor(c), ct), statusCode: 201));
+        group.MapGet("/executions", async (string name, string? date, HttpContext c, PublishedExecutionClient client, CancellationToken ct) => Results.Json(await client.ReadAsync(name, date, c.Request.Headers.Authorization[0]!, ct)));
         group.MapGet("/pipelines/{name}", async (string name, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.ContextAsync(name, Actor(c), Actor(c).Permissions.Contains("tela_jobs"), ct)));
         group.MapGet("/drafts/{id:guid}", async (Guid id, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.GetAsync(id, Actor(c), ct)));
         group.MapPost("/pipelines", async (HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.CreateAsync(await Body<CreateDraft>(c, ct), Actor(c), ct), statusCode: 201));

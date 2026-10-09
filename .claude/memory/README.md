@@ -99,3 +99,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Seletores de placeholders de e-mail](orquestra-email-placeholders.md) — F1 mergeada (#415); F2 implementada e validada, aguardando merge.
 
 - [Workspace Pipeline F1](orquestra-workspace-pipeline-f1-planejamento.md) — plano aprovado, fundação .NET e gates locais concluídos; entrega DEV detalhada nas release notes e contexto compartilhado.
+
+- [Workspace Pipeline F3](orquestra-workspace-pipeline-f3.md) — criação/editor independente, três experiências e RBAC; conferir registro final para SHA/deploy DEV.

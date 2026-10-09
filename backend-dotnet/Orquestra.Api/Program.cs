@@ -21,6 +21,14 @@ builder.Services.AddScoped<ISessionRepository, SqlSessionRepository>();
 builder.Services.AddScoped<IDraftRepository, SqlDraftRepository>();
 builder.Services.AddSingleton(new WorkspaceLeaseOptions(builder.Configuration.GetValue<int?>("Workspace:LeaseSeconds") ?? 120));
 builder.Services.AddScoped<SessionAuthenticator>();
+builder.Services.AddScoped<PublishedExecutionClient>();
+builder.Services.AddHttpClient("workspace-read", client =>
+{
+    var address = new Uri(builder.Configuration["Workspace:LegacyApiUrl"] ?? "http://orquestra-api:8000/", UriKind.Absolute);
+    if (address.Scheme != "http" && address.Scheme != "https") throw new InvalidOperationException("URL interna inválida");
+    client.BaseAddress = address;
+    client.Timeout = TimeSpan.FromSeconds(5);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false });
 builder.Services.AddHttpClient<IBasicIdentityClient, LegacyBasicIdentityClient>(client =>
 {
     var url = builder.Configuration["Workspace:LegacyApiUrl"] ?? "http://orquestra-api:8000/";
