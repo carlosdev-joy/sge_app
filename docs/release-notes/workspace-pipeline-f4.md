@@ -28,3 +28,5 @@ PR479 foi integrado em develop e migrations144/145 aplicadas com backup verifica
 No DEV, o factory precisa estar ativo para executar a intenção. A conexão do motor SQL14_DMDB41 vinha exclusivamente do ambiente e não aparecia no catálogo REST: seu identificador/tipo foi registrado no catálogo Airflow sem copiar credenciais. Após recriar API/webserver, o nginx exige reload para resolver novos IPs.
 
 O aceite real também confirmou UUIDs representados diferentemente por pyodbc e pymssql. Adaptador e factory agora usam UUID canônico minúsculo nos marcadores, mantendo comparação estrita de hash/versão. Dois testes de regressão cobrem a fronteira entre drivers.
+
+A factory real gerou a DAG e terminou SUCCESS na mesma corrida retomada. O Airflow2.11 devolve parâmetros REST como objetos Param serializados; a conferência agora extrai exclusivamente o value do wrapper reconhecido, preservando recusa para marcadores ausentes/diferentes e para classes desconhecidas. Compatível também com respostas escalares.

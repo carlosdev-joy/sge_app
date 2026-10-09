@@ -204,6 +204,16 @@ def load_operation(cur,id):
  # pyodbc retorna UUID uppercase; pymssql retorna uuid.UUID. Canonizar fronteira.
  result['version']=str(uuid.UUID(str(result['version'])))
  return result
+def dag_marker_values(params):
+ # Airflow 2.11 REST serializa Param; versões anteriores podem devolver escalares.
+ keys=('workspace_version_id','workspace_content_hash','workspace_projection_hash')
+ result={}
+ for key in keys:
+  value=(params or {}).get(key)
+  if isinstance(value,dict) and value.get('__class')=='airflow.models.param.Param':value=value.get('value')
+  result[key]=value
+ return result
+
 async def airflow_idle(client,name):
  response=await client.get('/api/v1/dags/'+name+'/dagRuns',params={'state':['running','queued'],'limit':100})
  if response.status_code==404:return True
@@ -285,7 +295,7 @@ async def process_operation(id):
     if details.status_code==404:return
     details.raise_for_status();dag=details.json()
     if dag.get('has_import_errors'):raise PublicationBlocked('dag_import_error','DAG apresenta erro de importação')
-    params=dag.get('params') or {}
+    params=dag_marker_values(dag.get('params'))
     if any(params.get(k)!=v for k,v in markers.items()):return
     renew_claim(q,id,token);c.commit()
     paused=not bool(definition['metadata']['legacyPipeline'].get('active',1))
