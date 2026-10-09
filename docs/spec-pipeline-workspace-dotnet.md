@@ -245,3 +245,6 @@ Coleta e IDs necessários às etapas seguintes são considerados nos contratos d
 - Registrar baseline real da branch develop e estado do DEV.
 - Escolher pipeline de teste sem dados sensíveis com cenários SQL/Python e amostra DataStage.
 - O usuário autorizou ajuste da documentação e continuidade em 2026-10-09. Conferir divergências da base/ambiente e detalhar o plano de F1 no servidor antes de escrever código. Alterações de escopo ou regras operacionais devem ser apresentadas para revisão.
+
+## Referências visuais versionadas
+Os quatro mockups aprovados estão em docs/mockups/pipeline-workspace/ na branch docs/pipeline-workspace-dotnet. Ler o README e abrir os PNGs antes de implementar a interface. Transportar essa pasta para o worktree de feature junto com a documentação. As imagens definem a direção visual; os contratos e permissões desta especificação definem o comportamento.

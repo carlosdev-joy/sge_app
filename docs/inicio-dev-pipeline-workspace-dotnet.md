@@ -68,3 +68,6 @@ Quando F1 for implementada: PR para develop, revisão adversarial, migration de 
 
 ## Critério de passagem
 O plano F1 só está pronto quando identifica versão .NET distribuível, autenticação equivalente, roteamento sem colisão, preservação de RBAC e isolamento do trabalho. Acesso SSH ainda precisa ser informado ou a sessão deve ser aberta diretamente no servidor.
+
+## Referências visuais versionadas
+Os quatro mockups aprovados estão em docs/mockups/pipeline-workspace/ na branch docs/pipeline-workspace-dotnet. Ler o README e abrir os PNGs antes de implementar a interface. Transportar essa pasta para o worktree de feature junto com a documentação. As imagens definem a direção visual; os contratos e permissões desta especificação definem o comportamento.

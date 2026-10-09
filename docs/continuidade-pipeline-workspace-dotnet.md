@@ -40,3 +40,6 @@ Estamos iniciando a evolução do ORQUESTRA conforme docs/spec-pipeline-workspac
 
 ## Próxima entrega imediata
 Usar docs/inicio-dev-pipeline-workspace-dotnet.md para inspeção segura e evidências. Acesso SSH não foi fornecido nesta sessão. Nenhuma conexão ou validação no servidor foi realizada.
+
+## Referências visuais versionadas
+Os quatro mockups aprovados estão em docs/mockups/pipeline-workspace/ na branch docs/pipeline-workspace-dotnet. Ler o README e abrir os PNGs antes de implementar a interface. Transportar essa pasta para o worktree de feature junto com a documentação. As imagens definem a direção visual; os contratos e permissões desta especificação definem o comportamento.
