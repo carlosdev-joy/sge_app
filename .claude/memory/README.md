@@ -97,3 +97,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Título do login](orquestra-login-nome.md) — correção pronta na branch `fix/login-nome-orquestra`; aguarda merge e deploy.
 
 - [Seletores de placeholders de e-mail](orquestra-email-placeholders.md) — F1 mergeada (#415); F2 implementada e validada, aguardando merge.
+
+- [Workspace Pipeline F1](orquestra-workspace-pipeline-f1-planejamento.md) — plano aprovado, fundação .NET e gates locais concluídos; entrega DEV detalhada nas release notes e contexto compartilhado.
