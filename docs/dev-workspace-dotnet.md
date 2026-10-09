@@ -30,7 +30,11 @@ Somente o overlay troca o mount de `/etc/nginx/nginx.conf` por `config/nginx.wor
 
 Nginx resolve `workspace-api` pelo DNS Docker em runtime (validade 5 s, timeout 2 s). Ausência de DNS/conexão e timeout respondem 503 JSON estável, com `Cache-Control: no-store`; o proxy inicia mesmo sem o serviço workspace. O backend conserva seus 401/403/503. Authorization é encaminhado sem logar headers; a correlação usa `$request_id` gerado no proxy, descartando o ID recebido do cliente.
 
-Saúde pública do piloto: `/orquestra/workspace/health/live` e `/orquestra/workspace/health/ready`. Live não prova SQL. Ready verifica dependências necessárias, sem DDL e sem exigir tabelas draft F2. `/orquestra/health` permanece legado.
+Saúde pública do piloto: `/orquestra/workspace/health/live` e `/orquestra/workspace/health/ready`. Live não prova SQL. Ready verifica dependências necessárias, sem DDL; exige schema F2 quando WORKSPACE_DRAFTS_ENABLED=true. `/orquestra/health` permanece legado.
+
+## Rascunhos F2
+
+Aplicar migrations141/142 antes de habilitar `WORKSPACE_DRAFTS_ENABLED=true`; consultar [contratos](contracts/workspace-drafts-v1.md). A conta dedicada permanece sem escrita no legado. Conceder SELECT nas fontes de configuração explicitadas em LegacyFlowReader e SELECT/INSERT/UPDATE em rascunho/lease, SELECT/INSERT em versão/evento; não conceder DELETE nem roles amplas. Ausência de tabela opcional é tolerada; falta de permissão retorna503. Backup, migrations e grants fazem parte do deploy, nunca de requests.
 
 ## Instalação offline
 

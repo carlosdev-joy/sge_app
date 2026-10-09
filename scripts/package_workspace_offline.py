@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Empacota e ensaia F1 sem egress; exige imagens fixadas já presentes no Docker."""
+"""Empacota e ensaia o workspace sem egress; exige imagens fixadas já presentes no Docker."""
 import argparse
 import base64
 import hashlib
@@ -57,6 +57,10 @@ def main():
         target = staged / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
+    migration_dir = context / 'sql' / 'migrations'
+    migration_dir.mkdir(parents=True)
+    for migration in sorted((root / 'sql/migrations').glob('*workspace*.sql')):
+        shutil.copyfile(migration, migration_dir / migration.name)
     packages = {}
     for lock in source.glob('*/packages.lock.json'):
         for dependencies in json.loads(lock.read_text())['dependencies'].values():
@@ -162,7 +166,7 @@ Extrair `tar -xzf source-feed.tar.gz` em diretório isolado e executar:
 O NuGet.Config limpa fontes externas e usa somente /feed; o cache de pacotes começa vazio.
 O teste SQL vivo é omitido nesse ensaio sem banco; não equivale ao gate SQL separado.
 O inventário/SBOM cobre NuGet; componentes Linux das bases exigem SBOM do fornecedor.
-''')
+'''.replace('orquestra-workspace-f1:rebuild', args.image.split(':')[0] + ':rebuild'))
     run('docker', 'save', '-o', str(output / 'images.tar'), *transport_tags, args.image)
     # Ensaio load sem remoção de imagens compartilhadas.
     run('docker', 'load', '-i', str(output / 'images.tar'))

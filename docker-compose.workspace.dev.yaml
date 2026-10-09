@@ -7,6 +7,7 @@ services:
       dockerfile: Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
+      Workspace__DraftsEnabled: "${WORKSPACE_DRAFTS_ENABLED:-false}"
       Workspace__Enabled: "${WORKSPACE_ENABLED:-false}"
       Workspace__LegacyApiUrl: http://orquestra-api:8000/
       Workspace__Sql__Server: sqlserver-dev,1433
