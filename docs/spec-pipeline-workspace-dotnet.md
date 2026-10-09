@@ -1,5 +1,5 @@
 # Espaço de trabalho de Pipeline e gestão em .NET
-Data: 2026-10-09 · Status: rascunho para revisão · Projeto: ORQUESTRA
+Data: 2026-10-09 · Status: direção e continuidade autorizadas; detalhamento técnico no DEV · Projeto: ORQUESTRA
 
 ## 1. Visão
 Concentrar criação, montagem, configuração, publicação e investigação no espaço de trabalho de Pipeline, seguindo a direção visual dos mockups aprovados na conversa. Retirar os menus Etapas e Fluxos quando suas funções estiverem acessíveis dentro do Pipeline. Manter React e migrar a gestão progressivamente para .NET, preservando Airflow, DataStage, SQL e jobs Python/PySpark.
@@ -122,12 +122,32 @@ Preservar regras tela_pipelines/tela_jobs e acao_editar/acao_executar: a união 
 
 Após a paridade funcional, retirar /jobs e /fluxos do menu, preservando rotas de compatibilidade fora do registro NAV, com guards próprios. Links com pipeline/job/modo/data/de mantêm o contexto; link sem pipeline abre seleção no workspace. Busca global abre o objeto selecionado.
 
+### Perfis de uso e permissões
+O piloto atende desenvolvimento, consulta e sustentação desde sua primeira entrega utilizável. Perfil de experiência escolhe a aba inicial; permissões por ação continuam sendo autoridade no servidor. Usuário pode acumular responsabilidades sem receber privilégios implicitamente.
+
+| Experiência | Entrada preferencial | Recursos essenciais |
+|---|---|---|
+| Desenvolvimento | Fluxo em Montagem | Rascunho, parâmetros, validação e versões |
+| Consulta | Visão geral publicada | Descrição, responsáveis, fluxo e dependências |
+| Sustentação | Execuções | Data operacional, bloqueios, logs e runbook |
+
+Consultar definição, consultar logs/dados autorizados, editar, publicar, executar, cancelar, reprocessar e administrar são capacidades separadas. Mapear para o RBAC real antes de criar recursos; não inferir autorização pelo nome do perfil. Operador sem editar pode reprocessar se autorizado; editor sem publicar não promove versão.
+
+Critérios comuns: testar os três percursos, usuário com funções acumuladas e negativa de cada ação pela API; não exibir segredos na consulta. Retirada de Etapas/Fluxos mantém acesso equivalente para cada público.
+
+### Preparação para monitores, capacidade e conhecimento
+A fundação reserva identificadores e eventos para evolução futura, sem incluir novas telas de monitoramento ou Academy no piloto.
+- Execuções distinguem previsto_em, dependencias_liberadas_em, enfileirado_em, iniciado_em e concluido_em. Campo indisponível é nulo com origem informada, nunca estimado como fato.
+- Registrar motor, pool/fila, executor e identificador de tentativa quando a fonte os fornecer. Não chamar limite de tarefas do worker de limite de pipelines.
+- Relacionar runbooks e ajuda por identificador estável de pipeline/componente; textos sensíveis seguem RBAC.
+- Definições e eventos trazem schemaVersion, versão publicada e correlação; armazenamento histórico tem política explícita de retenção antes de ampliar coleta.
+
 ## 6. Fases
 Cada fase tem PR própria para develop, revisão adversarial antes da PR e deploy/smoke no DEV quando altera comportamento. Dividir fases grandes em PRs menores que permaneçam funcionais.
 
 ### F1 Fundação e contratos
 Entregar contrato versionado, mapa de funções de Jobs/Fluxos, projeto .NET com saúde/readiness, validação de sessão/RBAC e roteamento DEV. Nenhuma edição ativa nem remoção de menus.
-Aceite: sessão expirada/inativa é recusada; ações negadas não aparecem nem são aceitas; API atual continua funcional; ausência do .NET não afeta módulos antigos.
+Aceite: matriz dos três públicos e capacidades é documentada; sessão expirada/inativa é recusada; ações negadas não aparecem nem são aceitas; API atual continua funcional; ausência do .NET não afeta módulos antigos.
 
 ### F2 Rascunhos e edição concorrente
 Entregar schema, importação fiel, CRUD, revision, lease e auditoria.
@@ -135,7 +155,7 @@ Aceite: dois usuários não adquirem lease simultânea; posse antiga não salva;
 
 ### F3 Workspace e criação
 Entregar criação simples, cabeçalho, abas e modos com acesso desacoplado do editor.
-Aceite: criação abre rascunho; outro usuário consulta sem editar; todos os tipos usados no piloto preservam configuração; modo consulta não grava nem altera layout.
+Aceite: desenvolvimento, consulta e sustentação abrem o contexto adequado sem ampliar permissão; criação abre rascunho; outro usuário consulta sem editar; todos os tipos usados no piloto preservam configuração; modo consulta não grava nem altera layout.
 
 ### F4 Validação e publicação
 Entregar versões, comparação, adaptador e reconciliação.
@@ -172,7 +192,7 @@ Aceite: criação até execução funciona no DEV, falhas e concorrência são e
 
 ## 8. Smoke pós-deploy
 a) Conferir SHA, versão visível, saúde dos serviços e migrations.
-b) Entrar como editor e leitor; validar ações permitidas/negadas.
+b) Entrar como desenvolvedor, leitor e sustentação; conferir abas iniciais, papéis acumulados e negativas na UI/API.
 c) Criar pipeline novo e conferir que nenhuma DAG é disparada.
 d) Abrir com dois usuários e conferir bloqueio, expiração e revisão.
 e) Salvar rascunho e verificar configuração publicada intacta.
@@ -191,9 +211,37 @@ IA recebe especificação própria: proposta de alteração no mesmo contrato, c
 
 Python/PySpark permanecem motores de processamento. Escala futura mede fila, latência de disparo, memória, CPU, I/O e limites das fontes; runtime da aplicação não recebe cargas pesadas.
 
+### Monitores estratégico e operacional
+Evolução própria após Pipeline e Malha. Estratégico acompanha entregas/serviços de negócio, SLA, qualidade e impacto; operacional acompanha execuções, dependências, filas, falhas e recuperação. Mesmos dados, granularidades diferentes.
+Cadastrar compromisso de entrega, calendário, prazo, responsável e relação com pipelines/consumidores antes de calcular aderência.
+Navegação contextual: entrega → malha → pipeline → etapa/log. Painel de sala é somente leitura, mostra última atualização e degradação da fonte.
+
+### Capacidade por horário e apoio ao agendamento
+Primeiro entregar coleta confiável e histórico; depois recomendar horários.
+Conferir no DEV e na configuração-alvo quantos workers existem, concorrência efetiva, pools, filas e limites externos. O valor 50 observado em worker_concurrency não prova 50 pipelines simultâneos.
+Medir concorrência por tarefa/recurso, fila, espera por dependência, espera por capacidade e duração. Mapa de calor por dia/horário, curva ocupação/fila e timeline detalham as cargas sobrepostas.
+Desenvolvimento compara janelas e impacto da nova carga; consulta vê janela/risco da entrega; sustentação identifica recurso bloqueador e ações autorizadas.
+Simulação usa histórico ou duração explicitamente estimada para pipeline novo, calendário, paralelismo, dependências e prazo. Exibir amostra, período, confiança e data da previsão. Sem amostra suficiente, informar ausência de recomendação.
+Não otimizar apenas pela faixa vazia, prometer início exato ou sugerir aumento automático de concorrência. Testar horários operacionais, dias úteis, cargas atípicas, indisponibilidade e mudanças de capacidade.
+
+### Academy e comunidade
+Evolução futura, sem fórum/LMS nesta entrega. Prever trilhas por perfil, artigos versionados, runbooks, exemplos, modelos e perguntas/respostas.
+Conteúdo usa IDs estáveis, autor, responsável por revisão, versão aplicável, data de revisão e acesso. Distinguir contribuição comunitária de orientação validada.
+Ajuda contextual acompanha agendamento, montagem e investigação. Busca futura relaciona objetos técnicos e conteúdos autorizados.
+IA consulta somente conhecimento autorizado, cita fonte/versão e não transforma resposta comunitária em regra de execução.
+
+### Ordem das entregas seguintes
+1. Workspace de Pipeline e fundação .NET (F1–F6 desta spec).
+2. Workspace de Malha e composição versionada.
+3. Monitor operacional e histórico de capacidade por recurso/horário.
+4. Monitor estratégico por entrega e recomendação de agendamento baseada no histórico.
+5. Assistente de montagem por linguagem natural sobre o contrato já validado.
+6. Academy e comunidade, aproveitando ajuda contextual e runbooks desde as fases anteriores.
+Coleta e IDs necessários às etapas seguintes são considerados nos contratos da F1; implementação de cada produto recebe spec própria.
+
 ## 10. Condições para execução
 - Confirmar acesso atual ao DEV e caminho da cópia de trabalho.
 - Conferir SDK/runtime .NET e disponibilidade offline antes de F1.
 - Registrar baseline real da branch develop e estado do DEV.
 - Escolher pipeline de teste sem dados sensíveis com cenários SQL/Python e amostra DataStage.
-- Revisar esta especificação antes de escrever o plano detalhado e implementar.
+- O usuário autorizou ajuste da documentação e continuidade em 2026-10-09. Conferir divergências da base/ambiente e detalhar o plano de F1 no servidor antes de escrever código. Alterações de escopo ou regras operacionais devem ser apresentadas para revisão.
