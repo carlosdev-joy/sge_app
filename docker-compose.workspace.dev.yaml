@@ -9,6 +9,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       Workspace__EnvironmentLabel: Desenvolvimento
       Workspace__DraftsEnabled: "${WORKSPACE_DRAFTS_ENABLED:-false}"
+      Workspace__PublicationsEnabled: "${WORKSPACE_PUBLICATIONS_ENABLED:-false}"
       Workspace__Enabled: "${WORKSPACE_ENABLED:-false}"
       Workspace__LegacyApiUrl: http://orquestra-api:8000/
       Workspace__Sql__Server: sqlserver-dev,1433
@@ -31,3 +32,16 @@ services:
   ui-nginx:
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}/config/nginx.workspace.dev.conf:/etc/nginx/nginx.conf:ro
+  orquestra-api:
+    environment:
+      WORKSPACE_PUBLICATIONS_ENABLED: "${WORKSPACE_PUBLICATIONS_ENABLED:-false}"
+  airflow-worker:
+    environment: &workspace-engine
+      WORKSPACE_PUBLICATIONS_ENABLED: "${WORKSPACE_PUBLICATIONS_ENABLED:-false}"
+      PYTHONPATH: /opt/airflow/config:/opt/airflow/dags/Orquestrador:/opt/airflow
+  airflow-scheduler:
+    environment: *workspace-engine
+  airflow-webserver:
+    environment: *workspace-engine
+  airflow-triggerer:
+    environment: *workspace-engine

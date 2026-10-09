@@ -17,7 +17,9 @@ from deps import (
 
 log = logging.getLogger("orquestra-api")
 
-router = APIRouter()
+from services.workspace_legacy_guard import legacy_workspace_guard
+
+router = APIRouter(dependencies=[Depends(legacy_workspace_guard)])
 
 DAGS_FOLDER = os.getenv("DAGS_FOLDER", "/opt/airflow/dags")
 

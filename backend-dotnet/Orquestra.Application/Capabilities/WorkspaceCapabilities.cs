@@ -6,7 +6,10 @@ public sealed record WorkspaceCapabilities(int SchemaVersion, bool Enabled, Work
 public sealed record WorkspaceActions(
     bool ConsultDefinition, bool ConsultStages, bool ConsultLogs,
     bool EditDraft = false, bool Publish = false, bool Execute = false,
-    bool Cancel = false, bool Reprocess = false, bool Administer = false);
+    bool Cancel = false, bool Reprocess = false, bool Administer = false)
+{
+    public bool ConsultVersions { get; init; }
+}
 
 public static class WorkspaceAuthorization
 {

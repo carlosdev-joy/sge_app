@@ -36,7 +36,9 @@ from services import espera as espera_svc
 
 log = logging.getLogger("orquestra-api")
 
-router = APIRouter()
+from services.workspace_legacy_guard import legacy_workspace_guard
+
+router = APIRouter(dependencies=[Depends(legacy_workspace_guard)])
 
 MAX_LIMIT = 200
 

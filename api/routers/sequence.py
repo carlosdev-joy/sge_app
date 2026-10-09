@@ -14,7 +14,9 @@ from deps import (
 
 log = logging.getLogger("orquestra-api")
 
-router = APIRouter()
+from services.workspace_legacy_guard import legacy_workspace_guard
+
+router = APIRouter(dependencies=[Depends(legacy_workspace_guard)])
 
 
 def _build_cron(schedule_type, hour, minute, dow, dom):

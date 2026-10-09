@@ -1,4 +1,4 @@
-# Pipeline workspace — F3
+# Pipeline workspace — F4
 
 Mode: Operate. Extension of the incumbent ORQUESTRA interface; preserve semantic light/dark tokens, typography, navigation and shared UI controls. Approved mockups in docs/mockups/pipeline-workspace are critique references for structure, not a promise to deliver F4/F5 features in F3.
 
@@ -7,3 +7,5 @@ Direction contract: a quiet operational workspace with legible identity/state/en
 Quality bar: familiar controls, visible field labels/focus, no horizontal document overflow at 390px, usable canvas and properties at 1440px, full dark/light parity, explicit error/empty states. Contextual execution view retains pipeline and date. No authorization derived from experience or profile label.
 
 Evidence: docs/spec-pipeline-workspace-dotnet.md; PRODUCT.md; docs/ui-temas-cores.md; approved four mockups. Visual verification uses synthetic API fixtures clearly identified separately from the real DEV smoke.
+
+F4 extension: publication controls sit above the flow with validation diagnostics linking to their nodes; pending/recovery status remains visible after reload. Versions have explicit confirmed/imported/unconfirmed states, field comparison and restore-to-draft. Keep the existing Operate system; no new visual world or branding.

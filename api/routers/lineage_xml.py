@@ -18,7 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from db import managed_conn
 from deps import get_current_user
 
-router = APIRouter()
+from services.workspace_legacy_guard import legacy_workspace_guard
+
+router = APIRouter(dependencies=[Depends(legacy_workspace_guard)])
 
 # Diretório dos exports XML (mesmo padrão do DSX; configurável)
 _XML_BASE_DIR = os.environ.get("XML_BASE_DIR") or os.environ.get("DSX_BASE_DIR", "/opt/airflow/dsx")

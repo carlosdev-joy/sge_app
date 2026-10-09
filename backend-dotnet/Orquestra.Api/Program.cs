@@ -19,9 +19,11 @@ builder.Services.AddSingleton(new WorkspaceSqlOptions(
     builder.Configuration.GetValue<bool>("Workspace:Sql:TrustServerCertificate")));
 builder.Services.AddScoped<ISessionRepository, SqlSessionRepository>();
 builder.Services.AddScoped<IDraftRepository, SqlDraftRepository>();
+builder.Services.AddScoped<IPublicationRepository, SqlDraftRepository>();
 builder.Services.AddSingleton(new WorkspaceLeaseOptions(builder.Configuration.GetValue<int?>("Workspace:LeaseSeconds") ?? 120));
 builder.Services.AddScoped<SessionAuthenticator>();
 builder.Services.AddScoped<PublishedExecutionClient>();
+builder.Services.AddScoped<LegacyPublicationValidationClient>();
 builder.Services.AddHttpClient("workspace-read", client =>
 {
     var address = new Uri(builder.Configuration["Workspace:LegacyApiUrl"] ?? "http://orquestra-api:8000/", UriKind.Absolute);
@@ -88,9 +90,11 @@ app.MapGet("/workspace/capabilities", async (HttpContext context, SessionAuthent
     var capabilities = WorkspaceAuthorization.Capabilities(principal, configuration.GetValue<bool>("Workspace:Enabled"));
     if (capabilities.Actions.ConsultStages && principal.SessionHash is not null && configuration.GetValue<bool>("Workspace:DraftsEnabled") && await context.RequestServices.GetRequiredService<IDraftRepository>().SchemaAvailableAsync(ct))
         capabilities = capabilities with { Actions = capabilities.Actions with { EditDraft = principal.Permissions.Contains("acao_editar"), Administer = principal.Permissions.Contains("acao_editar") && principal.Permissions.Contains("acao_admin") } };
+    if(capabilities.Actions.ConsultStages && configuration.GetValue<bool>("Workspace:PublicationsEnabled") && await context.RequestServices.GetRequiredService<IPublicationRepository>().PublicationSchemaAsync(ct)) capabilities=capabilities with { Actions=capabilities.Actions with { ConsultVersions=true, Publish=capabilities.Actions.EditDraft && principal.Permissions.Contains("acao_publicar") } };
     return Results.Json(capabilities);
 }).RequireRateLimiting("session");
 app.MapDraftEndpoints();
+app.MapPublicationEndpoints();
 app.MapFallback(() => Results.Json(new { detail = "Recurso do workspace indisponível nesta fase", code = "not_found" }, statusCode: 404));
 app.Run();
 

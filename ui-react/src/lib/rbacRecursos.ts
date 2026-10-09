@@ -32,6 +32,7 @@ export const RBAC_RECURSOS: [string, string][] = [
   ['agente_curador', 'Agente — Curador dos aprendizados'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],
+  ['acao_publicar', 'Publicar versões de pipeline'],
   ['acao_admin', 'Administração'],
 ]
 

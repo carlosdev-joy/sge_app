@@ -7,7 +7,7 @@ export interface WorkspaceLayout { schemaVersion: number; nodes: Record<string, 
 export interface WorkspaceLease { holderUser: string; fence: number; expiresAt: string; heldBySession: boolean }
 export interface WorkspaceDraft { draftId: string; pipelineName: string; baseVersionId: string | null; definition: WorkspaceDefinition; layout: WorkspaceLayout; revision: number; state: string; createdBy: string; responsible: string; createdAt: string; updatedAt: string; readOnlyReasons: string[]; lease: WorkspaceLease | null }
 export interface WorkspaceContext { pipelineName: string; draftsAvailable: boolean; environmentLabel?: string; summary?: JsonObject; published: { definition: WorkspaceDefinition; layout: WorkspaceLayout; readOnlyReasons: string[] } | null; draft: WorkspaceDraft | null }
-export interface WorkspaceCapabilities { schemaVersion: number; enabled: boolean; knownNodeTypes: string[]; actions: { consultDefinition: boolean; consultStages: boolean; consultLogs: boolean; editDraft: boolean; administer: boolean; publish: boolean; execute: boolean } }
+export interface WorkspaceCapabilities { schemaVersion: number; enabled: boolean; knownNodeTypes: string[]; actions: { consultDefinition: boolean; consultStages: boolean; consultLogs: boolean; consultVersions?: boolean; editDraft: boolean; administer: boolean; publish: boolean; execute: boolean } }
 export type WorkspaceExperience = 'desenvolvimento' | 'consulta' | 'sustentacao'
 export function object(value: unknown): JsonObject { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {} }
 export function text(value: unknown): string { return typeof value === 'string' ? value : '' }
@@ -41,5 +41,18 @@ export function connectWorkspace(definition: WorkspaceDefinition, source: string
  return { ...definition, edges: [...definition.edges, { source, target }] }
 }
 export function initialWorkspace(name: string, displayName: string, project: string, domain: string, description: string): { definition: WorkspaceDefinition; layout: WorkspaceLayout } {
- return { definition: { schemaVersion: 1, identity: { pipelineName: name, displayName }, metadata: { legacyPipeline: { pipeline_name: name, project_name: project || null, domain: domain || null, descricao: description || null } }, nodes: [], edges: [] }, layout: { schemaVersion: 1, nodes: {} } }
+ return { definition: { schemaVersion: 1, identity: { pipelineName: name, displayName }, metadata: { legacyPipeline: { pipeline_name: name, project_name: project || null, domain: domain || null, descricao: description || null, schedule_type: 'on_demand', active: 1 } }, nodes: [], edges: [] }, layout: { schemaVersion: 1, nodes: {} } }
+}
+
+export interface WorkspaceDiagnostic { nodeId: string | null; field: string; code: string; message: string }
+export interface WorkspaceValidation { revision: number; valid: boolean; diagnostics: WorkspaceDiagnostic[] }
+export interface WorkspacePublication { operationId: string; draftId: string; versionId: string; pipelineName: string; revision: number; state: string; attempts: number; projected: boolean; error: string | null; updatedAt: string }
+export interface WorkspaceVersion { versionId: string; number: number; origin: string; contentHash: string; definition: WorkspaceDefinition; layout: WorkspaceLayout; createdBy: string; createdAt: string; state: string }
+export function compareWorkspaceVersions(before: unknown, after: unknown, path = ''): { path: string; before: unknown; after: unknown }[] {
+ if (JSON.stringify(before) === JSON.stringify(after)) return []
+ if (before !== null && after !== null && typeof before === 'object' && typeof after === 'object') {
+  const left = before as Record<string, unknown>, right = after as Record<string, unknown>
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].sort().flatMap(key => compareWorkspaceVersions(left[key], right[key], `${path}/${key}`))
+ }
+ return [{ path: path || '/', before, after }]
 }

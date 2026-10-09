@@ -12,7 +12,7 @@ namespace Orquestra.Infrastructure.Drafts;
 
 public sealed record WorkspaceLeaseOptions(int DurationSeconds = 120);
 
-public sealed class SqlDraftRepository(WorkspaceSqlOptions options, WorkspaceLeaseOptions? leases = null) : IDraftRepository
+public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, WorkspaceLeaseOptions? leases = null) : IDraftRepository, IPublicationRepository
 {
     private readonly int leaseSeconds = Math.Clamp(leases?.DurationSeconds ?? 120, 30, 600);
     private const string Columns = "draft_id,pipeline_name,base_version_id,definition_json,layout_json,revision,estado,criado_por,responsavel,criado_em,atualizado_em,read_only_json";
@@ -60,6 +60,25 @@ public sealed class SqlDraftRepository(WorkspaceSqlOptions options, WorkspaceLea
             // Nenhuma configuração de nós é devolvida sem tela_jobs.
             draft = null;
         }
+        // A projeção ativa durante reconciliação ainda NÃO é uma publicação.
+        // Pipeline gerido lê a última versão confirmada (ou base importada inicial).
+        await using(var schema=Command(c,t,"SELECT OBJECT_ID('dbo.etl_workspace_pipeline','U')"))
+        if(await schema.ExecuteScalarAsync(ct) is not null and not DBNull)
+        {
+            await using var managed=Command(c,t,"SELECT p.pipeline_name,v.definition_json,v.layout_json FROM dbo.etl_workspace_pipeline p LEFT JOIN dbo.etl_workspace_publicacao o ON o.operation_id=p.pending_operation_id LEFT JOIN dbo.etl_workspace_rascunho d ON d.draft_id=o.draft_id LEFT JOIN dbo.etl_workspace_versao v ON v.version_id=COALESCE(p.version_id,d.base_version_id) WHERE p.pipeline_name=@name",("@name",name));
+            await using var row=await managed.ExecuteReaderAsync(ct);
+            if(await row.ReadAsync(ct))
+            {
+                canonical=row.GetString(0);published=null;
+                foreach(var field in new[]{"project_name","domain","descricao"})summary.Remove(field);
+                if(!row.IsDBNull(1))
+                {
+                    var confirmed=JsonSerializer.Deserialize<PipelineDefinition>(row.GetString(1),DraftValidation.Json)!;
+                    if(stages)published=JsonSerializer.SerializeToElement(new{definition=confirmed,layout=JsonSerializer.Deserialize<FlowLayout>(row.GetString(2),DraftValidation.Json),readOnlyReasons=Array.Empty<string>()},DraftValidation.Json);
+                    if(confirmed.Metadata.TryGetProperty("legacyPipeline",out var metadata))foreach(var field in new[]{"project_name","domain","descricao"})if(metadata.TryGetProperty(field,out var value))summary[field]=value.Clone();
+                }
+            }
+        }
         return new(canonical, available, published, draft, Summary: JsonSerializer.SerializeToElement(summary, DraftValidation.Json));
     }, ct);
     public Task<Draft> GetAsync(Guid id, WorkspacePrincipal actor, CancellationToken ct) => Run(async (c, t) =>
@@ -87,7 +106,9 @@ public sealed class SqlDraftRepository(WorkspaceSqlOptions options, WorkspaceLea
         var version = Guid.NewGuid();
         await using var cmd = Command(c, t, "INSERT dbo.etl_workspace_versao(version_id,pipeline_name,numero,definition_json,layout_json,content_hash,criada_por) SELECT @id,@name,ISNULL(MAX(numero),0)+1,@definition,@layout,@hash,@actor FROM dbo.etl_workspace_versao WITH(UPDLOCK,HOLDLOCK) WHERE pipeline_name=@name", ("@id", version), ("@name", source.Definition.Identity.PipelineName), ("@definition", definition), ("@layout", layout), ("@hash", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(definition + "\n" + layout)))), ("@actor", actor.Matricula));
         await cmd.ExecuteNonQueryAsync(ct);
-        return await Insert(c, t, source.Definition, source.Layout, version, source.Reasons, actor, ct);
+        var imported = await Insert(c, t, source.Definition, source.Layout, version, source.Reasons, actor, ct);
+        await CaptureBaseHash(c,t,imported.DraftId,name,ct);
+        return imported;
     }, ct);
     public Task<Draft> SaveAsync(Guid id, SaveDraft request, WorkspacePrincipal actor, CancellationToken ct) => Run(async (c, t) =>
     {
@@ -135,6 +156,7 @@ public sealed class SqlDraftRepository(WorkspaceSqlOptions options, WorkspaceLea
         await using var release = Command(c, t, "UPDATE dbo.etl_workspace_lease SET expires_at=SYSUTCDATETIME() WHERE draft_id=@id", ("@id", id)); await release.ExecuteNonQueryAsync(ct);
         if (discard)
         {
+            await NoPendingPublication(c,t,id,ct);
             await using var change = Command(c, t, "UPDATE dbo.etl_workspace_rascunho SET estado='descartado',revision=revision+1,atualizado_em=SYSUTCDATETIME(),responsavel=@actor WHERE draft_id=@id", ("@id", id), ("@actor", actor.Matricula)); await change.ExecuteNonQueryAsync(ct);
         }
         await Audit(c, t, id, actor, discard ? "descartar" : "liberar_lease", draft.Revision + (discard ? 1 : 0), ct);
@@ -145,6 +167,7 @@ public sealed class SqlDraftRepository(WorkspaceSqlOptions options, WorkspaceLea
         var draft = await Load(c, t, id, true, ct);
         await CurrentSession(c, t, actor, ct);
         if (draft.State != "ativo") throw Conflict("draft_discarded", "Rascunho descartado");
+        if (!allowReadOnly) await NoPendingPublication(c,t,id,ct,true);
         if (!allowReadOnly && (draft.Definition.IsReadOnly || draft.ReadOnlyReasons.Count != 0)) throw Conflict("draft_read_only", "Configuração somente leitura; consulte os motivos do rascunho");
         return draft;
     }
