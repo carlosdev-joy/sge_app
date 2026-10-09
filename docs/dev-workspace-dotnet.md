@@ -70,3 +70,14 @@ O smoke cria rede Docker `--internal`, containers temporários de imagens locais
 Após publicação: conferir SHA/tag, ready, release SQL/Admin e autenticação/capabilities de perfis sintéticos. Bearer inválido/expirado/revogado deve retornar 401, usuário inativo 403, dependência SQL indisponível 503 sem detalhe interno. Confirmar FastAPI/UI/Airflow saudáveis com workspace parado somente na janela de smoke autorizada.
 
 Para desabilitar o piloto, definir `WORKSPACE_ENABLED=false` e recriar somente workspace-api. Para remover o roteamento, recriar somente ui-nginx com os dois arquivos originais Compose (base + DEV), **sem o overlay**, restaurando o mount padrão. Depois parar/remover apenas workspace-api se necessário; não tocar banco/volumes. Readiness e migrações/versão permanecem parte do gate global da entrega.
+
+
+## Interface F3
+
+`/pipelines/novo` cria rascunho vazio. `/pipelines/:nome/*` usa nome codificado uma vez; abas visão geral, fluxo, etapas, parâmetros e execuções. `experiencia=desenvolvimento|consulta|sustentacao` muda o contexto, sem ampliar permissões. `fonte=rascunho` permite consultar um rascunho de pipeline já publicado. `data=AAAA-MM-DD` conserva a data operacional no workspace e na abertura dos logs.
+
+Consulta básica (`tela_pipelines`) recebe resumo sem nós. Fluxo exige também `tela_jobs`; execuções exigem adicionalmente `tela_logs`. Edição exige Bearer e `acao_editar`, transferência `acao_admin`. A API continua autoridade de revisão/lease/fence. O editor não usa o FluxoEditor legado e todas as mutações vão para `/workspace`.
+
+Aliases query `/workspace/pipeline-context?name=...`, `/workspace/pipeline-drafts?name=...` e `/workspace/executions?name=...&date=...` preservam identidades com slash, percentual, Unicode e espaços. O último encaminha leitura GET ao FastAPI `/pipeline-execution?pipeline_name=...`, com RBAC em ambos os serviços, timeout de 5 segundos, limite de 2 MiB e erros sanitizados. Nenhum endpoint aceita URL de destino do cliente.
+
+Dados locais sujos são mantidos somente na memória da aba e limpos na troca de sessão; recarregar a página perde esse conteúdo e há aviso de saída. Consulta não persiste posição/zoom nem faz renovação de lease. O ambiente mostrado vem da configuração do servidor, nunca de inferência da URL.

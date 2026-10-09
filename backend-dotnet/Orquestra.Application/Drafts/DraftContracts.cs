@@ -12,7 +12,7 @@ public sealed record CreateDraft(PipelineDefinition Definition, FlowLayout Layou
 public sealed record SaveDraft(long ExpectedRevision, long Fence, PipelineDefinition Definition, FlowLayout Layout);
 public sealed record LeaseRequest(long? Fence = null);
 public sealed record RevisionFence(long ExpectedRevision, long Fence);
-public sealed record PipelineContext(string PipelineName, bool DraftsAvailable, JsonElement? Published, Draft? Draft);
+public sealed record PipelineContext(string PipelineName, bool DraftsAvailable, JsonElement? Published, Draft? Draft, string EnvironmentLabel = "Workspace", JsonElement? Summary = null);
 public sealed class WorkspaceException(int statusCode, string code, string detail) : Exception(detail)
 {
     public int StatusCode { get; } = statusCode;

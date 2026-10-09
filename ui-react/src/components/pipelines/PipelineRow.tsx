@@ -3,8 +3,8 @@ import { Eye, Edit, GitBranch, History, Play, PowerOff, Settings, Boxes } from '
 import type { Pipeline } from '../../types/pipeline'
 import { critColor } from './pipelineUtils'
 
-export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit, onInactivate, onGenDag, onExec }: {
-  pipeline: Pipeline; isViewer: boolean
+export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, onAudit, onInactivate, onGenDag, onExec, onWorkspace }: {
+  pipeline: Pipeline; isViewer: boolean; onWorkspace?: () => void
   onView: () => void; onEdit: () => void; onLineage: () => void
   onAudit: () => void; onInactivate: () => void; onGenDag: () => void; onExec: () => void
 }) {
@@ -57,6 +57,7 @@ export function PipelineRow({ pipeline: p, isViewer, onView, onEdit, onLineage, 
         </span>
       )}
 
+      {onWorkspace&&<Button variant="secondary" size="sm" onClick={onWorkspace} aria-label={`Abrir workspace de ${p.pipeline_name}`}><GitBranch size={12}/>Workspace</Button>}
       {/* Sempre visível: abre os jobs deste pipeline em nova aba (preserva o filtro daqui) */}
       <Button variant="secondary" size="sm"
         title={`Ver etapas de ${p.pipeline_name} em nova aba`}

@@ -38,6 +38,8 @@ import { PageSpinner } from './components/ui/Spinner'
 
 // Admin sob demanda (docs/spec-admin-reestruturacao.md, F2): antes entrava no
 // bundle principal com as 24 abas; agora a casca é um chunk e cada aba outro.
+const PipelineWorkspace = lazy(() => import('./pages/PipelineWorkspace'))
+const PipelineCreate = lazy(() => import('./pages/PipelineCreate'))
 const Admin = lazy(() => import('./pages/Admin'))
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -116,6 +118,8 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<PrivateRoute><AppShellV2 /></PrivateRoute>}>
             <Route index element={<HomeRedirect />} />
+            <Route path="pipelines/novo" element={<RequirePerm perm="tela_pipelines"><Suspense fallback={<PageSpinner />}><PipelineCreate /></Suspense></RequirePerm>} />
+            <Route path="pipelines/:nome/*" element={<RequirePerm perm="tela_pipelines"><Suspense fallback={<PageSpinner />}><PipelineWorkspace /></Suspense></RequirePerm>} />
             {/* Home "Consulta de Propostas" no visual NATIVO do Orquestra —
                 tela oficial desde a F3 da migração (docs/spec-caixa-ds-nativo.md).
                 Rota estática exata: vence o splat caixa-seguro/* no ranking do
