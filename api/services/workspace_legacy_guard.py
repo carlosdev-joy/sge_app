@@ -38,7 +38,7 @@ async def legacy_workspace_guard(request: Request):
         raise HTTPException(422, "Lote excede limite de pipelines")
     if not names:
         return
-    runtime = "/airflow/" in request.url.path or "/execucoes/" in request.url.path
+    runtime = "/airflow/" in request.url.path or "/execucoes/" in request.url.path or request.url.path.endswith("/pipeline-runs")
     connection = get_db_conn()
     cursor = connection.cursor()
     try:

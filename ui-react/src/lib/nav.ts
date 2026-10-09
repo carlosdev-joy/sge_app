@@ -11,6 +11,7 @@ import {
   Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, LifeBuoy, Wrench, Bot,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
+import { useWorkspaceCapabilities } from '../components/workspace/useWorkspaceCapabilities'
 
 // Domínios da navegação, na ordem de exibição (cabeçalho de seção na sidebar).
 // "Operação" (monitorar, diário) separada de "Construção" (cadastrar, dev).
@@ -91,7 +92,9 @@ export function firstVisiblePath(perms: string[] | null | undefined): string {
 // Filtra o NAV por RBAC (`canAccess`) e agrupa por domínio, removendo seções vazias.
 export function useVisibleNav(): NavGroupView[] {
   const perms = useAuthStore((s) => s.user?.permissoes) ?? []
-  const all = NAV.filter((n) => canAccess(n.perm, perms))
+  const caps = useWorkspaceCapabilities()
+  const contextual = caps.data?.enabled === true && caps.data.actions.contextualNavigation === true
+  const all = NAV.filter((n) => canAccess(n.perm, perms) && !(contextual && ['/jobs', '/fluxos'].includes(n.to)))
   return NAV_GROUPS
     .map((group) => ({ group, items: all.filter((n) => n.group === group) }))
     .filter((g) => g.items.length > 0)

@@ -91,9 +91,14 @@ app.MapGet("/workspace/capabilities", async (HttpContext context, SessionAuthent
     if (capabilities.Actions.ConsultStages && principal.SessionHash is not null && configuration.GetValue<bool>("Workspace:DraftsEnabled") && await context.RequestServices.GetRequiredService<IDraftRepository>().SchemaAvailableAsync(ct))
         capabilities = capabilities with { Actions = capabilities.Actions with { EditDraft = principal.Permissions.Contains("acao_editar"), Administer = principal.Permissions.Contains("acao_editar") && principal.Permissions.Contains("acao_admin") } };
     if(capabilities.Actions.ConsultStages && configuration.GetValue<bool>("Workspace:PublicationsEnabled") && await context.RequestServices.GetRequiredService<IPublicationRepository>().PublicationSchemaAsync(ct)) capabilities=capabilities with { Actions=capabilities.Actions with { ConsultVersions=true, Publish=capabilities.Actions.EditDraft && principal.Permissions.Contains("acao_publicar") } };
+    var operations = configuration.GetValue<bool>("Workspace:OperationsEnabled") && capabilities.Actions.ConsultStages && capabilities.Actions.ConsultLogs;
+    var canOperate = operations && principal.SessionHash is not null && principal.Permissions.Contains("acao_executar");
+    var pilotUsers = (configuration["Workspace:NavigationPilotUsers"] ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    capabilities = capabilities with { Actions = capabilities.Actions with { Execute = canOperate, Reprocess = canOperate, PauseStages = canOperate, ContextualNavigation = operations && pilotUsers.Contains(principal.Matricula, StringComparer.OrdinalIgnoreCase) } };
     return Results.Json(capabilities);
 }).RequireRateLimiting("session");
 app.MapDraftEndpoints();
+app.MapOperationEndpoints();
 app.MapPublicationEndpoints();
 app.MapFallback(() => Results.Json(new { detail = "Recurso do workspace indisponível nesta fase", code = "not_found" }, statusCode: 404));
 app.Run();

@@ -335,6 +335,8 @@ async def reconcile_once():
   runs=[tuple(r) for r in q.execute('SELECT pipeline_name,run_id,activity_epoch FROM dbo.etl_workspace_execucao WHERE ativa=1').fetchall()]
  finally:q.close();c.close()
  async with httpx.AsyncClient(base_url=AIRFLOW_URL,auth=(AIRFLOW_USER,AIRFLOW_PASSWORD),timeout=5,trust_env=False) as client:
+  from services.workspace_operations import reconcile_commands
+  await reconcile_commands(client)
   for name,run,epoch in runs:
    response=await client.get('/api/v1/dags/'+name+'/dagRuns/'+run)
    if response.is_success and response.json().get('state') in {'success','failed'}:

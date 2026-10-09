@@ -103,3 +103,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Workspace Pipeline F3](orquestra-workspace-pipeline-f3.md) — criação/editor independente, três experiências e RBAC; conferir registro final para SHA/deploy DEV.
 
 - [Workspace Pipeline F4](orquestra-workspace-pipeline-f4.md) — publicação/validação/versionamento; roteiro e gates de entrega no registro da fase.
+
+- [Workspace Pipeline F5 — candidato e pendências de entrega](orquestra-workspace-pipeline-f5.md).

@@ -34,6 +34,7 @@ import Portabilidades from './caixa/pages/Portabilidades'
 import PainelIA from './caixa/pages/PainelIA'
 import Acompanhamento from './caixa/pages/Acompanhamento'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
+import { LegacyWorkspaceEntry } from './components/workspace/LegacyWorkspaceEntry'
 import { PageSpinner } from './components/ui/Spinner'
 
 // Admin sob demanda (docs/spec-admin-reestruturacao.md, F2): antes entrava no
@@ -83,8 +84,8 @@ const PAGE_ELEMENT: Record<string, React.ReactNode> = {
   '/dashboard': <Dashboard />,
   '/gestao-falhas': <GestaoFalhas />,
   '/pipelines': <Pipelines />,
-  '/jobs': <Jobs />,
-  '/fluxos': <Fluxos />,
+  '/jobs': <LegacyWorkspaceEntry kind="jobs"><Jobs /></LegacyWorkspaceEntry>,
+  '/fluxos': <LegacyWorkspaceEntry kind="fluxos"><Fluxos /></LegacyWorkspaceEntry>,
   '/publicacao': <Publicacao />,
   '/logs': <Logs />,
   '/avisos': <Avisos />,

@@ -136,7 +136,7 @@ interface FluxoNode {
   param_vinculos?: Record<string, string>
   python?: PythonNodeApi | null
 }
-interface FluxoResp { nodes: FluxoNode[] }
+export interface FluxoResp { nodes: FluxoNode[] }
 
 // Layout automático em camadas (autoLayout/liveLayout) e validação de ciclo
 // (criaCiclo) moram em ./layoutGrafo — módulo puro compartilhado com o
@@ -544,6 +544,7 @@ function Paleta({
 
 interface Props {
   pipeline: string
+  workspace?: { flow: FluxoResp; runId: string | null; onRun: (id: string | null) => void; canReprocess: boolean; canPause: boolean }
   // Somente leitura (perfil consulta): esconde paleta/ações e bloqueia edição.
   // A autoridade continua sendo a API (PERM_EDITAR no POST /fluxo).
   readOnly?: boolean
@@ -569,7 +570,7 @@ export function FluxoEditor(props: Props) {
 
 function FluxoEditorInner({
   pipeline, readOnly = false, modoExecucao = false, dataExecucao = null,
-  onDataExecucao,
+  onDataExecucao, workspace,
 }: Props) {
   const qc = useQueryClient()
   const colorMode = useColorMode()
@@ -597,7 +598,8 @@ function FluxoEditorInner({
   // POST /execucoes/rerun (e do GET da prévia, que revela a topologia).
   const usuarioAtual = useAuthStore(s => s.user)
   const ehAdmin = useAuthStore(s => s.isAdmin)
-  const podeExecutar = ehAdmin() || !!usuarioAtual?.permissoes?.includes('acao_executar')
+  const podeExecutar = workspace ? workspace.canReprocess || workspace.canPause : ehAdmin() || !!usuarioAtual?.permissoes?.includes('acao_executar')
+  const sessionToken = useAuthStore(s => s.token)
   const [rerunAberto, setRerunAberto] = useState(false)
 
   // ── F5: etapa em espera (pausa de runtime) ────────────────────────────────
@@ -618,20 +620,22 @@ function FluxoEditorInner({
   // do pipeline ANTERIOR).
   const [escolhaCorrida, setEscolhaCorrida] =
     useState<{ pipeline: string; data: string | null; runId: string } | null>(null)
-  const corridaEscolhida =
+  const corridaEscolhida = workspace ? workspace.runId :
     (escolhaCorrida && escolhaCorrida.pipeline === pipeline
       && escolhaCorrida.data === (dataExecucao ?? null))
       ? escolhaCorrida.runId
       : null
   const escolherCorrida = useCallback((runId: string | null) => {
+    if (workspace) { workspace.onRun(runId); return }
     setEscolhaCorrida(runId
       ? { pipeline, data: dataExecucao ?? null, runId }
       : null)
-  }, [pipeline, dataExecucao])
+  }, [pipeline, dataExecucao, workspace])
 
   const execQuery = useQuery<PipelineExecucaoApi>({
-    queryKey: ['pipeline-execucao', pipeline, dataExecucao ?? null, corridaEscolhida],
+    queryKey: workspace ? ['workspace-execution', sessionToken, pipeline, dataExecucao ?? '', corridaEscolhida ?? ''] : ['pipeline-execucao', pipeline, dataExecucao ?? null, corridaEscolhida],
     queryFn: () => {
+      if (workspace) return apiFetch(`/workspace/executions?${new URLSearchParams({name:pipeline,...(dataExecucao?{date:dataExecucao}:{}),...(corridaEscolhida?{runId:corridaEscolhida}:{})})}`)
       const base = `/pipelines/${encodeURIComponent(pipeline)}/execucao`
       if (corridaEscolhida) {
         return apiFetch(`${base}?run_id=${encodeURIComponent(corridaEscolhida)}`)
@@ -644,7 +648,7 @@ function FluxoEditorInner({
   })
   const execData = emExecucao ? execQuery.data : undefined
   // A data exibida: a pedida, ou a que o servidor calculou (ODATE corrente).
-  const dataExibida = dataExecucao ?? execData?.data_referencia ?? ''
+  const dataExibida = (workspace?.runId ? execData?.data_referencia : dataExecucao) ?? execData?.data_referencia ?? ''
 
   // Camada de execução (pura). Fora do modo Execução é `null` e as duas
   // decorações abaixo devolvem os arrays ORIGINAIS por identidade — a montagem
@@ -853,11 +857,13 @@ function FluxoEditorInner({
   // excluir — também caem na confirmação, senão sobreviveriam em silêncio.
   const [delEdgeIds, setDelEdgeIds] = useState<string[]>([])
 
-  const { data, isLoading, isError, error } = useQuery<FluxoResp>({
+  const flowQuery = useQuery<FluxoResp>({
     queryKey: ['fluxo', pipeline],
     queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`),
-    enabled: !!pipeline,
+    enabled: !!pipeline && !workspace,
   })
+  const data = workspace?.flow ?? flowQuery.data
+  const {isLoading, isError, error} = flowQuery
 
   // Espelho do dirty p/ o guard do rebuild (ref: fora das deps de propósito —
   // dirty mudar não pode disparar rebuild com data velha).
@@ -889,7 +895,8 @@ function FluxoEditorInner({
   // barra e os avisos, e um fit feito antes disso enquadra uma altura que
   // deixou de existir. Só a PRESENÇA entra na chave — o refetch de 30s traz
   // um objeto novo, mas a chave continua a mesma e o enquadramento não pula.
-  const chaveFit = `${pipeline}|${emExecucao ? 'exec' : 'montagem'}`
+  const workspaceShape = workspace?.flow.nodes.map(n=>`${n.job_name}:${n.layout_x??''}:${n.layout_y??''}`).join('|') ?? ''
+  const chaveFit = `${pipeline}|${emExecucao ? 'exec' : 'montagem'}|${workspaceShape}`
     + `|${emExecucao && execData ? 'carregado' : '-'}`
   // ⚠️ ESPERA a MEDIÇÃO dos nós (`useNodesInitialized`). Antes desta fase o fit
   // saía 90 ms depois do payload, e nesse instante o React Flow ainda não tinha
@@ -901,8 +908,7 @@ function FluxoEditorInner({
   useEffect(() => {
     if (!data || data.nodes.length === 0 || !nosMedidos) return
     if (fittedPipeRef.current === chaveFit) return
-    fittedPipeRef.current = chaveFit
-    const t = setTimeout(() => rf.fitView({ padding: 0.2, duration: 250 }), 90)
+    const t = setTimeout(() => {fittedPipeRef.current = chaveFit;rf.fitView({ padding: 0.2, duration: 250 })}, 90)
     return () => clearTimeout(t)
   }, [data, chaveFit, rf, nosMedidos])
 
@@ -2259,6 +2265,24 @@ function FluxoEditorInner({
         />
       )}
       {emExecucao && execData?.identidade?.run_id && <ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} />}
+      {workspace && emExecucao && nodes.length > 0 && (
+        <label className="flex items-center gap-2 border-b border-edge px-3 py-2 text-sm">
+          <span className="shrink-0">Localizar etapa</span>
+          <select className="min-w-0 flex-1 rounded border border-edge bg-panel px-2 py-1 text-ink"
+            value={selectedId ?? ''}
+            onChange={event => {
+              const id = event.target.value
+              setSelectedId(id || null)
+              if (!id) { rf.fitView({ padding: 0.2, duration: 250 }); return }
+              setDockEstado(e => e === 'colapsado' ? 'aberto' : e)
+              realceFocarNo(id)
+              rf.fitView({ nodes: [{ id }], minZoom: 0.8, maxZoom: 1, padding: 0.3, duration: 250 })
+            }}>
+            <option value="">Todas as etapas</option>
+            {nodes.map(node => <option key={node.id} value={node.id}>{node.id}</option>)}
+          </select>
+        </label>
+      )}
       {/* Linha principal: paleta FIXA à esquerda (recolhível) + canvas.
           As propriedades moram no dock inferior (fase 3) — nada sobrepõe o grafo. */}
       <div className="flex min-h-0 flex-1">
@@ -2306,12 +2330,12 @@ function FluxoEditorInner({
         >
           <Background gap={18} size={1} />
           <Controls />
-          <MiniMap
+          {!workspace && <MiniMap
             pannable
             zoomable
             nodeColor={miniMapColor}
             className="!bg-panel"
-          />
+          />}
 
           {/* (F1) Painel do realce — só existe com algo em foco; sem clique o
               canvas é exatamente o de sempre. */}
@@ -2391,7 +2415,7 @@ function FluxoEditorInner({
           chamada de rede (dry_run no Airflow + fecho de dependências) e não
           pode disparar por ter um nó selecionado. `selectedId` é o task_id no
           Airflow — no grafo gerado o id do nó É o job_name/task_id. */}
-      {emExecucao && rerunAberto && selectedId && (
+      {emExecucao && (!workspace || workspace.canReprocess) && rerunAberto && selectedId && (
         <ModalRerunEtapa
           open
           onClose={() => setRerunAberto(false)}
@@ -2399,14 +2423,14 @@ function FluxoEditorInner({
           taskId={selectedId}
           jobName={selectedId}
           dataReferencia={execData?.data_referencia ?? dataExecucao ?? null}
-          runId={corridaEscolhida}
+          runId={corridaEscolhida ?? execData?.identidade?.dag_run_id ?? execData?.identidade?.run_id ?? null}
           status={camadaExec?.porJob.get(selectedId.trim().toLowerCase())?.status ?? null}
         />
       )}
 
       {/* (F5) Pausar / liberar / cancelar. Montado só quando aberto, como o de
           rerun (padrão D31: o Modal não desmonta com open=false). */}
-      {emExecucao && pausaAberta && selectedId && (
+      {emExecucao && (!workspace || workspace.canPause) && pausaAberta && selectedId && (
         <ModalPausaEtapa
           open
           onClose={() => setPausaAberta(false)}

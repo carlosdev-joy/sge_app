@@ -9,6 +9,8 @@ public sealed record WorkspaceActions(
     bool Cancel = false, bool Reprocess = false, bool Administer = false)
 {
     public bool ConsultVersions { get; init; }
+    public bool ContextualNavigation { get; init; }
+    public bool PauseStages { get; init; }
 }
 
 public static class WorkspaceAuthorization
