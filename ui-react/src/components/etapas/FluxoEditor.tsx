@@ -46,6 +46,9 @@ import {
   type EdgeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { WorkspaceRunProperties } from '../workspace/WorkspaceRunProperties'
+import { WorkspaceFlowNode } from '../workspace/WorkspaceFlowNode'
+import './workspaceReference.css'
 import { apiFetch } from '../../lib/api'
 import { normalizeBusca } from '../../lib/busca'
 import { Button } from '../ui/Button'
@@ -94,6 +97,7 @@ import { ModalRerunEtapa } from './ModalRerunEtapa'
 import { ModalPausaEtapa } from './ModalPausaEtapa'
 import { useAuthStore } from '../../store/auth'
 
+const workspaceNodeTypes = Object.fromEntries(['etapa','decisao','notificacao','sql','aguarde','email','valida_arquivo'].map(type=>[type,WorkspaceFlowNode]))
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode,
                     aguarde: AguardeNode, email: EmailNode, valida_arquivo: ValidaArquivoNode }
 
@@ -2243,16 +2247,16 @@ function FluxoEditorInner({
   // painel nunca é inútil"): colapsado mantém a barra fina; senão mostra as
   // propriedades do PIPELINE. 'max' sem seleção rebaixa para 'aberto' (o modo
   // focado é para editar um nó; o resumo do pipeline não pede a tela inteira).
-  const dockColapsado = dockEstado === 'colapsado'
-  const dockRedimensionavel = selNode ? dockEstado === 'aberto' : !dockColapsado
+  const dockColapsado = !workspace && dockEstado === 'colapsado'
+  const dockRedimensionavel = !workspace && (selNode ? dockEstado === 'aberto' : !dockColapsado)
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-edge bg-canvas">
+    <div className={`flex h-full w-full flex-col overflow-hidden rounded-lg border border-edge bg-canvas ${workspace?'workspace-reference-operation':''}`}>
       {/* (F3) Chrome do modo Execução: barra de data/janela/resumo + avisos
           honestos. Não existe na Montagem — o modo Montagem segue exatamente
           o de antes desta fase. */}
       {emExecucao && (
-        <BarraExecucao
+        <div className={workspace?'workspace-reference-toolbar':undefined}><BarraExecucao
           pipeline={pipeline}
           dataExibida={dataExibida}
           dataPedida={dataExecucao ?? null}
@@ -2262,11 +2266,11 @@ function FluxoEditorInner({
           erro={execQuery.isError ? (execQuery.error as Error) : null}
           corridaEscolhida={corridaEscolhida}
           onCorrida={escolherCorrida}
-        />
+        /></div>
       )}
-      {emExecucao && execData?.identidade?.run_id && <ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} />}
+      {emExecucao && execData?.identidade?.run_id && <div className={workspace?'workspace-reference-validation':undefined}><ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} /></div>}
       {workspace && emExecucao && nodes.length > 0 && (
-        <label className="flex items-center gap-2 border-b border-edge px-3 py-2 text-sm">
+        <label className="workspace-reference-locator flex items-center gap-2 border-b border-edge px-3 py-2 text-sm">
           <span className="shrink-0">Localizar etapa</span>
           <select className="min-w-0 flex-1 rounded border border-edge bg-panel px-2 py-1 text-ink"
             value={selectedId ?? ''}
@@ -2285,7 +2289,7 @@ function FluxoEditorInner({
       )}
       {/* Linha principal: paleta FIXA à esquerda (recolhível) + canvas.
           As propriedades moram no dock inferior (fase 3) — nada sobrepõe o grafo. */}
-      <div className="flex min-h-0 flex-1">
+      <div className={`flex min-h-0 flex-1 ${workspace?'workspace-reference-canvas':''}`}>
         {!travado && (
           <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
         )}
@@ -2302,7 +2306,7 @@ function FluxoEditorInner({
         <ReactFlow
           nodes={realce.nodesRealce}
           edges={edgesRender}
-          nodeTypes={nodeTypes}
+          nodeTypes={workspace?workspaceNodeTypes:nodeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
@@ -2339,7 +2343,7 @@ function FluxoEditorInner({
 
           {/* (F1) Painel do realce — só existe com algo em foco; sem clique o
               canvas é exatamente o de sempre. */}
-          {realce.cadeia && realce.rotuloFoco && (
+          {!workspace && realce.cadeia && realce.rotuloFoco && (
             <Panel position="top-left">
               <PainelRealce
                 foco={realce.rotuloFoco}
@@ -2350,7 +2354,7 @@ function FluxoEditorInner({
                 onLimpar={realce.limpar}
                 textoTras={realceTextos.tras}
                 textoFrente={realceTextos.frente}
-                acesos={realce.cadeia.nos.size}
+                acesos={!workspace && realce.cadeia.nos.size}
                 total={nodes.length}
               />
             </Panel>
@@ -2409,7 +2413,7 @@ function FluxoEditorInner({
       </div>
 
       {/* (F3) Legenda do modo Execução — mesma leitura de painel da malha. */}
-      {emExecucao && <LegendaExecucao />}
+      {emExecucao && <div className={workspace?'workspace-reference-legend':undefined}><LegendaExecucao /></div>}
 
       {/* (F4) Confirmação do rerun. Montada só quando aberta: a prévia é uma
           chamada de rede (dry_run no Airflow + fecho de dependências) e não
@@ -2464,7 +2468,8 @@ function FluxoEditorInner({
       <div
         className={[
           'relative flex shrink-0 flex-col border-t border-edge bg-panel',
-          selNode && dockEstado === 'max' ? 'h-[70%]' : '',
+          workspace ? 'workspace-reference-properties' : '',
+          !workspace && selNode && dockEstado === 'max' ? 'h-[70%]' : '',
           dockRedimensionavel ? 'max-h-[60%]' : '',
         ].join(' ')}
         style={dockRedimensionavel ? { height: dockAltura } : undefined}
@@ -2476,6 +2481,7 @@ function FluxoEditorInner({
             className="absolute -top-1 left-0 right-0 z-10 h-2.5 cursor-row-resize"
           />
         )}
+
 
         {/* Header do dock: resumo do nó selecionado + controles de estado */}
         <div className="flex h-9 shrink-0 items-center gap-2 border-b border-edge px-3">
@@ -2651,7 +2657,7 @@ function FluxoEditorInner({
                 ) : null
               })()}
               <div className="ml-auto flex shrink-0 items-center gap-0.5 text-dim">
-                {dockEstado !== 'max' ? (
+                {!workspace && (dockEstado !== 'max' ? (
                   <button
                     onClick={() => setDockEstado('max')}
                     title="Maximizar (modo focado) — duplo-clique no nó também abre assim"
@@ -2667,8 +2673,8 @@ function FluxoEditorInner({
                   >
                     <Minimize2 size={13} />
                   </button>
-                )}
-                {dockEstado === 'colapsado' ? (
+                ))}
+                {!workspace && (dockEstado === 'colapsado' ? (
                   <button
                     onClick={() => setDockEstado('aberto')}
                     title="Expandir propriedades"
@@ -2684,7 +2690,7 @@ function FluxoEditorInner({
                   >
                     <ChevronDown size={14} />
                   </button>
-                )}
+                ))}
                 <button
                   onClick={closePanel}
                   title="Fechar propriedades (Esc)"
@@ -2710,7 +2716,7 @@ function FluxoEditorInner({
                 </span>
               )}
               <div className="ml-auto flex shrink-0 items-center gap-0.5 text-dim">
-                {dockColapsado ? (
+                {!workspace && (dockColapsado ? (
                   <button
                     onClick={() => setDockEstado('aberto')}
                     title="Expandir propriedades do pipeline"
@@ -2726,7 +2732,7 @@ function FluxoEditorInner({
                   >
                     <ChevronDown size={14} />
                   </button>
-                )}
+                ))}
               </div>
             </>
           )}
@@ -2739,9 +2745,9 @@ function FluxoEditorInner({
             <PainelPipeline pipeline={pipeline} contagem={contagemNos} readOnly={travado} />
           </div>
         )}
-        {selNode && dockEstado !== 'colapsado' && (
+        {selNode && (workspace || dockEstado !== 'colapsado') && (
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <PropriedadesPanel
+            {workspace ? <WorkspaceRunProperties node={selNode} step={camadaExec?.porJob.get(selNode.id.trim().toLowerCase())} pipeline={pipeline} runId={corridaEscolhida??execData?.identidade?.run_id??null}/> : <PropriedadesPanel
               node={selNode}
               pipeline={pipeline}
               nodes={nodes}
@@ -2772,8 +2778,9 @@ function FluxoEditorInner({
               onUpdateCaso={atualizarCaso}
               onRemoveCaso={removerCaso}
               onMoveCaso={moverCaso}
-            />
-          </div>
+            />}
+            {workspace && realce.cadeia && realce.rotuloFoco && <details className="p-3 border-t border-edge"><summary className="text-xs text-dim cursor-pointer mb-2">Examinar dependências da etapa</summary><PainelRealce foco={realce.rotuloFoco} sentido={realce.sentido} onSentido={realce.mudarSentido} isolar={realce.isolar} onIsolar={realce.alternarIsolar} onLimpar={realce.limpar} textoTras={realceTextos.tras} textoFrente={realceTextos.frente} acesos={realce.cadeia.nos.size} total={nodes.length}/></details>}
+      </div>
         )}
       </div>
 

@@ -6,7 +6,7 @@ import type { WorkspaceDraft, WorkspacePublication, WorkspaceValidation } from '
 import { useAuthStore } from '../../store/auth'
 import { Button } from '../ui/Button'
 const labels: Record<string, string> = { pendente: 'Publicação solicitada', projetado: 'Configuração aplicada; aguardando DAG', gerando: 'Confirmando versão no Airflow', publicado: 'Versão publicada e confirmada', erro: 'Publicação interrompida' }
-export function WorkspacePublicationPanel({ draft, fence, canPublish, dirty, busy, onFreeze, onConfirmed, onSelect }: { draft: WorkspaceDraft; fence: number | undefined; canPublish: boolean; dirty: boolean; busy: boolean; onFreeze: (value: boolean) => void; onConfirmed: () => void; onSelect: (id: string) => void }) {
+export function WorkspacePublicationPanel({ embedded = false, draft, fence, canPublish, dirty, busy, onFreeze, onConfirmed, onSelect }: { embedded?: boolean; draft: WorkspaceDraft; fence: number | undefined; canPublish: boolean; dirty: boolean; busy: boolean; onFreeze: (value: boolean) => void; onConfirmed: () => void; onSelect: (id: string) => void }) {
  const token = useAuthStore(s => s.token)
  const [validation, setValidation] = useState<WorkspaceValidation | null>(null)
  const [error, setError] = useState('')
@@ -26,7 +26,7 @@ export function WorkspacePublicationPanel({ draft, fence, canPublish, dirty, bus
  }, onMutate: () => onFreeze(true), onSuccess: value => { setSent(value); setError(''); onFreeze(true); operations.refetch() }, onError: value => {setError(value.message); onFreeze(pending)} })
  const retry = useMutation({ mutationFn: () => workspaceApi.retry(draft, fence!, operation!.operationId), onSuccess: value => { setSent(value); setError(''); operations.refetch() }, onError: value => setError(value.message) })
  const valid = validation?.revision === draft.revision && validation.valid && !dirty
- return <section className="border border-edge rounded-lg bg-panel px-4 py-3 space-y-2" aria-label="Validação e publicação">
+ return <section className={`${embedded ? 'border-t border-edge' : 'border border-edge rounded-lg'} bg-panel px-4 py-3 space-y-2`} aria-label="Validação e publicação">
   <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-sm text-ink">Validar e publicar</h2></div><div className="flex flex-wrap gap-2">
    <Button size="sm" variant="secondary" disabled={dirty || busy || pending || publish.isPending} loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck size={15}/>Validar rascunho</Button>
    {canPublish && <Button size="sm" disabled={!fence || !valid || busy || pending || validate.isPending} loading={publish.isPending} onClick={() => { if (window.confirm('Publicar esta revisão e substituir a configuração ativa do pipeline?')) publish.mutate() }}><Upload size={15}/>Publicar versão</Button>}

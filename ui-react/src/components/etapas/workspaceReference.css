@@ -1,0 +1,12 @@
+.workspace-reference-properties > div:first-child { height: auto; min-height: 44px; flex-wrap: wrap; padding-top: 10px; padding-bottom: 10px; }
+.workspace-reference-properties > div:first-child > span { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.workspace-reference-properties { min-height: 260px; max-height: 460px; overflow: auto; }
+@media (min-width: 1024px) {
+ .workspace-reference-operation { display: grid; grid-template-columns: minmax(0, 1fr) 320px; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+ .workspace-reference-toolbar { grid-column: 1 / -1; grid-row: 1; }
+ .workspace-reference-validation { grid-column: 1 / -1; grid-row: 2; }
+ .workspace-reference-locator { grid-column: 1; grid-row: 3; }
+ .workspace-reference-canvas { grid-column: 1; grid-row: 4; }
+ .workspace-reference-properties { grid-column: 2; grid-row: 3 / 5; border-top: 0; border-left: 1px solid rgb(var(--edge)); min-height: 0; max-height: none; }
+ .workspace-reference-legend { grid-column: 1 / -1; grid-row: 5; }
+}
