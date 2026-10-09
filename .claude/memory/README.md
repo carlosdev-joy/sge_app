@@ -105,3 +105,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Workspace Pipeline F4](orquestra-workspace-pipeline-f4.md) — publicação/validação/versionamento; roteiro e gates de entrega no registro da fase.
 
 - [Workspace Pipeline F5 — candidato e pendências de entrega](orquestra-workspace-pipeline-f5.md).
+
+- [Workspace — correção estrutural da referência](orquestra-workspace-referencia.md): complemento F5, candidato2.12.0; entrega DEV e revisão visual em evidências/memória compartilhada.
