@@ -114,3 +114,17 @@ def test_sql_driver_guid_representation_matches_engine_artifact(as_uuid):
     version=uuid.UUID('4c1fcc8f-814a-42fc-ba64-a93b86a71e6c')
     cursor=MagicMock();cursor.fetchone.return_value=('operation','draft',version if as_uuid else str(version).upper(),'PUB',1,'ALICE',None,'a'*64,'gerando','workspace_run','{}','{}','b'*64)
     assert load_operation(cursor,'operation')['version']==str(version)
+
+
+@pytest.mark.parametrize('serialized',[False,True])
+def test_airflow_rest_params_match_dag_marker_values(serialized):
+    from services.workspace_publication import dag_marker_values
+    markers={'workspace_version_id':'4c1fcc8f-814a-42fc-ba64-a93b86a71e6c','workspace_content_hash':'a'*64,'workspace_projection_hash':'b'*64}
+    payload={k:{'__class':'airflow.models.param.Param','description':None,'schema':{},'value':v} for k,v in markers.items()} if serialized else markers
+    assert dag_marker_values(payload)==markers
+
+
+@pytest.mark.parametrize('invalid',[None,{}, {'__class':'Other','value':'trusted'}, {'__class':'airflow.models.param.Param'}, {'value':'trusted'}])
+def test_airflow_unrecognized_or_missing_markers_do_not_confirm(invalid):
+    from services.workspace_publication import dag_marker_values
+    assert dag_marker_values({'workspace_content_hash':invalid})['workspace_content_hash']!='trusted'
