@@ -9,3 +9,7 @@ Consulte docs/contracts/workspace-publications-v1.md, docs/release-notes/workspa
 ## Verificação final antes do PR
 
 .NET64PASS0FAIL0SKIP em SQL isolado; Python7169PASS/8falhas preexistentes/51SKIP, zero novas falhas. TS/build passam; lint166erros12avisos sem novas assinaturas. Navegador sintético13checks aprovado; revisões independentes adversarial/segurança e impeccable aprovadas. Pacote offline-ship68NuGet/127checksums, consumidor sem rede/cache61PASS3SQLSKIP; SQL coberto separadamente. Imagem sha256:06c0bd25b8fe5c0489910feee9a547f09ede4fa11763bdcefbc1d22a75259772. PR/merge/deploy/smoke DEV ainda são passos seguintes; esta nota não afirma entrega.
+
+## Marco DEV anterior ao encerramento
+
+PR479 integrado, develop325d2efe, migrations145 e versão2.10.0; fontes backend conferidas com offline-ship. Primeira publicação sintética foi retomada após reinício do adaptador, mas a factory encontrou cursor fechado na consulta de hash. Correção em conexão própria revisada adversarial/segurança, em PR corretivo da mesma branch F4. Operação erro mantém quarentena. Não considerar F4 concluída antes do smoke real.

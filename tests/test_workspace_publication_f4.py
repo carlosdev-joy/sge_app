@@ -105,3 +105,12 @@ def test_existing_unicode_project_preserved_without_path_escape():
     definition=flow();definition['metadata']['legacyPipeline']['project_name']='Atuária'
     errors,projected=validate_projection(definition,LAYOUT,{},CONNECTIONS)
     assert not errors and projected['etl_pipeline'][0]['project_name']=='Atuária'
+
+
+@pytest.mark.parametrize('as_uuid',[False,True])
+def test_sql_driver_guid_representation_matches_engine_artifact(as_uuid):
+    import uuid
+    from services.workspace_publication import load_operation
+    version=uuid.UUID('4c1fcc8f-814a-42fc-ba64-a93b86a71e6c')
+    cursor=MagicMock();cursor.fetchone.return_value=('operation','draft',version if as_uuid else str(version).upper(),'PUB',1,'ALICE',None,'a'*64,'gerando','workspace_run','{}','{}','b'*64)
+    assert load_operation(cursor,'operation')['version']==str(version)
