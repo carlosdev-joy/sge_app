@@ -1,0 +1,541 @@
+{
+  "pytest": {
+    "passed": 7202,
+    "skipped": 51,
+    "knownFailures": [
+      "tests/test_api_v2_4.py::test_dashboard_requires_auth",
+      "tests/test_api_v2_4.py::test_factory_preview_not_found",
+      "tests/test_api_v2_4.py::test_malha_requires_auth",
+      "tests/test_api_v2_4.py::test_register_pipeline_missing_fields",
+      "tests/test_kanban_rodape_card.py::test_o_prazo_aparece_no_card[aguardando]",
+      "tests/test_kanban_rodape_card.py::test_o_prazo_aparece_no_card[andamento]",
+      "tests/test_kanban_rodape_card.py::test_o_prazo_aparece_no_card[novo_parado]",
+      "tests/test_smoke.py::test_pipelines_unauthenticated"
+    ],
+    "newFailures": 0,
+    "baselinePassed": 7201
+  },
+  "dotnetSql": {
+    "passed": 76,
+    "failed": 0,
+    "skipped": 0
+  },
+  "build": "pass",
+  "typescript": "pass",
+  "distUnchanged": true,
+  "eslint": {
+    "newSignatures": 0,
+    "baselineUnique": 75
+  },
+  "migrationTestsPassed": 154,
+  "functionalCandidate": "211289ff774053ee1ad1ba7816a483fe564e4c69",
+  "fullAcceptance": false,
+  "pending": [
+    "paridade antiga",
+    "bundle",
+    "interação300nós",
+    "InformationServer/Caixa/SQL IO/INPcampo"
+  ],
+  "browserChecks": 16,
+  "browserDevChecks": 6,
+  "browserNegativeChecks": 4,
+  "smokeDevChecks": 87,
+  "performanceBrowser": {
+    "scope": "Production build local, desktop Chromium sem CPU throttle; API/fluxo sintéticos; interação até 2 frames não é INP de campo",
+    "samples": [
+      {
+        "nodes": 50,
+        "firstCanvasReadyMs": 802.4482830078341,
+        "interactionSamplesMs": [
+          103.4237899875734,
+          79.98636402771808,
+          106.43959502340294,
+          59.31420298293233,
+          88.01561300060712,
+          62.39790900144726,
+          98.99430599762127,
+          83.27527999063022,
+          52.73622399545275,
+          64.30661599733867,
+          53.50577298668213,
+          63.51268800790422,
+          72.25873501738533,
+          66.44463399425149,
+          60.31676201382652,
+          50.680537009611726,
+          50.30367799918167,
+          66.35740399360657,
+          66.69230398256332,
+          51.48640600964427,
+          98.19232899462804,
+          84.51207701000385,
+          49.2810889845714,
+          66.20648500393145,
+          52.201384998625144
+        ],
+        "interactionP95Ms": 103.4237899875734,
+        "lcpMs": 816,
+        "cls": 0.0018057716049382716,
+        "savePreservesGraph": true,
+        "javascriptErrors": []
+      },
+      {
+        "nodes": 100,
+        "firstCanvasReadyMs": 857.653451996157,
+        "interactionSamplesMs": [
+          113.40164701687172,
+          79.29033398977481,
+          64.83087700325996,
+          68.63351102219895,
+          98.9818770030979,
+          82.33140199445188,
+          74.81784198898822,
+          75.51343200611882,
+          86.63675599382259,
+          113.96488500759006,
+          99.06780798337422,
+          103.68551101419143,
+          97.0037399965804,
+          85.75710697914474,
+          147.82336799544282,
+          100.98910401575267,
+          85.19266897928901,
+          62.985971017042175,
+          67.74052101536654,
+          69.77932999143377,
+          63.17170802503824,
+          92.44331798981875,
+          73.73042500694282,
+          84.58264797809534,
+          98.67298899916932
+        ],
+        "interactionP95Ms": 113.96488500759006,
+        "lcpMs": 884,
+        "cls": 0.001712854938271605,
+        "savePreservesGraph": true,
+        "javascriptErrors": []
+      },
+      {
+        "nodes": 300,
+        "firstCanvasReadyMs": 1055.4131520038936,
+        "interactionSamplesMs": [
+          222.70518299774267,
+          185.61323601170443,
+          197.8612699895166,
+          223.34934200625867,
+          142.69721700111404,
+          134.3434499867726,
+          182.6380009879358,
+          199.55033698352054,
+          166.98021299089305,
+          183.0180899996776,
+          150.47282702289522,
+          149.12133000325412,
+          183.8972190162167,
+          149.28930898895487,
+          183.51769002038054,
+          151.68637500028126,
+          281.68791098869406,
+          195.1843139831908,
+          156.29986999556422,
+          159.65565299848095,
+          198.5123390040826,
+          186.5156970161479,
+          238.6092730157543,
+          147.66328100813553,
+          201.13826598390006
+        ],
+        "interactionP95Ms": 238.6092730157543,
+        "lcpMs": 1080,
+        "cls": 0.0013058179012345678,
+        "savePreservesGraph": true,
+        "javascriptErrors": []
+      }
+    ],
+    "assets": [
+      {
+        "file": "index-D9z8rf6_.js",
+        "gzipBytes": 835275
+      },
+      {
+        "file": "index.es-CSu3Kioz.js",
+        "gzipBytes": 48226
+      },
+      {
+        "file": "html2canvas-3k5U_Ryh.js",
+        "gzipBytes": 45787
+      },
+      {
+        "file": "index-BBWFHAL5.css",
+        "gzipBytes": 22949
+      },
+      {
+        "file": "PipelineWorkspace-CCNhdd6p.js",
+        "gzipBytes": 15671
+      },
+      {
+        "file": "AgentesTab-CQehEp7l.js",
+        "gzipBytes": 11523
+      },
+      {
+        "file": "purify.es-Bu4Grnl0.js",
+        "gzipBytes": 10166
+      },
+      {
+        "file": "useQuery-BEVIehxO.js",
+        "gzipBytes": 7805
+      },
+      {
+        "file": "EmailTab-02HzhQH0.js",
+        "gzipBytes": 6527
+      },
+      {
+        "file": "MaestroTab-Bj0hieSC.js",
+        "gzipBytes": 6137
+      },
+      {
+        "file": "UtilitariosTab-Bkhlwu66.js",
+        "gzipBytes": 5606
+      },
+      {
+        "file": "NotificacoesTab-_xkBvNPB.js",
+        "gzipBytes": 5391
+      },
+      {
+        "file": "Admin-C2IiloHP.js",
+        "gzipBytes": 4505
+      },
+      {
+        "file": "ComunicadosTab-mqlgsuNl.js",
+        "gzipBytes": 4470
+      },
+      {
+        "file": "BancosTab-DvCiuxr5.js",
+        "gzipBytes": 4270
+      },
+      {
+        "file": "Button-DgEsRDkI.js",
+        "gzipBytes": 4087
+      },
+      {
+        "file": "ConfigTab-FxkhJ8yI.js",
+        "gzipBytes": 3340
+      },
+      {
+        "file": "ConexoesTab-fqiIZKMB.js",
+        "gzipBytes": 3189
+      },
+      {
+        "file": "UsuariosTab-4G0-Cdo_.js",
+        "gzipBytes": 3157
+      },
+      {
+        "file": "SondaServiceNowTab-DehprjEY.js",
+        "gzipBytes": 3013
+      },
+      {
+        "file": "IATab-D5N6BUz1.js",
+        "gzipBytes": 2879
+      },
+      {
+        "file": "BacklogTab-y-OZho06.js",
+        "gzipBytes": 2816
+      },
+      {
+        "file": "AgendamentoTab-Njlak1WN.js",
+        "gzipBytes": 2731
+      },
+      {
+        "file": "VersoesTab-BbD5ZLz3.js",
+        "gzipBytes": 1996
+      },
+      {
+        "file": "PipelineCreate-BNHdSSJY.js",
+        "gzipBytes": 1771
+      },
+      {
+        "file": "TiposJobTab-BM0_fP-r.js",
+        "gzipBytes": 1703
+      },
+      {
+        "file": "DeletePipelineTab-DWggWKRC.js",
+        "gzipBytes": 1691
+      },
+      {
+        "file": "RolesAirflowTab-DdpEFSsJ.js",
+        "gzipBytes": 1601
+      },
+      {
+        "file": "RegenDagsTab-C2tkk4pX.js",
+        "gzipBytes": 1589
+      },
+      {
+        "file": "DagsInventarioTab-CxF0qtyc.js",
+        "gzipBytes": 1438
+      },
+      {
+        "file": "PerfisTab-Mbq8Wjev.js",
+        "gzipBytes": 1419
+      },
+      {
+        "file": "ProjetosTab-BkyIkusT.js",
+        "gzipBytes": 1367
+      },
+      {
+        "file": "TriagemTab-D9MXMd9c.js",
+        "gzipBytes": 1253
+      },
+      {
+        "file": "ComumUI-hzJ1qTu3.js",
+        "gzipBytes": 526
+      },
+      {
+        "file": "rbacRecursos-NFxbbvxj.js",
+        "gzipBytes": 517
+      },
+      {
+        "file": "chunk-QTnfLwEv.js",
+        "gzipBytes": 423
+      },
+      {
+        "file": "react-DVDVAUQY.js",
+        "gzipBytes": 418
+      },
+      {
+        "file": "file-plus-corner-CCLCc0Ux.js",
+        "gzipBytes": 242
+      },
+      {
+        "file": "comum-B3r6yLh_.js",
+        "gzipBytes": 183
+      },
+      {
+        "file": "acesso-4RYxsl1O.js",
+        "gzipBytes": 170
+      }
+    ],
+    "budgets": {
+      "apiP95Ms": 500,
+      "lcpMs": 2500,
+      "interactionP95Ms": 200,
+      "cls": 0.1,
+      "initialRouteGzipBytes": 307200
+    },
+    "limits": [
+      "Sem comprovação de SQL IO/N+1 por plano real; não mede rede/CPU da Caixa; CLS inclui edição depois da carga; interação é proxy, não INP certificado"
+    ]
+  },
+  "performanceApi": {
+    "passedFunctional": true,
+    "ownDraftNodes": 300,
+    "apiSamples": [
+      {
+        "endpoint": "/orquestra/workspace/capabilities",
+        "samplesMs": [
+          10.382178996223956,
+          16.98789300280623,
+          7.99102199380286,
+          13.308677007444203,
+          11.417948990128934,
+          9.298730990849435,
+          11.733507999451831,
+          12.105107976822183,
+          9.289619978517294,
+          10.091109987115487,
+          13.901015976443887,
+          10.3365009999834,
+          7.6244820083957165,
+          6.013234000420198,
+          5.429134995210916,
+          4.182465985650197,
+          6.581174005987123,
+          6.304003996774554,
+          7.169534015702084,
+          9.105021017603576,
+          12.105817993870005,
+          7.267103006597608,
+          7.234403979964554,
+          12.928716983878985,
+          6.236943008843809,
+          5.320165015291423,
+          6.244774005608633,
+          6.251804006751627,
+          8.604721020674333,
+          7.117662986274809
+        ],
+        "p95Ms": 13.901015976443887,
+        "responseBytes": 411,
+        "budgetMs": 500
+      },
+      {
+        "endpoint": "/orquestra/workspace/drafts/<own-draft>",
+        "samplesMs": [
+          15.771954000229016,
+          26.986914017470554,
+          14.7195560275577,
+          9.20134098851122,
+          11.238359002163634,
+          7.727971998974681,
+          41.5077299985569,
+          16.003864002414048,
+          40.943269996205345,
+          8.562653005355969,
+          21.241839014692232,
+          11.612618021899834,
+          21.063519991002977,
+          10.937068989733234,
+          23.024406982585788,
+          7.622942008310929,
+          9.917660994688049,
+          16.686663002474234,
+          27.274591993773356,
+          14.146845001960173,
+          13.15745699685067,
+          20.855659997323528,
+          29.136361001292244,
+          27.201143006095663,
+          16.104954993352294,
+          12.003558018477634,
+          19.960709993029013,
+          11.906547995749861,
+          28.07606299757026,
+          13.256495993118733
+        ],
+        "p95Ms": 40.943269996205345,
+        "responseBytes": 72611,
+        "budgetMs": 500
+      },
+      {
+        "endpoint": "/orquestra/workspace/pipeline-context",
+        "samplesMs": [
+          20.82166899344884,
+          11.130659026093781,
+          13.417617010418326,
+          27.28822300559841,
+          20.308550010668114,
+          26.789903989993036,
+          24.96415498899296,
+          16.620303998934105,
+          45.498204010073096,
+          24.06571598839946,
+          19.792070001130924,
+          13.264288019854575,
+          19.54933101660572,
+          18.54502101195976,
+          22.945567994611338,
+          58.59570199390873,
+          28.734570980304852,
+          20.524580002529547,
+          29.62002099957317,
+          15.878853999311104,
+          42.25401900475845,
+          29.050130979157984,
+          29.118522012140602,
+          23.156847018981352,
+          33.768475987017155,
+          32.51302699209191,
+          28.286613000091165,
+          34.33859601500444,
+          29.158411984099075,
+          14.41548700677231
+        ],
+        "p95Ms": 45.498204010073096,
+        "responseBytes": 72799,
+        "budgetMs": 500
+      }
+    ],
+    "invalidConnectionLocated": true,
+    "invalidPublicationRejected": true,
+    "invalidDraftDoesNotGenerateDag": true,
+    "candidateSha": "211289ff774053ee1ad1ba7816a483fe564e4c69",
+    "limits": [
+      "Sem tracing/plano SQL/N+1; conta latência via proxy DEV local; conexão inválida deliberada, sem acesso a fonte externa"
+    ]
+  },
+  "failureRecovery": {
+    "passed": true,
+    "onlyServiceStopped": "workspace-api",
+    "checks": [
+      {
+        "path": "/orquestra/workspace/health/ready",
+        "status": 503,
+        "workspaceStopped": true
+      },
+      {
+        "path": "/orquestra/workspace/capabilities",
+        "status": 503,
+        "workspaceStopped": true
+      },
+      {
+        "path": "/orquestra/health",
+        "status": 200,
+        "workspaceStopped": true
+      },
+      {
+        "path": "/v2/",
+        "status": 200,
+        "workspaceStopped": true
+      },
+      {
+        "path": "/orquestra/versao/publica",
+        "status": 200,
+        "workspaceStopped": true
+      }
+    ],
+    "workspaceRecovered": true,
+    "legacyAvailableDuringFailure": true,
+    "limits": [
+      "Não é failover/HA nem reboot total; SQL/volumes não foram parados; piloto flag off em testes isolados, não altera flag global"
+    ]
+  },
+  "offline": {
+    "package": "/root/orquestra-f6-evidencias/offline",
+    "checksumFilesVerified": 132,
+    "nugetPackages": 68,
+    "buildNetwork": "none",
+    "restoreLocked": true,
+    "noCache": true,
+    "testsPassed": 73,
+    "sqlTestsSkipped": 3,
+    "separateSqlTestsPassed": 76,
+    "saveLoadSucceeded": true,
+    "consumerRebuildSucceeded": true,
+    "consumerImageId": "sha256:540cae38bb46074ac943cfece33516d8a63d352501df1cea30dfbaaa4f9ade3d",
+    "runtimeImageId": "sha256:af8cb699ed0a2c1127791f6bfdcf7c8eef9ecafd0f098ad9b019972409fcd563",
+    "migrationsIncluded": [
+      "140_versao_workspace_pipeline_f1.sql",
+      "141_workspace_rascunhos.sql",
+      "142_versao_workspace_pipeline_f2.sql",
+      "143_versao_workspace_pipeline_f3.sql",
+      "144_workspace_publicacao.sql",
+      "145_versao_workspace_pipeline_f4.sql",
+      "146_workspace_comandos.sql",
+      "147_versao_workspace_pipeline_f5.sql",
+      "148_versao_workspace_fluxo_referencia.sql"
+    ],
+    "limits": [
+      "linux/amd64 DEV; Information Server/Caixa não ensaiado",
+      "SBOM NuGet; componentes OS/bases exigem SBOM do fornecedor",
+      "não afirma determinismo binário de imagens"
+    ]
+  },
+  "evidenceSha256": {
+    "offline-validation.json": "acc7cf84151177cad2fd1ca858437ddf8b9c1c6416c241ae4e1ef048b155ad7e",
+    "performance-api.json": "e02c8e6adf7c0340bc16a2cde4fce44e69c90bbd16b9185b3cf8497fc2152eaf",
+    "smoke-dev.json": "cd2b0cfa73b4ab0a6b4a5d4d2a5abadd977834c3264439a78791c2a317f084cb",
+    "performance-browser.json": "5c37c96945d6905842186ac4f48185751a92959ce9f595f7c2e38293d681674d",
+    "eslint.json": "f451392a9bf3e8f8d37e2eaec6b87f5fbc45c7992bbe33ab524797297972390c",
+    "browser-dev.json": "32406754abb91b4d7711793907caafe015081346587b65bdb6a345875933096a",
+    "failure-recovery.json": "57a3a5b8a8ab900b20ff3bddf8684bce74501b946d77ee7a93539c3c3289de18",
+    "browser-negative.json": "50be98d2ad3a87df4b7d971fe6e5e2a3c2f4830cee43a1d31b1c6c894e2f1da5",
+    "eslint-comparison.json": "4d8271ed5b5c93327f8bd29be71329ee6b337b06cef6cd47f3947d56faa36a2b",
+    "browser-validation.json": "3e31915d7704758540dfa54cfe16423f739e008c1f663504a3b153a047d625f3",
+    "validation.json": "81d00a51452c502de3417c4ff41089779981168cf237a33a829d0b5fc480b047"
+  },
+  "nulCheck": {
+    "newFiles": [],
+    "baselineUnchanged": [
+      "ui-react/src/lib/lineageIsx.ts"
+    ]
+  }
+}
