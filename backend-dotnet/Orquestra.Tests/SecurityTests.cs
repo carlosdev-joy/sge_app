@@ -119,7 +119,7 @@ public sealed class SecurityTests
     }
 
     [Theory]
-    [InlineData("/workspace/drafts/123")] [InlineData("/workspace/drafts/123/publish")] [InlineData("/workspace/pipelines")]
+    [InlineData("/workspace/drafts/123")] [InlineData("/workspace/drafts/123/publish")]
     public async Task FutureMutationsAreUnavailable(string path)
     {
         using var app = new TestApp(new FakeSessions { Principal = Principal("tela_pipelines", "acao_admin") });

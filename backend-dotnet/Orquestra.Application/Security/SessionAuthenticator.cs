@@ -14,7 +14,7 @@ public sealed class SessionAuthenticator(ISessionRepository sessions, IBasicIden
             var token = authorization[7..]; // Não trim: os mesmos bytes usados pelo legado.
             if (token.Length == 0) throw InvalidSession();
             var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
-            return await sessions.FindValidAsync(hash, cancellationToken) ?? throw InvalidSession();
+            return (await sessions.FindValidAsync(hash, cancellationToken) ?? throw InvalidSession()) with { SessionHash = hash };
         }
         if (authorization.StartsWith("Basic ", StringComparison.Ordinal))
         {

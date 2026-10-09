@@ -1,6 +1,9 @@
 namespace Orquestra.Application.Security;
 
-public sealed record WorkspacePrincipal(string Matricula, string Perfil, IReadOnlySet<string> Permissions);
+public sealed record WorkspacePrincipal(string Matricula, string Perfil, IReadOnlySet<string> Permissions)
+{
+    [System.Text.Json.Serialization.JsonIgnore] public string? SessionHash { get; init; }
+}
 
 public sealed class SessionRejectedException(int statusCode, string code, string detail) : Exception(detail)
 {
