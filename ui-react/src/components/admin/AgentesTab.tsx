@@ -1,3 +1,4 @@
+import { confirmAction } from '../../lib/dialogs'
 // Admin › Agentes (F3 da spec docs/spec-agentes-datastage.md).
 //
 // Estrutura (reestruturação de 25/09, a pedido do usuário — a aba crescia
@@ -224,20 +225,20 @@ export function AgentesTab() {
   ]
 
   /** Sair do agente aberto descarta o rascunho do prompt: confirma antes. */
-  function podeSair(): boolean {
+  async function podeSair(): Promise<boolean> {
     return !promptSujo
-      || window.confirm('O prompt deste agente tem alterações não salvas. Sair e descartá-las?')
+      || await confirmAction('O prompt deste agente tem alterações não salvas. Sair e descartá-las?')
   }
 
-  function gerenciar(id: string) {
-    if (selecionado !== null && !podeSair()) return
+  async function gerenciar(id: string) {
+    if (selecionado !== null && !await podeSair()) return
     setSelecionado(atual => (atual === id ? null : id))
     setSecao('acesso')
   }
 
-  function fecharDetalhe() {
+  async function fecharDetalhe() {
     const id = selecionado
-    if (!podeSair()) return
+    if (!await podeSair()) return
     setSelecionado(null)
     // O foco volta para o "Gerenciar" da linha — quem usa teclado não se perde.
     if (id) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-agentes-gerenciar="${id}"]`)?.focus())

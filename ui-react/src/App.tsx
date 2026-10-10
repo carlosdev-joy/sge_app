@@ -1,3 +1,4 @@
+import { ApplicationDialogs } from './components/ui/ApplicationDialogs'
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -191,6 +192,7 @@ export default function App() {
           </Route>
           <Route path="*" element={<HomeRedirect />} />
         </Routes>
+        <ApplicationDialogs/>
         </BrowserRouter>
       </ErrorBoundary>
     </QueryClientProvider>

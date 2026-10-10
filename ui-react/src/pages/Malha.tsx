@@ -1,3 +1,4 @@
+import { confirmAction } from '../lib/dialogs'
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -565,8 +566,8 @@ function MembrosModal({ malhaName, onClose }: { malhaName: string; onClose: () =
     onError: (e: Error) => toast.error(e.message || 'Erro ao remover o pipeline'),
   })
 
-  function remover(pipeline_name: string) {
-    if (!confirm(`Remover "${pipeline_name}" da malha "${malhaName}"?\n\nO pipeline continua existindo — sai apenas desta malha.`)) return
+  async function remover(pipeline_name: string) {
+    if (!await confirmAction(`Remover "${pipeline_name}" da malha "${malhaName}"?\n\nO pipeline continua existindo — sai apenas desta malha.`)) return
     removerMut.mutate(pipeline_name)
   }
 
@@ -808,9 +809,9 @@ function MalhasView({ onAbrir, onAcompanhar }: {
     onError: (e: Error) => toast.error(e.message || 'Erro ao alterar a malha'),
   })
 
-  function alternar(m: ApiMalha) {
+  async function alternar(m: ApiMalha) {
     const acao = m.ativo ? 'Inativar' : 'Reativar'
-    if (!confirm(`${acao} a malha "${m.malha_name}"?`)) return
+    if (!await confirmAction(`${acao} a malha "${m.malha_name}"?`)) return
     toggleMut.mutate(m)
   }
 

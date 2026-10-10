@@ -1,3 +1,4 @@
+import { toast } from '../ui/Toast'
 // Catálogo de Pipelines — inventário completo (Cards/Diagrama + export CSV).
 // MOVIDO de pages/Malha.tsx na F9 da spec de dependências (§4b/§8): a tela
 // Malha passou a exibir SÓ malhas e a consulta vive em Catálogo & Lineage
@@ -13,7 +14,6 @@ import { CritBadge } from './CritBadge'
 import {
   Download, RefreshCw, LayoutGrid, AlignLeft, Network, X,
 } from 'lucide-react'
-
 // ─── Types matching actual API response ─────────────────────────────────────
 
 interface ApiJob {
@@ -215,7 +215,7 @@ function DiagramView({ items }: { items: ApiPipeline[] }) {
 // ─── CSV export ──────────────────────────────────────────────────────────────
 
 function exportCsv(data: ApiPipeline[]) {
-  if (!data.length) { alert('Nenhum dado para exportar.'); return }
+  if (!data.length) { toast.info('Nenhum dado para exportar.'); return }
   const esc = (v: string | number | null | undefined) => `"${String(v ?? '').replace(/"/g, '""')}"`
   const rows: string[] = []
 
