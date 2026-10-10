@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { atalhosDaPaleta } from '../../lib/adminNav'
+import { useWorkspaceCapabilities } from '../workspace/useWorkspaceCapabilities'
+import { workspacePath } from '../../lib/workspace'
 import { canAccess } from '../../lib/nav'
 import { useAuthStore } from '../../store/auth'
 import { GitBranch, Briefcase, Database, Search, Settings } from 'lucide-react'
@@ -30,7 +32,7 @@ interface ResultItem {
   id: string
   label: string
   sub: string
-  group: 'Pipelines' | 'Etapas' | 'Catálogo' | 'Administração'
+  group: 'Pipelines' | 'Fluxos' | 'Catálogo' | 'Administração'
   href: string
 }
 
@@ -45,6 +47,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const [debounced, setDebounced] = useState('')
   const [cursor, setCursor] = useState(0)
   const perms = useAuthStore((s) => s.user?.permissoes) ?? []
+  const caps=useWorkspaceCapabilities()
+  const contextual=caps.data?.enabled===true&&caps.data.actions.contextualNavigation===true&&caps.data.actions.consultStages&&canAccess('tela_pipelines',perms)
   const veAdmin = canAccess('tela_admin', perms)
 
   // Debounce
@@ -103,6 +107,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   // Build flat result list — na MESMA ordem de groupOrder (o cursor é o índice
   // nesta lista achatada).
+  const items = useMemo(()=>{
   const items: ResultItem[] = []
 
   if (pipelinesData?.data) {
@@ -123,8 +128,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         id: `job-${j.pipeline_name}-${j.job_name}`,
         label: j.job_name,
         sub: j.pipeline_name + (j.job_type ? ` · ${j.job_type}` : ''),
-        group: 'Etapas',
-        href: `/jobs`,
+        group: 'Fluxos',
+        href: contextual?workspacePath(j.pipeline_name,'fluxo','desenvolvimento'):`/fluxos?${new URLSearchParams({pipeline:j.pipeline_name,legado:'1'})}`,
       })
     }
   }
@@ -144,6 +149,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   for (const a of atalhosAdmin) {
     items.push({ id: a.id, label: a.rotulo, sub: a.descricao, group: 'Administração', href: a.caminho })
   }
+
+  return items
+  },[pipelinesData,jobsData,catalogData,atalhosAdmin,contextual])
 
   // Keyboard navigation
   const handleKeyDown = useCallback(
@@ -180,10 +188,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   if (!open) return null
 
-  const groupOrder: ResultItem['group'][] = ['Pipelines', 'Etapas', 'Catálogo', 'Administração']
+  const groupOrder: ResultItem['group'][] = ['Pipelines', 'Fluxos', 'Catálogo', 'Administração']
   const groupIcons: Record<ResultItem['group'], React.ReactNode> = {
     Pipelines: <GitBranch size={12} />,
-    Etapas: <Briefcase size={12} />,
+    Fluxos: <Briefcase size={12} />,
     Catálogo: <Database size={12} />,
     Administração: <Settings size={12} />,
   }

@@ -6,13 +6,13 @@ export function contextualPath(name: string, tab: string, search: URLSearchParam
  const next = new URLSearchParams(search)
  next.delete('pipeline'); next.delete('legado')
  if (experience) next.set('experiencia', experience)
- return `/pipelines/${encodeURIComponent(name)}/${tab}?${next}`
+ return `/pipelines/${encodeURIComponent(name)}/${tab==='etapas'?'fluxo':tab}?${next}`
 }
 export function legacyWorkspacePath(kind: 'jobs' | 'fluxos', search: URLSearchParams): string | null {
  const name = search.get('pipeline')?.trim()
  if (!name || search.get('legado') === '1') return null
  const execution = kind === 'fluxos' && search.get('modo') === 'execucao'
- return contextualPath(name, execution ? 'execucoes' : kind === 'jobs' ? 'etapas' : 'fluxo', search, execution ? 'sustentacao' : 'desenvolvimento')
+ return contextualPath(name, execution ? 'execucoes' : 'fluxo', search, execution ? 'sustentacao' : 'desenvolvimento')
 }
 function decoded(value: unknown): unknown {
  if (typeof value !== 'string') return value ?? null

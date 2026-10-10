@@ -11,7 +11,7 @@ export interface WorkspaceCapabilities { schemaVersion: number; enabled: boolean
 export type WorkspaceExperience = 'desenvolvimento' | 'consulta' | 'sustentacao'
 export function object(value: unknown): JsonObject { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {} }
 export function text(value: unknown): string { return typeof value === 'string' ? value : '' }
-export function workspacePath(name: string, tab = 'visao-geral', experience: WorkspaceExperience = 'consulta'): string { return `/pipelines/${encodeURIComponent(name)}/${tab}?experiencia=${experience}` }
+export function workspacePath(name: string, tab = 'visao-geral', experience: WorkspaceExperience = 'consulta'): string { return `/pipelines/${encodeURIComponent(name)}/${tab==='etapas'?'fluxo':tab}?experiencia=${experience}` }
 export function technicalSuggestion(name: string): string { return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase().slice(0, 200) }
 export function cloneFlow<T>(value: T): T { return structuredClone(value) }
 export function patchLegacy(node: WorkspaceNode, key: string, value: unknown): WorkspaceNode {

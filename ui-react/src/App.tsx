@@ -183,6 +183,7 @@ export default function App() {
                 </RequirePerm>
               }
             />
+            <Route path="jobs" element={<RequirePerm perm="tela_jobs"><Suspense fallback={<PageSpinner />}><LegacyWorkspaceEntry kind="jobs"><Jobs /></LegacyWorkspaceEntry></Suspense></RequirePerm>} />
             {NAV.map((n) => {
               const element = PAGE_ELEMENT[n.to]
               if (!element) return null

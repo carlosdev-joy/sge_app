@@ -8,7 +8,7 @@
 // tests/test_rbac_recursos_admin.py prende as duas listas.
 export const RBAC_RECURSOS: [string, string][] = [
   ['tela_dashboard', 'Dashboard'], ['tela_pipelines', 'Pipelines'],
-  ['tela_jobs', 'Etapas'], ['tela_logs', 'Logs'],
+  ['tela_jobs', 'Fluxo de pipelines'], ['tela_logs', 'Logs'],
   ['tela_governanca', 'Catálogo & Lineage'],
   ['tela_malha', 'Malha'], ['tela_admin', 'Admin'],
   ['tela_impacto_campo', 'Impacto de Campo'], ['tela_plano_ajuste', 'Planos de Ajuste'],

@@ -6,7 +6,7 @@
 
 import type { LucideIcon } from 'lucide-react'
 import {
-  LayoutDashboard, Workflow, Blocks, ScrollText, Bell, ShieldAlert,
+  LayoutDashboard, Workflow, ScrollText, Bell, ShieldAlert,
   Library, Network, Settings, Crosshair, ClipboardList, BarChart3, Terminal,
   Rocket, Gauge, Copy, Cable, OctagonX, GitBranch, ShieldCheck, LifeBuoy, Wrench, Bot,
 } from 'lucide-react'
@@ -43,13 +43,12 @@ export const NAV: NavItem[] = [
   { to: '/avisos',        label: 'Avisos',             icon: Bell,            group: 'Operação' },
   { to: '/chamados',      label: 'Chamados',           icon: LifeBuoy,        group: 'Operação',           perm: 'tela_chamados' },
   { to: '/pipelines',     label: 'Pipelines',          icon: Workflow,        group: 'Construção',         perm: 'tela_pipelines' },
-  { to: '/jobs',          label: 'Etapas',             icon: Blocks,          group: 'Construção',         perm: 'tela_jobs' },
-  // Mesma permissão de Etapas: /fluxos é o MESMO editor em tela dedicada
+  // Fluxo reutiliza tela_jobs para preservar concessões existentes.
   // (decisão revisada em docs/DESIGN_navegacao_regroup.md).
-  { to: '/fluxos',        label: 'Fluxos',             icon: GitBranch,       group: 'Construção',         perm: 'tela_jobs' },
+  { to: '/fluxos',        label: 'Fluxo de pipelines',             icon: GitBranch,       group: 'Construção',         perm: 'tela_jobs' },
   { to: '/publicacao',    label: 'Publicação',         icon: Rocket,          group: 'Construção',         perm: 'tela_logs' },
   // Malha mora na Construção (decisão do usuário, spec dependências §8 —
-  // 2026-08-02): montagem fica com Pipelines/Etapas/Fluxos/Publicação; em
+  // 2026-08-02): montagem fica com Pipelines/Fluxos/Publicação; em
   // Governança fica a consulta (Catálogo & Lineage, destino do inventário na F9).
   { to: '/malha',         label: 'Malha de Pipelines', icon: Network,         group: 'Construção',         perm: 'tela_malha' },
   { to: '/governanca',    label: 'Catálogo & Lineage', icon: Library,         group: 'Governança & Dados', perm: 'tela_governanca' },
