@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { confirmAction } from '../../lib/dialogs'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { CheckCircle2, Upload, ShieldCheck } from 'lucide-react'
 import { workspaceApi } from '../../lib/workspaceApi'
@@ -25,11 +26,13 @@ export function WorkspacePublicationPanel({ embedded = false, draft, fence, canP
   return workspaceApi.publish(draft, fence, command.current.id)
  }, onMutate: () => onFreeze(true), onSuccess: value => { setSent(value); setError(''); onFreeze(true); operations.refetch() }, onError: value => {setError(value.message); onFreeze(pending)} })
  const retry = useMutation({ mutationFn: () => workspaceApi.retry(draft, fence!, operation!.operationId), onSuccess: value => { setSent(value); setError(''); operations.refetch() }, onError: value => setError(value.message) })
+ const currentGate=useRef({allowed:false,fence,draftId:draft.draftId,revision:draft.revision})
  const valid = validation?.revision === draft.revision && validation.valid && !dirty
+ useLayoutEffect(()=>{currentGate.current={allowed:!!fence&&!!valid&&canPublish&&!busy&&!pending&&!validate.isPending&&!publish.isPending,fence,draftId:draft.draftId,revision:draft.revision}})
  return <section className={`${embedded ? 'border-t border-edge' : 'border border-edge rounded-lg'} bg-panel px-4 py-3 space-y-2`} aria-label="Validação e publicação">
   <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-sm text-ink">Validar e publicar</h2></div><div className="flex flex-wrap gap-2">
    <Button size="sm" variant="secondary" disabled={dirty || busy || pending || publish.isPending} loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck size={15}/>Validar rascunho</Button>
-   {canPublish && <Button size="sm" disabled={!fence || !valid || busy || pending || validate.isPending} loading={publish.isPending} onClick={() => { if (window.confirm('Publicar esta revisão e substituir a configuração ativa do pipeline?')) publish.mutate() }}><Upload size={15}/>Publicar versão</Button>}
+   {canPublish && <Button size="sm" disabled={!fence || !valid || busy || pending || validate.isPending} loading={publish.isPending} onClick={async () => { if (await confirmAction('Publicar esta revisão e substituir a configuração ativa do pipeline?',()=>currentGate.current.allowed&&currentGate.current.fence===fence&&currentGate.current.draftId===draft.draftId&&currentGate.current.revision===draft.revision)) publish.mutate() }}><Upload size={15}/>Publicar versão</Button>}
   </div></div>
   {dirty && <p className="text-sm text-dim">Salve as alterações para validar esta revisão.</p>}
   {!canPublish && <p className="text-sm text-dim">Sua sessão pode consultar os diagnósticos. Publicar exige a permissão de publicação.</p>}

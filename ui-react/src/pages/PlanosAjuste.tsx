@@ -1,3 +1,4 @@
+import { confirmAction } from '../lib/dialogs'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api'
@@ -60,7 +61,7 @@ function PlanList({ onOpen }: { onOpen: (id: number) => void }) {
   })
 
   const removePlan = async (id: number) => {
-    if (!confirm('Remover este plano e todos os seus itens?')) return
+    if (!await confirmAction('Remover este plano e todos os seus itens?')) return
     try {
       await apiFetch(`/change-plans/${id}`, { method: 'DELETE' })
       toast.success('Plano removido')

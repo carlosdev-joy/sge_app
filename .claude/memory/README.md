@@ -115,3 +115,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Atalho Delete](orquestra-workspace-tecla-delete.md) — 10/10/2026: candidato2.12.3; conferir registro final DEV.
 
 - [Arrastar componentes](orquestra-workspace-arrastar-componentes.md) — 10/10/2026: candidato2.12.4; conferir registro final DEV.
+
+- [Diálogos no padrão da aplicação](orquestra-dialogos-padrao-aplicacao.md) — 10/10/2026: candidato2.12.5; consultar registro final DEV.

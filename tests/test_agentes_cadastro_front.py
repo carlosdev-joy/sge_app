@@ -101,8 +101,8 @@ def test_rascunho_do_prompt_nao_some_sem_aviso():
     fonte = codigo(ABA)
     assert "hidden={secao !== 'prompt'}" in fonte and "hidden={secao !== 'acesso'}" in fonte
     assert "onSujo={setPromptSujo}" in fonte
-    assert "if (selecionado !== null && !podeSair()) return" in fonte
-    assert "if (!podeSair()) return" in fonte and "window.confirm(" in fonte
+    assert "if (selecionado !== null && !await podeSair()) return" in fonte
+    assert "if (!await podeSair()) return" in fonte and "confirmAction(" in fonte
     prompt = codigo(FRONT / "components" / "admin" / "PromptAgente.tsx")
     assert "const sujo = rascunho !== null || seuTexto !== null" in prompt
     assert "useEffect(() => { onSujo?.(sujo) }, [sujo, onSujo])" in prompt

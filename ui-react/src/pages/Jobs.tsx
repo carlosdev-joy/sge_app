@@ -1,3 +1,4 @@
+import { confirmAction } from '../lib/dialogs'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -257,9 +258,9 @@ function JobFormModal({
     onError: (e: Error) => setErr([e.message]),
   })
 
-  function aplicarGrafiaDs(nome: string) {
+  async function aplicarGrafiaDs(nome: string) {
     if (!isEdit) { f('job_name', nome); return }
-    if (!confirm(
+    if (!await confirmAction(
       `Renomear "${job!.job_name}" para "${nome}"?\n\n`
       + 'O rename é transacional: dependências, condições, lineage e histórico '
       + 'acompanham. Depois é preciso republicar a DAG.')) return
