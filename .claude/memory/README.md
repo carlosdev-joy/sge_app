@@ -111,3 +111,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Workspace Pipeline F6](orquestra-workspace-pipeline-f6.md) — rodada de consolidação; aceite integral pendente por paridade/desempenho; conferir entrega DEV no registro final.
 
 - [Ajustes de cadastro e ligações](orquestra-workspace-cadastro-conexoes.md) — 09/10/2026: candidato2.12.2 após F6; conferir registro final DEV.
+
+- [Atalho Delete](orquestra-workspace-tecla-delete.md) — 10/10/2026: candidato2.12.3; conferir registro final DEV.
