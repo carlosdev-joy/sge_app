@@ -109,3 +109,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Workspace — correção estrutural da referência](orquestra-workspace-referencia.md): complemento F5, candidato2.12.0; entrega DEV e revisão visual em evidências/memória compartilhada.
 
 - [Workspace Pipeline F6](orquestra-workspace-pipeline-f6.md) — rodada de consolidação; aceite integral pendente por paridade/desempenho; conferir entrega DEV no registro final.
+
+- [Ajustes de cadastro e ligações](orquestra-workspace-cadastro-conexoes.md) — 09/10/2026: candidato2.12.2 após F6; conferir registro final DEV.

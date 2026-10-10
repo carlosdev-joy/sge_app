@@ -105,8 +105,23 @@ def validate_projection(definition,layout,existing,connection_types,email_policy
   else:adj[edge['source']].add(edge['target'])
  if jobs._graph_has_cycle(adj):error(None,'edges','cycle','Dependências contêm ciclo')
  schedule_type=pipeline.get('schedule_type') or 'daily'
- if schedule_type not in {'daily','weekly','monthly','custom','monthly_days_times','on_demand'}:error(None,'schedule_type','schedule','Tipo de agenda não suportado')
+ if schedule_type not in {'daily','weekly','monthly','biweekly','custom','monthly_days_times','on_demand'}:error(None,'schedule_type','schedule','Tipo de agenda não suportado')
  if schedule_type!='on_demand' and not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?',str(pipeline.get('scheduled_time') or '')):error(None,'scheduled_time','schedule','Informe horário válido ou selecione sob demanda')
+ # Os mesmos formatos e limites do cadastro anterior, sem normalização silenciosa.
+ from routers import pipelines as schedules
+ try:
+  if schedule_type=='custom':
+   if not schedules._parse_horarios_especificos(pipeline.get('horarios_especificos')):error(None,'horarios_especificos','schedule','Informe pelo menos um horário de execução')
+   days=pipeline.get('dias_semana')
+   if days and (not isinstance(days,str) or any(day not in {'0','1','2','3','4','5','6'} for day in days.split(','))):error(None,'dias_semana','schedule','Selecione dias da semana válidos')
+  if schedule_type=='monthly_days_times' and not schedules._validate_dias_horarios_mes(pipeline.get('dias_horarios_mes')):error(None,'dias_horarios_mes','schedule','Adicione dias e horários do mês')
+  for mode,field,maximum in [('weekly','schedule_dow',6),('monthly','schedule_dom',28),('biweekly','schedule_dom',13)]:
+   if schedule_type==mode:
+    number=pipeline.get(field);number=1 if number is None else number;minimum=0 if mode=='weekly' else 1
+    if isinstance(number,bool) or not isinstance(number,int) or not minimum<=number<=maximum:error(None,field,'schedule','Informe um dia válido para a agenda')
+ except (HTTPException,ValueError,TypeError,AttributeError) as exc:
+  message=str(exc.detail) if isinstance(exc,HTTPException) else 'Confira os dias e horários da agenda'
+  error(None,'schedule','schedule',message)
  mssql={key for key,kind in connection_types.items() if kind in {'mssql','sqlserver'}}
  for node,job in zip(nodes,projection['etl_pipeline_job']):
   kind=node['type'];id=node['id'];cfg=node['configuration'];command=job.get('job_command');ssh=job.get('ssh_conn_id');issues=[]
