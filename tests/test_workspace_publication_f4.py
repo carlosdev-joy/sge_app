@@ -128,3 +128,37 @@ def test_airflow_rest_params_match_dag_marker_values(serialized):
 def test_airflow_unrecognized_or_missing_markers_do_not_confirm(invalid):
     from services.workspace_publication import dag_marker_values
     assert dag_marker_values({'workspace_content_hash':invalid})['workspace_content_hash']!='trusted'
+
+@pytest.mark.parametrize('schedule',[
+ {'schedule_type':'daily','scheduled_time':'06:00:00'},
+ {'schedule_type':'weekly','scheduled_time':'06:00:00','schedule_dow':None},
+ {'schedule_type':'monthly','scheduled_time':'06:00:00','schedule_dom':None},
+ {'schedule_type':'biweekly','scheduled_time':'06:00:00'},
+ {'schedule_type':'weekly','scheduled_time':'06:00:00','schedule_dow':0},
+ {'schedule_type':'monthly','scheduled_time':'06:00:00','schedule_dom':28},
+ {'schedule_type':'biweekly','scheduled_time':'06:00:00','schedule_dom':13},
+ {'schedule_type':'custom','scheduled_time':'08:00:00','horarios_especificos':'08:00,10:00,12:00','dias_semana':'1,5'},
+ {'schedule_type':'monthly_days_times','scheduled_time':'06:00:00','dias_horarios_mes':'[{"dia":1,"horarios":["09:00","10:30"]}]'},
+])
+def test_workspace_agendas_preservam_contrato_legado(schedule):
+    definition=flow();definition['metadata']['legacyPipeline'].update(schedule)
+    before=copy.deepcopy(definition)
+    errors,projection=validate_projection(definition,LAYOUT,{},CONNECTIONS)
+    assert not errors
+    assert all(projection['etl_pipeline'][0][k]==v for k,v in schedule.items())
+    assert definition==before
+
+@pytest.mark.parametrize('schedule',[
+ {'schedule_type':'biweekly','schedule_dom':14},
+ {'schedule_type':'weekly','schedule_dow':True},
+ {'schedule_type':'monthly','schedule_dom':0},
+ {'schedule_type':'custom','horarios_especificos':'09:00,99:00'},
+ {'schedule_type':'custom','horarios_especificos':''},
+ {'schedule_type':'monthly_days_times','dias_horarios_mes':'[{"dia":29,"horarios":["09:00"]}]'},
+ {'schedule_type':'monthly_days_times','dias_horarios_mes':'[]'},
+ {'schedule_type':'monthly_days_times','dias_horarios_mes':{}},
+])
+def test_workspace_agendas_invalidas_nao_publicam(schedule):
+    definition=flow();definition['metadata']['legacyPipeline'].update(scheduled_time='06:00:00',**schedule)
+    errors,_=validate_projection(definition,LAYOUT,{},CONNECTIONS)
+    assert any(e['code']=='schedule' for e in errors)

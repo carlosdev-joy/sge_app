@@ -1,3 +1,4 @@
+import { Modal } from '../ui/Modal'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { type Connection, type EdgeChange, type NodeChange } from '@xyflow/react'
@@ -21,6 +22,7 @@ type LocalDraft = {base:WorkspaceDraft;definition:WorkspaceDefinition;layout:Wor
 const localDrafts=new Map<string,LocalDraft>()
 useAuthStore.subscribe((state,previous)=>{if(state.token!==previous.token)localDrafts.clear()})
 export function WorkspaceEditor({draft,definition:source,layout:sourceLayout,reasons,capabilities,development,tab,onSaved,onDiscarded,actionsHost}:{actionsHost?:HTMLElement|null;draft:WorkspaceDraft|null;definition:WorkspaceDefinition;layout:WorkspaceLayout;reasons:string[];capabilities:WorkspaceCapabilities;development:boolean;tab:string;onSaved:(draft:WorkspaceDraft)=>void;onDiscarded:()=>void}) {
+ const [pendingNodeId,setPendingNodeId]=useState<string|null>(null)
  const editorRef=useRef<HTMLDivElement>(null);const [diagnosticRequest,setDiagnosticRequest]=useState<{id:string;key:number}|null>(null)
  const [layoutKey,setLayoutKey]=useState(0);const [search,setSearch]=useState('');const [librarySearch,setLibrarySearch]=useState('');const [publicationFrozen,setPublicationFrozen]=useState(false)
  const cached=development&&draft?localDrafts.get(draft.draftId):undefined
@@ -92,9 +94,10 @@ export function WorkspaceEditor({draft,definition:source,layout:sourceLayout,rea
     {publication}
    </section>
    {!node&&<aside className="border border-edge rounded-lg bg-panel p-4 min-w-0"><h2 className="text-sm font-semibold text-ink">Propriedades da etapa</h2><p className="text-sm text-dim mt-3">Selecione uma etapa no fluxo para consultar sua configuração.</p><dl className="mt-6 space-y-4 text-sm"><div><dt className="text-dim">Pipeline</dt><dd className="text-ink break-all">{definition.identity.pipelineName}</dd></div><div><dt className="text-dim">Componentes</dt><dd className="text-ink">{definition.nodes.length}</dd></div><div><dt className="text-dim">Conexões</dt><dd className="text-ink">{definition.edges.length}</dd></div></dl></aside>}
-   {node&&<NodeProperties key={`${node.id}:${diagnosticRequest?.id===node.id?diagnosticRequest.key:0}`} node={node} editable={editable} diagnosticRequest={diagnosticRequest?.id===node.id?diagnosticRequest.key:undefined} onClose={()=>setSelected(null)} onRename={id=>{try{const next=renameWorkspaceNode(definition,layout,node.id,id);changed(next.definition,next.layout);setSelected(id)}catch(e){toast.error(e instanceof Error?e.message:'Não foi possível renomear')}}} onChange={next=>changed({...definition,nodes:definition.nodes.map(n=>n.id===next.id?next:n)})} onDelete={()=>{if(!window.confirm(`Remover a etapa ${node.id} e suas dependências?`))return;const next=removeWorkspaceNode(definition,layout,node.id);changed(next.definition,next.layout);setSelected(null)}}/>}
+   {node&&<NodeProperties key={`${node.id}:${diagnosticRequest?.id===node.id?diagnosticRequest.key:0}`} node={node} editable={editable} diagnosticRequest={diagnosticRequest?.id===node.id?diagnosticRequest.key:undefined} onClose={()=>setSelected(null)} onRename={id=>{try{const next=renameWorkspaceNode(definition,layout,node.id,id);changed(next.definition,next.layout);setSelected(id)}catch(e){toast.error(e instanceof Error?e.message:'Não foi possível renomear')}}} onChange={next=>changed({...definition,nodes:definition.nodes.map(n=>n.id===next.id?next:n)})} onDelete={()=>setPendingNodeId(node.id)}/>}
   </div>}
   {tab==='parametros'&&publication}
+  <Modal open={pendingNodeId!==null} onClose={()=>setPendingNodeId(null)} title="Remover etapa" size="sm"><p className="text-sm text-ink [overflow-wrap:anywhere]">Remover a etapa {pendingNodeId} e suas ligações do rascunho?</p><p className="text-xs text-dim mt-2">A configuração publicada permanece disponível.</p><div className="flex justify-end gap-3 mt-5"><Button variant="secondary" onClick={()=>setPendingNodeId(null)}>Cancelar</Button><Button variant="danger" disabled={!editable} onClick={()=>{if(pendingNodeId){const next=removeWorkspaceNode(definition,layout,pendingNodeId);changed(next.definition,next.layout);setSelected(null)}setPendingNodeId(null)}}>Remover etapa</Button></div></Modal>
   <WorkspaceDraftTools key={`${base?.revision}-${editable}`} definition={definition} editable={editable} onApply={next=>changed(next)}/>
   {held&&base&&<div className="flex justify-end"><Button variant="ghost" size="sm" disabled={busy||publicationFrozen} onClick={()=>release(true)}>Descartar rascunho</Button></div>}
  </div>
