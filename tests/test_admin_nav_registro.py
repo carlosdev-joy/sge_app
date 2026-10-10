@@ -473,9 +473,9 @@ def test_f6_paleta_so_para_quem_tem_tela_admin():
 
 def test_f6_paleta_administracao_entra_por_ultimo():
     fonte = PALETA.read_text(encoding="utf-8")
-    assert "const groupOrder: ResultItem['group'][] = ['Pipelines', 'Etapas', 'Catálogo', 'Administração']" in fonte
+    assert "const groupOrder: ResultItem['group'][] = ['Pipelines', 'Fluxos', 'Catálogo', 'Administração']" in fonte
     # a lista achatada (índice do cursor ↑/↓/Enter) segue a mesma ordem dos grupos
-    ordem = [fonte.index(m) for m in ("group: 'Pipelines'", "group: 'Etapas'", "group: 'Catálogo'",
+    ordem = [fonte.index(m) for m in ("group: 'Pipelines'", "group: 'Fluxos'", "group: 'Catálogo'",
                                         "group: 'Administração'")]
     assert ordem == sorted(ordem)
     assert "Administração: <Settings size={12} />" in fonte
