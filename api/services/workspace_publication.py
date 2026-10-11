@@ -19,8 +19,9 @@ from db import get_db_conn
 from deps import AIRFLOW_URL,AIRFLOW_USER,AIRFLOW_PASSWORD,carregar_usuario
 
 log=logging.getLogger("orquestra.workspace.publication")
-TABLES={"etl_pipeline":("pipeline_name",),"etl_pipeline_job":("pipeline_name","job_name"),"etl_pipeline_param":("pipeline_name","param_name"),"etl_pipeline_job_param":("pipeline_name","job_name","param_name"),"etl_valida_arquivo_no":("pipeline_name","task_id"),"etl_valida_arquivo_config":("pipeline_name","task_id","entrada_id"),"etl_pipeline_dependencia":("pipeline_name","depende_de"),"etl_pipeline_owner":("pipeline_name",)}
+TABLES={"etl_pipeline":("pipeline_name",),"etl_pipeline_job":("pipeline_name","job_name"),"etl_pipeline_param":("pipeline_name","param_name"),"etl_pipeline_job_param":("pipeline_name","job_name","param_name"),"etl_valida_arquivo_no":("pipeline_name","task_id"),"etl_valida_arquivo_config":("pipeline_name","task_id","entrada_id"),"etl_pipeline_dependencia":("pipeline_name","depende_de"),"etl_pipeline_owner":("pipeline_name",),"etl_job_lineage":("pipeline_name",)}
 RUNTIME=frozenset({"dag_criada","last_execution","updated_at","created_at","atualizado_em","criado_em","dag_config_pendente_em"})
+LINEAGE_RUNTIME=RUNTIME|{'extracted_at'}
 IDENT=re.compile(r"^[A-Za-z0-9_.-]+$")
 FOLDER=re.compile(r"^[\w .-]+$")
 ENABLED=lambda:os.getenv("WORKSPACE_PUBLICATIONS_ENABLED","false").lower()=="true"
@@ -39,7 +40,7 @@ def columns(cur,table):
  return {r[0] for r in cur.execute("SELECT name FROM sys.columns WHERE object_id=OBJECT_ID(?) AND is_identity=0 AND is_computed=0",('dbo.'+table,)).fetchall()}
 def ignored_columns(cur,table):
  assert table in TABLES
- return RUNTIME | {r[0] for r in cur.execute("SELECT name FROM sys.columns WHERE object_id=OBJECT_ID(?) AND (is_identity=1 OR is_computed=1)",('dbo.'+table,)).fetchall()}
+ return (LINEAGE_RUNTIME if table=='etl_job_lineage' else RUNTIME) | {r[0] for r in cur.execute("SELECT name FROM sys.columns WHERE object_id=OBJECT_ID(?) AND (is_identity=1 OR is_computed=1)",('dbo.'+table,)).fetchall()}
 def _json(value):
  if value is None:return None
  if isinstance(value,dict):return value
@@ -99,7 +100,9 @@ def materialize(definition,layout,existing):
  policy_fields=('liberar_dependentes_sem_movimento','notificar_sem_movimento')
  previous_pipeline=next(iter(existing.get('etl_pipeline',[])),{})
  if any(field in pipeline and pipeline[field]!=previous_pipeline.get(field,False if field==policy_fields[0] else True) for field in policy_fields):pipeline['politica_sem_movimento_revisao']=int(previous_pipeline.get('politica_sem_movimento_revisao') or 0)+1
- projected={table:[] for table in TABLES};projected['etl_pipeline']=[pipeline]
+ captured=type(metadata.get('workspaceLineageVersion')) is int and metadata.get('workspaceLineageVersion')==1
+ if 'workspaceLineageVersion' in metadata and not captured:raise PublicationBlocked('lineage_contract','Contrato de lineage inválido')
+ projected={table:[] for table in TABLES if table!='etl_job_lineage' or captured};projected['etl_pipeline']=[pipeline]
  related=metadata.get('legacyTables') or {}
  if set(related)-{'etl_pipeline_param','etl_pipeline_dependencia','etl_pipeline_owner'}:raise PublicationBlocked('unsupported_configuration','Tabela adicional não é projetável pelo adaptador')
  for table in ('etl_pipeline_param','etl_pipeline_dependencia','etl_pipeline_owner'):
@@ -107,7 +110,11 @@ def materialize(definition,layout,existing):
  positions=layout.get('nodes') or {};nodes=definition.get('nodes') or [];edges=definition.get('edges') or []
  for order,node in enumerate(nodes,1):
   cfg=node.get('configuration') or {}
-  if set(cfg)-{'legacyJob','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config'}:raise PublicationBlocked('unsupported_configuration','Configuração adicional de etapa não é projetável')
+  if set(cfg)-({'legacyJob','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config','etl_job_lineage'} if captured else {'legacyJob','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config'}):raise PublicationBlocked('unsupported_configuration','Configuração adicional de etapa não é projetável')
+  if captured:
+   lineage=cfg.get('etl_job_lineage')
+   if not isinstance(lineage,list) or len(lineage)>5000 or any(not isinstance(row,dict) for row in lineage):raise PublicationBlocked('lineage_contract','Cada etapa exige uma lista de lineage válida')
+   for row in lineage:projected['etl_job_lineage'].append({**row,'pipeline_name':name,'job_name':node['id']})
   job=dict(cfg.get('legacyJob') or {});job.update(pipeline_name=name,job_name=node['id'],job_type=node['type']);job.setdefault('execution_order',order)
   parents=[edge['source'] for edge in edges if edge['target']==node['id']];job['depends_on_jobs']=','.join(parents) or None
   if node['id'] in positions:job.update(layout_x=positions[node['id']]['x'],layout_y=positions[node['id']]['y'])
@@ -278,6 +285,7 @@ async def validate_draft(id,revision,actor):
   if projection:
    for table,records in projection.items():
     allowed=columns(q,table)
+    if table=='etl_job_lineage':errors.extend(lineage_column_diagnostics(q,records))
     for record in records:
      unknown=set(record)-allowed-ignored_columns(q,table)
      if unknown:errors.append({'nodeId':record.get('job_name') or record.get('task_id'),'field':table,'code':'unknown_column','message':'Configuração contém campo não projetável: '+', '.join(sorted(unknown))})
@@ -292,6 +300,15 @@ def removed_job_names(existing,desired):
  return [row['job_name'] for row in existing if row['job_name'].rstrip().casefold() not in target]
 
 def sync_rows(cur,table,name,desired):
+ if table=='etl_job_lineage':
+  # Sem chave funcional: preservar inclusive duplicatas; identidade é técnica.
+  allowed=columns(cur,table)
+  cur.execute('DELETE FROM dbo.etl_job_lineage WHERE pipeline_name=?',(name,))
+  for row in desired:
+   values={key:(json.dumps(value,ensure_ascii=False) if isinstance(value,(dict,list)) else value) for key,value in row.items() if key in allowed and key not in LINEAGE_RUNTIME}
+   fields=list(values)
+   cur.execute('INSERT dbo.etl_job_lineage ('+','.join('['+key+']' for key in fields)+') VALUES ('+','.join('?' for _ in fields)+')',tuple(values[key] for key in fields))
+  return
  allowed=columns(cur,table);keys=TABLES[table];present=rows(cur,table,name);desired_keys={tuple(str(r.get(k) or '') if k=='param_name' else str(r.get(k) or '').rstrip().casefold() for k in keys) for r in desired}
  for old in present:
   if tuple(str(old.get(k) or '') if k=='param_name' else str(old.get(k) or '').rstrip().casefold() for k in keys) not in desired_keys:
@@ -356,6 +373,7 @@ async def process_operation(id):
     if not await airflow_idle(client,op['name']):raise PublicationBlocked('execution_active','Pipeline possui execução ativa ou disparo pendente no Airflow')
     existing=load_workspace_secrets(q,definition,{table:rows(q,table,op['name']) for table in TABLES},draft_id=op['draft']);errors,projection=validate_projection(definition,layout,existing,await connection_types(q),__import__('routers.jobs',fromlist=['_config_email_do_admin'])._config_email_do_admin(q))
     if any(set(record)-columns(q,table)-ignored_columns(q,table) for table,records in projection.items() for record in records) if projection else False:raise PublicationBlocked('unknown_column','Configuração contém campo não projetável')
+    if projection and 'etl_job_lineage' in projection:errors.extend(lineage_column_diagnostics(q,projection['etl_job_lineage']))
     if errors:raise PublicationBlocked('publication_invalid','Configuração recusada na validação final; consulte os diagnósticos do rascunho')
     c.rollback();q.execute('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; SET XACT_ABORT ON')
     renew_claim(q,id,token)
@@ -377,6 +395,7 @@ async def process_operation(id):
      q.execute('DELETE FROM dbo.etl_job_lineage WHERE pipeline_name=? AND job_name=?',(op['name'],removed))
     sync_rows(q,'etl_pipeline_job',op['name'],projection['etl_pipeline_job'])
     for table in ('etl_pipeline_param','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config','etl_pipeline_dependencia','etl_pipeline_owner'):sync_rows(q,table,op['name'],projection[table])
+    if 'etl_job_lineage' in projection:sync_rows(q,'etl_job_lineage',op['name'],projection['etl_job_lineage'])
     for (job,parameter),cipher in existing.get('_workspace_legacy_secrets',{}).items():
      q.execute('INSERT dbo.etl_workspace_segredo_legado(version_id,pipeline_name,job_name,param_name,ciphertext) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM dbo.etl_workspace_segredo_legado WHERE version_id=? AND param_name=? AND (job_name=? OR (job_name IS NULL AND ? IS NULL)))',(str(op['version']),op['name'],job or None,parameter,cipher,str(op['version']),parameter,job or None,job or None))
     projected=active_hash(q,op['name']);q.execute("UPDATE dbo.etl_workspace_publicacao SET estado='projetado',projection_hash=?,erro_resumido=NULL,atualizada_em=SYSUTCDATETIME() WHERE operation_id=?",(projected,str(id)));c.commit();op['state']='projetado';op['projected']=projected
@@ -461,3 +480,23 @@ async def reconcile_loop():
    except asyncio.CancelledError:raise
    except Exception:log.warning('Reconciliador workspace aguardando dependência; detalhes redigidos')
   await asyncio.sleep(5)
+
+
+def lineage_column_diagnostics(cur,records):
+ """Valida contra o schema real; nunca truncar ou perder metadados importados."""
+ cur.execute("SELECT c.name,t.name,c.max_length,c.is_nullable,c.is_identity,c.is_computed,c.default_object_id FROM sys.columns c JOIN sys.types t ON t.user_type_id=c.user_type_id WHERE c.object_id=OBJECT_ID('dbo.etl_job_lineage')")
+ schema=list(cur.fetchall());errors=[]
+ if not schema:return [{'nodeId':None,'field':'etl_job_lineage','code':'lineage_schema','message':'Lineage indisponível; aplique as migrations de lineage'}]
+ for row in records:
+  for name,kind,width,nullable,identity,computed,default in schema:
+   if identity or computed or name in LINEAGE_RUNTIME:continue
+   value=row.get(name)
+   invalid=value is None and not nullable and not default
+   if value is not None and kind in ('nvarchar','nchar','varchar','char'):
+    if not isinstance(value,str):invalid=True
+    else:
+     try:size=len(value.encode('utf-16-le')) if kind.startswith('n') else len(value.encode('cp1252'))
+     except UnicodeError:invalid=True
+     else:invalid=width!=-1 and size>width
+   if invalid:errors.append({'nodeId':row.get('job_name'),'field':'etl_job_lineage.'+name,'code':'lineage_value','message':'Campo de lineage inválido ou maior que a capacidade do cadastro: '+name})
+ return errors[:500]

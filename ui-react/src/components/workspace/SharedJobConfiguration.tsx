@@ -1,3 +1,4 @@
+import type { SecretContext } from './WorkspaceSecretParameter'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
@@ -9,7 +10,8 @@ import { Button } from '../ui/Button'
 import { Select } from '../ui/Input'
 import { toast } from '../ui/Toast'
 
-export default function SharedJobConfiguration({ node, editable, defaults, canApply, onApply, onClose }: {
+export default function SharedJobConfiguration({ node, editable, defaults, context, pipelineName, canApply, onApply, onClose }: {
+ context?: SecretContext; pipelineName:string;
  node: WorkspaceNode; editable: boolean; defaults: JobParamApi[]; canApply: () => boolean;
  onApply: (node: WorkspaceNode) => void; onClose: () => void;
 }) {
@@ -52,7 +54,7 @@ export default function SharedJobConfiguration({ node, editable, defaults, canAp
     {(ssh.data?.connections ?? []).map(connection => <option key={connection.conn_id} value={connection.conn_id}>{connection.conn_id}{connection.host ? ` (${connection.host})` : ''}</option>)}
     {value.ssh_conn_id && !(ssh.data?.connections ?? []).some(connection => connection.conn_id === value.ssh_conn_id) && <option value={value.ssh_conn_id}>{value.ssh_conn_id} (fora da lista)</option>}
    </Select></div>}
-   <JobTypeFields value={value} onChange={change} sshConns={ssh.data?.connections ?? []} mssqlConns={mssql.data?.connections ?? []} defaultsOverride={defaults} disableEncrypted disableMaestro canApply={allowed}/>
+   <JobTypeFields value={value} onChange={change} sshConns={ssh.data?.connections ?? []} mssqlConns={mssql.data?.connections ?? []} defaultsOverride={defaults} disableEncrypted disableMaestro={!context} pipeline={pipelineName} jobName={node.id} workspaceMaestro={context?{...context,canApply:allowed,defaults}:undefined} canApply={allowed}/>
   </fieldset>
   {protectedRows.length > 0 && <div className="border-t border-edge pt-4 space-y-2"><h4 className="text-sm font-medium text-ink">Parâmetros protegidos</h4>{protectedRows.map((row, index) => <p key={index} className="text-sm text-dim"><span className="font-medium text-ink">{text(row.param_name)}</span> · preservado por referência</p>)}</div>}
   <div className="flex flex-wrap justify-end gap-2 border-t border-edge pt-4"><Button variant="secondary" onClick={onClose}>{editable ? 'Cancelar' : 'Fechar'}</Button>{editable && <Button onClick={apply} disabled={errors.length > 0}>Aplicar ao fluxo</Button>}</div>

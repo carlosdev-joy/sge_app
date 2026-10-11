@@ -151,6 +151,10 @@ def _validar_corpo(body: dict) -> tuple[str, list[dict], dict, date]:
 
 @router.post("/maestro/conversar", tags=["maestro"])
 async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(_require_jobs)):
+    return await conversar_contextual(body,user)
+
+
+async def conversar_contextual(body,user,draft_context=None):
     conversa_id, mensagens, contexto, referencia = _validar_corpo(body)
     nivel = contexto["nivel"]
     pipeline = (contexto.get("pipeline_name") or "").strip()[:200] or None
@@ -176,7 +180,10 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
             catalogo = maestro.carregar_catalogo(cur)
         except maestro.MaestroIndisponivel as e:
             raise HTTPException(status_code=503, detail=str(e))
-        if nivel == maestro.NIVEL_PIPELINE:
+        if draft_context is not None:
+            pipeline=draft_context["pipeline"];job=draft_context["job"]
+            declarados=draft_context["declarados"];defaults=draft_context["defaults"]
+        elif nivel == maestro.NIVEL_PIPELINE:
             declarados = maestro.parametros_declarados_pipeline(cur, pipeline)
             defaults = []   # o editor do wizard É a lista de defaults
         else:
@@ -196,10 +203,11 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
         texto, modelo = await ia_provedor.chat_conversa(cfg, system, mensagens)
     except HTTPException as e:
         duracao = int((time.monotonic() - inicio) * 1000)
-        _registrar_silencioso(conversa_id=conversa_id, matricula=user["matricula"], pipeline=pipeline,
-                              job=job, mensagem=pergunta, resposta=None, status=maestro.STATUS_ERRO,
-                              cenario=None, params=None, motivo=str(e.detail)[:600],
-                              modelo=cfg.get("model") or None, duracao_ms=duracao)
+        if draft_context is None:
+            _registrar_silencioso(conversa_id=conversa_id, matricula=user["matricula"], pipeline=pipeline,
+                                  job=job, mensagem=pergunta, resposta=None, status=maestro.STATUS_ERRO,
+                                  cenario=None, params=None, motivo=str(e.detail)[:600],
+                                  modelo=cfg.get("model") or None, duracao_ms=duracao)
         if e.status_code == 500:
             # Configuração (ORQUESTRA_CONN_KEY, lib ausente) é assunto de admin;
             # o usuário do chat não vê internals (mesma regra do caixa_chat).
@@ -212,10 +220,11 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
     resposta, proposta = maestro.extrair_proposta(texto)
     resultado = maestro.avaliar(proposta, referencia, declarados, codigos)
 
-    _registrar_silencioso(conversa_id=conversa_id, matricula=user["matricula"], pipeline=pipeline,
-                          job=job, mensagem=pergunta, resposta=resposta, status=resultado["status"],
-                          cenario=resultado["cenario"], params=resultado["params"],
-                          motivo=resultado["motivo"], modelo=modelo, duracao_ms=duracao)
+    if draft_context is None:
+        _registrar_silencioso(conversa_id=conversa_id, matricula=user["matricula"], pipeline=pipeline,
+                              job=job, mensagem=pergunta, resposta=resposta, status=resultado["status"],
+                              cenario=resultado["cenario"], params=resultado["params"],
+                              motivo=resultado["motivo"], modelo=modelo, duracao_ms=duracao)
 
     return {
         "conversa_id": conversa_id,
@@ -230,7 +239,6 @@ async def maestro_conversar(body: dict = Body(default={}), user: dict = Depends(
         "referencia": referencia.isoformat(),
         "nivel": nivel,
     }
-
 
 def _registrar_silencioso(**campos) -> None:
     """Best-effort: falha no registro nunca derruba a resposta ao usuário

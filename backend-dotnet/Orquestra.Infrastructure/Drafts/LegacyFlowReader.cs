@@ -10,7 +10,7 @@ namespace Orquestra.Infrastructure.Drafts;
 // Somente configuração: nunca conexões, credenciais, snapshots ou histórico de execução.
 internal static class LegacyFlowReader
 {
-    internal static readonly string[] OptionalTables = ["etl_pipeline_param", "etl_pipeline_job_param", "etl_valida_arquivo_no", "etl_valida_arquivo_config", "etl_pipeline_dependencia", "etl_pipeline_owner"];
+    internal static readonly string[] OptionalTables = ["etl_pipeline_param", "etl_pipeline_job_param", "etl_valida_arquivo_no", "etl_valida_arquivo_config", "etl_pipeline_dependencia", "etl_pipeline_owner", "etl_job_lineage"];
     public static async Task<(PipelineDefinition Definition, FlowLayout Layout, string[] Reasons)> ReadAsync(SqlConnection connection, SqlTransaction transaction, string name, CancellationToken ct)
     {
         var pipeline = (await Rows("etl_pipeline", false)).SingleOrDefault() ?? throw new WorkspaceException(404, "pipeline_not_found", "Pipeline não encontrado");
@@ -19,8 +19,8 @@ internal static class LegacyFlowReader
         var related = new Dictionary<string, List<Dictionary<string, object?>>>(StringComparer.Ordinal);
         foreach (var table in OptionalTables) related[table] = await Rows(table, true);
         var reasons = new HashSet<string>(StringComparer.Ordinal);
-        var metadata = new Dictionary<string, object?> { ["legacyPipeline"] = Sanitize(pipeline, false), ["legacyTables"] = related.Where(p => p.Key != "etl_pipeline_job_param" && !p.Key.StartsWith("etl_valida_arquivo", StringComparison.Ordinal)).ToDictionary(p => p.Key, p => p.Value.Select(r => Sanitize(r, p.Key == "etl_pipeline_param")).ToArray()) };
-        foreach (var table in related.Where(p => p.Key == "etl_pipeline_job_param" || p.Key.StartsWith("etl_valida_arquivo", StringComparison.Ordinal)))
+        var metadata = new Dictionary<string, object?> { [WorkspaceLineage.Marker] = 1, ["legacyPipeline"] = Sanitize(pipeline, false), ["legacyTables"] = related.Where(p => p.Key != "etl_pipeline_job_param" && p.Key != WorkspaceLineage.Table && !p.Key.StartsWith("etl_valida_arquivo", StringComparison.Ordinal)).ToDictionary(p => p.Key, p => p.Value.Select(r => Sanitize(r, p.Key == "etl_pipeline_param")).ToArray()) };
+        foreach (var table in related.Where(p => p.Key == "etl_pipeline_job_param" || p.Key == WorkspaceLineage.Table || p.Key.StartsWith("etl_valida_arquivo", StringComparison.Ordinal)))
             if (table.Value.Any(r => r.GetValueOrDefault("__workspace_job_name") is null)) { reasons.Add("Configuração legada referencia nó ausente"); metadata[table.Key + "Unassociated"] = table.Value.Where(r => r.GetValueOrDefault("__workspace_job_name") is null).Select(r => Sanitize(r, table.Key == "etl_pipeline_job_param")).ToArray(); }
         var positions = new Dictionary<string, NodePosition>(StringComparer.Ordinal);
         var nodes = new List<FlowNode>();
@@ -30,7 +30,7 @@ internal static class LegacyFlowReader
             var id = Convert.ToString(job["job_name"], CultureInfo.InvariantCulture)!;
             var type = Convert.ToString(job.GetValueOrDefault("job_type") ?? "datastage", CultureInfo.InvariantCulture)!;
             var config = new Dictionary<string, object?> { ["legacyJob"] = Sanitize(job, false) };
-            foreach (var table in new[] { "etl_pipeline_job_param", "etl_valida_arquivo_no", "etl_valida_arquivo_config" })
+            foreach (var table in new[] { "etl_pipeline_job_param", "etl_valida_arquivo_no", "etl_valida_arquivo_config", WorkspaceLineage.Table })
                 config[table] = related[table].Where(r => string.Equals(Convert.ToString(r.GetValueOrDefault("__workspace_job_name")), id, StringComparison.Ordinal)).Select(r => Sanitize(r, table == "etl_pipeline_job_param")).ToArray();
             nodes.Add(new() { Id = id, Type = type, Configuration = JsonSerializer.SerializeToElement(config, DraftValidation.Json) });
             if (!FlowNode.KnownTypes.Contains(type)) reasons.Add($"Tipo de nó não suportado: {type}");
@@ -50,7 +50,7 @@ internal static class LegacyFlowReader
         async Task<List<Dictionary<string, object?>>> Rows(string table, bool optional)
         {
             // Identificador somente da lista constante interna acima; nome do pipeline parametrizado.
-            var jobColumn = table == "etl_pipeline_job_param" ? "job_name" : table.StartsWith("etl_valida_arquivo", StringComparison.Ordinal) ? "task_id" : null;
+            var jobColumn = (table == "etl_pipeline_job_param" || table == WorkspaceLineage.Table) ? "job_name" : table.StartsWith("etl_valida_arquivo", StringComparison.Ordinal) ? "task_id" : null;
             var sql = jobColumn is null ? $"SELECT * FROM dbo.[{table}] WHERE pipeline_name=@name" : $"SELECT s.*,j.job_name AS __workspace_job_name FROM dbo.[{table}] s LEFT JOIN dbo.etl_pipeline_job j ON j.pipeline_name=s.pipeline_name AND j.job_name=s.[{jobColumn}] WHERE s.pipeline_name=@name";
             await using var command = new SqlCommand(sql, connection, transaction);
             command.Parameters.Add("@name", SqlDbType.NVarChar, 200).Value = name;
@@ -65,7 +65,7 @@ internal static class LegacyFlowReader
                     result.Add(row);
                 }
             }
-            catch (SqlException e) when (optional && e.Number == 208) { }
+            catch (SqlException e) when (optional && table != WorkspaceLineage.Table && e.Number == 208) { }
             return result;
         }
         object? Sanitize(Dictionary<string, object?> row, bool parameters)

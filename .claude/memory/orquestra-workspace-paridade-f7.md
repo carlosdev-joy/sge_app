@@ -31,3 +31,11 @@ Gates locais7283PASS8falhasidênticasbase51skip,91Pythonfoco,77SQL0skipincluicon
 Nenhuma PR/deployC confirmada neste snapshot; registrofinal teráprecedência. PendênciasF7Dlineage/Maestro,F8performance,F9matriz. DataStage/InformationServerCaixa real não equivale a fixturesDEV; main/produção separadas.
 
 Delta final C: destinatários do fluxo editados em linhas, persistidos em JSON array compatível com SQL e validados por formato/domínios Admin; horários novos/alterados usam régua24h. Valores legados incompatíveis preservados quando inalterados. Gatesfinal3/browserfinal6 e revisão visualship. SmokeDEV ainda pendente.
+
+
+## F7C entregue / início F7D
+F7C PR493 mergeada em develop e3a44bc958d251c1830cc8685ea2cbb590596ac7, DEV2.15.0/migrations157–158. Smoke95 requisições/verificações incluindo polling, 3publicações S1→S2→restoreS1; fixture inativa sem draft/comando ativo. Backup verificado; imagem offline e rebuild consumidor sem rede aprovados. Grants restritos corrigidos após helper inicial falhar antes da troca de imagem; recuperação e smoke PASS. Registro final2026-10-11-workspace-paridade-f7c-dev-final-codex.md prevalece sobre estados candidatos acima.
+F7D branch feat/workspace-paridade-f7d basee3a44bc9. Desenho de contrato anexado à spec complemento antes do código: lineage capturado por marcador imutável, hash compatível com operações antigas, histórico desconhecido em consulta; Maestro existente contextualizado ao draft. Implementação e gates ainda pendentes. F8/F9 e ensaios externos seguem pendentes; sem main/produção.
+
+## F7D candidato validado — 2026-10-11
+Lineage capturado por nó com contrato hash1, compatibilidade hash0 e restore histórico sem captura em consulta. Maestro usa contexto draft com fence/revision, propostas locais e filtro estrutural de credenciais. SQL78PASS0skip;pytest7325PASS8conhecidas51skip/0NEW;297focados;lint73/73/0NEW;build4PASS;fontes0NUL;browser7+teclado;reviewer ship e documenter preserve incumbente. PR/offline/DEV ainda pendentes, sem declaração de deploy. F8/F9 continuam.

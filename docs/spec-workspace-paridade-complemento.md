@@ -1,5 +1,5 @@
 # Complemento executável: paridade do workspace — Orquestra
-Data: 2026-10-11 · Status: autorizada, F7A/F7B entregues em DEV; execução F7C
+Data: 2026-10-11 · Status: autorizada, F7A/F7B/F7C entregues em DEV; execução F7D
 
 ## 1. Visão
 Completar os requisitos de paridade de docs/spec-pipeline-workspace-dotnet.md, confrontados em docs/workspace-paridade-f6.md. Autorização explícita do usuário: seguir até encerrar os pontos listados, preservando a spec existente e a referência visual. Não substitui arquitetura, contratos ou escopo da spec original.
@@ -60,3 +60,18 @@ Valores Encrypted novos/alterados serão enviados apenas a endpoint write-only a
 Parâmetros de pipeline usam o editor compartilhado em staging e preservam campos adicionais por identidade; referências protegidas são consultáveis e removíveis com confirmação. Tipos comuns não podem capturar valores protegidos. Importação DataStage permanece consulta de declarações, aplicação explícita à revisão atual, sem executar jobs. Cadastro rico e ordem executável terão campos guiados; layout Organizar não modifica execution_order.
 
 Referências legadas sem UUID recebem baseline imutável por versão. Captura inicial só ocorre quando o hash ativo comprova o snapshot corrente/base, em transação SERIALIZABLE; novas importações capturam no mesmo txn. Publicações seguintes copiam baseline histórico à nova versão. Restore sem baseline comprovado fica em consulta com motivo. Não inferir cifras históricas de versões antigas a partir do valor atual. A chave de cifra deve ser conservada; autenticidade HMAC é verificada sem decifrar na projeção. Não há GC nesta entrega, para preservar versões e restores.
+
+
+### Contrato F7D — lineage e Maestro no rascunho
+
+Importações e criações novas recebem `metadata.workspaceLineageVersion=1` e uma lista explícita `configuration.etl_job_lineage` em cada nó, inclusive vazia. Ausência significa captura histórica desconhecida. A marca é controlada pelo servidor e imutável no save; rascunhos ativos anteriores continuam editáveis no contrato anterior, preservando lineage ativo. Restaurar uma versão histórica sem captura comprovada gera rascunho somente para consulta com motivo persistido. Não reconstruir lineage histórico a partir do cadastro atual.
+
+Importação lê lineage, definição e hash base na mesma transação SERIALIZABLE. As linhas preservam campos conhecidos e adicionais; associação órfã torna a importação somente para consulta. Publicação do contrato1 substitui todas as linhas do pipeline atomicamente com as demais tabelas, incluindo a lista vazia. Identidades técnicas e timestamps não são configuração. A projeção preserva duplicatas e não usa chave textual presumida para atualizar linhas sem chave funcional.
+
+A migration de hash mantém o resultado anterior byte a byte no contrato0 e acrescenta lineage somente no contrato1. O procedimento recebe override explícito para captura base/publicação .NET; sem override, escolhe a versão da operação pendente primeiro (inclusive quarentena de erro), depois a versão confirmada. Ordenação de lineage usa representação canônica de todos os campos projetáveis, sem id/timestamps, independente da ordem de edição ou de reinserção. Expected/projection/inherited hashes devem permanecer no mesmo contrato; correção entre contratos é recusada. Não reescrever snapshots, hashes existentes ou operações pendentes anteriores.
+
+Lineage tem consulta e formulário de origens/destinos/transformações no editor expandido, aplicado apenas à definição local. Importações dos extratores existentes retornam prévia e exigem aplicar explicitamente. Rotas legadas que gravam cadastro/header/cache não podem ser chamadas pelo draft. Indisponibilidade de DataStage/InformationServer é exibida como tal; nenhum resultado fictício. Metadados protegidos/defaults Encrypted não entram em JSON ou IA.
+
+Maestro usa o provedor/catálogo existente por contrato específico de draft, com autenticação nativa, permissões, revisão e lease/fence conferidos no servidor. Declarações/defaults/contexto vêm do draft fornecido validado e da identidade salva, sem substituir por catálogo ativo. Propostas são revisáveis, nunca salvam/publicam/executam automaticamente. Contexto e saída são saneados, referências protegidas excluídas; resultado antigo não pode ser aplicado após mudança de nó, configuração, revisão ou posse. Conversas de draft têm namespace próprio.
+
+Gates adicionais: marker falsificado/removido e lineage em posição alternativa recusados; histórico desconhecido em consulta; arrays vazios conhecidos publicados; reordenação sem mudança de hash, mudança de qualquer campo com conflito; captura/transação sem perda de linhas; divergência após projeção mantém gate; operação anterior continua retomável após migration; propostas atrasadas e segredos nunca chegam ao provedor/aplicação.
