@@ -11,10 +11,11 @@ interface Historico {
       linhas: number | null; linhas_fisicas: number | null; decisao: string }[] } }[]
   conclusao: { resultado: string; liberar_dependentes: boolean; notificar: boolean } | null
 }
-export function ValidacaoExecucao({ pipeline, runId }: { pipeline: string; runId: string }) {
+// `active=false`: vista conservada oculta (workspace); não acompanha o servidor.
+export function ValidacaoExecucao({ pipeline, runId, active = true }: { pipeline: string; runId: string; active?: boolean }) {
   const q = useQuery<Historico>({ queryKey: ['validacao-execucao', pipeline, runId],
     queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/validacao-execucao?run_id=${encodeURIComponent(runId)}`),
-    refetchInterval: 15_000 })
+    refetchInterval: active ? 15_000 : false })
   const h = q.data
   if (h && !h.original) return null
   return <details className="max-h-72 shrink-0 overflow-y-auto border-b border-edge bg-panel px-4 py-2 text-xs text-ink">

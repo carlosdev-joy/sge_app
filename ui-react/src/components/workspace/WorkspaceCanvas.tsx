@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ReactFlow, Background, Controls, MarkerType, type Node, type NodeChange, type EdgeChange, type Connection, type ReactFlowInstance, useReactFlow } from '@xyflow/react'
+import { ReactFlow, Background, Controls, MarkerType, type Node, type NodeChange, type EdgeChange, type Connection, type ReactFlowInstance, useReactFlow, useStoreApi } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
@@ -14,8 +14,9 @@ type CanvasNode = Node<{ label: string; kind: string; condition:Record<string,un
 const edgeId=(edge:WorkspaceDefinition['edges'][number])=>JSON.stringify([edge.source,edge.target,edge.branch??null])
 const nodeTypes={workspace:WorkspaceFlowNode}
 function FocusOnMobile({selected}:{selected:string|null}) {
- const flow=useReactFlow()
- useEffect(()=>{if(selected&&window.matchMedia('(max-width:1023px)').matches)flow.fitView({nodes:[{id:selected}],minZoom:0.8,maxZoom:1,padding:0.2,duration:200})},[selected,flow])
+ const flow=useReactFlow();const store=useStoreApi()
+ // Canvas conservado oculto (sem caixa de layout) não é reenquadrado: o zoom do usuário fica.
+ useEffect(()=>{if(selected&&!!store.getState().domNode?.getClientRects().length&&window.matchMedia('(max-width:1023px)').matches)flow.fitView({nodes:[{id:selected}],minZoom:0.8,maxZoom:1,padding:0.2,duration:200})},[selected,flow,store])
  return null
 }
 export function WorkspaceCanvas({definition,layout,editable,selected,onSelect,onPositions,onRemoveEdge,onConnect,onRequestRemoveNode,onDropComponent}:{definition:WorkspaceDefinition;layout:WorkspaceLayout;editable:boolean;selected:string|null;onSelect:(id:string)=>void;onPositions:(changes:NodeChange[])=>void;onRemoveEdge:(changes:EdgeChange[])=>void;onConnect:(connection:Connection)=>void;onRequestRemoveNode:(id:string)=>void;onDropComponent:(type:string,position:{x:number;y:number})=>void}) {

@@ -1,4 +1,6 @@
 import { ApplicationDialogs } from './components/ui/ApplicationDialogs'
+// Antes do BrowserRouter: o voltar/avançar protegido precisa ouvir o popstate primeiro.
+import './lib/navigationGuard'
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'

@@ -70,7 +70,7 @@ export default function SpecializedConfiguration({ node, definition, editable, c
  const sqlNames = staged.edges.filter(edge => edge.target === node.id && staged.nodes.some(row => row.id === edge.source && row.type === 'sql')).map(edge => edge.source)
  if (issue) return <div className="space-y-4"><p role="status" className="text-sm text-dim">{issue}</p><Button variant="secondary" onClick={onClose}>Fechar</Button></div>
  return <div className="min-w-0 space-y-4">
-  <p className="text-sm text-dim">{editable ? 'Configure esta etapa no rascunho. Aplicar mantém as alterações no Fluxo; use Salvar rascunho para persistir.' : 'Modo consulta. Inicie a edição do rascunho para alterar esta configuração.'}</p>
+  <p className="text-sm text-dim">{editable ? 'Configure esta etapa no rascunho. Aplicar mantém as alterações na Montagem; use Salvar rascunho para persistir.' : 'Modo consulta. Inicie a edição do rascunho para alterar esta configuração.'}</p>
   <fieldset disabled={!editable} className="min-w-0">
    {node.type === 'sql' && <PainelSql {...common} mssqlConns={sql.data?.connections ?? []} onPatchSql={patch} canPreview={allowed}/>}
    {node.type === 'email' && <PainelEmail {...common} sqlNames={sqlNames} onPatchEmail={patch}/>}

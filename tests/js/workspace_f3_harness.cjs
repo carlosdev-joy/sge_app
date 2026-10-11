@@ -1,7 +1,7 @@
 const fs=require('fs'),path=require('path'),assert=require('assert/strict');
 const root=path.resolve(__dirname,'../..');const {transform}=require(root+'/ui-react/node_modules/sucrase');
 function load(file,requireFn=require){const m={exports:{}};new Function('require','module','exports',transform(fs.readFileSync(root+'/ui-react/src/lib/'+file,'utf8'),{transforms:['typescript','imports']}).code)(requireFn,m,m.exports);return m.exports}
-const w=load('workspace.ts');
+const tabs=load('workspaceTabs.ts');const w=load('workspace.ts',id=>id==='./workspaceTabs'?tabs:require(id));
 const types=['datastage','sql','python','shell','storedproc','http','decisao','aguarde','notificacao','email','valida_arquivo'];
 const names=['Operação A/B %25','Espaços & ? # ç','ação_東京'];
 for(const name of names){assert.equal(decodeURIComponent(w.workspacePath(name).split('/')[2]),name);assert.equal(w.initialWorkspace(name,'Nome humano','','','').definition.identity.pipelineName,name)}
