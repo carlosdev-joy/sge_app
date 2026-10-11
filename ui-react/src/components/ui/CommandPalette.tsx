@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useGuardedNavigate } from '../../lib/navigationGuard'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { atalhosDaPaleta } from '../../lib/adminNav'
@@ -39,7 +39,8 @@ interface ResultItem {
 // ── CommandPalette ────────────────────────────────────────────────────────────
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const navigate = useNavigate()
+  // Mesma guarda dos links: sair de uma edição não salva pede confirmação.
+  const navigate = useGuardedNavigate()
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
 
@@ -129,7 +130,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         label: j.job_name,
         sub: j.pipeline_name + (j.job_type ? ` · ${j.job_type}` : ''),
         group: 'Fluxos',
-        href: contextual?workspacePath(j.pipeline_name,'fluxo','desenvolvimento'):`/fluxos?${new URLSearchParams({pipeline:j.pipeline_name,legado:'1'})}`,
+        href: contextual?workspacePath(j.pipeline_name,'montagem','desenvolvimento'):`/fluxos?${new URLSearchParams({pipeline:j.pipeline_name,legado:'1'})}`,
       })
     }
   }

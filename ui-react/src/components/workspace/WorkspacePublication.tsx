@@ -7,14 +7,15 @@ import type { WorkspaceDraft, WorkspacePublication, WorkspaceValidation } from '
 import { useAuthStore } from '../../store/auth'
 import { Button } from '../ui/Button'
 const labels: Record<string, string> = { pendente: 'Publicação solicitada', projetado: 'Configuração aplicada; aguardando DAG', gerando: 'Confirmando versão no Airflow', publicado: 'Versão publicada e confirmada', erro: 'Publicação interrompida' }
-export function WorkspacePublicationPanel({ embedded = false, draft, fence, canPublish, dirty, busy, onFreeze, onConfirmed, onSelect }: { embedded?: boolean; draft: WorkspaceDraft; fence: number | undefined; canPublish: boolean; dirty: boolean; busy: boolean; onFreeze: (value: boolean) => void; onConfirmed: () => void; onSelect: (id: string) => void }) {
+// `active=false`: painel conservado numa vista oculta; o acompanhamento não consulta o servidor.
+export function WorkspacePublicationPanel({ embedded = false, active = true, draft, fence, canPublish, dirty, busy, onFreeze, onConfirmed, onSelect }: { embedded?: boolean; active?: boolean; draft: WorkspaceDraft; fence: number | undefined; canPublish: boolean; dirty: boolean; busy: boolean; onFreeze: (value: boolean) => void; onConfirmed: () => void; onSelect: (id: string) => void }) {
  const token = useAuthStore(s => s.token)
  const [validation, setValidation] = useState<WorkspaceValidation | null>(null)
  const [error, setError] = useState('')
  const [sent, setSent] = useState<WorkspacePublication | null>(null)
  const command = useRef<{revision: number; id: string} | null>(null)
  const confirmed = useRef<string | null>(null)
- const operations = useQuery({ queryKey: ['workspace-publications', token, draft.draftId], queryFn: ({ signal }) => workspaceApi.publications(draft.draftId, signal), retry: false, refetchInterval: 2000 })
+ const operations = useQuery({ queryKey: ['workspace-publications', token, draft.draftId], queryFn: ({ signal }) => workspaceApi.publications(draft.draftId, signal), retry: false, refetchInterval: active ? 2000 : false })
  const operation = operations.data?.find(row => row.operationId === sent?.operationId) ?? sent ?? operations.data?.[0]
  const pending = !!operation && !['erro', 'publicado'].includes(operation.state)
  useEffect(() => { onFreeze(pending) }, [pending, operation, draft.revision, onFreeze])

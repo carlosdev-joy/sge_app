@@ -43,7 +43,7 @@ export default function WorkspaceLineage({node,definition,editable,context,canAp
   }catch(error){if(mounted.current&&allowed())toast.error(error instanceof Error?error.message:'Não foi possível consultar o extrator.')}finally{if(mounted.current)setBusy(false)}
  }
  return <div className="space-y-5 min-w-0">
-  <p className="text-sm text-dim">Origens, destinos e transformações desta etapa. Aplicar mantém as mudanças no Fluxo; salve o rascunho para persistir.</p>
+  <p className="text-sm text-dim">Origens, destinos e transformações desta etapa. Aplicar mantém as mudanças na Montagem; salve o rascunho para persistir.</p>
   {!captured&&<p role="status" className="text-sm text-dim">Esta versão não capturou lineage. Conclua ou descarte o rascunho e reimporte o pipeline para editar estes dados.</p>}
   <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-dim">{rows.length} objeto{rows.length===1?'':'s'} no lineage</p>{ready&&<Button size="sm" variant="secondary" onClick={()=>{setSelected(rows.length);setRows([...rows,{direction:'origem',object_name:'',object_type:'Tabela',extraction_method:'manual'}])}}><Plus size={14}/>Adicionar objeto</Button>}</div>
   {rows.length>0?<div className="grid gap-5 md:grid-cols-[minmax(150px,1fr)_minmax(0,3fr)]">

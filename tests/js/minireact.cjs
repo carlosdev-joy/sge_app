@@ -24,8 +24,8 @@
 //
 // ── O que ele NÃO é ────────────────────────────────────────────────────────
 // Não é React. Não há reconciliação por `key`, `useEffect` não roda (efeito é
-// browser, e nenhum aceite desta fase depende de um), não há portal nem
-// contexto. Se um componente passar a depender de qualquer um deles, o teste
+// browser, e nenhum aceite desta fase depende de um), não há portal. Contexto
+// propaga do Provider aos filhos. Se um componente depender do que falta, o teste
 // QUEBRA em vez de mentir — que é o comportamento certo para uma bancada.
 'use strict'
 
@@ -82,6 +82,16 @@ function useMemo(fn, deps) {
 const useCallback = (fn, deps) => useMemo(() => fn, deps)
 const useEffect = () => {}          // efeito é browser; nenhum aceite depende
 const useLayoutEffect = () => {}
+// Contexto com propagação pela árvore: o render é síncrono e em profundidade,
+// então basta empilhar o `value` do Provider enquanto os filhos dele renderizam
+// (ver `renderizar`). Fora de qualquer Provider, useContext devolve o padrão.
+function createContext(padrao) {
+  const c = { padrao, pilha: [] }
+  c.Provider = function Provider(p) { return p.children }
+  c.Provider.__contexto = c
+  return c
+}
+const useContext = (c) => c.pilha.length ? c.pilha[c.pilha.length - 1] : c.padrao
 
 function criar(tipo, props, ...filhos) {
   const p = Object.assign({}, props)
@@ -115,7 +125,14 @@ function renderizar(no, trilha) {
       caminho = trilhaAnterior
       indiceHook = hookAnterior
     }
-    return renderizar(saida, meu)
+    const contexto = tipo.__contexto
+    if (!contexto) return renderizar(saida, meu)
+    contexto.pilha.push(props.value)
+    try {
+      return renderizar(saida, meu)
+    } finally {
+      contexto.pilha.pop()
+    }
   }
   // Host: preserva os handlers (é o que permite CLICAR) e desce nos filhos.
   const filhos = renderizar(props.children, trilha.concat(String(tipo)))
@@ -192,6 +209,6 @@ function montar(elemento) {
 
 module.exports = {
   FRAGMENT, montar,
-  hooks: { useState, useRef, useMemo, useCallback, useEffect, useLayoutEffect },
+  hooks: { useState, useRef, useMemo, useCallback, useEffect, useLayoutEffect, createContext, useContext },
   criar,
 }

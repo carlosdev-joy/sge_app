@@ -111,6 +111,6 @@ export function PainelValidaArquivo({ node, pipeline, nodes, edges, sshConns, on
       </div>)}
       <p className="text-xs text-dim">{resultado.combinacao} {resultado.contagem}</p>
     </section>}
-    <p className="border-t border-edge pt-3 text-xs leading-relaxed text-dim">{node.data.workspace ? 'Aplique ao Fluxo e use Salvar rascunho. Valide e publique a versão para disponibilizar a configuração às novas execuções.' : 'Salve pelo botão “Salvar fluxo”. Alterar nós, conexões, servidor SSH ou destinos exige publicar a DAG.'} Caminho, cabeçalho e políticas valem para novas execuções. Retomar uma execução preserva sua revisão original; para usar mudanças, inicie uma nova execução.</p>
+    <p className="border-t border-edge pt-3 text-xs leading-relaxed text-dim">{node.data.workspace ? 'Aplique à Montagem e use Salvar rascunho. Valide e publique a versão para disponibilizar a configuração às novas execuções.' : 'Salve pelo botão “Salvar fluxo”. Alterar nós, conexões, servidor SSH ou destinos exige publicar a DAG.'} Caminho, cabeçalho e políticas valem para novas execuções. Retomar uma execução preserva sua revisão original; para usar mudanças, inicie uma nova execução.</p>
   </div>
 }

@@ -1,7 +1,13 @@
 // Comportamento compartilhado dos overlays do DS (Modal e Sheet): pilha
 // global, Esc só no topo e gestão de foco. Vive em arquivo próprio (sem
 // componentes) para o fast refresh do Vite não reclamar dos exports mistos.
-import React, { useEffect, useRef } from 'react'
+import React, { createContext, useEffect, useRef } from 'react'
+
+// Área de tela conservada oculta (ex.: Montagem enquanto a Configuração do
+// mesmo rascunho está aberta). Um overlay aberto dentro dela continua montado,
+// com o conteúdo preservado, mas não entra na pilha, não prende foco nem Esc e
+// não se anuncia como diálogo até a área voltar a ser exibida.
+export const OverlayScope = createContext(true)
 
 // Pilha global dos overlays abertos: com camadas empilhadas (ex.: detalhe →
 // histórico na seção Caixa), o Esc deve fechar SÓ o do topo. Sem a pilha, o

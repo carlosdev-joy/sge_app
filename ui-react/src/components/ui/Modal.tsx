@@ -1,6 +1,6 @@
-import React, { useRef } from 'react'
+import React, { useContext, useRef } from 'react'
 import { X } from 'lucide-react'
-import { useOverlay, trapTabKey } from './overlay'
+import { OverlayScope, useOverlay, trapTabKey } from './overlay'
 
 interface ModalProps {
   open: boolean
@@ -14,8 +14,11 @@ const SIZES = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-4xl'
 
 export function Modal({ open, onClose, title, children, size = 'md' }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+  // Dentro de uma área oculta (OverlayScope) o modal fica montado e inerte:
+  // mesma árvore, conteúdo preservado, fora da pilha e sem role de diálogo.
+  const active = useContext(OverlayScope)
   // Pilha de overlays + Esc no topo + gestão de foco (ver ui/overlay.ts).
-  useOverlay(open, onClose, panelRef)
+  useOverlay(open && active, onClose, panelRef)
 
   if (!open) return null
 
@@ -28,12 +31,12 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
     // Backspace no navegador de pastas do anexo (onde a própria tela ensina
     // "Subir um nível (Backspace)") disparava o `deleteKeyCode` e abria
     // "Excluir nó" por cima. Vale para todo modal, não só aquele.
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 nokey">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 nokey" style={active ? undefined : { display: 'none' }}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div
         ref={panelRef}
-        role="dialog"
-        aria-modal="true"
+        role={active ? 'dialog' : undefined}
+        aria-modal={active ? 'true' : undefined}
         aria-label={title}
         tabIndex={-1}
         onKeyDown={(e) => trapTabKey(e, panelRef.current)}

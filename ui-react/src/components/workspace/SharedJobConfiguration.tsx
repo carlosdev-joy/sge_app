@@ -49,7 +49,7 @@ export default function SharedJobConfiguration({ node, editable, defaults, conte
   catch (error) { toast.error(error instanceof Error ? error.message : 'Não foi possível aplicar a configuração.') }
  }
  return <div className="space-y-5 min-w-0">
-  <p className="text-sm text-dim">{editable ? 'Configure esta etapa no rascunho. Aplicar mantém as alterações no Fluxo; use Salvar rascunho para persistir.' : 'Consulte a configuração desta etapa.'}</p>
+  <p className="text-sm text-dim">{editable ? 'Configure esta etapa no rascunho. Aplicar mantém as alterações na Montagem; use Salvar rascunho para persistir.' : 'Consulte a configuração desta etapa.'}</p>
   {!editable && <p role="status" className="text-sm text-dim">Modo consulta. Inicie a edição do rascunho para alterar esta configuração.</p>}
   {(ssh.isError || mssql.isError) && <p role="status" className="text-sm text-dim">Não foi possível carregar um catálogo de conexões. Confira a conexão configurada e tente novamente.</p>}
   {errors.length > 0 && <div role="status" className="space-y-1 text-sm text-amber-800 dark:text-amber-300">{errors.map(error => <p key={error}>{error}</p>)}</div>}

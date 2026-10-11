@@ -1,18 +1,34 @@
 import { object, text, type WorkspaceDefinition, type WorkspaceLayout } from './workspace'
 import type { FluxoResp } from '../components/etapas/FluxoEditor'
+import { canonicalWorkspaceQuery, canonicalWorkspaceTab } from './workspaceTabs'
 
 // Apenas destinos locais conhecidos; query de origem nunca vira URL livre.
-export function contextualPath(name: string, tab: string, search: URLSearchParams, experience?: string): string {
- const next = new URLSearchParams(search)
+// Abas anteriores (fluxo, execucoes, logs, parametros...) resolvem para o destino atual.
+export function contextualPath(name: string, tab: string, search: URLSearchParams, experience?: string, hash = ''): string {
+ const next = canonicalWorkspaceQuery(tab, search)
  next.delete('pipeline'); next.delete('legado')
  if (experience) next.set('experiencia', experience)
- return `/pipelines/${encodeURIComponent(name)}/${tab==='etapas'?'fluxo':tab}?${next}`
+ return `/pipelines/${encodeURIComponent(name)}/${canonicalWorkspaceTab(tab)}?${next}${hash.startsWith('#') ? hash : ''}`
 }
-export function legacyWorkspacePath(kind: 'jobs' | 'fluxos', search: URLSearchParams): string | null {
+// Volta à Malha de origem (`de=malha:NOME`) na lente de execução, com a data e
+// a corrida da malha quando informadas. O destino é montado aqui, nunca lido
+// da query (mesmo molde de linkDaCorrida e de pages/Fluxos).
+export function malhaReturnPath(search: URLSearchParams): string | null {
+ const origin = search.get('de') ?? ''
+ const malha = origin.startsWith('malha:') ? origin.slice(6).trim() : ''
+ if (!malha) return null
+ const next = new URLSearchParams({ malha, modo: 'execucao' })
+ const run = Number((search.get('corrida') ?? '').trim())
+ if (Number.isInteger(run) && run > 0) next.set('corrida', String(run))
+ const date = (search.get('data') ?? '').trim()
+ if (date) next.set('data', date)
+ return `/malha?${next}`
+}
+export function legacyWorkspacePath(kind: 'jobs' | 'fluxos', search: URLSearchParams, hash = ''): string | null {
  const name = search.get('pipeline')?.trim()
  if (!name || search.get('legado') === '1') return null
  const execution = kind === 'fluxos' && search.get('modo') === 'execucao'
- return contextualPath(name, execution ? 'execucoes' : 'fluxo', search, execution ? 'sustentacao' : 'desenvolvimento')
+ return contextualPath(name, execution ? 'execucao' : 'montagem', search, execution ? 'sustentacao' : 'desenvolvimento', hash)
 }
 function decoded(value: unknown): unknown {
  if (typeof value !== 'string') return value ?? null

@@ -11,7 +11,7 @@ export function WorkspaceVersions({name, canRestore}: {name: string; canRestore:
  const token = useAuthStore(s => s.token), client = useQueryClient(), navigate = useNavigate()
  const [left, setLeft] = useState(''), [right, setRight] = useState(''), [error, setError] = useState('')
  const versions = useQuery({queryKey: ['workspace-versions',token,name], queryFn: ({signal}) => workspaceApi.versions(name,signal), retry:false})
- const restore = useMutation({mutationFn: (id: string) => workspaceApi.restore(name,id), onSuccess: () => {client.invalidateQueries({queryKey:['workspace-context',token,name]});navigate(workspacePath(name,'fluxo','desenvolvimento'))}, onError: value => setError(value.message)})
+ const restore = useMutation({mutationFn: (id: string) => workspaceApi.restore(name,id), onSuccess: () => {client.invalidateQueries({queryKey:['workspace-context',token,name]});navigate(workspacePath(name,'montagem','desenvolvimento'))}, onError: value => setError(value.message)})
  if(versions.isPending) return <PageSpinner/>
  if(versions.isError) return <p role="alert" className="text-sm text-red-700 dark:text-red-400">{versions.error.message}</p>
  const before = versions.data.find(v => v.versionId === left), after = versions.data.find(v => v.versionId === right)

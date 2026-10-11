@@ -548,7 +548,7 @@ function Paleta({
 
 interface Props {
   pipeline: string
-  workspace?: { flow: FluxoResp; runId: string | null; onRun: (id: string | null) => void; canReprocess: boolean; canPause: boolean }
+  workspace?: { flow: FluxoResp; runId: string | null; onRun: (id: string | null) => void; canReprocess: boolean; canPause: boolean; active?: boolean; stage?: string | null; onStage?: (id: string | null) => void } // active=false: vista oculta, sem teclado nem polling; stage/onStage: etapa investigada (URL)
   // Somente leitura (perfil consulta): esconde paleta/ações e bloqueia edição.
   // A autoridade continua sendo a API (PERM_EDITAR no POST /fluxo).
   readOnly?: boolean
@@ -648,7 +648,7 @@ function FluxoEditorInner({
         ? `?data_referencia=${encodeURIComponent(dataExecucao)}` : ''))
     },
     enabled: !!pipeline && emExecucao,
-    refetchInterval: 30_000,   // leitura de painel: acompanha o dia rodando
+    refetchInterval: workspace?.active === false ? false : 30_000,   // leitura de painel: acompanha o dia rodando
   })
   const execData = emExecucao ? execQuery.data : undefined
   // A data exibida: a pedida, ou a que o servidor calculou (ODATE corrente).
@@ -1992,7 +1992,7 @@ function FluxoEditorInner({
   const temModalAberto = !!(delNodeIds?.length) || !!renamePedido || showPublish
     || rerunAberto || pausaAberta
   useEffect(() => {
-    if (temModalAberto) return
+    if (temModalAberto || workspace?.active === false) return // vista oculta do workspace: o teclado é da vista visível
     const onKey = (e: KeyboardEvent) => {
       // Overlay na frente = quem trata teclado é ele. A lista `temModalAberto`
       // só enxerga os modais DESTE componente; o navegador de pastas do anexo
@@ -2038,7 +2038,27 @@ function FluxoEditorInner({
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [selectedId, temModalAberto, closePanel, dockEstado, nodes, dirty, saving, travado, setNodes, salvar, realceLimpar])
+  }, [selectedId, temModalAberto, workspace?.active, closePanel, dockEstado, nodes, dirty, saving, travado, setNodes, salvar, realceLimpar])
+
+  // Workspace: a etapa investigada é contrato com a vista Tabela (URL `etapa`).
+  // URL → canvas quando a etapa existe no grafo; canvas → URL quando o operador
+  // seleciona. `etapaAplicada` é a última etapa da URL já refletida no canvas.
+  const etapaPedida = workspace?.stage ?? null
+  const aoTrocarEtapa = workspace?.onStage
+  const [etapaAplicada, setEtapaAplicada] = useState<string | null>(null)
+  if (aoTrocarEtapa && etapaPedida !== etapaAplicada && (!etapaPedida || nodes.some(n => n.id === etapaPedida))) {
+    setEtapaAplicada(etapaPedida)
+    if (etapaPedida !== selectedId) {
+      setSelectedId(etapaPedida)
+      if (etapaPedida) setDockEstado(e => (e === 'colapsado' ? 'aberto' : e))
+    }
+  }
+  useEffect(() => {
+    if (!aoTrocarEtapa || selectedId === etapaAplicada) return
+    // Ainda carregando o grafo da etapa pedida: não apagar a URL.
+    if (selectedId === null && etapaPedida && !nodes.some(n => n.id === etapaPedida)) return
+    aoTrocarEtapa(selectedId)
+  }, [aoTrocarEtapa, selectedId, etapaAplicada, etapaPedida, nodes])
 
   // ── Pendências por nó (validação leve, AO VIVO) — padrão ADF: o grafo
   // sinaliza o que falta configurar sem precisar abrir nó por nó. A régua é a
@@ -2268,7 +2288,7 @@ function FluxoEditorInner({
           onCorrida={escolherCorrida}
         /></div>
       )}
-      {emExecucao && execData?.identidade?.run_id && <div className={workspace?'workspace-reference-validation':undefined}><ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} /></div>}
+      {emExecucao && execData?.identidade?.run_id && <div className={workspace?'workspace-reference-validation':undefined}><ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} active={workspace?.active !== false} /></div>}
       {workspace && emExecucao && nodes.length > 0 && (
         <label className="workspace-reference-locator flex items-center gap-2 border-b border-edge px-3 py-2 text-sm">
           <span className="shrink-0">Localizar etapa</span>

@@ -235,7 +235,7 @@ export default function Pipelines() {
                   </button>
                   {isDomOpen && domPipelines.map(p => (
                     <PipelineRow
-                      onWorkspace={workspace.data?.enabled&&workspace.data.actions.consultDefinition?()=>navigate(workspacePath(p.pipeline_name,workspace.data.actions.editDraft?'fluxo':'visao-geral',workspace.data.actions.editDraft?'desenvolvimento':'consulta')):undefined}
+                      onWorkspace={workspace.data?.enabled&&workspace.data.actions.consultDefinition?()=>navigate(workspacePath(p.pipeline_name,workspace.data.actions.editDraft?'montagem':'visao-geral',workspace.data.actions.editDraft?'desenvolvimento':'consulta')):undefined}
                       key={p.pipeline_name}
                       pipeline={p}
                       isViewer={isViewer}

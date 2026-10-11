@@ -1,10 +1,9 @@
 import { WorkspaceFlowTools } from './WorkspaceFlowTools'
-const WorkspaceParameters = lazy(() => import('./WorkspaceParameters').then(module => ({ default: module.WorkspaceParameters })))
-import { useNavigate } from 'react-router-dom'
+import { useNavigationGuard } from '../../lib/navigationGuard'
+import { OverlayScope } from '../ui/overlay'
 import { confirmAction } from '../../lib/dialogs'
 import { Modal } from '../ui/Modal'
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { PageSpinner } from '../ui/Spinner'
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { type Connection, type EdgeChange, type NodeChange } from '@xyflow/react'
 import { GitBranch, LockKeyhole, Pencil, RefreshCw, Save, UnlockKeyhole } from 'lucide-react'
@@ -16,7 +15,10 @@ import { Input, Select } from '../ui/Input'
 import { toast } from '../ui/Toast'
 import { NodeProperties } from './NodeProperties'
 import { WorkspaceCanvas } from './WorkspaceCanvas'
-import { WorkspaceDraftTools } from './WorkspaceDraftTools'
+import { WorkspaceJsonTools } from './WorkspaceDraftTools'
+import { WorkspaceConfiguration } from './WorkspaceConfiguration'
+import type { JobParamApi } from '../../lib/dsParams'
+import { sameWorkspaceSession, type ConfigurationGroup } from '../../lib/workspaceTabs'
 import { WorkspacePublicationPanel } from './WorkspacePublication'
 import { connectWorkspaceDecision, removeWorkspaceEdges } from '../../lib/workspaceDecision'
 import { createPortal } from 'react-dom'
@@ -26,8 +28,12 @@ import { WORKSPACE_COMPONENT_MIME, WORKSPACE_TYPES, typeLabel } from './workspac
 type LocalDraft = {base:WorkspaceDraft;definition:WorkspaceDefinition;layout:WorkspaceLayout}
 const localDrafts=new Map<string,LocalDraft>()
 useAuthStore.subscribe((state,previous)=>{if(state.token!==previous.token)localDrafts.clear()})
-export function WorkspaceEditor({draft,definition:source,layout:sourceLayout,reasons,capabilities,development,tab,onSaved,onDiscarded,actionsHost}:{actionsHost?:HTMLElement|null;draft:WorkspaceDraft|null;definition:WorkspaceDefinition;layout:WorkspaceLayout;reasons:string[];capabilities:WorkspaceCapabilities;development:boolean;tab:string;onSaved:(draft:WorkspaceDraft)=>void;onDiscarded:()=>void}) {
- const navigate=useNavigate()
+export interface WorkspaceSessionState { dirty: boolean; editable: boolean; revision: number | null }
+// Uma instância por Pipeline/rascunho/experiência: Montagem e Configuração são
+// vistas da mesma sessão; nos demais destinos ela continua montada e oculta.
+export function WorkspaceEditor({name,draft,definition:source,layout:sourceLayout,reasons,capabilities,development,tab,configGroup,onConfigGroup,onOpenTab,onSession,onSaved,onDiscarded,actionsHost}:{name:string;actionsHost?:HTMLElement|null;draft:WorkspaceDraft|null;definition:WorkspaceDefinition;layout:WorkspaceLayout;reasons:string[];capabilities:WorkspaceCapabilities;development:boolean;tab:string;configGroup:ConfigurationGroup;onConfigGroup:(group:ConfigurationGroup)=>void;onOpenTab:(tab:'montagem'|'configuracao')=>void;onSession?:(state:WorkspaceSessionState)=>void;onSaved:(draft:WorkspaceDraft)=>void;onDiscarded:()=>void}) {
+ // Escopo de overlay herdado: as vistas só o restringem, nunca o reativam.
+ const overlayScope=useContext(OverlayScope)
  const [pendingNodeId,setPendingNodeId]=useState<string|null>(null)
  const editorRef=useRef<HTMLDivElement>(null);const [diagnosticRequest,setDiagnosticRequest]=useState<{id:string;key:number}|null>(null)
  const [layoutKey,setLayoutKey]=useState(0);const [librarySearch,setLibrarySearch]=useState('');const [publicationFrozen,setPublicationFrozen]=useState(false)
@@ -50,19 +56,13 @@ export function WorkspaceEditor({draft,definition:source,layout:sourceLayout,rea
  useEffect(()=>{if(!fence||!expires||!manage)return;const delay=Math.max(5000,Math.min(30000,(Date.parse(expires)-Date.now())/2));const timer=setInterval(()=>renewRef.current(),delay);return()=>clearInterval(timer)},[fence,expires,manage])
  useEffect(()=>{if(base&&development){if(dirty)localDrafts.set(base.draftId,{base,definition,layout});else localDrafts.delete(base.draftId)}},[base,definition,layout,dirty,development])
  useEffect(()=>{const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer)},[])
- useEffect(()=>{
-  if(!dirty)return
-  const unload=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue=''}
-  const click=(event:MouseEvent)=>{
-   const target=event.target instanceof Element?event.target.closest<HTMLAnchorElement>('a[href]'):null
-   if(!target||event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey||target.target==='_blank'||target.hasAttribute('download'))return
-   const destination=new URL(target.href,window.location.href)
-   if(destination.href===window.location.href)return
-   event.preventDefault();event.stopImmediatePropagation()
-   void confirmAction('Há alterações não salvas nesta aba. Deseja sair?').then(accepted=>{if(!accepted)return;if(destination.origin===window.location.origin)navigate(destination.pathname+destination.search+destination.hash);else{window.removeEventListener('beforeunload',unload);window.location.assign(destination.href)}})
-  }
-  window.addEventListener('beforeunload',unload);document.addEventListener('click',click,true);return()=>{window.removeEventListener('beforeunload',unload);document.removeEventListener('click',click,true)}
- },[dirty,navigate])
+ const revision=base?.revision??null
+ useEffect(()=>{onSession?.({dirty,editable,revision})},[dirty,editable,revision,onSession])
+ // Sair da sessão (outro pipeline, fonte ou experiência, ou fora do Pipeline)
+ // com alterações pede confirmação; trocar de destino dentro dela não. Com a
+ // saída confirmada, o cache local deste rascunho é descartado e não volta.
+ const guardedDraft=base?.draftId
+ useNavigationGuard(dirty?{leaves:(from,to)=>!sameWorkspaceSession(name,from,to),message:'Há alterações não salvas neste rascunho. Sair desta sessão descarta essas alterações. Deseja sair?',onLeave:()=>{if(guardedDraft)localDrafts.delete(guardedDraft)}}:null)
  function editingCurrentDraft(expected=base,expectedFence=lease?.fence){const state=currentState.current;return state.editable&&Date.parse(state.lease?.expiresAt??'')>Date.now()&&state.base?.draftId===expected?.draftId&&state.base?.revision===expected?.revision&&state.lease?.fence===expectedFence}
  function sameDraftIntent(){const state=currentState.current;return state.base?.draftId===base?.draftId&&state.base?.revision===base?.revision&&!state.busy}
  function changed(next:WorkspaceDefinition,nextLayout=layout){if(!currentState.current.editable)return;setDefinition(next);setLayout(nextLayout);setDirty(true)}
@@ -92,31 +92,43 @@ export function WorkspaceEditor({draft,definition:source,layout:sourceLayout,rea
   if(!diagnosticRequest)return
   const frame=requestAnimationFrame(()=>{const panel=editorRef.current?.querySelector<HTMLElement>('[aria-label="Propriedades da etapa"]');panel?.scrollIntoView({block:'start'});panel?.querySelector<HTMLElement>('textarea')?.focus({preventScroll:true})})
   return()=>cancelAnimationFrame(frame)
- },[diagnosticRequest])
+ },[diagnosticRequest,tab])
  const actions=(<div className="flex flex-wrap gap-2">{base&&<Button size="sm" variant="secondary" disabled={busy} onClick={reload}><RefreshCw size={14}/>Recarregar</Button>}{manage&&!held&&<Button disabled={busy} size="sm" onClick={()=>begin()}><Pencil size={14}/>{reasons.length?'Gerenciar rascunho':'Iniciar edição'}</Button>}{manage&&!held&&capabilities.actions.administer&&owner&&!owner.heldBySession&&<Button size="sm" variant="secondary" disabled={busy} onClick={()=>begin(true)}>Assumir edição</Button>}{held&&<><Button disabled={busy} size="sm" variant="secondary" onClick={()=>release()}>Encerrar edição</Button>{allowed&&<Button size="sm" onClick={()=>save.mutate()} disabled={!dirty||publicationFrozen} loading={save.isPending}><Save size={14}/>Salvar rascunho</Button>}</>}</div>)
- const publication=base&&development&&capabilities.actions.consultVersions&&<WorkspacePublicationPanel embedded={tab!=='parametros'} draft={base} fence={held?lease?.fence:undefined} canPublish={capabilities.actions.publish} dirty={dirty} busy={busy} onFreeze={setPublicationFrozen} onConfirmed={reload} onSelect={id=>{setSelected(id);setDiagnosticRequest({id,key:Date.now()})}}/>
- return <div ref={editorRef} className="space-y-3">
+ const assembling=tab==='montagem',configuring=tab==='configuracao'
+ // Cada vista é montada na primeira visita e mantida, oculta fora do seu
+ // destino: formulários, canvas (zoom, posição, seleção), inspector e JSON em
+ // edição continuam como estavam. Overlays de uma vista oculta ficam inertes.
+ const [configurationMounted,setConfigurationMounted]=useState(configuring)
+ if(configuring&&!configurationMounted)setConfigurationMounted(true)
+ const [assemblyMounted,setAssemblyMounted]=useState(assembling)
+ if(assembling&&!assemblyMounted)setAssemblyMounted(true)
+ const secretContext=base&&lease?{draftId:base.draftId,expectedRevision:base.revision,fence:lease.fence}:undefined
+ // Uma única instância para as duas vistas: validação e comando de publicação não recomeçam.
+ const publication=base&&development&&capabilities.actions.consultVersions&&<WorkspacePublicationPanel active={assembling||configuring} draft={base} fence={held?lease?.fence:undefined} canPublish={capabilities.actions.publish} dirty={dirty} busy={busy} onFreeze={setPublicationFrozen} onConfirmed={reload} onSelect={id=>{if(!assembling)onOpenTab('montagem');setSelected(id);setDiagnosticRequest({id,key:Date.now()})}}/>
+ const configurationStatus=dirty?'Há alterações não salvas neste rascunho. Publicar é uma ação separada.':manage&&!held?'Inicie a edição para alterar a configuração deste rascunho.':base?`Rascunho salvo · revisão ${base.revision}. Publicar é uma ação separada.`:'Configuração publicada em consulta.'
+ return <div ref={editorRef} className="space-y-3" hidden={!assembling&&!configuring}>
   <div className="flex flex-wrap items-center justify-between gap-3 px-0 py-0">
-   <div className="text-xs flex items-center gap-2 text-dim">{editable?<UnlockKeyhole size={17}/>:<LockKeyhole size={17}/>}<span>{editable?'Você está editando o rascunho':owner&&Date.parse(owner.expiresAt)>clock?`${owner.holderUser} possui a sessão de edição`:'Modo consulta'}{base&&` · revisão ${base.revision}`}</span></div>
-   {!actionsHost&&actions}
-   {actionsHost&&createPortal(actions,actionsHost)}
+   <div className="text-xs flex items-center gap-2 text-dim">{editable?<UnlockKeyhole size={17}/>:<LockKeyhole size={17}/>}<span>{editable?'Você está editando o rascunho':owner&&Date.parse(owner.expiresAt)>clock?`${owner.holderUser} possui a sessão de edição`:'Modo consulta'}{base&&` · revisão ${base.revision}`} · publicação separada</span></div>
+   {(assembling||configuring)&&!actionsHost&&actions}
+   {(assembling||configuring)&&actionsHost&&createPortal(actions,actionsHost)}
   </div>
   {(issue||!!reasons.length)&&<div role="alert" className="border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300 rounded-lg p-3 text-sm">{issue||reasons.join(' · ')}</div>}
-  <div className="text-xs text-dim flex flex-wrap justify-between gap-2"><span>{dirty?'Alterações ainda não salvas nesta aba':base?`Último salvamento: ${new Date(base.updatedAt).toLocaleString('pt-BR')}`:'Configuração publicada'} · {definition.nodes.length} etapas</span>{base&&<span>Responsável: {base.responsible}</span>}</div>
+  <div className="text-xs text-dim flex flex-wrap justify-between gap-2"><span>{dirty?'Alterações ainda não salvas nesta sessão':base?`Último salvamento: ${new Date(base.updatedAt).toLocaleString('pt-BR')}`:'Configuração publicada'} · {definition.nodes.length} etapas</span>{base&&<span>Responsável: {base.responsible}</span>}</div>
 
+  {configurationMounted&&<OverlayScope.Provider value={overlayScope&&configuring}><div hidden={!configuring}><WorkspaceConfiguration group={configGroup} onGroup={onConfigGroup} definition={definition} editable={editable} onApply={next=>changed(next)} canApply={()=>editingCurrentDraft()} secretContext={secretContext} responsible={base?.responsible} status={configurationStatus} jsonKey={`${base?.revision}-${editable}`} saveAction={held&&allowed?<Button size="sm" onClick={()=>save.mutate()} disabled={!dirty||publicationFrozen} loading={save.isPending}><Save size={14}/>Salvar rascunho</Button>:undefined}/></div></OverlayScope.Provider>}
 
-  {tab==='parametros'?<Suspense fallback={<PageSpinner />}><WorkspaceParameters secretContext={base&&lease?{draftId:base.draftId,expectedRevision:base.revision,fence:lease.fence}:undefined} definition={definition} editable={editable} canApply={()=>editingCurrentDraft()} onApply={next=>{if(editingCurrentDraft())changed(next)}}/></Suspense>:<div className="grid gap-3 lg:grid-cols-[160px_minmax(0,1fr)_260px]">
+  {assemblyMounted&&<OverlayScope.Provider value={overlayScope&&assembling}><div hidden={!assembling}><div className="grid gap-3 lg:grid-cols-[160px_minmax(0,1fr)_260px] xl:grid-cols-[192px_minmax(0,1fr)_320px]">
    <aside className="border border-edge rounded-lg bg-panel p-3"><h2 className="text-sm font-semibold text-ink mb-3">Componentes</h2><Input label="Buscar componente" value={librarySearch} onChange={e=>setLibrarySearch(e.target.value)} className="mb-3"/>{[['Integração',['datastage','sql','python','shell','storedproc','http']],['Controle',['decisao','aguarde']],['Entrega',['valida_arquivo','notificacao','email']]].map(([group,kinds])=><div key={String(group)} className="mb-4"><h3 className="text-xs font-medium text-dim mb-2">{group}</h3><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-1 gap-2">{WORKSPACE_TYPES.filter(([type,label])=>(kinds as string[]).includes(type)&&label.toLocaleLowerCase().includes(librarySearch.toLocaleLowerCase())).map(([type,label,Icon])=><button key={type} type="button" disabled={!editable} draggable={editable} onDragStart={event=>{if(!editable){event.preventDefault();return}event.dataTransfer.setData(WORKSPACE_COMPONENT_MIME,type);event.dataTransfer.effectAllowed='copy'}} onClick={()=>add(type)} className="flex items-center gap-2 px-2 py-2 text-left text-xs rounded border border-edge text-ink hover:bg-edge/20 cursor-grab active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-60 disabled:cursor-not-allowed"><Icon size={15} className="text-blue-700 dark:text-blue-400 shrink-0"/>{label}</button>)}</div></div>)}<p className="text-xs text-dim mt-4">{editable?'Clique ou arraste para adicionar uma etapa.':'Tipos de etapa disponíveis no workspace.'}</p></aside>
    <section className="border border-edge rounded-lg bg-panel min-w-0 overflow-hidden"><div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-edge"><h2 className="text-sm font-semibold text-ink">{development?'Fluxo em montagem':base?'Fluxo do rascunho':'Fluxo publicado'}</h2><div className="flex items-center gap-2"><Button size="sm" variant="secondary" disabled={!editable||!definition.nodes.length} onClick={()=>{changed(definition,arrangeWorkspace(definition,layout));setLayoutKey(v=>v+1)}}><GitBranch size={13}/>Organizar</Button><span className="text-xs text-dim">{editable?'Montagem':'Somente leitura'}</span></div></div>{<div className="px-4 py-2 border-b border-edge"><Select label="Localizar etapa no fluxo" value={selected??''} onChange={e=>setSelected(e.target.value||null)}><option value="">Selecione uma etapa</option>{definition.nodes.map(n=><option key={n.id} value={n.id}>{n.id} · {typeLabel(n.type)}</option>)}</Select></div>}<WorkspaceCanvas key={layoutKey} definition={definition} layout={layout} editable={editable} selected={selected} onSelect={setSelected} onPositions={positions} onRemoveEdge={edges} onConnect={connect} onRequestRemoveNode={setPendingNodeId} onDropComponent={add}/>
-    {publication}
    </section>
    {!node&&<aside className="border border-edge rounded-lg bg-panel p-4 min-w-0"><h2 className="text-sm font-semibold text-ink">Propriedades da etapa</h2><p className="text-sm text-dim mt-3">Selecione uma etapa no fluxo para consultar sua configuração.</p><dl className="mt-6 space-y-4 text-sm"><div><dt className="text-dim">Pipeline</dt><dd className="text-ink break-all">{definition.identity.pipelineName}</dd></div><div><dt className="text-dim">Componentes</dt><dd className="text-ink">{definition.nodes.length}</dd></div><div><dt className="text-dim">Conexões</dt><dd className="text-ink">{definition.edges.length}</dd></div></dl></aside>}
-   {node&&<NodeProperties secretContext={base&&lease?{draftId:base.draftId,expectedRevision:base.revision,fence:lease.fence}:undefined} key={`${node.id}:${diagnosticRequest?.id===node.id?diagnosticRequest.key:0}`} node={node} definition={definition} onDefinitionChange={next=>{if(editingCurrentDraft())changed(next,currentState.current.layout)}} editable={editable} defaults={params as unknown as import('../../lib/dsParams').JobParamApi[]} canRename={()=>editingCurrentDraft()} diagnosticRequest={diagnosticRequest?.id===node.id?diagnosticRequest.key:undefined} onClose={()=>setSelected(null)} onRename={id=>{try{const current=currentState.current;if(!current.editable||!current.definition.nodes.some(row=>row.id===node.id))return;const next=renameWorkspaceNode(current.definition,current.layout,node.id,id);changed(next.definition,next.layout);setSelected(id)}catch(e){toast.error(e instanceof Error?e.message:'Não foi possível renomear')}}} onChange={next=>{const current=currentState.current;if(current.editable)changed({...current.definition,nodes:current.definition.nodes.map(n=>n.id===next.id?next:n)})}} onDelete={()=>setPendingNodeId(node.id)}/>}
-  </div>}
-  {tab==='parametros'&&publication}
+   {node&&<NodeProperties secretContext={secretContext} key={`${node.id}:${diagnosticRequest?.id===node.id?diagnosticRequest.key:0}`} node={node} definition={definition} onDefinitionChange={next=>{if(editingCurrentDraft())changed(next,currentState.current.layout)}} editable={editable} defaults={params as unknown as JobParamApi[]} canRename={()=>editingCurrentDraft()} diagnosticRequest={diagnosticRequest?.id===node.id?diagnosticRequest.key:undefined} onClose={()=>setSelected(null)} onRename={id=>{try{const current=currentState.current;if(!current.editable||!current.definition.nodes.some(row=>row.id===node.id))return;const next=renameWorkspaceNode(current.definition,current.layout,node.id,id);changed(next.definition,next.layout);setSelected(id)}catch(e){toast.error(e instanceof Error?e.message:'Não foi possível renomear')}}} onChange={next=>{const current=currentState.current;if(current.editable)changed({...current.definition,nodes:current.definition.nodes.map(n=>n.id===next.id?next:n)})}} onDelete={()=>setPendingNodeId(node.id)}/>}
+  </div></div></OverlayScope.Provider>}
+  {publication}
+  {assemblyMounted&&<OverlayScope.Provider value={overlayScope&&assembling}><div hidden={!assembling}>
+  <section aria-label="Ferramentas do fluxo" className="flex flex-wrap items-start gap-2"><WorkspaceFlowTools definition={definition} editable={editable} canApply={()=>editingCurrentDraft()} onApply={next=>{if(editingCurrentDraft())changed(next)}}/><WorkspaceJsonTools key={`${base?.revision}-${editable}`} mode="import" definition={definition} editable={editable} onApply={next=>changed(next)}/></section>
   <Modal open={pendingNodeId!==null} onClose={()=>setPendingNodeId(null)} title="Remover etapa" size="sm"><p className="text-sm text-ink [overflow-wrap:anywhere]">Remover a etapa {pendingNodeId} e suas ligações do rascunho?</p><p className="text-xs text-dim mt-2">A configuração publicada permanece disponível.</p><div className="flex justify-end gap-3 mt-5"><Button variant="secondary" onClick={()=>setPendingNodeId(null)}>Cancelar</Button><Button variant="danger" disabled={!editable} onClick={()=>{if(pendingNodeId){const next=removeWorkspaceNode(definition,layout,pendingNodeId);changed(next.definition,next.layout);setSelected(null)}setPendingNodeId(null)}}>Remover etapa</Button></div></Modal>
-  <WorkspaceFlowTools definition={definition} editable={editable} canApply={()=>editingCurrentDraft()} onApply={next=>{if(editingCurrentDraft())changed(next)}}/>
-  <WorkspaceDraftTools key={`${base?.revision}-${editable}`} definition={definition} editable={editable} onApply={next=>changed(next)}/>
+  </div></OverlayScope.Provider>}
   {held&&base&&<div className="flex justify-end"><Button variant="ghost" size="sm" disabled={busy||publicationFrozen} onClick={()=>release(true)}>Descartar rascunho</Button></div>}
  </div>
 }

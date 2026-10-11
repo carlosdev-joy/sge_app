@@ -4,9 +4,9 @@
 // o Esc-no-topo e a gestão de foco (useOverlay/trapTabKey). NÃO mexe no
 // overflow do body: o scroll da página nunca fica travado ao abrir/fechar
 // (critério da fase); o conteúdo rola dentro do painel.
-import React, { useRef } from 'react'
+import React, { useContext, useRef } from 'react'
 import { X } from 'lucide-react'
-import { useOverlay, trapTabKey } from './overlay'
+import { OverlayScope, useOverlay, trapTabKey } from './overlay'
 
 interface SheetProps {
   open: boolean
@@ -20,17 +20,19 @@ interface SheetProps {
 
 export function Sheet({ open, onClose, title, children, side = 'right', widthClass = 'max-w-2xl' }: SheetProps) {
   const panelRef = useRef<HTMLDivElement>(null)
-  useOverlay(open, onClose, panelRef)
+  // Mesma regra do Modal: numa área oculta (OverlayScope) fica montado e inerte.
+  const active = useContext(OverlayScope)
+  useOverlay(open && active, onClose, panelRef)
 
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50">
+    <div className="fixed inset-0 z-50" style={active ? undefined : { display: 'none' }}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div
         ref={panelRef}
-        role="dialog"
-        aria-modal="true"
+        role={active ? 'dialog' : undefined}
+        aria-modal={active ? 'true' : undefined}
         aria-label={title}
         tabIndex={-1}
         onKeyDown={(e) => trapTabKey(e, panelRef.current)}
