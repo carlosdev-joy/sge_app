@@ -1,10 +1,11 @@
+import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { Box } from 'lucide-react'
 import { WORKSPACE_TYPES, typeLabel } from './workspaceCatalog'
 import { object, text } from '../../lib/workspace'
 import type { ExecNoEtapa } from '../etapas/execucaoEtapas'
 
-export function WorkspaceFlowNode({data,selected,type,isConnectable}:NodeProps) {
+export const WorkspaceFlowNode = memo(function WorkspaceFlowNode({data,selected,type,isConnectable}:NodeProps) {
  const kind=text(data.kind)||text(data.type)||(type==='etapa'?'datastage':type??'')
  const Icon=WORKSPACE_TYPES.find(t=>t[0]===kind)?.[2]??Box
  const exec=data.exec as ExecNoEtapa|null|undefined
@@ -17,4 +18,4 @@ export function WorkspaceFlowNode({data,selected,type,isConnectable}:NodeProps) 
   {data.hasPlainDependency===true&&<Handle id="legacy" type="source" position={Position.Right} isConnectable={false} style={{top:'90%'}}/>}
   {handles.map((handle,index)=><Handle key={handle} id={handle||undefined} type="source" position={Position.Right} isConnectable={isConnectable} style={{top:`${(index+1)*100/(handles.length+1)}%`}} className="!h-2.5 !w-2.5 !bg-dim !border-panel"/>)}
  </div>
-}
+})
