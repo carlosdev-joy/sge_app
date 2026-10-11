@@ -214,12 +214,13 @@ def test_ancora_isolamento_sobrevive_ao_empacotamento():
     """⛔ Âncora. `sandbox=""` é um atributo VAZIO, e minificador que remove
     atributo vazio deixaria a defesa só no fonte. Confere no bundle publicado —
     é ele que roda no navegador de quem edita o fluxo."""
-    assets = sorted((RAIZ / "ui-react/dist/assets").glob("index-*.js"),
+    assets = sorted((RAIZ / "ui-react/dist/assets").glob("*.js"),
                     key=lambda p: p.stat().st_mtime, reverse=True)
     if not assets:
         pytest.skip("dist não construída nesta máquina")
-    bundle = assets[0].read_text(encoding="utf-8", errors="replace")
-    if "Prévia do e-mail" not in bundle:
+    bundles = [path.read_text(encoding="utf-8", errors="replace") for path in assets]
+    bundle = "\n".join(content for content in bundles if "Prévia do e-mail" in content)
+    if not bundle:
         pytest.skip("dist anterior à prévia — rode npm run build")
     assert re.search(r'sandbox\s*:\s*[`"\']{2}', bundle), (
         "o sandbox do iframe sumiu no empacotamento")

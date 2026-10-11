@@ -1,0 +1,1 @@
+import{n as e}from"./api-CD03TN7I.js";var t=[`BI_CVP`,`BI_VIDA`,`BI_PREVIDENCIA`,`BI_PRESTAMISTA`],n=(t,n={})=>e(`/admin`,{method:`POST`,body:JSON.stringify({action:t,...n})});export{n,t};

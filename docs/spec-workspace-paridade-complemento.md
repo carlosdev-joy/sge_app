@@ -1,5 +1,5 @@
 # Complemento executável: paridade do workspace — Orquestra
-Data: 2026-10-11 · Status: autorizada, F7A/F7B/F7C entregues em DEV; execução F7D
+Data: 2026-10-11 · Status: autorizada, F7A/F7B/F7C/F7D entregues em DEV; execução F8/F9
 
 ## 1. Visão
 Completar os requisitos de paridade de docs/spec-pipeline-workspace-dotnet.md, confrontados em docs/workspace-paridade-f6.md. Autorização explícita do usuário: seguir até encerrar os pontos listados, preservando a spec existente e a referência visual. Não substitui arquitetura, contratos ou escopo da spec original.
@@ -75,3 +75,17 @@ Lineage tem consulta e formulário de origens/destinos/transformações no edito
 Maestro usa o provedor/catálogo existente por contrato específico de draft, com autenticação nativa, permissões, revisão e lease/fence conferidos no servidor. Declarações/defaults/contexto vêm do draft fornecido validado e da identidade salva, sem substituir por catálogo ativo. Propostas são revisáveis, nunca salvam/publicam/executam automaticamente. Contexto e saída são saneados, referências protegidas excluídas; resultado antigo não pode ser aplicado após mudança de nó, configuração, revisão ou posse. Conversas de draft têm namespace próprio.
 
 Gates adicionais: marker falsificado/removido e lineage em posição alternativa recusados; histórico desconhecido em consulta; arrays vazios conhecidos publicados; reordenação sem mudança de hash, mudança de qualquer campo com conflito; captura/transação sem perda de linhas; divergência após projeção mantém gate; operação anterior continua retomável após migration; propostas atrasadas e segredos nunca chegam ao provedor/aplicação.
+
+
+### Plano de medição F8 — 2026-10-11, antes das alterações
+Base develop555af58a/DEV2.16.0. Cenários iguais50/100/300nós,25seleções e dois requestAnimationFrame até pintura,30amostras por endpoint através do proxy DEV; Chromium desktop sem throttle. Essa interação é proxy de laboratório, não INP de campo. APIp95 observado10,9–25,9ms, sem hipótese de mudança SQL. Canvasp95 antes72,0/133,0/216,0ms; CLS0,0010–0,0018. Main838238bytesgzip na medição determinística, acima do orçamento307200; medir também soma dos scripts efetivamente carregados pela rota para não esconder custo em chunks.
+
+Hipótese1: imports síncronos de páginas alheias ao Fluxo trazem bibliotecas não usadas à rota inicial. Isolar carregamento por rota com lazy/Suspense da casa, mantendo login e casca síncronos, permissões/URLs e guardas idênticos. Medir bytes realmente carregados antes/depois e testar rotas diretas, erro, temas e entradas legadas. Um commit perf por hipótese.
+
+Hipótese2 (condicionada ao perfil de execução): seleção reconstrói data de todos os nós, fazendo trabalho proporcional ao grafo. Usar identidade estável somente se perfil/medição confirmar trabalho no mapeamento/renderer; não virtualizar ocultando etapas nem reduzir capabilities para cumprir meta. Medir os mesmos50/100/300nós, preservando seleção, drag, Delete, ligação, decisão e save. Sem nova dependência.
+
+Entrega F8 precisa revisão adversarial, gates da base, dist final e migration de versão; medir API novamente após DEV e comparar metodologias. INP de campo/Caixa permanecem externos quando não houver amostras reais. F7D smoke DEV concluído; registro final confirma três publicações e histórico em consulta, sem ensaio externo Caixa.
+
+F8 hipótese1 refinada por medição: divisão de páginas reduziu main a187416bytesgzip, mas soma efetiva da rotaFluxo335151bytes ainda excede307200. Import estático de WorkspaceParameters traz JobTypeFields/catalog/importadores mesmo na abaFluxo; Operations/Versions também entram sem uso. Estender a mesma hipótese de carregamento sob demanda às abas, preservando casca/Fluxo/Dashboard/login síncronos e defaults/guardas. Sem hipótese nova ou reestruturação visual.
+
+Resultado H1: scripts efetivamente carregados antes879418bytesgzip e depois239022bytesgzip, abaixo307200. Mesma rota fria, fixture e build de produção. Testes estáticos de registro Agentes/Utilitários aceitam ligação lazy equivalente; âncora sandbox de e-mail agora inspeciona também chunks da prévia para não omitir proteção após split (49focadosPASS). Perfil CPU300antes localizou WorkspaceFlowNode(tS) com28amostras e Handle(o_)24, autorizando isolamento de data/memo no renderer na H2.

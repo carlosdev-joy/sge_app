@@ -8,36 +8,38 @@ import { NAV, canAccess, firstVisiblePath } from './lib/nav'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { AppShellV2 } from './components/layout/AppShellV2'
 import Login from './pages/Login'
-import Malha from './pages/Malha'
-import Governanca from './pages/Governanca'
-import ImpactoCampo from './pages/ImpactoCampo'
-import PlanosAjuste from './pages/PlanosAjuste'
-import Logs from './pages/Logs'
-import Jobs from './pages/Jobs'
-import Pipelines from './pages/Pipelines'
+const Malha = lazy(() => import('./pages/Malha'))
+const Governanca = lazy(() => import('./pages/Governanca'))
+const ImpactoCampo = lazy(() => import('./pages/ImpactoCampo'))
+const PlanosAjuste = lazy(() => import('./pages/PlanosAjuste'))
+const Logs = lazy(() => import('./pages/Logs'))
+const Jobs = lazy(() => import('./pages/Jobs'))
+const Pipelines = lazy(() => import('./pages/Pipelines'))
 import Dashboard from './pages/Dashboard'
-import PowerBI from './pages/PowerBI'
-import DsConsole from './pages/DsConsole'
-import Avisos from './pages/Avisos'
-import GestaoFalhas from './pages/GestaoFalhas'
-import Publicacao from './pages/Publicacao'
-import Performance from './pages/Performance'
-import CopiaDados from './pages/CopiaDados'
-import Inventario from './pages/Inventario'
-import Chamados from './pages/Chamados'
-import Finalizacao from './pages/Finalizacao'
-import Fluxos from './pages/Fluxos'
-import Utilitarios from './pages/Utilitarios'
-import Agentes from './pages/Agentes'
-import Monitoramento from './caixa/pages/Monitoramento'
-import Index from './caixa/pages/Index'
-import Portabilidades from './caixa/pages/Portabilidades'
-import PainelIA from './caixa/pages/PainelIA'
-import Acompanhamento from './caixa/pages/Acompanhamento'
+const PowerBI = lazy(() => import('./pages/PowerBI'))
+const DsConsole = lazy(() => import('./pages/DsConsole'))
+const Avisos = lazy(() => import('./pages/Avisos'))
+const GestaoFalhas = lazy(() => import('./pages/GestaoFalhas'))
+const Publicacao = lazy(() => import('./pages/Publicacao'))
+const Performance = lazy(() => import('./pages/Performance'))
+const CopiaDados = lazy(() => import('./pages/CopiaDados'))
+const Inventario = lazy(() => import('./pages/Inventario'))
+const Chamados = lazy(() => import('./pages/Chamados'))
+const Finalizacao = lazy(() => import('./pages/Finalizacao'))
+const Fluxos = lazy(() => import('./pages/Fluxos'))
+const Utilitarios = lazy(() => import('./pages/Utilitarios'))
+const Agentes = lazy(() => import('./pages/Agentes'))
+const Monitoramento = lazy(() => import('./caixa/pages/Monitoramento'))
+const Index = lazy(() => import('./caixa/pages/Index'))
+const Portabilidades = lazy(() => import('./caixa/pages/Portabilidades'))
+const PainelIA = lazy(() => import('./caixa/pages/PainelIA'))
+const Acompanhamento = lazy(() => import('./caixa/pages/Acompanhamento'))
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
 import { LegacyWorkspaceEntry } from './components/workspace/LegacyWorkspaceEntry'
 import { PageSpinner } from './components/ui/Spinner'
 
+// Páginas fora da entrada inicial carregam sob demanda; login, Dashboard e casca
+// permanecem síncronos. Guards continuam externos ao Suspense.
 // Admin sob demanda (docs/spec-admin-reestruturacao.md, F2): antes entrava no
 // bundle principal com as 24 abas; agora a casca é um chunk e cada aba outro.
 const PipelineWorkspace = lazy(() => import('./pages/PipelineWorkspace'))
@@ -130,7 +132,7 @@ export default function App() {
               path="caixa-seguro"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Index /></ProfileProvider>
+                  <Suspense fallback={<PageSpinner />}><ProfileProvider><Index /></ProfileProvider></Suspense>
                 </RequirePerm>
               }
             />
@@ -143,7 +145,7 @@ export default function App() {
               path="caixa-seguro/acompanhamento"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Monitoramento /></ProfileProvider>
+                  <Suspense fallback={<PageSpinner />}><ProfileProvider><Monitoramento /></ProfileProvider></Suspense>
                 </RequirePerm>
               }
             />
@@ -156,7 +158,7 @@ export default function App() {
               path="caixa-seguro/portabilidades"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Portabilidades /></ProfileProvider>
+                  <Suspense fallback={<PageSpinner />}><ProfileProvider><Portabilidades /></ProfileProvider></Suspense>
                 </RequirePerm>
               }
             />
@@ -167,7 +169,7 @@ export default function App() {
               path="caixa-seguro/acompanhamento/:status"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Acompanhamento /></ProfileProvider>
+                  <Suspense fallback={<PageSpinner />}><ProfileProvider><Acompanhamento /></ProfileProvider></Suspense>
                 </RequirePerm>
               }
             />
@@ -179,7 +181,7 @@ export default function App() {
               path="caixa-seguro/ia-operacional"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><PainelIA /></ProfileProvider>
+                  <Suspense fallback={<PageSpinner />}><ProfileProvider><PainelIA /></ProfileProvider></Suspense>
                 </RequirePerm>
               }
             />
@@ -188,7 +190,7 @@ export default function App() {
               const element = PAGE_ELEMENT[n.to]
               if (!element) return null
               const path = n.to.replace(/^\//, '') + (WILDCARD_ROUTES.has(n.to) ? '/*' : '')
-              return <Route key={n.to} path={path} element={<RequirePerm perm={n.perm}>{element}</RequirePerm>} />
+              return <Route key={n.to} path={path} element={<RequirePerm perm={n.perm}><Suspense fallback={<PageSpinner />}>{element}</Suspense></RequirePerm>} />
             })}
           </Route>
           <Route path="*" element={<HomeRedirect />} />
