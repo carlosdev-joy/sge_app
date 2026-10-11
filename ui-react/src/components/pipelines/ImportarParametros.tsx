@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
 import { aplicarImportacao, erroCatalogo, type CatalogoParam, type Importado } from '../../lib/pipelineCatalogo'
@@ -11,22 +11,25 @@ function legendaSemEncrypted(p: Importado): string {
   return p.param_value ?? ''
 }
 
-export function ImportarParametros({ project, params, onChange }: {
-  project: string; params: CatalogoParam[]; onChange: (p: CatalogoParam[]) => void
+export function ImportarParametros({ project, params, onChange, canApply }: {
+  project: string; params: CatalogoParam[]; onChange: (p: CatalogoParam[]) => void; canApply?: () => boolean
 }) {
   const [jobs, setJobs] = useState('')
+  const current = useRef({ canApply, project, jobs })
+  useLayoutEffect(() => { current.current = { canApply, project, jobs } })
+  const allowed = () => !current.current.canApply || current.current.canApply()
   const [previa, setPrevia] = useState<{ parametros: Importado[]; avisos: string[] } | null>(null)
   const [escolhidos, setEscolhidos] = useState<Record<string, number>>({})
   const [substituir, setSubstituir] = useState<Record<string, boolean>>({})
   const [erro, setErro] = useState('')
 
   const consulta = useMutation({
-    mutationFn: () => apiFetch<{ parametros: Importado[]; avisos: string[] }>('/pipelines/parametros/importar-previa', {
-      method: 'POST', body: JSON.stringify({ project_name: project, jobs: jobs.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean) }),
+    mutationFn: (request: { project: string; jobs: string }) => apiFetch<{ parametros: Importado[]; avisos: string[] }>('/pipelines/parametros/importar-previa', {
+      method: 'POST', body: JSON.stringify({ project_name: request.project, jobs: request.jobs.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean) }),
     }),
     onMutate: () => { setPrevia(null); setErro(''); setEscolhidos({}); setSubstituir({}) },
-    onSuccess: data => setPrevia(data),
-    onError: e => setErro(erroCatalogo(e)),
+    onSuccess: (data, request) => { if (allowed() && current.current.project === request.project && current.current.jobs === request.jobs) setPrevia(data) },
+    onError: (e, request) => { if (allowed() && current.current.project === request.project && current.current.jobs === request.jobs) setErro(erroCatalogo(e)) },
   })
 
   // Filtra Encrypted da prévia — senha nunca deve aparecer em listagem
@@ -34,6 +37,7 @@ export function ImportarParametros({ project, params, onChange }: {
   const nomes = [...new Set(parametrosFiltrados.map(p => p.param_name))]
 
   function aplicar() {
+    if (!allowed()) return
     // Aplica com escolhidos — params Encrypted ficam fora do escolhidos, não serão importados
     const r = aplicarImportacao(params, parametrosFiltrados, escolhidos, substituir)
     if (r.erros.length) { setErro(r.erros.join(' ')); return }
@@ -50,7 +54,7 @@ export function ImportarParametros({ project, params, onChange }: {
         onChange={e => { setJobs(e.target.value); setPrevia(null); setErro('') }}
         ajuda="Até 5 jobs, um por linha. A prévia não altera o pipeline." />
       <Button type="button" variant="secondary" disabled={!project || !jobs.trim() || consulta.isPending}
-        onClick={() => consulta.mutate()}>
+        onClick={() => { if (allowed()) consulta.mutate({ project, jobs }) }}>
         {consulta.isPending ? 'Consultando parâmetros…' : 'Consultar parâmetros'}
       </Button>
       {consulta.isPending && <p role="status" className="text-sm text-dim">A consulta pode levar até 45 segundos.</p>}
@@ -139,7 +143,7 @@ export function ImportarParametros({ project, params, onChange }: {
               Descartar prévia
             </Button>
           </div>
-          <p className="text-xs text-dim">Os valores só serão gravados ao salvar o pipeline. Defaults importados não são sincronizados automaticamente.</p>
+          <p className="text-xs text-dim">{canApply ? 'A seleção será aplicada ao rascunho; use Salvar rascunho para persistir.' : 'Os valores só serão gravados ao salvar o pipeline.'} Defaults importados não são sincronizados automaticamente.</p>
         </div>
       )}
     </section>

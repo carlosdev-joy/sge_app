@@ -19,3 +19,15 @@ Novo POST /workspace-adapter/valida-arquivo/preview é autenticado e estático: 
 Evidências /root/orquestra-f7b-evidencias: primeirofull7236pass/8mesmasfalhas51skip, baseisolada7205pass8falhas74skip (.git ausente acrescenta23skip); testes focados10pass com dois negativos adicionados após coleta da primeirafull. Lintbase74/candidato73zeroNEW. Build inicialPASS; rodada browser/negativos e revisão final em andamento. Nenhuma nova PR/deploy confirmado neste snapshot. Registro compartilhado final terá precedência.
 
 F7B fechamento local: pytestfinal4 7239pass/8mesmasfalhas51skip, lint74base73finalzeroNEW, finaltsc-b/VitePASS; QA/securitymanualsemachadosabertos; browser14cenáriosincluindonósnovos/JSONincompatível/lease/consulta,36recapturas solicitadaspelorevisorindependente. Finishship/documenterdelta; backupDEVverificado. ConfiguraçãoJSONincompatívelpreservadaemconsulta commotivoexplícito. EntregaDEV/PR/SHAcontinuampendentesnestesnapshot, registrofinal teráprecedência.
+
+
+## F7B entregue / F7C candidato
+F7B PR492 integrada em develop b22cbdf2bac71098ccdeacf2fc9e305adce80a1c, DEV2.14.0/migration156, backup e22smokesPASS; registro final2026-10-11-workspace-paridade-f7b-dev-final-codex.md tem precedência sobre snapshots candidatos acima.
+
+F7C branch feat/workspace-paridade-f7c, baseb22cbdf2. Candidato2.15.0 migrations157/158. Catálogo compartilhado com tipos/origens/destinos/descrições/importação e vínculos locais; governança rica, notificações/dataref, política sem movimento; importação guiada e execution_order sem alterar layout. Segredo write-only cifrado fora do snapshot, UUID vinculado a draft/pipeline/job/param e sessão/revisão/lease/fence. .NET valida ref antes de save; projeção autentica HMAC sem decifrar. Vault imutável; baseline legado por versão, captura SERIALIZABLE com hash comprovado, importação no mesmo txn, restore sem prova em consulta. Não há GC nesta entrega.
+
+Gates locais7283PASS8falhasidênticasbase51skip,91Pythonfoco,77SQL0skipincluiconcorrência/restauração/reexec157; lint73base73candidatezeroNEW, governançafinal0msgs, fontes0NUL (NULgeradodistjáexistenabase); build6tsc-b/VitePASS. Browser8+2sintéticos, númerosretidosdigitação/save/reload, cancel/late-secret semaplicar. QA corrigiu representação numérica; revisõesfinaisaprovadas. BackupDEVverificadoantesdeploy. Evidências /root/orquestra-f7c-evidencias.
+
+Nenhuma PR/deployC confirmada neste snapshot; registrofinal teráprecedência. PendênciasF7Dlineage/Maestro,F8performance,F9matriz. DataStage/InformationServerCaixa real não equivale a fixturesDEV; main/produção separadas.
+
+Delta final C: destinatários do fluxo editados em linhas, persistidos em JSON array compatível com SQL e validados por formato/domínios Admin; horários novos/alterados usam régua24h. Valores legados incompatíveis preservados quando inalterados. Gatesfinal3/browserfinal6 e revisão visualship. SmokeDEV ainda pendente.

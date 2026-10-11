@@ -35,3 +35,9 @@ async def validate_workspace_draft(draft_id:UUID,body:dict=Body(default={}),acto
  revision=body.get('expectedRevision')
  if type(revision)is not int or revision<1:raise HTTPException(422,'Revisão obrigatória')
  return await validate_draft(draft_id,revision,actor)
+
+@router.post('/workspace-adapter/secrets/{draft_id}', status_code=201)
+def protect_workspace_parameter(draft_id:UUID,body:dict=Body(default={}),actor:dict=Depends(require_perm(PERM_EDITAR)),authorization:str|None=Header(default=None)):
+ if not ENABLED():raise HTTPException(503,'Workspace desabilitado')
+ from services.workspace_secrets import store_secret
+ return store_secret(draft_id,body,actor,authorization)

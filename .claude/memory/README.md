@@ -120,4 +120,4 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 
 - [Edição no Fluxo](orquestra-workspace-edicao-no-fluxo.md) — candidato2.12.6; consultar entrega DEV final.
 
-- [Paridade do workspace F7](orquestra-workspace-paridade-f7.md) — continuidade autorizada pela spec; F7A2.13.0 em DEV, candidato F7B2.14.0; entregas finais nos registros compartilhados.
+- [Paridade do workspace F7](orquestra-workspace-paridade-f7.md) — continuidade autorizada pela spec; F7A/F7B2.14.0 em DEV, candidato F7C2.15.0; entregas finais nos registros compartilhados.

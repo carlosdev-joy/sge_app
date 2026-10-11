@@ -1,5 +1,5 @@
 # Complemento executável: paridade do workspace — Orquestra
-Data: 2026-10-11 · Status: autorizada, F7A entregue; execução F7B
+Data: 2026-10-11 · Status: autorizada, F7A/F7B entregues em DEV; execução F7C
 
 ## 1. Visão
 Completar os requisitos de paridade de docs/spec-pipeline-workspace-dotnet.md, confrontados em docs/workspace-paridade-f6.md. Autorização explícita do usuário: seguir até encerrar os pontos listados, preservando a spec existente e a referência visual. Não substitui arquitetura, contratos ou escopo da spec original.
@@ -52,3 +52,11 @@ Spec original continua autoridade. PR490 removeu Etapas/lista e atualizou rótul
 ### Contrato da prévia estática F7B
 
 A prévia de Valida Arquivo no editor recebe o grafo/configuração e somente diretórios String/Pathname fixos do rascunho local. POST /workspace-adapter/valida-arquivo/preview exige acao_editar, tela_pipelines, tela_jobs e workspace habilitado; não consulta cadastro publicado, banco, SSH, existência de arquivos nem secrets. É cálculo estático, não operação sobre uma identidade de rascunho no servidor. Guardas atuais de definição/lease/revisão/fence rejeitam aplicação e respostas antigas na UI. O save versionado e a publicação mantêm seus próprios contratos/autorização.
+
+### Contrato seguro F7C — desenho de implementação
+
+Valores Encrypted novos/alterados serão enviados apenas a endpoint write-only autenticado do adaptador com draftId, expectedRevision, fence, nome do parâmetro e escopo pipeline/etapa. O servidor confere sessão nativa atual, revisão, estado editável, ausência de publicação pendente e lease/fence dentro de transação com locks na mesma ordem do repositório. O segredo é cifrado por ORQUESTRA_CONN_KEY em tabela exclusiva; resposta contém somente referência UUID imutável com pipeline/job/parâmetro. Definition/layout, versões, auditoria, prévias, IA e evidências nunca contêm o valor/cifra. Cancelar não aplica referência ao draft; registros pendentes não são publicados. Referências registradas são validadas pelo .NET ao salvar e pelo adaptador ao projetar; valores históricos permanecem resolvíveis para restore. A projeção ativa recebe apenas a cifra no campo legado Encrypted. Nenhum GET resolve segredo. Referências antigas preservam o contrato anterior. Endpoint não grava tabela ativa nem muda revisão/definição.
+
+Parâmetros de pipeline usam o editor compartilhado em staging e preservam campos adicionais por identidade; referências protegidas são consultáveis e removíveis com confirmação. Tipos comuns não podem capturar valores protegidos. Importação DataStage permanece consulta de declarações, aplicação explícita à revisão atual, sem executar jobs. Cadastro rico e ordem executável terão campos guiados; layout Organizar não modifica execution_order.
+
+Referências legadas sem UUID recebem baseline imutável por versão. Captura inicial só ocorre quando o hash ativo comprova o snapshot corrente/base, em transação SERIALIZABLE; novas importações capturam no mesmo txn. Publicações seguintes copiam baseline histórico à nova versão. Restore sem baseline comprovado fica em consulta com motivo. Não inferir cifras históricas de versões antigas a partir do valor atual. A chave de cifra deve ser conservada; autenticidade HMAC é verificada sem decifrar na projeção. Não há GC nesta entrega, para preservar versões e restores.

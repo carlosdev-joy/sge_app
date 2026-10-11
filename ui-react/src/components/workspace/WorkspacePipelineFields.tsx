@@ -1,7 +1,7 @@
 import { useId, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
-import { Input, Select } from '../ui/Input'
+import { Input, Select, Textarea } from '../ui/Input'
 import { Button } from '../ui/Button'
 import { SCHEDULE_TYPES, SCHEDULE_LABELS, DOW_LABELS, MAX_MONTH_DAYS, hourlyTimes, parseMonthDaysTimes, parseCustomTimes } from '../pipelines/pipelineUtils'
 import { text } from '../../lib/workspace'
@@ -38,4 +38,29 @@ export function WorkspaceScheduleFields({value,editable,onChange}:{value:Record<
  {kind==='custom'&&<div className="flex flex-wrap gap-3">{DOW_LABELS.map(([day,label])=><label key={day} className="text-xs text-ink flex gap-1"><input type="checkbox" disabled={!editable} checked={text(value.dias_semana).split(',').includes(String(day))} onChange={e=>{const days=new Set(text(value.dias_semana).split(',').filter(Boolean));if(e.target.checked)days.add(String(day));else days.delete(String(day));patch({dias_semana:[...days].sort().join(',')||null})}}/>{label}</label>)}</div>}
  <label className="flex gap-2 text-sm text-ink"><input type="checkbox" disabled={!editable} checked={!!value.somente_dias_uteis} onChange={e=>patch({somente_dias_uteis:e.target.checked?1:0})}/>Somente dias úteis</label><Select label="Calendário de feriados" disabled={!editable} value={text(value.calendario_nome)} onChange={e=>patch({calendario_nome:e.target.value||null})}><option value="">Sem calendário adicional</option>{!!value.calendario_nome&&!calendars.data?.calendarios.some(c=>c.calendario_nome===value.calendario_nome)&&<option>{text(value.calendario_nome)}</option>}{calendars.data?.calendarios.map(c=><option key={c.calendario_nome}>{c.calendario_nome}</option>)}</Select>{calendars.isError&&<p role="alert" className="text-xs text-red-700 dark:text-red-400">Falha ao carregar calendários. <button type="button" className="underline" onClick={()=>calendars.refetch()}>Tentar novamente</button></p>}
  </>}</fieldset>
+}
+
+function emailRecipientText(value: unknown): string {
+ if (Array.isArray(value)) return value.map(String).join('\n')
+ if (typeof value !== 'string') return ''
+ try { const parsed: unknown = JSON.parse(value); if (Array.isArray(parsed)) return parsed.map(String).join('\n') } catch { /* Preserve unsupported legacy text until explicitly edited. */ }
+ return value
+}
+
+export function WorkspaceGovernanceFields({ value, editable, onChange }: { value: Record<string, unknown>; editable: boolean; onChange: (next: Record<string, unknown>) => void }) {
+ const patch = (next: Record<string, unknown>) => onChange({ ...value, ...next })
+ return <fieldset disabled={!editable} className="space-y-4 min-w-0"><legend className="text-sm font-medium text-ink mb-3">Governança e execução</legend>
+  <Textarea label="Descrição do pipeline" value={text(value.descricao)} rows={3} onChange={e => patch({ descricao: e.target.value })}/>
+  <Input label="Tags" value={text(value.tags)} onChange={e => patch({ tags: e.target.value })} ajuda="Separe as tags por vírgulas."/>
+  <div className="grid sm:grid-cols-3 gap-3"><Select label="Criticidade" value={text(value.criticidade) || 'Media'} onChange={e => patch({ criticidade: e.target.value })}>{['Alta','Media','Baixa'].map(c => <option key={c}>{c}</option>)}</Select><Select label="Ambiente" value={text(value.ambiente) || 'PROD'} onChange={e => patch({ ambiente: e.target.value })}>{['PROD','HML','DEV'].map(a => <option key={a}>{a}</option>)}</Select><Input label="SLA (minutos)" type="number" min={1} value={String(value.sla_minutos ?? '')} onChange={e => patch({ sla_minutos: e.target.value ? Number(e.target.value) : null })}/></div>
+  <label className="flex gap-2 text-sm text-ink"><input type="checkbox" checked={value.active === true || value.active === 1} onChange={e => patch({ active: e.target.checked ? 1 : 0 })}/>Pipeline ativo após publicar</label>
+  {!value.active && <Textarea label="Motivo da inativação" value={text(value.motivo_inativacao)} rows={2} onChange={e => patch({ motivo_inativacao: e.target.value })} ajuda="Informe pelo menos 5 caracteres ao inativar um pipeline publicado."/>}
+  <div className="grid sm:grid-cols-3 gap-3">{[['max_active_runs','Runs simultâneas',1],['retries_count','Retries',0],['retry_delay_seconds','Delay retry (s)',0]].map(([key,label,min]) => <Input key={key} label={String(label)} type="number" min={Number(min)} value={String(value[String(key)] ?? '')} onChange={e => patch({ [key]: e.target.value ? Number(e.target.value) : null })}/>)}</div>
+  <div className="grid sm:grid-cols-2 gap-3"><Input label="Data de início DAG (opcional)" type="date" value={text(value.dag_start_date).slice(0,10)} onChange={e => patch({ dag_start_date: e.target.value || null })}/><Input label="Hora de virada do dia (ODATE)" type="time" value={text(value.hora_virada).slice(0,5)} onChange={e => patch({ hora_virada: e.target.value || null })} ajuda="Em branco usa o calendário. A partir da virada, a execução pertence ao dia seguinte."/></div>
+  <div className="space-y-2"><h3 className="text-sm font-medium text-ink">Notificações da execução</h3>{[['envia_msg_inicio','Notificar início'],['envia_msg_fim','Notificar conclusão'],['envia_msg_erro','Notificar falha']].map(([key,label]) => <label key={key} className="flex gap-2 text-sm text-ink"><input type="checkbox" checked={!!value[key]} onChange={e => patch({ [key]: e.target.checked ? 1 : 0 })}/>{label}</label>)}</div>
+  <Input label="Fila de execução (pool)" value={text(value.pool_name)} onChange={e => patch({ pool_name: e.target.value || null })}/>
+  <Textarea label="Runbook (Markdown)" rows={4} value={text(value.runbook_md)} onChange={e => patch({ runbook_md: e.target.value || null })}/>
+  <Textarea label="Destinatários de e-mail do fluxo" rows={2} value={emailRecipientText(value.email_destinatarios)} onChange={e => patch({ email_destinatarios: JSON.stringify(e.target.value.split('\n')) })} ajuda="Um endereço por linha. Os componentes de e-mail somam esta lista à própria."/>
+  <div className="space-y-3 border-t border-edge pt-4"><h3 className="text-sm font-medium text-ink">Conclusão sem movimento</h3><p className="text-xs text-dim">Quando todos os destinos forem pulados, o histórico é mantido. Falha técnica sempre bloqueia a liberação.</p><label className="flex gap-2 text-sm text-ink"><input type="checkbox" checked={!!value.liberar_dependentes_sem_movimento} onChange={e => patch({ liberar_dependentes_sem_movimento: e.target.checked ? 1 : 0 })}/>Liberar pipelines dependentes mesmo sem movimento</label><label className="flex gap-2 text-sm text-ink"><input type="checkbox" checked={value.notificar_sem_movimento === undefined || !!value.notificar_sem_movimento} onChange={e => patch({ notificar_sem_movimento: e.target.checked ? 1 : 0 })}/>Notificar conclusão sem movimento</label></div>
+ </fieldset>
 }
