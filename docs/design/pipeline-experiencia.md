@@ -36,9 +36,9 @@ Em1440×960 e1280×800, sem depender de zoom do navegador:
 ```text
 Casca
 Breadcrumb | nome/contexto                 Salvar | Validar | Publicar
-Visão geral | Fluxo | Execuções | Configuração | Versões
+Visão geral | Montagem | Execução | Configuração | Versões
 Fonte/revisão/editor/salvo (resumo curto)
-Biblioteca        | Montagem / Execução | Desfazer/Refazer | Organizar
+Biblioteca        | Desfazer/Refazer | Organizar | Mais
 recolhível        | Canvas dominante                    | Inspector
                   |                                     | da etapa
                   | Validação recolhível                | selecionada
@@ -60,7 +60,8 @@ Remover e JSON em ações avançadas, não competindo com configurar. Desfazer/r
 ## Composição desktop: Execução
 ```text
 Nome | corrida | data | versão              Executar | Mais
-Fluxo [Execução]      Última atualização / conexão
+Visão geral | Montagem | Execução | Configuração | Versões
+Corrida selecionada | Histórico | Última atualização / conexão
 Resumo curto de estado e contagens confiáveis
 Canvas operacional dominante                Inspector
                                             Resumo / Tentativas / Logs
@@ -84,9 +85,9 @@ Reprocessar não se confunde com executar tudo. Explicar escopo antes da confirm
 **Lista:** busca principal, filtros adicionais recolhíveis, uma linha por Pipeline, nome amigável/técnico, estado, responsável, editor e atualização. Entrar pelo nome; ações secundárias em menu. Rascunho novo deve ser localizável sem histórico do navegador.
 **Criação:** identificação essencial à esquerda e resumo útil à direita (referência04); nenhuma lista extensa de política/agendamento antes de começar.
 **Visão geral:** finalidade, dono, versão e relações. Resumo de configuração com Editar configuração. Não replicar controles da aba Configuração.
-**Configuração:** navegação interna Identificação, Agenda/dependências, Parâmetros, Execução, Notificações e Documentação. Um grupo ativo por vez e barra Salvar comum. Nome e contexto sempre visíveis.
+**Configuração:** navegação interna Identificação, Agenda/dependências, Parâmetros, Políticas de execução, Notificações e Documentação. Um grupo ativo por vez e barra Salvar comum. Nome e contexto sempre visíveis.
 **Versões:** lista, estado de confirmação e comparação. Restore abre novo draft e preserva histórico; sem botão que prometa reverter execução ativa.
-**Execuções:** histórico filtrável; clique abre visualizador operacional comum; filtros de data/status/versão e retorno preservados.
+**Histórico em Execução:** abre sob demanda; clique seleciona a corrida no visualizador operacional comum; filtros de data/status/versão e retorno preservados. Logs e tentativas ficam no inspector da etapa, com ampliação contextual.
 **Ferramentas:** conteúdo atual vira ajuda contextual/ações apropriadas. Sem aba inteira que apenas encaminha a outras abas.
 
 ## Responsividade, teclado e erro
@@ -106,3 +107,7 @@ Simulações testam estados/UI; execução real própria testa integração. Cad
 
 ## Referência interativa
 O [protótipo de Pipeline](../prototypes/pipeline-workspace/README.md) materializa a composição e as principais interações desta proposta. Sua [verificação e capturas](../prototypes/pipeline-workspace/VALIDACAO.md) distinguem o que foi testado do que é conceitual. Validar com o usuário antes de adaptar as telas React do produto. Nenhuma integração com DEV foi realizada.
+
+
+## Preservação funcional e revisão de navegação — 11/10/2026
+Decisão do usuário: Montagem e Execução são abas principais. Histórico/logs integram Execução, sem uma segunda faixa de modos. O inventário dos 11 componentes, oito agendas, sessão, publicação e ações operacionais está na [matriz de preservação funcional](../matriz-paridade-pipeline.md). Essa matriz é requisito para implementação: reduzir densidade não autoriza perder campos, payloads, permissões ou funcionalidades. Integrações e campos especializados não cobertos pelo protótipo permanecem pendências explícitas.

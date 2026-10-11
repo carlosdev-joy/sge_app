@@ -2,7 +2,7 @@
 
 Executada em 11/10/2026, no navegador integrado do Codex. Ambiente exclusivamente local, com dados fictícios. Esta verificação confirma os cenários listados; a aprovação de UX pelo usuário ainda está pendente. Não confirma implementação no DEV, segurança multiusuário, publicação real ou desempenho do produto.
 
-## Evidência observada
+## Primeira versão — evidência histórica (navegação substituída pela revisão abaixo)
 
 | Cenário | Resultado |
 | --- | --- |
@@ -54,3 +54,31 @@ Capturas registram momentos do protótipo, com cenários fictícios. Os mockups 
 ## Próxima validação
 
 Pedir ao usuário que percorra criação, montagem, configuração e investigação, registrando ajustes por tela. Após aprovação, o dev no servidor deve adaptar componentes React existentes, ligar contratos .NET e estados do motor, aplicar RBAC/lease reais, testar regressões e comparar capturas do DEV com este protótipo e os mockups. Nenhuma dessas integrações foi implementada nesta etapa.
+
+
+## Revisão: abas diretas e opções reais — 11/10/2026
+
+Base de código inventariada: develop df1a81caa3ef5400877bf3ab2f798011552143b2. Nenhuma operação no DEV. A matriz em docs/matriz-paridade-pipeline.md diferencia capacidade existente, destino proposto e integração pendente.
+
+| Verificação desta revisão | Resultado observado |
+|---|---|
+| Navegação principal do Pipeline | Cinco abas: Visão geral, Montagem, Execução, Configuração e Versões; zero faixas flow-toolbar/seletor de modos |
+| Biblioteca real | 11 tipos adicionados individualmente; cada adição abre propriedades e eleva de 6 para 7 nós; desfazer restaura o fluxo |
+| Agenda | Oito modalidades selecionáveis, com campos condicionais; Sob demanda sem horário automático |
+| Governança | Inativação revela Motivo da inativação; flags sem movimento, SLA, pool e retries acessíveis no grupo próprio |
+| Execução | Inicia pela aba própria, conclui 6/6; histórico abre em janela e Abrir execução retorna à corrida no canvas |
+| Investigação | Logs da etapa sem sair de Execução; tentativas mantêm identidade da corrida e etapa |
+| Falha e retomada | Falha na qualidade bloqueia entrega; nova tentativa conclui 6/6; tentativa 1 Falhou e tentativa 2 Concluída preservadas |
+| Experiências | Consulta desabilita agenda e edição da etapa; Sustentação acessa investigação operacional |
+| Larguras | 1440×960, 1280×800 e 390×844 sem transbordamento horizontal do documento; canvas móvel mantém rolagem própria |
+| Ajuste ao canvas | Em 1440 px, canvas 740 px e largura rolável 740 px; frame ajustado 716 px; texto longo do comando contido no nó |
+| Console | Sem erros ou avisos no trecho consultado após os cenários |
+| Sintaxe/modelo | Verificações concluídas com saída 0; suíte do modelo preservada |
+
+Capturas desta revisão: 12-montagem-abas.jpg, 13-execucao-abas.jpg, 14-historico-integrado.jpg, 15-agenda-real.jpg, 16-mobile-abas.jpg. As capturas 01–11 registram a primeira versão.
+
+Não certificado: equivalência dos payloads reais, validações específicas completas, catálogos, importação, lineage, comparação entre versões, datas operacionais, reprocessamento/pausa remotos, valores protegidos, multiusuário, desempenho ou envio/execução real dos 11 tipos. O simulador genérico não interpreta as configurações dos componentes. A interface antiga só deverá ser substituída no DEV após a matriz de preservação ter implementação e evidência por capacidade.
+
+
+### Correção do componente Shell
+Reprodução no navegador: o item Shell tinha 842 px de altura, com min-height herdada de 824 px no ícone. Causa: classe shell usada simultaneamente no ícone de tipo e na estrutura da página. Correção: classes de ícones isoladas pelo prefixo kind-, preservando o estilo da estrutura. Nova medição: Shell 52 px, todos os 11 ícones da biblioteca 28 px, demais itens entre 52 e 67 px conforme quebra do texto. Inclusão do Shell no canvas e campos SSH/comando conferidos. Captura: evidence/17-shell-corrigido.jpg.

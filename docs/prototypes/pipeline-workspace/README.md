@@ -12,11 +12,11 @@ Para desenvolvimento do protótipo, use os arquivos separados `index.html`, `sty
 
 ## Roteiro de validação com o usuário
 
-1. Na montagem inicial de **Cobrança diária**, selecionar e renomear uma etapa. Abrir Configuração e retornar ao Fluxo: a edição permanece no mesmo rascunho.
+1. Na montagem inicial de **Cobrança diária**, selecionar e renomear uma etapa. Abrir Configuração e retornar à Montagem: a edição permanece no mesmo rascunho.
 2. Abrir a biblioteca pelo botão **Etapas**, adicionar uma etapa e definir dependências nos detalhes. Tentar uma dependência circular: deve ser recusada. Arrastar para organizar. Remover e desfazer (Ctrl+Z).
-3. Verificar que Visão geral resume finalidade e agenda sem duplicar formulários. Configuração concentra Identificação, Agenda e dependências, Parâmetros, Execução, Notificações e Documentação.
+3. Verificar que Visão geral resume finalidade e agenda sem duplicar formulários. Configuração concentra Identificação, Agenda e dependências, Parâmetros, Políticas de execução, Notificações e Documentação.
 4. Salvar o rascunho; a versão 2.4 continua preservada. Publicar abre uma revisão explícita e cria uma versão simulada. Em Versões, comparar e copiar uma versão para o rascunho.
-5. Em Fluxo → Execução, executar a simulação. Verificar dependências em espera, ramos de extração em paralelo, execução azul e conclusão verde com marca de verificação.
+5. Na aba Execução, executar a simulação. Verificar dependências em espera, ramos de extração em paralelo, execução azul e conclusão verde com marca de verificação.
 6. Após terminar, selecionar **Falha na qualidade** e iniciar nova simulação. A etapa de qualidade falha e a entrega fica bloqueada. Selecionar a etapa e tentar novamente. Em Tentativas, consultar os dois resultados; em Logs, consultar registros fictícios.
 7. Experimentar **Espera por capacidade** (4 segundos fictícios) e **Entrega pulada**. São demonstrações de estados, sem estimativa de fila ou recomendação real de horário.
 8. Simular desconexão durante uma execução: congelar os estados e suspender animações até reconectar. O motor fictício continua em segundo plano, como uma corrida real poderia continuar sem o navegador.
@@ -25,7 +25,7 @@ Para desenvolvimento do protótipo, use os arquivos separados `index.html`, `sty
 
 ## Direção visual
 
-Referências: `../../mockups/pipeline-workspace/02-pipeline-montagem.png`, `01-pipeline-execucao.png` e `04-criar-pipeline.png`. O grafo domina a tela, com azul de ação, branco nas áreas de trabalho e cabeçalho azul escuro. A biblioteca e o inspetor podem ser recolhidos; a biblioteca começa recolhida até 1360 px para dar espaço ao fluxo. Em celular, o grafo permite rolagem própria e os detalhes aparecem abaixo. Tipografia de sistema, sem fontes ou bibliotecas externas. Ícones deste protótipo são provisórios; a implementação deve usar o conjunto do design system.
+Referências: `../../mockups/pipeline-workspace/02-pipeline-montagem.png`, `01-pipeline-execucao.png` e `04-criar-pipeline.png`. O grafo domina a tela, com azul de ação, branco nas áreas de trabalho e cabeçalho azul escuro. A biblioteca e o inspetor podem ser recolhidos; a biblioteca começa recolhida até 1200 px para dar espaço ao fluxo. Em celular, o grafo permite rolagem própria e os detalhes aparecem abaixo. Tipografia de sistema, sem fontes ou bibliotecas externas. Ícones deste protótipo são provisórios; a implementação deve usar o conjunto do design system.
 
 ## Limites explícitos e passagem ao dev
 
@@ -40,3 +40,10 @@ Usar como contrato de produto a [especificação](../../spec-ux-pipeline-profiss
 `node --check app.js`, `node --check model.js` e `node model.test.cjs` verificam sintaxe e a máquina de estados: dependências, ciclo, espera por capacidade, falha, retomada, histórico de tentativas, ramo pulado e isolamento da versão executada em relação ao rascunho.
 
 A evidência dos testes visuais e do roteiro está em `VALIDACAO.md`. Capturas em `evidence/` documentam o protótipo; não substituem os mockups originais nem representam o DEV.
+
+
+## Revisão de navegação e opções reais — 11/10/2026
+
+Abas: **Visão geral | Montagem | Execução | Configuração | Versões**. Histórico abre dentro de Execução; logs e tentativas permanecem nos detalhes da etapa. Não há seletor de modos em uma segunda faixa. Biblioteca com os 11 tipos do workspace atual; Configuração representa as oito modalidades de agenda e os principais campos de governança.
+
+O botão **Opções existentes** mostra o mapa de distribuição das capacidades encontradas no código. O [inventário detalhado](../../matriz-paridade-pipeline.md) define os critérios para adaptar o produto sem regressões. Os campos específicos são uma demonstração parcial: catálogos, parâmetros completos, ramos, prévias, pausa, segredos e integrações reais não estão implementados aqui. O simulador não interpreta regras dos componentes.

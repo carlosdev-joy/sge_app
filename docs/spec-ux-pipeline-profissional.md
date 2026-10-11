@@ -22,8 +22,8 @@ O contrato visual complementar está em [pipeline-experiencia.md](design/pipelin
 **IN:**
 - Lista unificada de publicados e rascunhos, retomada, busca e indicação de edição em andamento.
 - Criação essencial, espaço de trabalho, configuração única, montagem, versões/publicação e investigação contextual.
-- Cinco destinos principais: Visão geral, Fluxo, Execuções, Configuração, Versões.
-- Dois modos dentro de Fluxo: Montagem e Execução. Execuções abre o mesmo visualizador a partir do histórico, sem implementar uma segunda experiência gráfica.
+- Cinco destinos principais: Visão geral, Montagem, Execução, Configuração, Versões.
+- Montagem e Execução são abas distintas, com um renderer reutilizado. Histórico, tabela, tentativas e logs pertencem a Execução e abrem sob demanda; não há uma segunda faixa de modos nem abas principais separadas de Execuções/Logs.
 - Inspector de etapa contextual; estados reais, atualização, acessibilidade, persistência de contexto e recuperação de erro.
 - Sessão de edição compartilhada entre abas e redução de modais para operações frequentes.
 - Critérios visuais e funcionais, protótipo navegável identificado como simulação, implantação incremental em DEV.
@@ -58,7 +58,7 @@ O contrato visual complementar está em [pipeline-experiencia.md](design/pipelin
 - Adaptador atual: api/services/workspace_publication.py, workspace_operations.py e routers/pipelines.py. A projeção e reconciliação permanecem no adaptador durante a migração.
 
 ### Sessão do workspace
-Um contexto de edição no nível do Pipeline guarda definição/layout locais, revisão-base, dirty, lease/fence e publicação pendente. Trocar Fluxo↔Configuração não perde alterações, não adquire uma segunda posse e não interrompe a renovação da posse atual.
+Um contexto de edição no nível do Pipeline guarda definição/layout locais, revisão-base, dirty, lease/fence e publicação pendente. Trocar Montagem↔Configuração não perde alterações, não adquire uma segunda posse e não interrompe a renovação da posse atual.
 Salvar rascunho persiste os campos alterados na mesma revisão por contrato existente. Aplicar no inspector incorpora mudanças locais; publicar continua separado.
 Ao sair do Pipeline, recarregar ou mudar da definição em edição, confirmar descarte de alterações locais. Falha de save conserva o trabalho; revisão obsoleta exige reconciliação explícita, nunca sobrescrita silenciosa.
 Cache local em memória não promete sobrevivência a fechar o navegador. Nenhum novo valor protegido fica em cache/URL/log.
@@ -101,10 +101,10 @@ Erros: detail em português e code estável; 401 sessão,403 permissão,409 revi
 | Nome amigável, descrição, projeto/domínio, responsável e tags | Configuração / Identificação | Visão geral |
 | Identificador técnico | Criação; depois somente leitura | Cabeçalho/copiar |
 | Agenda, calendário, ODATE, predecessores/janelas | Configuração / Agenda e dependências | Visão geral |
-| SLA, pool, concorrência, retries e política sem movimento | Configuração / Execução | Visão geral resumida |
+| SLA, pool, concorrência, retries e política sem movimento | Configuração / Políticas de execução | Visão geral resumida |
 | E-mail e notificações gerais | Configuração / Notificações | Visão geral se relevante |
 | Parâmetros globais e referências protegidas | Configuração / Parâmetros | Inspector só vínculo/override da etapa |
-| Etapas, arestas, decisões, ordem executável | Fluxo / Montagem | Visão geral com contagem |
+| Etapas, arestas, decisões, ordem executável | Montagem | Visão geral com contagem |
 | Comando, conexão, parâmetros e retries da etapa | Inspector da etapa / Montagem | Execução consulta snapshot |
 | Lineage da etapa | Inspector / Lineage | Visão geral: atalho; catálogo externo mantém destino próprio |
 | Runbook | Configuração / Documentação | Visão geral e investigação |
@@ -122,7 +122,7 @@ Responder o que faz, quem mantém, qual definição está aberta e onde particip
 Atalhos Editar configuração, Abrir fluxo, Ver execuções respeitam capabilities. Não repetir formulários nem mostrar tabelas/logs extensos na visão geral.
 Sem informação, orientar onde cadastrar em vez de multiplicar Não informado.
 
-### Fluxo / Montagem
+### Montagem
 Cabeçalho identifica rascunho/revisão, ambiente da aplicação e destino quando configurado; indicador de alterações locais separa salvo de não publicado.
 Biblioteca, canvas dominante e inspector; seleção de uma etapa mostra campos principais diretamente. Configurações extensas usam subseções do inspector ou área expandida; modal permanece para confirmação, segredo e importação excepcional.
 Biblioteca recolhível, busca por tipo; clicar/arrastar adiciona no rascunho. Conectar, excluir, organizar, desfazer/refazer atuam localmente. Organizar muda layout; ordem executável não altera dependências.
@@ -130,8 +130,8 @@ Histórico local de desfazer/refazer: últimos50 patches do draft (definição/l
 Painel inferior de validação recolhível mostra erro/aviso, campo e etapa; selecionar diagnóstico abre a etapa correta. Se todos válidos, resumo curto; detalhes sob demanda.
 Barra de ações consistente: Salvar rascunho, Validar, Publicar. Publicação pendente visível e preservada ao recarregar. Outros leitores veem editor/último save/revisão; ninguém vê mudanças não salvas de outra sessão.
 
-### Fluxo / Execução e Execuções
-Execuções lista corridas e situação/duração/origem/versão. Selecionar uma abre visualizador comum em modo Execução, preservando filtros de origem.
+### Execução: gráfico, histórico e logs
+Histórico dentro de Execução lista corridas e situação/duração/origem/versão. Selecionar uma retorna ao mesmo visualizador, preservando filtros de origem; não ocupar permanentemente a altura do canvas.
 O cabeçalho operacional identifica corrida/data/versão; não mostra rascunho como definição executada. Sem corrida selecionada, apresenta escolha/estado vazio e não promete andamento.
 Solicitar execução usa somente configuração publicada, capabilities e gate existentes; mostra recebimento da solicitação, fila e início como estados diferentes. Data lógica e parâmetros devem ter controles guiados para parâmetros declarados; JSON fica avançado.
 Após resposta de disparo, abrir runId retornado no visualizador. A DAG pausada continua aguardando, com causa quando API a informar.
@@ -141,7 +141,7 @@ Links antigos Logs/Etapas/Fluxos redirecionam preservando pipeline, modo, data, 
 A aba Logs do Pipeline é substituída por investigação contextual, mantendo rota de compatibilidade. Publicação global mantém histórico de fábrica para suporte, claramente identificado e secundário à publicação de versão.
 
 ### Configuração e Versões
-Configuração agrupa Identificação, Agenda/dependências, Parâmetros, Execução, Notificações e Documentação; navegação interna em vez de formulário vertical único.
+Configuração agrupa Identificação, Agenda/dependências, Parâmetros, Políticas de execução, Notificações e Documentação; navegação interna em vez de formulário vertical único.
 Mesmo draft/lease e ação Salvar das demais abas. Uma edição apenas de agenda não abre o canvas nem altera a versão publicada antes da publicação confirmada.
 Versões: publicada/importada/não confirmada explícitas; comparação por campo/etapa/aresta e layout em seção separada. Restaurar cria novo draft conforme guardas existentes; nunca reescreve histórico.
 
@@ -183,7 +183,7 @@ Cada fase pode ser dividida em PRs pequenas (alvo ~500 linhas úteis), sempre a 
 
 ### F3 — contexto e Configuração única
 - Entregável: cinco abas, formulários remanejados e sessão de edição contínua.
-- Aceite: descrição/agenda/parâmetros editáveis só no destino canônico; resumo tem atalho; alterações sobrevivem Fluxo↔Configuração; mesma lease/fence; leitura simultânea e transferência não permitem save obsoleto; rascunho/publicado/corrida não se confundem.
+- Aceite: descrição/agenda/parâmetros editáveis só no destino canônico; resumo tem atalho; alterações sobrevivem Montagem↔Configuração; mesma lease/fence; leitura simultânea e transferência não permitem save obsoleto; rascunho/publicado/corrida não se confundem.
 - Validação: interação por teclado, navegação com dirty, conflito/expiração, permissão combinada; validação comum.
 
 ### F4 — montagem fiel e eficiente
@@ -251,3 +251,7 @@ As referências externas orientam princípios; não alteram contratos do ORQUEST
 ## Protótipo navegável de referência (F1)
 Preparado em 11/10/2026 e isolado do produto. Veja [o roteiro e os limites](prototypes/pipeline-workspace/README.md), [a verificação](prototypes/pipeline-workspace/VALIDACAO.md) e [o HTML portátil](prototypes/pipeline-workspace/pipeline-workspace.html). Baixe o HTML para interagir; o GitHub mostra o código.
 O protótipo demonstra catálogo com rascunhos, criação, montagem, configuração única, publicação/versões e execução com estados, falha, retomada e investigação. Perfis, editor ativo e telemetria são ilustrativos; não implementam autenticação, lease ou execução reais. A implementação produtiva continua pendente no DEV. A fonte canônica para os critérios de aceitação permanece esta especificação; divergências simplificadas do protótipo estão registradas no README.
+
+
+## Preservação funcional e revisão de navegação — 11/10/2026
+Decisão do usuário: Montagem e Execução são abas principais. Histórico/logs integram Execução, sem uma segunda faixa de modos. O inventário dos 11 componentes, oito agendas, sessão, publicação e ações operacionais está na [matriz de preservação funcional](matriz-paridade-pipeline.md). Essa matriz é requisito para implementação: reduzir densidade não autoriza perder campos, payloads, permissões ou funcionalidades. Integrações e campos especializados não cobertos pelo protótipo permanecem pendências explícitas.
