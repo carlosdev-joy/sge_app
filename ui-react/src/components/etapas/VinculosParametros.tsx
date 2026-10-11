@@ -6,27 +6,29 @@ import { Input, Select } from '../ui/Input'
 import { Button } from '../ui/Button'
 import type { JobTypeFieldsValue } from './JobTypeFields'
 
-export function VinculosParametros({ pipeline, value, onChange }: {
-  pipeline?: string; value: JobTypeFieldsValue; onChange: (p: Partial<JobTypeFieldsValue>) => void
+export function VinculosParametros({ pipeline, value, onChange, catalogOverride }: {
+  pipeline?: string; value: JobTypeFieldsValue; onChange: (p: Partial<JobTypeFieldsValue>) => void; catalogOverride?: CatalogoApi[]
 }) {
   const [alvo, setAlvo] = useState('')
   const [erro, setErro] = useState('')
   const cap = useQuery<{ vinculos_disponiveis: boolean }>({
     queryKey: ['param-vinculos-status'], queryFn: () => apiFetch('/pipelines/parametros/catalogo-status'),
-    enabled: !!pipeline, staleTime: 30_000,
+    enabled: !!pipeline && catalogOverride === undefined, staleTime: 30_000,
   })
   const q = useQuery<{ parametros: CatalogoApi[] }>({
     queryKey: ['pipeline-catalogo', pipeline],
     queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline ?? '')}/parametros?parametros_versao=2`),
-    enabled: !!pipeline && !!cap.data?.vinculos_disponiveis, staleTime: 0,
+    enabled: !!pipeline && !!cap.data?.vinculos_disponiveis && catalogOverride === undefined, staleTime: 0,
   })
   const refs = value.param_vinculos ?? {}
   const py = value.python
   const campo = py?.modo === 'arquivo' ? 'script_path' : py?.modo === 'codigo' ? 'destino_dir' : null
-  const catalogo = catalogoFromApi(q.data?.parametros)
+  const catalogo = catalogoFromApi(catalogOverride ?? q.data?.parametros)
+  const available = catalogOverride !== undefined || !!cap.data?.vinculos_disponiveis
+  const loaded = catalogOverride !== undefined || q.isSuccess
   const opcoes = catalogo.filter(p => (value.job_type === 'datastage' ? p.param_destino === 'datastage' : (['String', 'Pathname'].includes(p.param_type) && p.param_source === 'fixo')))
-  if (!pipeline || (value.job_type === 'python' && !campo)) return null
-  if (!cap.data?.vinculos_disponiveis && !Object.keys(refs).length) return null
+  if ((!pipeline && catalogOverride === undefined) || (value.job_type === 'python' && !campo)) return null
+  if (!available && !Object.keys(refs).length) return null
   function escolher(destino: string, nome: string) {
     const next = { ...refs }
     if (nome) next[destino] = nome
@@ -38,7 +40,7 @@ export function VinculosParametros({ pipeline, value, onChange }: {
   return <section className="space-y-3 border-t border-edge pt-3">
     <h3 className="text-sm font-semibold text-ink">Usar parâmetros do pipeline</h3>
     <p className="text-xs text-dim">Valores diretos no nó têm prioridade. A execução guarda a configuração original para retomadas. A primeira ativação exige publicar a DAG.</p>
-    {(cap.isError || q.isError) && <p role="alert" className="text-sm text-red-700 dark:text-red-300">Não foi possível carregar o catálogo. As referências preenchidas foram mantidas.</p>}
+    {catalogOverride === undefined && (cap.isError || q.isError) && <p role="alert" className="text-sm text-red-700 dark:text-red-300">Não foi possível carregar o catálogo. As referências preenchidas foram mantidas.</p>}
     {destinos.map(destino => {
       const nome = refs[destino] ?? ''
       const selecionado = opcoes.find(p => p.param_name === nome)
@@ -47,7 +49,7 @@ export function VinculosParametros({ pipeline, value, onChange }: {
         : !!py?.[destino as 'script_path' | 'destino_dir']
       return <div key={destino} className="space-y-1">
         <Select label={value.job_type === 'python' ? 'Origem do caminho' : `Parâmetro do job: ${destino}`}
-          value={nome} disabled={!q.isSuccess || !cap.data?.vinculos_disponiveis}
+          value={nome} disabled={!loaded || !available}
           onChange={e => escolher(destino, e.target.value)}>
           <option value="">Valor direto / sem referência</option>
           {nome && !selecionado && <option value={nome}>{nome} — indisponível</option>}
@@ -59,7 +61,7 @@ export function VinculosParametros({ pipeline, value, onChange }: {
     })}
     {value.job_type === 'datastage' && <div className="space-y-2">
       <Input label="Nome declarado pelo job DataStage" value={alvo} onChange={e => setAlvo(e.target.value)} />
-      <Button type="button" variant="secondary" disabled={!q.isSuccess || !opcoes.length}
+      <Button type="button" variant="secondary" disabled={!loaded || !opcoes.length}
         onClick={() => {
           const nome = alvo.trim()
           if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(nome) || nome.length > 128) {
@@ -71,6 +73,6 @@ export function VinculosParametros({ pipeline, value, onChange }: {
         }}>Adicionar referência</Button>
       {erro && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{erro}</p>}
     </div>}
-    {!opcoes.length && q.isSuccess && <p className="text-xs text-dim">Cadastre um parâmetro compatível em Parâmetros Globais do pipeline.</p>}
+    {!opcoes.length && loaded && <p className="text-xs text-dim">Cadastre um parâmetro compatível em Parâmetros Globais do pipeline.</p>}
   </section>
 }

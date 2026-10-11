@@ -48,11 +48,57 @@ def _json(value):
   except (ValueError,TypeError):return None
  return None
 
+def authenticated_cipher(value):
+ try:
+  from services.conn_crypto import _fernet
+  if not isinstance(value,str) or not value:raise ValueError()
+  # extract_timestamp autentica HMAC sem decifrar/expor o texto claro.
+  _fernet().extract_timestamp(value.encode('ascii'))
+ except Exception:raise PublicationBlocked('secret_cipher_invalid','Valor protegido indisponível; confira a chave e a integridade do armazenamento') from None
+ return value
+
+def load_workspace_secrets(cur,definition,existing,legacy_version=None,draft_id=None):
+ # Vault imutável: somente cifras, nunca texto claro. Sem UUID não há consulta adicional.
+ def refs(value):
+  if isinstance(value,dict):
+   if isinstance(value.get('secretReference'),dict):yield value['secretReference']
+   for child in value.values():yield from refs(child)
+  elif isinstance(value,list):
+   for child in value:yield from refs(child)
+ references=list(refs(definition));identifiers=[reference['secretId'] for reference in references if 'secretId' in reference]
+ if not references:return existing
+ cur.execute("SELECT OBJECT_ID('dbo.etl_workspace_segredo','U')")
+ if not cur.fetchone()[0]:raise PublicationBlocked('secret_schema_unavailable','Valores protegidos indisponíveis; aplique a migration 157')
+ vault={}
+ for id in set(str(value) for value in identifiers):
+  try:canonical=str(uuid.UUID(id))
+  except (ValueError,TypeError):raise PublicationBlocked('secret_reference','Referência protegida inválida')
+  cur.execute('SELECT pipeline_name,job_name,param_name,ciphertext FROM dbo.etl_workspace_segredo WITH(HOLDLOCK) WHERE secret_id=? AND pipeline_name=?',(canonical,definition['identity']['pipelineName']))
+  row=cur.fetchone()
+  if row:vault[canonical]={'pipelineName':row[0],'jobName':row[1],'parameterName':row[2],'ciphertext':row[3]}
+ baseline={}
+ legacy=[reference for reference in references if 'secretId' not in reference]
+ if legacy:
+  cur.execute("SELECT OBJECT_ID('dbo.etl_workspace_segredo_legado','U')")
+  if not cur.fetchone()[0]:raise PublicationBlocked('secret_schema_unavailable','Valores protegidos históricos indisponíveis; aplique a migration 157')
+  if legacy_version is None and draft_id is not None:
+   cur.execute('SELECT base_version_id FROM dbo.etl_workspace_rascunho WHERE draft_id=?',(str(draft_id),));source=cur.fetchone();legacy_version=source[0] if source else None
+  for reference in legacy:
+   job=reference.get('jobName');parameter=reference.get('parameterName')
+   if not isinstance(parameter,str):raise PublicationBlocked('secret_reference','Referência protegida histórica inválida')
+   cur.execute('SELECT ciphertext FROM dbo.etl_workspace_segredo_legado WITH(HOLDLOCK) WHERE version_id=? AND pipeline_name=? AND param_name=? AND (job_name=? OR (job_name IS NULL AND ? IS NULL))',(str(legacy_version) if legacy_version else None,definition['identity']['pipelineName'],parameter,job,job))
+   row=cur.fetchone()
+   if row:baseline[(str(job or '').rstrip().casefold(),parameter)]=authenticated_cipher(row[0])
+ return {**existing,'_workspace_secrets':vault,'_workspace_legacy_secrets':baseline}
+
 def materialize(definition,layout,existing):
- """Projeção completa; encrypted só usa a cifra atual da MESMA localização."""
+ """Projeção completa; produção prepara cifras imutáveis antes desta função."""
  name=definition['identity']['pipelineName'];metadata=definition.get('metadata') or {};pipeline=dict(metadata.get('legacyPipeline') or {});pipeline['pipeline_name']=name
  if 'schedule' in definition:raise PublicationBlocked('unsupported_schedule','Use a agenda na configuração do pipeline; o campo schedule separado não é projetável')
  if 'parameters' in definition:raise PublicationBlocked('unsupported_parameters','Parâmetros separados não são projetáveis; use o catálogo do pipeline')
+ policy_fields=('liberar_dependentes_sem_movimento','notificar_sem_movimento')
+ previous_pipeline=next(iter(existing.get('etl_pipeline',[])),{})
+ if any(field in pipeline and pipeline[field]!=previous_pipeline.get(field,False if field==policy_fields[0] else True) for field in policy_fields):pipeline['politica_sem_movimento_revisao']=int(previous_pipeline.get('politica_sem_movimento_revisao') or 0)+1
  projected={table:[] for table in TABLES};projected['etl_pipeline']=[pipeline]
  related=metadata.get('legacyTables') or {}
  if set(related)-{'etl_pipeline_param','etl_pipeline_dependencia','etl_pipeline_owner'}:raise PublicationBlocked('unsupported_configuration','Tabela adicional não é projetável pelo adaptador')
@@ -77,8 +123,21 @@ def materialize(definition,layout,existing):
     encrypted=str(row.get('param_type') or '').lower()=='encrypted'
     if encrypted:
      expected={'pipelineName':name,'jobName':row.get('job_name'),'parameterName':row.get('param_name')}
+     if isinstance(reference,dict) and 'secretId' in reference:
+      if set(reference)!=set(expected)|{'secretId'} or any(reference.get(key)!=value for key,value in expected.items()):raise PublicationBlocked('secret_reference','Referência protegida não corresponde ao parâmetro')
+      try:identifier=str(uuid.UUID(reference['secretId']))
+      except (ValueError,TypeError,AttributeError):raise PublicationBlocked('secret_reference','Referência protegida inválida')
+      protected=existing.get('_workspace_secrets',{}).get(identifier)
+      if not protected or any(protected.get(key)!=value for key,value in expected.items()) or not isinstance(protected.get('ciphertext'),str) or not protected['ciphertext']:raise PublicationBlocked('secret_reference','Valor protegido histórico indisponível')
+      row['param_value']=authenticated_cipher(protected['ciphertext'])
+      continue
      # Collation da origem já canonizada na leitura; a localização é imutável.
      if not isinstance(reference,dict) or set(reference)!=set(expected) or any((reference.get(k)!=v if k=='parameterName' else str(reference.get(k) or '').rstrip().casefold()!=str(v or '').rstrip().casefold()) for k,v in expected.items()):raise PublicationBlocked('secret_reference','Referência protegida não corresponde à localização do parâmetro')
+     if '_workspace_legacy_secrets' in existing:
+      baseline=existing['_workspace_legacy_secrets'].get((str(expected['jobName'] or '').rstrip().casefold(),expected['parameterName']))
+      if not baseline:raise PublicationBlocked('secret_history_unavailable','Valor protegido desta versão não possui cifra histórica comprovada')
+      row['param_value']=baseline
+      continue
      old=next((r for r in existing.get(table,[]) if all((r.get(k)==row.get(k) if k=='param_name' else str(r.get(k) or '').rstrip().casefold()==str(row.get(k) or '').rstrip().casefold()) for k in TABLES[table])),None)
      if old is None or str(old.get('param_type') or '').lower()!='encrypted':raise PublicationBlocked('secret_reference','Parâmetro protegido não existe mais na origem')
      row['param_value']=old['param_value']
@@ -122,6 +181,40 @@ def validate_projection(definition,layout,existing,connection_types,email_policy
  except (HTTPException,ValueError,TypeError,AttributeError) as exc:
   message=str(exc.detail) if isinstance(exc,HTTPException) else 'Confira os dias e horários da agenda'
   error(None,'schedule','schedule',message)
+ previous_pipeline=next(iter(existing.get('etl_pipeline',[])),{})
+ for field,allowed in (('criticidade',{'Alta','Media','Baixa'}),('ambiente',{'PROD','HML','DEV'})):
+  if field in pipeline and pipeline[field] not in allowed and pipeline[field]!=previous_pipeline.get(field):error(None,field,'pipeline_configuration','Selecione '+field+' válido')
+ for field,minimum,maximum in (('sla_minutos',1,525600),('max_active_runs',1,10),('retries_count',0,10),('retry_delay_seconds',0,604800)):
+  value=pipeline.get(field)
+  if value is not None and (type(value) is not int or not minimum<=value<=maximum) and value!=previous_pipeline.get(field):error(None,field,'pipeline_configuration','Informe número inteiro válido para '+field)
+ for field in ('hora_virada','nao_iniciar_antes','hora_limite_dependencia'):
+  value=pipeline.get(field)
+  if value and value!=previous_pipeline.get(field) and not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?',str(value)):error(None,field,'pipeline_configuration','Informe horário válido para '+field)
+ if pipeline.get('email_destinatarios')!=previous_pipeline.get('email_destinatarios'):
+  from services.email_mime import validar_destinatarios
+  raw=pipeline.get('email_destinatarios')
+  try:recipients=json.loads(raw) if isinstance(raw,str) else raw or []
+  except (ValueError,TypeError):recipients=None
+  if not isinstance(recipients,list) or any(not isinstance(item,str) for item in recipients):error(None,'email_destinatarios','pipeline_configuration','Informe destinatários em uma lista válida')
+  else:
+   valid,issues=validar_destinatarios(recipients,(email_policy or (None,None))[1])
+   if issues:error(None,'email_destinatarios','pipeline_configuration','Confira formato, domínios permitidos e limite dos destinatários')
+   else:pipeline['email_destinatarios']=json.dumps(valid,ensure_ascii=False)
+ if pipeline.get('active') in (False,0) and previous_pipeline.get('active') not in (False,0) and len(str(pipeline.get('motivo_inativacao') or '').strip())<5:error(None,'motivo_inativacao','pipeline_configuration','Informe o motivo da inativação com pelo menos 5 caracteres')
+ from services import job_params as parameter_rules
+ for table in ('etl_pipeline_param','etl_pipeline_job_param'):
+  known_names=set()
+  for parameter in projection[table]:
+   scope=(parameter.get('job_name'),str(parameter.get('param_name') or '').lower())
+   if scope in known_names:error(parameter.get('job_name'),'parameters','duplicate','Parâmetro duplicado no mesmo escopo')
+   known_names.add(scope)
+   old=next((row for row in existing.get(table,[]) if all(row.get(key)==parameter.get(key) for key in TABLES[table])),None)
+   if old is not None and all(old.get(key)==value for key,value in parameter.items()):continue
+   if table=='etl_pipeline_job_param' and next((n['type'] for n in nodes if n['id']==parameter.get('job_name')),None)!='datastage':continue
+   safe={**parameter,'param_value':'***' if str(parameter.get('param_type') or '').lower()=='encrypted' else parameter.get('param_value')}
+   _,issues=parameter_rules.normalizar_item(safe)
+   for message in issues:error(parameter.get('job_name'),'parameters','parameter_configuration',message)
+   if table=='etl_pipeline_param' and parameter.get('param_destino','datastage') not in {'datastage','orquestra'}:error(None,'param_destino','parameter_configuration','Destino do parâmetro inválido')
  mssql={key for key,kind in connection_types.items() if kind in {'mssql','sqlserver'}}
  for node,job in zip(nodes,projection['etl_pipeline_job']):
   kind=node['type'];id=node['id'];cfg=node['configuration'];command=job.get('job_command');ssh=job.get('ssh_conn_id');issues=[]
@@ -173,10 +266,10 @@ async def connection_types(cur):
 async def validate_draft(id,revision,actor):
  c=get_db_conn();q=c.cursor()
  try:
-  q.execute('SELECT definition_json,layout_json,revision,read_only_json,estado,pipeline_name FROM dbo.etl_workspace_rascunho WHERE draft_id=?',(str(id),));row=q.fetchone()
+  q.execute('SELECT definition_json,layout_json,revision,read_only_json,estado,pipeline_name,base_version_id FROM dbo.etl_workspace_rascunho WHERE draft_id=?',(str(id),));row=q.fetchone()
   if row is None:raise HTTPException(404,'Rascunho não encontrado')
   if row[2]!=revision:raise HTTPException(409,'Revisão alterada; recarregue')
-  definition=json.loads(row[0]);layout=json.loads(row[1]);existing={table:rows(q,table,row[5]) for table in TABLES}
+  definition=json.loads(row[0]);layout=json.loads(row[1]);existing=load_workspace_secrets(q,definition,{table:rows(q,table,row[5]) for table in TABLES},draft_id=id)
   errors,projection=validate_projection(definition,layout,existing,await connection_types(q),__import__('routers.jobs',fromlist=['_config_email_do_admin'])._config_email_do_admin(q))
   async with httpx.AsyncClient(base_url=AIRFLOW_URL,auth=(AIRFLOW_USER,AIRFLOW_PASSWORD),timeout=5,trust_env=False) as client:
    if not await airflow_idle(client,row[5]):errors.append({'nodeId':None,'field':'execution','code':'execution_active','message':'Pipeline possui execução ativa ou disparo pendente no Airflow'})
@@ -261,7 +354,7 @@ async def process_operation(id):
   async with httpx.AsyncClient(base_url=AIRFLOW_URL,auth=(AIRFLOW_USER,AIRFLOW_PASSWORD),timeout=10,follow_redirects=False,trust_env=False) as client:
    if op['state']=='pendente':
     if not await airflow_idle(client,op['name']):raise PublicationBlocked('execution_active','Pipeline possui execução ativa ou disparo pendente no Airflow')
-    existing={table:rows(q,table,op['name']) for table in TABLES};errors,projection=validate_projection(definition,layout,existing,await connection_types(q),__import__('routers.jobs',fromlist=['_config_email_do_admin'])._config_email_do_admin(q))
+    existing=load_workspace_secrets(q,definition,{table:rows(q,table,op['name']) for table in TABLES},draft_id=op['draft']);errors,projection=validate_projection(definition,layout,existing,await connection_types(q),__import__('routers.jobs',fromlist=['_config_email_do_admin'])._config_email_do_admin(q))
     if any(set(record)-columns(q,table)-ignored_columns(q,table) for table,records in projection.items() for record in records) if projection else False:raise PublicationBlocked('unknown_column','Configuração contém campo não projetável')
     if errors:raise PublicationBlocked('publication_invalid','Configuração recusada na validação final; consulte os diagnósticos do rascunho')
     c.rollback();q.execute('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; SET XACT_ABORT ON')
@@ -284,6 +377,8 @@ async def process_operation(id):
      q.execute('DELETE FROM dbo.etl_job_lineage WHERE pipeline_name=? AND job_name=?',(op['name'],removed))
     sync_rows(q,'etl_pipeline_job',op['name'],projection['etl_pipeline_job'])
     for table in ('etl_pipeline_param','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config','etl_pipeline_dependencia','etl_pipeline_owner'):sync_rows(q,table,op['name'],projection[table])
+    for (job,parameter),cipher in existing.get('_workspace_legacy_secrets',{}).items():
+     q.execute('INSERT dbo.etl_workspace_segredo_legado(version_id,pipeline_name,job_name,param_name,ciphertext) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM dbo.etl_workspace_segredo_legado WHERE version_id=? AND param_name=? AND (job_name=? OR (job_name IS NULL AND ? IS NULL)))',(str(op['version']),op['name'],job or None,parameter,cipher,str(op['version']),parameter,job or None,job or None))
     projected=active_hash(q,op['name']);q.execute("UPDATE dbo.etl_workspace_publicacao SET estado='projetado',projection_hash=?,erro_resumido=NULL,atualizada_em=SYSUTCDATETIME() WHERE operation_id=?",(projected,str(id)));c.commit();op['state']='projetado';op['projected']=projected
    if op['state'] in {'projetado','gerando'}:
     if active_hash(q,op['name'])!=op['projected']:raise PublicationBlocked('projection_hash_conflict','Projeção divergiu; publicação não confirmada')

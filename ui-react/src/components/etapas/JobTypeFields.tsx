@@ -719,7 +719,7 @@ export function JobTypeFields({
 
   return (
     <div className={`flex flex-col ${gap}`}>
-      {['datastage', 'python'].includes(job_type) && <VinculosParametros pipeline={pipeline} value={value} onChange={onChange} />}
+      {['datastage', 'python'].includes(job_type) && <VinculosParametros catalogOverride={defaultsOverride as import('../../lib/pipelineCatalogo').CatalogoApi[] | undefined} pipeline={pipeline} value={value} onChange={onChange} />}
       {/* python (v2) → seção própria: Modo de execução + campos por modo
           (substitui o campo genérico de comando; o módulo legado mora dentro). */}
       {job_type === 'python' ? (

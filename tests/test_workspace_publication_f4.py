@@ -162,3 +162,30 @@ def test_workspace_agendas_invalidas_nao_publicam(schedule):
     definition=flow();definition['metadata']['legacyPipeline'].update(scheduled_time='06:00:00',**schedule)
     errors,_=validate_projection(definition,LAYOUT,{},CONNECTIONS)
     assert any(e['code']=='schedule' for e in errors)
+
+@pytest.mark.parametrize('recipients', ['first@example.test\nsecond@example.test', '[42]', '["invalid"]', '["other@blocked.test"]'])
+def test_pipeline_recipient_storage_and_admin_domains_are_validated(recipients):
+    definition=flow();definition['metadata']['legacyPipeline']['email_destinatarios']=recipients
+    errors,_=validate_projection(definition,LAYOUT,{},CONNECTIONS,email_policy=([],['example.test'],None,False))
+    assert any(error['field']=='email_destinatarios' for error in errors)
+
+
+def test_pipeline_recipients_roundtrip_json_and_unchanged_legacy_is_preserved():
+    import json
+    definition=flow();definition['metadata']['legacyPipeline']['email_destinatarios']='["first@example.test", "", "second@example.test"]'
+    errors,projection=validate_projection(definition,LAYOUT,{},CONNECTIONS,email_policy=([],['example.test'],None,False))
+    assert not errors
+    assert json.loads(projection['etl_pipeline'][0]['email_destinatarios'])==['first@example.test','second@example.test']
+    definition['metadata']['legacyPipeline']['email_destinatarios']='legacy-unparseable'
+    existing={'etl_pipeline':[{'email_destinatarios':'legacy-unparseable'}]}
+    errors,projection=validate_projection(definition,LAYOUT,existing,CONNECTIONS)
+    assert not errors and projection['etl_pipeline'][0]['email_destinatarios']=='legacy-unparseable'
+
+
+@pytest.mark.parametrize('field', ['hora_virada','nao_iniciar_antes','hora_limite_dependencia'])
+def test_new_pipeline_time_must_be_valid_and_old_unsupported_time_remains_preserved(field):
+    definition=flow();definition['metadata']['legacyPipeline'][field]='25:99'
+    assert any(error['field']==field for error in validate_projection(definition,LAYOUT,{},CONNECTIONS)[0])
+    assert not validate_projection(definition,LAYOUT,{'etl_pipeline':[{field:'25:99'}]},CONNECTIONS)[0]
+    definition['metadata']['legacyPipeline'][field]='20:30'
+    assert not validate_projection(definition,LAYOUT,{},CONNECTIONS)[0]

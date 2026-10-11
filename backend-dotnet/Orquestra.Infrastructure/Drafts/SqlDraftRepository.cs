@@ -106,6 +106,9 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
         var version = Guid.NewGuid();
         await using var cmd = Command(c, t, "INSERT dbo.etl_workspace_versao(version_id,pipeline_name,numero,definition_json,layout_json,content_hash,criada_por) SELECT @id,@name,ISNULL(MAX(numero),0)+1,@definition,@layout,@hash,@actor FROM dbo.etl_workspace_versao WITH(UPDLOCK,HOLDLOCK) WHERE pipeline_name=@name", ("@id", version), ("@name", source.Definition.Identity.PipelineName), ("@definition", definition), ("@layout", layout), ("@hash", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(definition + "\n" + layout)))), ("@actor", actor.Matricula));
         await cmd.ExecuteNonQueryAsync(ct);
+        await using (var baselineSchema = Command(c, t, "SELECT OBJECT_ID('dbo.sp_workspace_capture_legacy_secrets','P')"))
+        if (await baselineSchema.ExecuteScalarAsync(ct) is not null and not DBNull)
+        { await using var baseline = Command(c, t, "EXEC dbo.sp_workspace_capture_legacy_secrets @version,@name", ("@version", version), ("@name", source.Definition.Identity.PipelineName)); await baseline.ExecuteNonQueryAsync(ct); }
         var imported = await Insert(c, t, source.Definition, source.Layout, version, source.Reasons, actor, ct);
         await CaptureBaseHash(c,t,imported.DraftId,name,ct);
         return imported;
@@ -118,7 +121,7 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
         await OwnedLease(c, t, id, request.Fence, actor, ct);
         if (!string.Equals(old.PipelineName, request.Definition.Identity.PipelineName, StringComparison.Ordinal)) DraftValidation.Invalid("Identidade do pipeline não pode ser alterada");
         if (request.Definition.IsReadOnly) DraftValidation.Invalid("Tipo de nó não suportado para edição");
-        PreserveReferences(old.Definition, request.Definition);
+        await ValidateSecretReferences(c, t, id, old.Definition, request.Definition, ct);
         await using var cmd = Command(c, t, "UPDATE dbo.etl_workspace_rascunho SET definition_json=@definition,layout_json=@layout,revision=revision+1,atualizado_em=SYSUTCDATETIME(),responsavel=@actor WHERE draft_id=@id", ("@id", id), ("@definition", JsonSerializer.Serialize(request.Definition, DraftValidation.Json)), ("@layout", JsonSerializer.Serialize(request.Layout, DraftValidation.Json)), ("@actor", actor.Matricula));
         await cmd.ExecuteNonQueryAsync(ct);
         await Audit(c, t, id, actor, "salvar", old.Revision + 1, ct);
@@ -215,6 +218,50 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
     private static async Task Audit(SqlConnection c, SqlTransaction t, Guid id, WorkspacePrincipal actor, string action, long revision, CancellationToken ct)
     {
         await using var cmd = Command(c, t, "INSERT dbo.etl_workspace_evento(entidade_id,ator,acao,revision) VALUES(@id,@actor,@action,@revision)", ("@id", id), ("@actor", actor.Matricula), ("@action", action), ("@revision", revision)); await cmd.ExecuteNonQueryAsync(ct);
+    }
+    private static async Task ValidateSecretReferences(SqlConnection c, SqlTransaction t, Guid draftId, PipelineDefinition old, PipelineDefinition next, CancellationToken ct)
+    {
+        var oldReferences = SecretReferences(JsonSerializer.SerializeToElement(old, DraftValidation.Json)).Select(CanonicalReference).ToHashSet(StringComparer.Ordinal);
+        var accepted = new HashSet<string>(StringComparer.Ordinal);
+        var rows = new List<(JsonElement Row, string? Job)>();
+        if (next.Metadata.ValueKind == JsonValueKind.Object && next.Metadata.TryGetProperty("legacyTables", out var tables) && tables.ValueKind == JsonValueKind.Object && tables.TryGetProperty("etl_pipeline_param", out var pipelineRows) && pipelineRows.ValueKind == JsonValueKind.Array)
+            rows.AddRange(pipelineRows.EnumerateArray().Select(row => (row, (string?)null)));
+        foreach (var node in next.Nodes)
+            if (node.Configuration.TryGetProperty("etl_pipeline_job_param", out var parameters) && parameters.ValueKind == JsonValueKind.Array) rows.AddRange(parameters.EnumerateArray().Select(row => (row, (string?)node.Id)));
+        foreach (var (row, job) in rows)
+        {
+            if (row.ValueKind != JsonValueKind.Object || !row.TryGetProperty("secretReference", out var reference)) continue;
+            if (reference.ValueKind != JsonValueKind.Object || !reference.TryGetProperty("secretId", out var identifier)) continue; // Legado mantém o contrato de preservação.
+            Guid id = default; JsonElement parameter = default;
+            if (identifier.ValueKind != JsonValueKind.String || !Guid.TryParse(identifier.GetString(), out id) || !row.TryGetProperty("param_type", out var type) || type.ValueKind != JsonValueKind.String || !type.GetString()!.Equals("Encrypted", StringComparison.OrdinalIgnoreCase) || !row.TryGetProperty("param_name", out parameter) || parameter.ValueKind != JsonValueKind.String)
+                DraftValidation.Invalid("Referência protegida inválida");
+            var name = parameter.GetString();
+            if (reference.EnumerateObject().Count() != 4 || !reference.TryGetProperty("pipelineName", out var pipeline) || pipeline.ValueKind != JsonValueKind.String || pipeline.GetString() != next.Identity.PipelineName || !reference.TryGetProperty("jobName", out var target) || (job is null ? target.ValueKind != JsonValueKind.Null : target.ValueKind != JsonValueKind.String || target.GetString() != job) || !reference.TryGetProperty("parameterName", out var bound) || bound.ValueKind != JsonValueKind.String || bound.GetString() != name)
+                DraftValidation.Invalid("Referência protegida não corresponde ao parâmetro");
+            var canonical = CanonicalReference(reference);
+            await using var schema = Command(c, t, "SELECT OBJECT_ID('dbo.etl_workspace_segredo','U')");
+            if (await schema.ExecuteScalarAsync(ct) is null or DBNull) throw new WorkspaceException(503, "secret_schema_unavailable", "Valores protegidos indisponíveis; aplique a migration 157");
+            await using var lookup = Command(c, t, "SELECT pipeline_name,job_name,param_name,draft_id FROM dbo.etl_workspace_segredo WITH(HOLDLOCK) WHERE secret_id=@id", ("@id", id));
+            await using var reader = await lookup.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct) || reader.GetString(0) != next.Identity.PipelineName || (reader.IsDBNull(1) ? null : reader.GetString(1)) != job || reader.GetString(2) != name || (!oldReferences.Contains(canonical) && reader.GetGuid(3) != draftId))
+                DraftValidation.Invalid("Referência protegida indisponível para esta revisão");
+            if (!accepted.Add(canonical)) DraftValidation.Invalid("Referência protegida duplicada");
+        }
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var reference in SecretReferences(JsonSerializer.SerializeToElement(next, DraftValidation.Json)))
+        {
+            var canonical = CanonicalReference(reference);
+            if (reference.ValueKind == JsonValueKind.Object && reference.TryGetProperty("secretId", out _))
+            { if (!accepted.Contains(canonical) || !seen.Add(canonical)) DraftValidation.Invalid("Referência protegida fora de parâmetro Encrypted ou duplicada"); }
+            else if (!oldReferences.Contains(canonical)) DraftValidation.Invalid("Referência de segredo não pode ser criada ou alterada");
+        }
+    }
+    private static string CanonicalReference(JsonElement value) => value.ValueKind == JsonValueKind.Object ? "{" + string.Join(",", value.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal).Select(p => JsonSerializer.Serialize(p.Name) + ":" + CanonicalReference(p.Value))) + "}" : value.ValueKind == JsonValueKind.Array ? "[" + string.Join(",", value.EnumerateArray().Select(CanonicalReference)) + "]" : value.GetRawText();
+    private static IEnumerable<JsonElement> SecretReferences(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+            foreach (var p in value.EnumerateObject()) { if (p.Name == "secretReference") yield return p.Value; foreach (var found in SecretReferences(p.Value)) yield return found; }
+        else if (value.ValueKind == JsonValueKind.Array) foreach (var item in value.EnumerateArray()) foreach (var found in SecretReferences(item)) yield return found;
     }
     private static void PreserveReferences(PipelineDefinition old, PipelineDefinition next)
     {
