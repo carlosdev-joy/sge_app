@@ -248,3 +248,7 @@ Coleta e IDs necessários às etapas seguintes são considerados nos contratos d
 
 ## Referências visuais versionadas
 Os quatro mockups aprovados estão em docs/mockups/pipeline-workspace/ na branch docs/pipeline-workspace-dotnet. Ler o README e abrir os PNGs antes de implementar a interface. Transportar essa pasta para o worktree de feature junto com a documentação. As imagens definem a direção visual; os contratos e permissões desta especificação definem o comportamento.
+
+## Continuidade autorizada — 11/10/2026
+
+O complemento [Paridade do workspace](spec-workspace-paridade-complemento.md) executa lacunas dos requisitos existentes, sem substituir esta spec. Decisão posterior do usuário, entregue PR490: retirar Etapas/lista e concentrar edição no Fluxo; prevalece sobre a opção de lista dos itens2/5 acima. Próximas fases F7A–F7D completam paridade; F8 mede desempenho e F9 registra homologação/limites. Autorização explícita inclui seguir até concluir os pontos listados, em DEV, mantendo referência visual e permissões.

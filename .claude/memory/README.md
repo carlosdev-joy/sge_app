@@ -119,3 +119,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Diálogos no padrão da aplicação](orquestra-dialogos-padrao-aplicacao.md) — 10/10/2026: candidato2.12.5; consultar registro final DEV.
 
 - [Edição no Fluxo](orquestra-workspace-edicao-no-fluxo.md) — candidato2.12.6; consultar entrega DEV final.
+
+- [Paridade do workspace F7](orquestra-workspace-paridade-f7.md) — continuidade autorizada pela spec; candidato F7A2.13.0, entrega DEV final no registro compartilhado.

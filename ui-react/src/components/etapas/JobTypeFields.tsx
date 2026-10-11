@@ -1,7 +1,7 @@
 import { VinculosParametros } from './VinculosParametros'
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Maximize2, Plus } from 'lucide-react'
+import { Maximize2, Plus, X } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
 import {
   DS_ENCRYPTED_MASCARA, DS_FORMATOS_SUGERIDOS, DS_PARAM_ANCORAS, DS_PARAM_SOURCES, DS_PARAM_TYPES,
@@ -121,6 +121,11 @@ export interface JobTypeFieldsProps {
   // Nome do job DataStage (a etapa) — habilita "Importar do DataStage" (F6),
   // que lê os parâmetros declarados no lineage ISX já extraído.
   jobName?: string
+  // Workspace: herança do próprio draft e guarda de respostas assíncronas.
+  defaultsOverride?: JobParamApi[]
+  disableEncrypted?: boolean
+  disableMaestro?: boolean
+  canApply?: () => boolean
 }
 
 // ── Label / placeholder do campo de comando, por tipo ────────────────────────
@@ -235,6 +240,7 @@ export interface JobParamsEditorProps {
   referencia?: string
   // Oculta params Encrypted da renderização visual (dados intactos no array).
   hideEncrypted?: boolean
+  disableEncrypted?: boolean
 }
 
 function genParamId() {
@@ -258,16 +264,17 @@ function useDsParamsPreview(params: JobParam[], referencia: string, ativo: boole
     [itens, referencia],
   )
   const corpoDiferido = useDeferredValue(corpo)
-  return useQuery<PreviewResp>({
+  const query = useQuery<PreviewResp>({
     queryKey: ['ds-params-preview', corpoDiferido],
     queryFn: () => apiFetch('/pipelines/jobs/params/preview', { method: 'POST', body: corpoDiferido }),
     enabled: ativo && itens.length > 0,
     staleTime: 60_000,
     placeholderData: prev => prev,
   })
+  return { ...query, data: corpo === corpoDiferido && !query.isPlaceholderData ? query.data : undefined }
 }
 
-export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc', referencia = '', hideEncrypted = false }: JobParamsEditorProps) {
+export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc', referencia = '', hideEncrypted = false, disableEncrypted = false }: JobParamsEditorProps) {
   const txt = compact ? 'text-xs' : 'text-sm'
   const inputCls = `bg-panel border text-ink rounded-md ${compact ? 'px-2 py-1 text-xs' : 'px-3 py-1.5 text-sm'} font-mono placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500`
   const selectCls = `bg-panel border border-edge text-ink rounded-md ${compact ? 'px-1.5 py-1 text-xs' : 'px-2 py-1.5 text-sm'} focus:outline-none focus:ring-1 focus:ring-blue-500`
@@ -404,7 +411,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
                         </td>
                         <td className="px-1 py-1 text-center">
                           <button type="button" onClick={() => removeVisible(visIdx)}
-                            className="text-dim hover:text-red-500 text-xs" title="Remover">✕</button>
+                            className="text-dim hover:text-red-500 text-xs" title="Remover"><X size={14}/></button>
                         </td>
                       </tr>
                     )
@@ -438,15 +445,16 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
             <div key={p.id ?? idx} data-param-linha={p.param_name}
               className="flex flex-col gap-1 rounded-md border border-edge/70 bg-canvas/40 p-1.5">
               <div className={`grid ${compact ? 'grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_20px] sm:grid-cols-[minmax(0,1fr)_84px_128px_20px]' : 'grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_24px] sm:grid-cols-[minmax(0,1fr)_96px_150px_24px]'} gap-1.5 items-center`}>
-                <input
+                <label className="col-span-3 sm:col-span-1 flex min-w-0 flex-col gap-1 text-xs text-dim">Nome<input
                   type="text"
                   value={p.param_name}
                   onChange={e => updateParam(idx, { param_name: e.target.value })}
                   placeholder="pNome ou PSet.pNome"
                   title="Nome exato do parâmetro no job (maiúsculas contam); membro de Parameter Set: PSet.Param"
-                  className={`${campo} col-span-3 sm:col-span-1 ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`}
-                />
-                <select
+                  className={`${campo} ${!p.param_name.trim() ? 'border-red-500/60' : 'border-edge'}`}
+                /></label>
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Tipo<select
+                  aria-label="Tipo"
                   value={p.param_type}
                   onChange={e => {
                     const tipo = e.target.value
@@ -461,9 +469,10 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
                   title="Tipo do parâmetro no DataStage"
                   className={sel}
                 >
-                  {DS_PARAM_TYPES.map(t => <option key={t}>{t}</option>)}
-                </select>
-                <select
+                  {DS_PARAM_TYPES.filter(t => !disableEncrypted || t !== 'Encrypted').map(t => <option key={t}>{t}</option>)}
+                </select></label>
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Origem<select
+                  aria-label="Origem"
                   value={origem}
                   onChange={e => updateParam(idx, { param_source: e.target.value })}
                   title="De onde vem o valor a cada execução"
@@ -471,56 +480,57 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
                   data-origem={origem}
                 >
                   {DS_PARAM_SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                </select>
+                </select></label>
                 <button
                   type="button"
                   onClick={() => removeParam(idx)}
                   className={`text-dim hover:text-red-500 ${txt} justify-self-center`}
                   title="Remover parâmetro"
-                >✕</button>
+                ><X size={14}/></button>
               </div>
 
               {/* Linha 2: valor / cálculo — muda com a origem */}
               {data ? (
                 <div className={`grid ${compact ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'} gap-1`} data-calculo>
-                  <input
+                  <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Meses<input
                     type="text" inputMode="numeric"
                     value={p.param_offset_meses ?? ''}
                     onChange={e => updateParam(idx, { param_offset_meses: e.target.value })}
                     placeholder="meses (0)"
                     title="Passo 1 — deslocamento em meses (dia truncado ao último válido do mês)"
                     className={`${campo} border-edge`}
-                  />
-                  <select
+                  /></label>
+                  <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Âncora<select
+                    aria-label="Âncora"
                     value={p.param_ancora ?? ''}
                     onChange={e => updateParam(idx, { param_ancora: e.target.value })}
                     title="Passo 2 — âncora dentro do período"
                     className={sel}
                   >
                     {DS_PARAM_ANCORAS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
-                  </select>
-                  <input
+                  </select></label>
+                  <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Dias<input
                     type="text" inputMode="numeric"
                     value={p.param_offset_dias ?? ''}
                     onChange={e => updateParam(idx, { param_offset_dias: e.target.value })}
                     placeholder="dias (0)"
                     title="Passo 3 — deslocamento em dias"
                     className={`${campo} border-edge`}
-                  />
-                  <input
+                  /></label>
+                  <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Formato<input
                     type="text" list="ds-param-formatos"
                     value={p.param_formato ?? ''}
                     onChange={e => updateParam(idx, { param_formato: e.target.value })}
                     placeholder="%Y-%m-%d"
                     title="Passo 4 — formato (strftime): %Y %m %d %y %H %M %S e separadores - / . _ :"
                     className={`${campo} border-edge`}
-                  />
+                  /></label>
                 </div>
               ) : origem === 'run_id' ? (
-                <input type="text" value="run_id da corrida (preenchido em runtime)" disabled
-                  className={`${campo} border-edge opacity-60`} />
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Valor<input type="text" value="run_id da corrida (preenchido em runtime)" disabled
+                  className={`${campo} border-edge opacity-60`} /></label>
               ) : p.param_type === 'Encrypted' ? (
-                <input
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Valor protegido<input
                   type="password" autoComplete="new-password"
                   value={p.param_value}
                   onChange={e => updateParam(idx, { param_value: e.target.value })}
@@ -528,15 +538,15 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
                   title={'Cifrado no banco; nunca aparece em log. Vazio com valor gravado = manter.'}
                   className={`${campo} ${!p.param_value && !p.tem_valor ? 'border-red-500/60' : 'border-edge'}`}
                   data-encrypted={p.tem_valor ? 'mantido' : 'novo'}
-                />
+                /></label>
               ) : (
-                <input
+                <label className="flex min-w-0 flex-col gap-1 text-xs text-dim">Valor<input
                   type="text"
                   value={p.param_value}
                   onChange={e => updateParam(idx, { param_value: e.target.value })}
                   placeholder={p.param_type === 'Pathname' ? '/caminho/absoluto' : p.param_type === 'Date' ? 'YYYY-MM-DD' : 'valor fixo'}
                   className={`${campo} border-edge`}
-                />
+                /></label>
               )}
 
               {/* Prévia — o valor que iria ao DataStage com a referência escolhida */}
@@ -599,7 +609,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
             onClick={() => removeParam(idx)}
             className={`text-dim hover:text-red-500 ${txt} justify-self-center pt-1`}
             title="Remover parâmetro"
-          >✕</button>
+          ><X size={14}/></button>
         </div>
       ))}
       <Button size="sm" variant="ghost" onClick={addParam} className="self-start">
@@ -612,9 +622,10 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
 // ── Componente principal ─────────────────────────────────────────────────────
 
 export function JobTypeFields({
-  value, onChange, sshConns, mssqlConns, compact, onMaximizar, pipeline, jobName,
+  value, onChange, sshConns, mssqlConns, compact, onMaximizar, pipeline, jobName, defaultsOverride, disableEncrypted, disableMaestro, canApply,
 }: JobTypeFieldsProps) {
   const { job_type } = value
+  const fieldId = useId()
   // "Simular com a referência" da prévia dos parâmetros DataStage — padrão hoje (fuso local).
   const [referenciaPrevia, setReferenciaPrevia] = useState(() => hojeLocalISO())
   // F4 — defaults do pipeline: informativo, para o usuário saber o que a etapa
@@ -622,10 +633,10 @@ export function JobTypeFields({
   const defaultsQ = useQuery<{ parametros: JobParamApi[]; disponivel: boolean }>({
     queryKey: ['pipeline-parametros', pipeline],
     queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline ?? '')}/parametros`),
-    enabled: job_type === 'datastage' && !!pipeline,
+    enabled: job_type === 'datastage' && !!pipeline && defaultsOverride === undefined,
     staleTime: 30_000,
   })
-  const defaultsPipeline = defaultsQ.data?.parametros ?? []
+  const defaultsPipeline = defaultsOverride ?? defaultsQ.data?.parametros ?? []
   // F6 — "Importar do DataStage": os parâmetros que o job DECLARA, do lineage
   // ISX já extraído (Governança › Job DataStage). Só acrescenta nomes ausentes;
   // nada é salvo até o usuário salvar a etapa.
@@ -640,19 +651,21 @@ export function JobTypeFields({
   // avatar aparece (interruptor do Admin + provedor com chave). A proposta
   // entra pelo mesmo caminho do import — a lista ATUAL via ref, mesclada por
   // nome exato; nada é salvo até o usuário salvar a etapa.
-  const maestro = useMaestroStatus(job_type === 'datastage')
+  const maestro = useMaestroStatus(job_type === 'datastage' && !disableMaestro)
   function aplicarDoMaestro(novos: JobParam[]) {
+    if (canApply && !canApply()) return
     const r = aplicarProposta(paramsRef.current, novos)
     onChange({ params: r.params })
     toast.success(resumoAplicacao(r))
   }
   async function importarDoDataStage() {
-    if (!podeImportar) return
+    if (!podeImportar || (canApply && !canApply())) return
     setImportando(true)
     try {
       const q = new URLSearchParams({ pipeline_name: pipeline!, job_name: (jobName ?? '').trim() })
       const d = await apiFetch<{ parameters?: IsxParameter[]; status?: string; erro?: string | null; extracted_at?: string | null }>(
         `/lineage/isx/job?${q.toString()}`)
+      if (canApply && !canApply()) return
       // Cabeçalho existe mas a ÚLTIMA extração falhou: o `parameters` vem
       // vazio (ou velho) — dizer "nenhum parâmetro novo" seria mentir.
       if (d.status && d.status !== 'ok') {
@@ -720,13 +733,14 @@ export function JobTypeFields({
       ) : (
       /* Comando / nome / procedure — label e placeholder por tipo */
       <div className="flex flex-col gap-1">
-        <label className={`${labelCls} flex items-center gap-1`}>
+        <label htmlFor={`${fieldId}-command`} className={`${labelCls} flex items-center gap-1`}>
           {jobCommandLabel(job_type)}
           {job_type === 'http' && (
             <Hint texto={'Aceita apenas http:// ou https://, sem espaços nem aspas.\nA URL é chamada no runtime pelo HttpCallOperator (allowlist do backend).'} />
           )}
         </label>
         <input
+          id={`${fieldId}-command`}
           type="text"
           value={value.job_command}
           onChange={e => onChange({ job_command: e.target.value })}
@@ -746,11 +760,12 @@ export function JobTypeFields({
       {/* shell → conexão SSH (obrigatória) */}
       {job_type === 'shell' && (
         <div className="flex flex-col gap-1">
-          <label className={`${labelCls} flex items-center gap-1`}>
+          <label htmlFor={`${fieldId}-ssh`} className={`${labelCls} flex items-center gap-1`}>
             Servidor SSH (conexão Airflow) *
             <Hint texto={'Obrigatório para etapas shell: o comando/script roda via SSH neste servidor.\nAs conexões SSH são cadastradas no Airflow.'} />
           </label>
           <select
+            id={`${fieldId}-ssh`}
             value={value.ssh_conn_id}
             onChange={e => onChange({ ssh_conn_id: e.target.value })}
             className={fieldCls}
@@ -759,6 +774,7 @@ export function JobTypeFields({
             {sshConns.map(c => (
               <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>
             ))}
+            {value.ssh_conn_id && !sshConns.some(c => c.conn_id === value.ssh_conn_id) && <option value={value.ssh_conn_id}>{value.ssh_conn_id} (fora da lista)</option>}
           </select>
         </div>
       )}
@@ -809,7 +825,7 @@ export function JobTypeFields({
                 {importando ? 'Importando…' : 'Importar do DataStage'}
               </Button>
             )}
-            {maestro.enabled && (
+            {!disableMaestro && maestro.enabled && (
               <MaestroChat
                 pipeline={pipeline}
                 jobName={(jobName ?? '').trim() || undefined}
@@ -858,6 +874,7 @@ export function JobTypeFields({
             onChange={params => onChange({ params })}
             compact={compact}
             referencia={referenciaPrevia}
+            disableEncrypted={disableEncrypted}
           />
         </div>
       )}
@@ -865,11 +882,12 @@ export function JobTypeFields({
       {/* storedproc → conexão MSSQL (obrigatória) */}
       {job_type === 'storedproc' && (
         <div className="flex flex-col gap-1">
-          <label className={`${labelCls} flex items-center gap-1`}>
+          <label htmlFor={`${fieldId}-sql`} className={`${labelCls} flex items-center gap-1`}>
             Conexão MSSQL *
             <Hint texto={'Obrigatória para storedproc: a proc roda neste servidor, com a credencial da conexão.'} />
           </label>
           <select
+            id={`${fieldId}-sql`}
             value={value.mssql_conn_id}
             onChange={e => {
               // Banco pertence ao SERVIDOR: trocar de conexão zera o banco-alvo
@@ -882,6 +900,7 @@ export function JobTypeFields({
             {mssqlConns.map(c => (
               <option key={c.conn_id} value={c.conn_id}>{c.conn_id}{c.host ? ` (${c.host})` : ''}</option>
             ))}
+            {value.mssql_conn_id && !mssqlConns.some(c => c.conn_id === value.mssql_conn_id) && <option value={value.mssql_conn_id}>{value.mssql_conn_id} (fora da lista)</option>}
           </select>
         </div>
       )}
@@ -890,11 +909,12 @@ export function JobTypeFields({
           selecionada (não mais o servidor fixo do app). */}
       {job_type === 'storedproc' && (
         <div className="flex flex-col gap-1">
-          <label className={`${labelCls} flex items-center gap-1`}>
+          <label htmlFor={`${fieldId}-database`} className={`${labelCls} flex items-center gap-1`}>
             Servidor / Banco {dbServer && <span className="text-dim/60 font-mono normal-case">({dbServer})</span>}
             <Hint texto={'Banco-alvo da proc, no MESMO servidor da conexão (vira EXEC [banco].schema.proc).\nVazio = banco padrão da conexão. A lista acompanha a conexão selecionada.'} />
           </label>
           <select
+            id={`${fieldId}-database`}
             value={value.mssql_database}
             onChange={e => onChange({ mssql_database: e.target.value })}
             disabled={!value.mssql_conn_id && !dbHost}
