@@ -23,7 +23,8 @@
 // byte como está no `src/`, com hooks de verdade e um laço de re-render.
 //
 // ── O que ele NÃO é ────────────────────────────────────────────────────────
-// Não é React. Não há reconciliação por `key`, `useEffect` não roda (efeito é
+// Não é React. A `key` só distingue o caminho do estado (key nova = estado
+// novo); não há reordenação por key. `useEffect` não roda (efeito é
 // browser, e nenhum aceite desta fase depende de um), não há portal. Contexto
 // propaga do Provider aos filhos. Se um componente depender do que falta, o teste
 // QUEBRA em vez de mentir — que é o comportamento certo para uma bancada.
@@ -113,7 +114,9 @@ function renderizar(no, trilha) {
   if (tipo === FRAGMENT) return renderizar(props.children, trilha)
   if (typeof tipo === 'function') {
     const nome = tipo.name || 'anon'
-    const meu = trilha.concat(nome)
+    // `key` entra no caminho: trocar a key remonta o componente (estado novo),
+    // como no React; key estável conserva o estado.
+    const meu = trilha.concat(no.key !== undefined && no.key !== null ? `${nome}@${no.key}` : nome)
     const trilhaAnterior = caminho
     const hookAnterior = indiceHook
     caminho = meu

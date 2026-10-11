@@ -191,3 +191,28 @@ Base `develop` `8a57ac6a`; branch `feat/ux-pipeline-montagem-f4`. Evidência **U
 | Diagnóstico recolhível | Abaixo do canvas, resumo sempre visível | `WorkspacePublicationPanel` | V | UX (abre com problema; diagnóstico reabre o inspector) | Candidato |
 | Fonte da Execução | Linha de contexto | `WorkspaceOperations` | E + L | UX | Candidato |
 | Desfazer/refazer, inspector em subseções | — | — | — | — | Pendente F4.2 |
+
+F4.1 fechada: PR #500 integrada em `develop` `3900e7c2` e validada no DEV como 2.19.0.
+
+## Candidato F4.2 — 2.20.0 (11/10/2026)
+
+Base `develop` `3900e7c2`; branch `feat/ux-pipeline-inspector-f4`. Evidência **H** = `tests/js/workspace_history_harness.cjs` (módulos puros); **UX14** = seção 14 da bancada do editor; ambas presas por `tests/test_workspace_ux_inspector.py`. Navegador real com APIs sintéticas: 13 verificações dos formulários, 6 da proteção de alterações não aplicadas e 3 de foco/atalhos aprovadas. Diagnóstico no campo exato confirmado frio/quente (2 cenários). Visual final SHIP (12 capturas); suíte 7365 aprovados / mesmas 8 falhas / 51 ignorados, tsc aprovado e lint 176 ocorrências / 73 assinaturas sem novas. QA adversarial final SHIP (18 verificações); build aprovado e zero NUL novo. p95 local 300 etapas 116,9 ms (<200); commit, PR e DEV pendentes. Detalhes nas [release notes](release-notes/2.20.0-pipeline-ux-inspector.md).
+
+| Capacidade | Novo acesso | Componente | Permissão | Evidência | Estado |
+|---|---|---|---|---|---|
+| Configuração da etapa dos 11 tipos (campos, conexões, parâmetros, vínculos) | Inspector → Configuração, inline | `NodeProperties` + `SharedJobConfiguration` / `SpecializedConfiguration` (painéis existentes) | E / D | UX14; navegador (11 tipos inline, aplicação/salvamento, campos desconhecidos e referências preservados) | Candidato |
+| Identificador, renomear, ordem de execução, remover | Inspector → Etapa | `NodeProperties` (`requestText`, modal de remoção existente) | D | UX14; H (renomear exato) | Candidato |
+| Lineage da etapa e importação DSX/ISX | Inspector → Lineage, inline | `WorkspaceLineage` | E / D | UX14 (diagnóstico abre Lineage); H | Candidato |
+| JSON da etapa | Inspector → Avançado (só quando pedido) | `NodeProperties` | E / D | UX14 (recusa alterar protegido) | Candidato |
+| Valor protegido da etapa | Configuração → Valores protegidos → modal | `WorkspaceSecretParameter` (inalterado) | D | UX14 (referência, histórico reiniciado, sem valor em claro) | Candidato |
+| Aplicar com mescla por campo e conflito explícito | Botão Aplicar de cada subseção | `lib/workspacePatch` | D | H (outro campo, clone, mesmo campo, removida, renomeada, ramos, repetida, ciclo); UX14 (Shell após save; SQL após SLA/arraste) | Candidato |
+| Desfazer/refazer local (50 passos) | Barra do canvas; Ctrl/⌘+Z, Ctrl/⌘+Shift+Z, Ctrl+Y | `lib/workspaceHistory`, `WorkspaceEditor` | D com posse | H (limite, no-op, refazer, gesto, digitação, memória 300, foco após o último passo); navegador (último Desfazer/Refazer por ponteiro/Enter com atalho imediato); UX14 (seleção, servidor 0, arraste, atalhos, recarregar/salvar limpam) | Candidato |
+| Modo focado | Inspector → Expandir propriedades; ampliar em Python/SQL/Decisão | `WorkspaceEditor` | — | UX14; navegador (formulário e canvas conservados, Esc) | Candidato |
+| Diagnóstico abre subseção/campo | Painel de validação → etapa | `WorkspacePublicationPanel` → `NodeProperties` | V | UX14 (Configuração, Lineage, campo desconhecido); H (seção 9: alvo do foco e não roubar); navegador (Conexão MSSQL exata fria/quente/chunk retido; Etapa, nome, desconhecido; sem roubo ao trocar subseção, mover foco, recolher ou reselecionar) | Candidato |
+| Troca de etapa com alterações não aplicadas | Canvas, localizador, diagnóstico, fechar | `WorkspaceEditor` (`confirmAction`) | — | UX14; navegador (SQL → Shell → SQL descarta só após confirmação) | Candidato |
+
+Limites F4.2: `minireact` conserva estado ao voltar à mesma chave após desmontagem (A → B → A); a regressão de descarte foi verificada com React real, sem ampliar a bancada. Diálogos de navegação interna são da aplicação; fechar/recarregar fisicamente a aba usa `beforeunload` nativo. Segurança manual ratificada sem bloqueador confirmado; `security-review` embutida indisponível/não executada. Nenhuma execução/publicação real, piloto ou certificação integrada F3/F5/F2/F6 decorre destas fixtures.
+
+Orçamento F4.2 em preview de produção: Montagem fria 246,3 KiB gzip; com primeiro SQL 284,9 KiB (ambos <300 KiB). Agregado aquecido após os 11 formulários lazy: 306,1 KiB (>300 KiB), registrado como limite sem encerrar o aceite total da F6.
+
+Performance F4.2: p95 de 75,1 / 77,4 / 116,9 ms em 50 / 100 / 300 etapas, 25 amostras por tamanho, Chromium local em 1440 e APIs sintéticas; proxy de seleção até dois frames, não INP de campo. Diagnóstico final do Claude: 14 cenários aprovados; Lineage sem controle editável preserva foco na seção, sem prova integrada de edição desse cenário.
