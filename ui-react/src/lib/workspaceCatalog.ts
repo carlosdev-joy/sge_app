@@ -47,3 +47,20 @@ export function importWorkspaceRows(definition: WorkspaceDefinition, rows: Works
  for (const row of rows) if (row.parent) next=connectWorkspaceDecision(next,row.parent,row.name.trim(),row.branch||undefined)
  return next
 }
+
+
+export function workspacePredecessors(definition:WorkspaceDefinition):string[] {
+ const tables=object(object(definition.metadata).legacyTables)
+ const rows=Array.isArray(tables.etl_pipeline_dependencia)?tables.etl_pipeline_dependencia.map(object):[]
+ return [...new Set([...rows.filter(row=>text(row.tipo)==='PIPELINE').map(row=>text(row.depende_de)),...text(object(object(definition.metadata).legacyPipeline).depends_on).split(',').map(name=>name.trim()).filter(Boolean)])]
+}
+export function setWorkspacePredecessors(definition:WorkspaceDefinition,names:string[]):WorkspaceDefinition {
+ const metadata=object(definition.metadata);const tables=object(metadata.legacyTables)
+ const previous=Array.isArray(tables.etl_pipeline_dependencia)?tables.etl_pipeline_dependencia.map(object):[]
+ const selected=new Set(names.map(name=>name.toLowerCase()))
+ if(selected.size!==names.length||names.some(name=>!name||name.toLowerCase()===definition.identity.pipelineName.toLowerCase()))throw new Error('Selecione predecessores distintos do próprio pipeline.')
+ if(previous.some(row=>row.origem_no!=null&&!selected.has(text(row.depende_de).toLowerCase())))throw new Error('Dependências compiladas devem ser editadas pela malha dona.')
+ const rows=previous.filter(row=>text(row.tipo)!=='PIPELINE'||selected.has(text(row.depende_de).toLowerCase()))
+ for(const name of names)if(!rows.some(row=>text(row.tipo)==='PIPELINE'&&text(row.depende_de).toLowerCase()===name.toLowerCase()))rows.push({pipeline_name:definition.identity.pipelineName,depende_de:name,tipo:'PIPELINE',job_origem:null,job_destino:null})
+ return {...definition,metadata:{...metadata,legacyTables:{...tables,etl_pipeline_dependencia:rows},legacyPipeline:{...object(metadata.legacyPipeline),depends_on:names.join(',')||null,...(names.length?{}:{nao_iniciar_antes:null,hora_limite_dependencia:null})}}}
+}

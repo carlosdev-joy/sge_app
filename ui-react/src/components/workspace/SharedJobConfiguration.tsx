@@ -9,9 +9,12 @@ import { JobTypeFields, jobTypeFieldsErrors, pythonFromApi, pythonToApi, type Co
 import { Button } from '../ui/Button'
 import { Select } from '../ui/Input'
 import { toast } from '../ui/Toast'
+import { conferirNomeDs, useDsJobs } from '../../lib/dsJobs'
+import { ConferenciaDsJob } from '../console/ConferenciaDsJob'
 
-export default function SharedJobConfiguration({ node, editable, defaults, context, pipelineName, canApply, onApply, onClose }: {
+export default function SharedJobConfiguration({ node, editable, defaults, context, pipelineName, projectName, canApply, onApply, onClose }: {
  context?: SecretContext; pipelineName:string;
+ projectName:string;
  node: WorkspaceNode; editable: boolean; defaults: JobParamApi[]; canApply: () => boolean;
  onApply: (node: WorkspaceNode) => void; onClose: () => void;
 }) {
@@ -27,6 +30,8 @@ export default function SharedJobConfiguration({ node, editable, defaults, conte
  if (node.type === 'datastage' && !value.ssh_conn_id) errors.push('Conexão SSH é obrigatória para esta etapa DataStage.')
  if (node.type === 'python' && value.python?.modo === 'modulo' && !value.ssh_conn_id) errors.push('Informe uma conexão SSH para publicar esta etapa Python.')
  const protectedRows = jobParameterRows(node).filter(encryptedParameter)
+ const [checkingDs, setCheckingDs] = useState(false)
+ const dsJobs = useDsJobs(projectName, node.type === 'datastage' && checkingDs)
  function change(patch: Partial<JobTypeFieldsValue>) {
   if (!allowed()) return
   Object.keys(patch).forEach(key => touched.current.add(key as keyof JobTypeFieldsValue))
@@ -56,6 +61,7 @@ export default function SharedJobConfiguration({ node, editable, defaults, conte
    </Select></div>}
    <JobTypeFields value={value} onChange={change} sshConns={ssh.data?.connections ?? []} mssqlConns={mssql.data?.connections ?? []} defaultsOverride={defaults} disableEncrypted disableMaestro={!context} pipeline={pipelineName} jobName={node.id} workspaceMaestro={context?{...context,canApply:allowed,defaults}:undefined} canApply={allowed}/>
   </fieldset>
+  {node.type === 'datastage' && <section className="space-y-3 border-t border-edge pt-4" aria-label="Conferência do job DataStage"><p className="text-xs text-dim">Projeto do rascunho: {projectName || 'Não informado'}. A consulta confere o nome configurado; não executa o job.</p><Button variant="secondary" disabled={!projectName || dsJobs.isFetching} onClick={()=>{setCheckingDs(true);if(checkingDs)void dsJobs.refetch()}}>Conferir nome no DataStage</Button>{checkingDs && <><ConferenciaDsJob conferencia={conferirNomeDs(value.job_command,dsJobs.data)} project={projectName} carregando={dsJobs.isFetching} onUsarGrafia={editable?name=>change({job_command:name}):undefined}/>{dsJobs.data?.disponivel && <Select label="Jobs do projeto DataStage" value={dsJobs.data.jobs.includes(value.job_command)?value.job_command:''} disabled={!editable} onChange={event=>change({job_command:event.target.value})}><option value="">Selecione um job para usar no editor</option>{dsJobs.data.jobs.map(name=><option key={name}>{name}</option>)}</Select>}</>}</section>}
   {protectedRows.length > 0 && <div className="border-t border-edge pt-4 space-y-2"><h4 className="text-sm font-medium text-ink">Parâmetros protegidos</h4>{protectedRows.map((row, index) => <p key={index} className="text-sm text-dim"><span className="font-medium text-ink">{text(row.param_name)}</span> · preservado por referência</p>)}</div>}
   <div className="flex flex-wrap justify-end gap-2 border-t border-edge pt-4"><Button variant="secondary" onClick={onClose}>{editable ? 'Cancelar' : 'Fechar'}</Button>{editable && <Button onClick={apply} disabled={errors.length > 0}>Aplicar ao fluxo</Button>}</div>
  </div>

@@ -1,5 +1,5 @@
 # Complemento executável: paridade do workspace — Orquestra
-Data: 2026-10-11 · Status: autorizada, F7A/F7B/F7C/F7D entregues em DEV; execução F8/F9
+Data: 2026-10-11 · Status: autorizada, F7A/F7B/F7C/F7D/F8 entregues em DEV; execução F9
 
 ## 1. Visão
 Completar os requisitos de paridade de docs/spec-pipeline-workspace-dotnet.md, confrontados em docs/workspace-paridade-f6.md. Autorização explícita do usuário: seguir até encerrar os pontos listados, preservando a spec existente e a referência visual. Não substitui arquitetura, contratos ou escopo da spec original.
@@ -93,3 +93,10 @@ Resultado H1: scripts efetivamente carregados antes879418bytesgzip e depois23902
 Resultado H2: comparação isolada buildsH1/H2,50/100/300p95antes85,7/494,0/361,2ms e depois55,0/79,4/193,5ms; CLS0,00142. Todos abaixo200ms/.1 nessa rodada. BaselineF7D original72/133/216 mostra variância do host compartilhado; amostras brutas preservadas e números não são INP de campo. Definição/layout e número de nós/arestas preservados ao salvar. Gates finais Python7326PASS8conhecidas51skip; lint73/73/0NEW; build3PASS.
 
 Confirmação H2 (fixture com arrayslineage explícitos em todos os nós):50/100/300p95antes83,7/158,2/273,3ms e depois65,6/99,9/113,3ms; CLSmáximo0,00181. Rodada inicial preservada em arquivospass1, ambas depoispassam<200. Nenhuma edição de UI entre as rodadas; confirmação resolve variância e contrato da fixture. Revisão visual independente F8ship,15capturas válidas; documenter preserva sistema incumbente.
+
+
+### Plano F9 — antes da homologação final
+Base developc71337dd/DEV2.16.1. Confrontar as19linhas do inventárioF6 e os11tipos com destinos atuais, separando prova de fonte, harness isolado e DEV real. Retestar capacidades/negativas e três experiências, salvar/recarregar próprio draft, versões/restore e projeção. Não executar serviços externos nem jobs por inferência; reutilizar provas SQL/offline quando fontes comprovadamente idênticas. Correções locais confirmadas nesta rodada entram na F9 com testes relevantes. Registrar política de restore/rollback sem destruir dados; preservar snapshots históricos. QA adversarial obrigatório antes da PR. Sem declarar paridade integral para campos ainda desconhecidos ou ensaios Caixa. Fechamento exige matriz explícita de comprovado/restrição/externo/pendente.
+
+
+Achados F9 confirmados antes da correção: importação JSON alternativa cria nó sem arraylineage no contrato1; inicializar explicitamente no mesmo contrato. Cadastro precisa seleção de predecessores e janelas não-iniciar/limite existentes; staging deve alterar tabela relacionada e CSV juntos, preservar campos/linhas assinadas por malha, nunca chamar POST/DELETEdependencias no editor draft. Catálogo paginado/ciclo/indisponibilidade seguem controles existentes; validar servidor antes de projeção. Conferência DataStage deve usar projeto do draft e comando configurado, nunca projeto ativo; catálogo GET indisponível é aviso, não bloqueio nem execução. Aplicar sugestões somente com posse/identidade atual. Sem novaMalha ou novaexecução.

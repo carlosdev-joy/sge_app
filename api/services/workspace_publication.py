@@ -16,6 +16,7 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 from db import get_db_conn
+from services.workspace_dependencies import dependency_changes, dependency_diagnostics
 from deps import AIRFLOW_URL,AIRFLOW_USER,AIRFLOW_PASSWORD,carregar_usuario
 
 log=logging.getLogger("orquestra.workspace.publication")
@@ -278,6 +279,7 @@ async def validate_draft(id,revision,actor):
   if row[2]!=revision:raise HTTPException(409,'Revisão alterada; recarregue')
   definition=json.loads(row[0]);layout=json.loads(row[1]);existing=load_workspace_secrets(q,definition,{table:rows(q,table,row[5]) for table in TABLES},draft_id=id)
   errors,projection=validate_projection(definition,layout,existing,await connection_types(q),__import__('routers.jobs',fromlist=['_config_email_do_admin'])._config_email_do_admin(q))
+  errors.extend(dependency_diagnostics(q,row[5],projection,existing))
   async with httpx.AsyncClient(base_url=AIRFLOW_URL,auth=(AIRFLOW_USER,AIRFLOW_PASSWORD),timeout=5,trust_env=False) as client:
    if not await airflow_idle(client,row[5]):errors.append({'nodeId':None,'field':'execution','code':'execution_active','message':'Pipeline possui execução ativa ou disparo pendente no Airflow'})
   errors +=[{'nodeId':None,'field':'definition','code':'read_only','message':message} for message in json.loads(row[3])]
@@ -376,6 +378,9 @@ async def process_operation(id):
     if projection and 'etl_job_lineage' in projection:errors.extend(lineage_column_diagnostics(q,projection['etl_job_lineage']))
     if errors:raise PublicationBlocked('publication_invalid','Configuração recusada na validação final; consulte os diagnósticos do rascunho')
     c.rollback();q.execute('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; SET XACT_ABORT ON')
+    if dependency_changes(projection,existing):
+     lock_result=q.execute("IF @@TRANCOUNT=0 BEGIN TRANSACTION; DECLARE @result INT; EXEC @result=sys.sp_getapplock @Resource=N'orquestra.workspace.dependencies',@LockMode='Exclusive',@LockOwner='Transaction',@LockTimeout=10000; SELECT @result").fetchone()
+     if not lock_result or lock_result[0]<0:raise PublicationBlocked('dependency_busy','Outra publicação está atualizando dependências; tente novamente')
     renew_claim(q,id,token)
     q.execute('SELECT pending_operation_id FROM dbo.etl_workspace_pipeline WITH(UPDLOCK,HOLDLOCK) WHERE pipeline_name=?',(op['name'],));owner=q.fetchone()
     if not owner or str(owner[0]).lower()!=str(id).lower():raise PublicationBlocked('operation_conflict','Outra operação controla este pipeline')
@@ -383,6 +388,8 @@ async def process_operation(id):
     if q.execute("SELECT TOP(1) pipeline_name FROM dbo.etl_pipeline_execucao WITH(UPDLOCK,HOLDLOCK) WHERE pipeline_name=? AND status IN('EXECUTANDO','RUNNING','QUEUED','AGUARDANDO','AGUARDANDO_DEPENDENCIA')",(op['name'],)).fetchone():raise PublicationBlocked('execution_active','Pipeline possui execução ativa ou comando pendente')
     if active_hash(q,op['name'])!=op['expected']:raise PublicationBlocked('active_hash_conflict','Configuração ativa mudou; nenhuma projeção aplicada')
     q.execute("EXEC sp_set_session_context @key=N'workspace_operation',@value=?",(str(id),))
+    dependency_errors=dependency_diagnostics(q,op['name'],projection,existing,lock=True)
+    if dependency_errors:raise PublicationBlocked('dependency_invalid',dependency_errors[0]['message'])
     # Remove referências antes de remover seus alvos; insere os alvos antes das referências.
     for table in ('etl_valida_arquivo_config','etl_valida_arquivo_no','etl_pipeline_job_param'):
      desired=projection[table];keys=TABLES[table]

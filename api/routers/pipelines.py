@@ -339,7 +339,7 @@ def _dependencias_de(cur, pipeline_name):
         return [d.strip() for d in raw.split(",") if d.strip()]
 
 
-def _check_circular_grafo(pipeline_name, depends_on_list, dependencias_de):
+def _check_circular_grafo(pipeline_name, depends_on_list, dependencias_de, *, fail_closed=False):
     """NÚCLEO do BFS de ciclo da F1 — puro, com a adjacência INJETADA.
 
     `dependencias_de(nome) -> [predecessores]` é quem diz o grafo: o cadastro
@@ -367,6 +367,8 @@ def _check_circular_grafo(pipeline_name, depends_on_list, dependencias_de):
             # Teto de segurança: malha grande não pode transformar um POST de
             # cadastro em varredura sem fim.
             if len(visitados) > 500:
+                if fail_closed:
+                    raise ValueError("Grafo de dependências excede o limite de análise; publicação recusada sem validação completa")
                 break
             fila.extend(dependencias_de(atual))
 
