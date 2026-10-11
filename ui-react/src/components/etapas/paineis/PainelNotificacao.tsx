@@ -59,16 +59,16 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
           <p className="text-[11px] text-dim">Notificação (Teams)</p>
         </div>
-        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+        {!node.data.workspace && <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
           <Trash2 size={13} /> Excluir notificação
-        </Button>
+        </Button>}
       </div>
 
       {/* 2 colunas no lg+: esquerda = identidade + canal/modelo; direita = mensagem. */}
       <div className="grid gap-4 p-4 lg:grid-cols-2">
         {/* ── Coluna esquerda: identidade + canal/modelo ──────────────────── */}
         <div className="flex min-w-0 flex-col gap-2">
-          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: AVISA_TIME" onRename={onRename} />
+          <NomeField readOnly={!!node.data.workspace} id={node.id} name={d.name} isNew={isNew} placeholder="ex: AVISA_TIME" onRename={onRename} />
 
           <div className="flex flex-col gap-1">
             <Select

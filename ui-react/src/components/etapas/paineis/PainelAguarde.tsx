@@ -56,15 +56,16 @@ export function PainelAguarde({
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
           <p className="text-[11px] text-dim">Aguarde (ponto de encontro)</p>
         </div>
-        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+        {!node.data.workspace && <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
           <Trash2 size={13} /> Excluir aguarde
-        </Button>
+        </Button>}
       </div>
 
       <div className="grid flex-1 gap-5 overflow-y-auto px-4 py-4 lg:grid-cols-2">
         {/* ── Coluna esquerda: identidade + o que ele está esperando ───────── */}
         <div className="flex flex-col gap-4">
           <NomeField
+            readOnly={!!node.data.workspace}
             id={node.id}
             name={d.name}
             isNew={isNew}

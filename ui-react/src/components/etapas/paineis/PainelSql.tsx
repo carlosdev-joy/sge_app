@@ -3,7 +3,7 @@
 // Pré-visualizar (POST /jobs/sql-preview) com grid de amostra (≤100 linhas).
 // Fase 4 do redesign: layout LARGO para o dock inferior — 2 colunas no lg+
 // (esquerda = SELECT grande + conexão/banco/on_error; direita = preview).
-import { useMemo, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
 // Table2, não Database: mesmo glifo do nó/paleta (Database ficou p/ o DataStage).
@@ -18,6 +18,7 @@ import { NomeField } from './shared'
 
 export interface PainelSqlProps {
   node: Node
+  canPreview?: () => boolean
   mssqlConns: { conn_id: string; host: string }[]
   onRename: (oldName: string, novo: string) => boolean
   onPatchSql: (nodeId: string, patch: Partial<SqlConfig>) => void
@@ -28,7 +29,7 @@ export interface PainelSqlProps {
 
 interface SqlPreview { columns: string[]; rows: unknown[][]; total: number; truncated: boolean }
 
-export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, onMaximizar }: PainelSqlProps) {
+export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, onMaximizar, canPreview }: PainelSqlProps) {
   const d = node.data as SqlNodeData
   const isNew = !!d.isNew
   const cfg = d.sql ?? defaultSql()
@@ -53,7 +54,11 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
   const databases = dbData?.databases ?? []
 
   // Resultado do preview (amostra). Mantido em estado local, na coluna direita.
-  const [preview, setPreview] = useState<SqlPreview | null>(null)
+  const [previewResult, setPreview] = useState<{ signature: string; value: SqlPreview } | null>(null)
+  const signature = JSON.stringify({ node: node.id, config: cfg })
+  const currentPreview = useRef({ signature, canPreview })
+  useLayoutEffect(() => { currentPreview.current = { signature, canPreview } })
+  const preview = previewResult?.signature === signature ? previewResult.value : null
   const [previewing, setPreviewing] = useState(false)
 
   // Troca de conexão: zera o banco (bancos pertencem ao servidor) e o preview.
@@ -64,6 +69,9 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
   }
 
   async function previewSql() {
+    if (canPreview && !canPreview()) return
+    const expected = signature
+    const valid = () => currentPreview.current.signature === expected && (!currentPreview.current.canPreview || currentPreview.current.canPreview())
     if (!host) { toast.error('Selecione uma conexão MSSQL.'); return }
     if (!cfg.database) { toast.error('Selecione um banco.'); return }
     if (!(cfg.sql || '').trim()) { toast.error('Escreva o SELECT antes de pré-visualizar.'); return }
@@ -77,9 +85,9 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           mssql_conn_id: cfg.mssql_conn_id, host, database: cfg.database, sql: cfg.sql,
         }),
       })
-      setPreview(res)
+      if (valid()) setPreview({ signature: expected, value: res })
     } catch (e: any) {
-      toast.error(e?.message || 'Falha ao pré-visualizar a consulta.')
+      if (valid()) toast.error(e?.message || 'Falha ao pré-visualizar a consulta.')
     } finally {
       setPreviewing(false)
     }
@@ -97,16 +105,16 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
           <p className="text-[11px] text-dim">Consulta SQL</p>
         </div>
-        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+        {!node.data.workspace && <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
           <Trash2 size={13} /> Excluir nó SQL
-        </Button>
+        </Button>}
       </div>
 
       {/* 2 colunas no lg+: esquerda = consulta; direita = pré-visualização. */}
       <div className="grid gap-4 p-4 lg:grid-cols-2">
         {/* ── Coluna esquerda: SELECT + conexão/banco/on_error ────────────── */}
         <div className="flex min-w-0 flex-col gap-2">
-          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: LE_CONTROLE" onRename={onRename} />
+          <NomeField readOnly={!!node.data.workspace} id={node.id} name={d.name} isNew={isNew} placeholder="ex: LE_CONTROLE" onRename={onRename} />
 
           <div className="mt-1 flex items-center gap-1.5">
             <Table2 size={12} className="text-violet-600 dark:text-violet-300" />

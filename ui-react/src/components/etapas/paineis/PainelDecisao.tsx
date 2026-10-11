@@ -3,7 +3,7 @@
 // (esquerda = fonte da condição; direita = ramos). No modo switch os casos
 // viram uma TABELA (uma linha por caso, senão no rodapé), padrão dos routers
 // de Informatica/DataStage. Abaixo de lg colapsa para 1 coluna.
-import { useEffect, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
 // Split, não GitBranch: mesmo glifo do nó/paleta (GitBranch ficou p/ o pipeline).
@@ -21,6 +21,7 @@ import { NomeField, CasoNomeInput, type CasoOps, type SimResult } from './shared
 
 export interface PainelDecisaoProps extends CasoOps {
   node: Node
+  canPreview?: () => boolean
   nodes: Node[]
   ramos: Record<string, string[]>
   jobNames: string[]
@@ -81,7 +82,7 @@ function BancoCondicao({ connId, host, value, onChange }: {
 
 export function PainelDecisao({
   node, nodes, ramos, jobNames, sqlNodeNames, mssqlConns, onRename, onPatchCondition, onSimular, onDelete,
-  onMaximizar, onHoverRamo,
+  onMaximizar, onHoverRamo, canPreview,
   onAlternarModo, onAddCaso, onUpdateCaso, onRemoveCaso, onMoveCaso,
 }: PainelDecisaoProps) {
   const d = node.data as DecisaoNodeData
@@ -96,11 +97,17 @@ export function PainelDecisao({
 
   // ── Simulação (decisão por valor de SQL) ──────────────────────────────────
   const [simulando, setSimulando] = useState(false)
-  const [simResult, setSimResult] = useState<SimResult | null>(null)
+  const [simulation, setSimResult] = useState<{ signature: string; value: SimResult } | null>(null)
+  const signature = JSON.stringify({ node: node.id, condition: c, nodes })
+  const currentPreview = useRef({ signature, canPreview })
+  useLayoutEffect(() => { currentPreview.current = { signature, canPreview } })
+  const simResult = simulation?.signature === signature ? simulation.value : null
   // Limpa o resultado ao trocar de nó/condição (key remonta, mas reforça ao editar).
-  useEffect(() => { setSimResult(null) }, [node.id])
 
   async function simular() {
+    if (canPreview && !canPreview()) return
+    const expected = signature
+    const valid = () => currentPreview.current.signature === expected && (!currentPreview.current.canPreview || currentPreview.current.canPreview())
     // Resolve o nó SQL de origem (source_job) e sua config (sql/conexão/banco).
     const sourceJob = (c.source_job || '').trim()
     if (!sourceJob) { toast.error('Selecione o nó SQL de origem antes de simular.'); return }
@@ -130,7 +137,8 @@ export function PainelDecisao({
             : { operador: c.operador, valor: (c.valor ?? '').toString() }),
         }),
       })
-      setSimResult(res)
+      if (!valid()) return
+      setSimResult({ signature: expected, value: res })
       // Destaque animado do ramo/caso escolhido — avisa se ainda não tem aresta.
       const escolhido = isSwitch ? (res.caso || 'senao') : (res.ramo === 'sim' ? 'sim' : 'nao')
       const rotulo = escolhido === 'sim' ? 'SIM' : escolhido === 'nao' ? 'NÃO'
@@ -141,7 +149,7 @@ export function PainelDecisao({
         onSimular(node.id, escolhido)
       }
     } catch (e: any) {
-      toast.error(e?.message || 'Falha ao simular a decisão.')
+      if (valid()) toast.error(e?.message || 'Falha ao simular a decisão.')
     } finally {
       setSimulando(false)
     }
@@ -170,16 +178,16 @@ export function PainelDecisao({
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
           <p className="text-[11px] text-dim">Decisão (roteador)</p>
         </div>
-        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+        {!node.data.workspace && <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
           <Trash2 size={13} /> Excluir decisão
-        </Button>
+        </Button>}
       </div>
 
       {/* 2 colunas no lg+: esquerda = fonte da condição; direita = ramos. */}
       <div className="grid gap-4 p-4 lg:grid-cols-[minmax(320px,420px)_1fr]">
         {/* ── Coluna esquerda: fonte da condição ─────────────────────────── */}
         <div className="flex min-w-0 flex-col gap-2">
-          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: DECISAO_VOLUME" onRename={onRename} />
+          <NomeField readOnly={!!node.data.workspace} id={node.id} name={d.name} isNew={isNew} placeholder="ex: DECISAO_VOLUME" onRename={onRename} />
 
           <div className="mt-1 flex items-center gap-1.5">
             <Split size={12} className="text-indigo-600 dark:text-indigo-300" />
