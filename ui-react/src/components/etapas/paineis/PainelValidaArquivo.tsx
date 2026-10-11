@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Edge, Node } from '@xyflow/react'
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
@@ -15,19 +15,24 @@ interface Previa {
     dependentes_transitivos: string[]; convergencias: string[]; cenarios: Record<string, string> }[]
   combinacao: string; contagem: string; aviso: string
 }
-export function PainelValidaArquivo({ node, pipeline, nodes, edges, sshConns, onPatchData, onRename, onDelete }: {
+export function PainelValidaArquivo({ node, pipeline, nodes, edges, sshConns, onPatchData, onRename, onDelete, catalogOverride, previewOverride, canPreview }: {
   node: Node; pipeline: string; nodes: Node[]; edges: Edge[]; sshConns: { conn_id: string; host: string }[]
   onPatchData: (id: string, patch: Record<string, unknown>) => void
   onRename: (id: string, nome: string) => boolean; onDelete: (id: string) => void
+  catalogOverride?: CatalogoApi[]
+  previewOverride?: (body: string) => Promise<Previa>
+  canPreview?: () => boolean
 }) {
   const cfg = node.data.valida_arquivo as ValidaConfig
   const [previa, setPrevia] = useState<{ assinatura: string; resultado: Previa } | null>(null)
   const [erro, setErro] = useState('')
   const [ocupado, setOcupado] = useState(false)
   const catalogo = useQuery<{ parametros: CatalogoApi[] }>({ queryKey: ['valida-catalogo', pipeline],
-    queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/parametros?parametros_versao=2`) })
-  const params = catalogoFromApi(catalogo.data?.parametros).filter(p => ['String', 'Pathname'].includes(p.param_type) && p.param_source === 'fixo')
+    queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/parametros?parametros_versao=2`), enabled: catalogOverride === undefined })
+  const params = catalogoFromApi(catalogOverride ?? catalogo.data?.parametros).filter(p => ['String', 'Pathname'].includes(p.param_type) && p.param_source === 'fixo')
   const assinatura = JSON.stringify({ config: cfg, nodes: grafoValidacao(nodes, edges) })
+  const currentPreview = useRef({ assinatura, canPreview })
+  useLayoutEffect(() => { currentPreview.current = { assinatura, canPreview } })
   const patch = (p: Partial<ValidaConfig>) => { onPatchData(node.id, { valida_arquivo: { ...cfg, ...p } }); setErro('') }
   const entrada = (id: string, p: Partial<EntradaArquivo>) => patch({ entradas: cfg.entradas.map(e => e.entrada_id === id ? { ...e, ...p } : e) })
   const mover = (i: number, delta: number) => {
@@ -35,20 +40,24 @@ export function PainelValidaArquivo({ node, pipeline, nodes, edges, sshConns, on
     patch({ entradas: ordenarEntradas(lista) })
   }
   async function consultar() {
+    if (canPreview && !canPreview()) return
+    const expected = assinatura
+    const valid = () => currentPreview.current.assinatura === expected && (!currentPreview.current.canPreview || currentPreview.current.canPreview())
     setOcupado(true); setErro(''); setPrevia(null)
     try {
-      const resultado = await apiFetch<Previa>(`/pipelines/${encodeURIComponent(pipeline)}/valida-arquivo/${encodeURIComponent(node.id)}/previa`, { method: 'POST', body: assinatura })
+      const resultado = previewOverride ? await previewOverride(assinatura) : await apiFetch<Previa>(`/pipelines/${encodeURIComponent(pipeline)}/valida-arquivo/${encodeURIComponent(node.id)}/previa`, { method: 'POST', body: assinatura })
+      if (!valid()) return
       setPrevia({ assinatura, resultado })
-    } catch (e) { setErro(erroCatalogo(e)) } finally { setOcupado(false) }
+    } catch (e) { if (valid()) setErro(erroCatalogo(e)) } finally { setOcupado(false) }
   }
   const resultado = previa?.assinatura === assinatura ? previa.resultado : null
   return <div className="flex min-w-0 flex-col gap-5 overflow-y-auto p-4 text-sm text-ink">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h3 className="font-semibold">Valida Arquivo</h3><p className="mt-1 text-xs text-dim">Configure, conecte os destinos e confira o impacto antes de salvar o fluxo.</p></div>
-      <Button size="sm" variant="danger" onClick={() => onDelete(node.id)}><Trash2 size={14} />Excluir nó</Button>
+      {!node.data.workspace && <Button size="sm" variant="danger" onClick={() => onDelete(node.id)}><Trash2 size={14} />Excluir nó</Button>}
     </div>
     <div className="grid gap-4 md:grid-cols-3">
-      <NomeField id={node.id} name={node.id} isNew={!!node.data.isNew} placeholder="VALIDA_ARQUIVO" onRename={onRename} />
+      <NomeField readOnly={!!node.data.workspace} id={node.id} name={node.id} isNew={!!node.data.isNew} placeholder="VALIDA_ARQUIVO" onRename={onRename} />
       <Select label="Conexão SSH" value={cfg.ssh_conn_id} onChange={e => patch({ ssh_conn_id: e.target.value })}>
         <option value="">Selecione uma conexão</option>
         {cfg.ssh_conn_id && !sshConns.some(c => c.conn_id === cfg.ssh_conn_id) && <option value={cfg.ssh_conn_id}>{cfg.ssh_conn_id} (não listada)</option>}
@@ -75,7 +84,7 @@ export function PainelValidaArquivo({ node, pipeline, nodes, edges, sshConns, on
           {e.alvo && !nodes.some(n => n.id === e.alvo) && <option value={e.alvo}>{e.alvo} (removido — escolha outro)</option>}
           {nodes.filter(n => n.id !== node.id && n.type !== 'valida_arquivo').map(n => <option key={n.id} value={n.id}>{n.id} · {n.type === 'etapa' ? String(n.data.type) : n.type}</option>)}
         </Select>
-        <ParametroCatalogoSelect label="Parâmetro de diretório (opcional)" params={params} value={e.param_name ?? ''} disabled={catalogo.isLoading || catalogo.isError} onChange={name => entrada(e.entrada_id, { param_name: name || null })} />
+        <ParametroCatalogoSelect label="Parâmetro de diretório (opcional)" params={params} value={e.param_name ?? ''} disabled={catalogOverride === undefined && (catalogo.isLoading || catalogo.isError)} onChange={name => entrada(e.entrada_id, { param_name: name || null })} />
         <Input label="Diretório direto (opcional)" value={e.diretorio_literal} maxLength={2000} onChange={v => entrada(e.entrada_id, { diretorio_literal: v.target.value })} ajuda="Caminho absoluto. Preenchido aqui, substitui o parâmetro; vazio usa o parâmetro selecionado." />
         <Select label="Se o arquivo não existir" value={e.se_nao_existe} onChange={v => entrada(e.entrada_id, { se_nao_existe: v.target.value as EntradaArquivo['se_nao_existe'] })}>
           <option value="falhar">Falhar e bloquear destinos</option><option value="pular">Pular este destino</option>
@@ -102,6 +111,6 @@ export function PainelValidaArquivo({ node, pipeline, nodes, edges, sshConns, on
       </div>)}
       <p className="text-xs text-dim">{resultado.combinacao} {resultado.contagem}</p>
     </section>}
-    <p className="border-t border-edge pt-3 text-xs leading-relaxed text-dim">Salve pelo botão “Salvar fluxo”. Alterar nós, conexões, servidor SSH ou destinos exige publicar a DAG. Caminho, cabeçalho e políticas valem para novas execuções. Retomar uma execução preserva sua revisão original; para usar mudanças, inicie uma nova execução.</p>
+    <p className="border-t border-edge pt-3 text-xs leading-relaxed text-dim">{node.data.workspace ? 'Aplique ao Fluxo e use Salvar rascunho. Valide e publique a versão para disponibilizar a configuração às novas execuções.' : 'Salve pelo botão “Salvar fluxo”. Alterar nós, conexões, servidor SSH ou destinos exige publicar a DAG.'} Caminho, cabeçalho e políticas valem para novas execuções. Retomar uma execução preserva sua revisão original; para usar mudanças, inicie uma nova execução.</p>
   </div>
 }

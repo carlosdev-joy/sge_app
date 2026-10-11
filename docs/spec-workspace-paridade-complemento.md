@@ -1,5 +1,5 @@
 # Complemento executável: paridade do workspace — Orquestra
-Data: 2026-10-11 · Status: autorizada, execução F7A
+Data: 2026-10-11 · Status: autorizada, F7A entregue; execução F7B
 
 ## 1. Visão
 Completar os requisitos de paridade de docs/spec-pipeline-workspace-dotnet.md, confrontados em docs/workspace-paridade-f6.md. Autorização explícita do usuário: seguir até encerrar os pontos listados, preservando a spec existente e a referência visual. Não substitui arquitetura, contratos ou escopo da spec original.
@@ -48,3 +48,7 @@ Todas as fases: uma PR para develop, QA adversarial antes da PR, segurança quan
 
 ## 8. Decisões
 Spec original continua autoridade. PR490 removeu Etapas/lista e atualizou rótulos; não reintroduzir. Autorização explícita de 11/10/2026 cobre pontos listados, continuidade e referência/qualidade empresarial. Produção/main e funcionalidades futuras da seção9 original continuam fora. Estado de fechamento e evidências por fase no registro compartilhado e memória.
+
+### Contrato da prévia estática F7B
+
+A prévia de Valida Arquivo no editor recebe o grafo/configuração e somente diretórios String/Pathname fixos do rascunho local. POST /workspace-adapter/valida-arquivo/preview exige acao_editar, tela_pipelines, tela_jobs e workspace habilitado; não consulta cadastro publicado, banco, SSH, existência de arquivos nem secrets. É cálculo estático, não operação sobre uma identidade de rascunho no servidor. Guardas atuais de definição/lease/revisão/fence rejeitam aplicação e respostas antigas na UI. O save versionado e a publicação mantêm seus próprios contratos/autorização.

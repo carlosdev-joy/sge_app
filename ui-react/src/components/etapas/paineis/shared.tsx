@@ -26,10 +26,11 @@ export interface SimResult { valor_obtido: string | null; resultado?: boolean; r
 // DataStage, com os nomes REAIS dos jobs do projeto (ver lib/dsJobs.ts). Só vale
 // no nó NOVO: num nó salvo o nome muda pelo rename transacional, não digitando.
 export function NomeField({
-  id, name, isNew, placeholder, onRename, fetchSuggestions, extra,
+  id, name, isNew, placeholder, onRename, fetchSuggestions, extra, readOnly = false,
 }: {
   id: string; name: string; isNew: boolean; placeholder: string
   onRename: (oldName: string, novo: string) => boolean
+  readOnly?: boolean
   fetchSuggestions?: (q: string) => Promise<string[]>
   extra?: ReactNode
 }) {
@@ -43,7 +44,7 @@ export function NomeField({
 
   function commit() {
     const v = draftRef.current
-    if (v.trim() === name) return
+    if (readOnly || v.trim() === name) return
     // Nó salvo: onRename abre a confirmação do rename TRANSACIONAL (o input
     // volta ao nome atual; muda de verdade só depois do OK + sucesso da API).
     if (!onRename(id, v)) alterarDraft(name)
@@ -67,6 +68,7 @@ export function NomeField({
         <Input
           label={isNew ? 'Nome *' : 'Nome'}
           value={draft}
+          readOnly={readOnly}
           onChange={e => alterarDraft(e.target.value)}
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
@@ -74,7 +76,7 @@ export function NomeField({
           className="font-mono text-xs"
         />
       )}
-      {!isNew
+      {readOnly ? <p className="text-[11px] text-dim">Use Renomear identificador nas propriedades do Fluxo.</p> : !isNew
         ? <p className="text-[11px] text-dim/70">Renomear um nó salvo atualiza dependências, condições e histórico — e pede confirmação.</p>
         : <p className="text-[11px] text-dim/70">Letras, números, _ . - (sem espaço)</p>}
       {extra}

@@ -179,15 +179,15 @@ export function PainelEmail({ node, sqlNames, onRename, onPatchEmail, onDelete }
           <p className="truncate text-sm font-semibold text-ink">{d.name}</p>
           <p className="text-[11px] text-dim">E-mail</p>
         </div>
-        <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
+        {!node.data.workspace && <Button variant="danger" size="sm" className="ml-auto shrink-0" onClick={() => onDelete(node.id)}>
           <Trash2 size={13} /> Excluir e-mail
-        </Button>
+        </Button>}
       </div>
 
       <div className="grid gap-4 p-4 lg:grid-cols-2">
         {/* ── Coluna esquerda: identidade, destinatários e anexo ──────────── */}
         <div className="flex min-w-0 flex-col gap-2">
-          <NomeField id={node.id} name={d.name} isNew={isNew} placeholder="ex: AVISA_EQUIPE" onRename={onRename} />
+          <NomeField readOnly={!!node.data.workspace} id={node.id} name={d.name} isNew={isNew} placeholder="ex: AVISA_EQUIPE" onRename={onRename} />
 
           <div className="flex flex-col gap-1">
             <Textarea
