@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ReactFlow, Background, Controls, MarkerType, type Node, type NodeChange, type EdgeChange, type Connection, type ReactFlowInstance, useReactFlow, useStoreApi } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Button } from '../ui/Button'
@@ -19,9 +19,10 @@ function FocusOnMobile({selected}:{selected:string|null}) {
  useEffect(()=>{if(selected&&!!store.getState().domNode?.getClientRects().length&&window.matchMedia('(max-width:1023px)').matches)flow.fitView({nodes:[{id:selected}],minZoom:0.8,maxZoom:1,padding:0.2,duration:200})},[selected,flow,store])
  return null
 }
-export function WorkspaceCanvas({definition,layout,editable,selected,onSelect,onPositions,onRemoveEdge,onConnect,onRequestRemoveNode,onDropComponent}:{definition:WorkspaceDefinition;layout:WorkspaceLayout;editable:boolean;selected:string|null;onSelect:(id:string)=>void;onPositions:(changes:NodeChange[])=>void;onRemoveEdge:(changes:EdgeChange[])=>void;onConnect:(connection:Connection)=>void;onRequestRemoveNode:(id:string)=>void;onDropComponent:(type:string,position:{x:number;y:number})=>void}) {
+export function WorkspaceCanvas({focusRef,definition,layout,editable,selected,onSelect,onPositions,onRemoveEdge,onConnect,onRequestRemoveNode,onDropComponent}:{focusRef?:RefObject<HTMLDivElement|null>;definition:WorkspaceDefinition;layout:WorkspaceLayout;editable:boolean;selected:string|null;onSelect:(id:string)=>void;onPositions:(changes:NodeChange[])=>void;onRemoveEdge:(changes:EdgeChange[])=>void;onConnect:(connection:Connection)=>void;onRequestRemoveNode:(id:string)=>void;onDropComponent:(type:string,position:{x:number;y:number})=>void}) {
  const flowRef=useRef<Pick<ReactFlowInstance,'screenToFlowPosition'>|null>(null)
- const canvasRef=useRef<HTMLDivElement>(null)
+ // O editor pode receber o elemento focável do canvas (devolução de foco após desfazer/refazer).
+ const ownRef=useRef<HTMLDivElement>(null);const canvasRef=focusRef??ownRef
  const [selectedEdge,setSelectedEdge]=useState<string|null>(null);const [confirmEdge,setConfirmEdge]=useState(false)
  // A seleção de etapa também pode vir do localizador ou de um diagnóstico.
  if(selected&&selectedEdge!==null)setSelectedEdge(null)

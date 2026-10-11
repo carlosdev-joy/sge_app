@@ -128,3 +128,11 @@ Não implementado nesta entrega: barra Salvar/Validar/Publicar unificada, painel
 - Montagem: grade 160/1fr/260 (lg), 192/1fr/320 (xl) e 216/1fr/352 (2xl); painel recolhido sai da grade. Alternadores Componentes e Propriedades na barra do canvas, com o localizador de etapa e Organizar. Biblioteca e inspector com rolagem interna no desktop. Altura do canvas `max(470px, 100dvh − 26rem)`; na Execução `max(620px, 100dvh − 21rem)`.
 - Cabeçalho: Salvar rascunho, Validar rascunho e Publicar versão (primária quando permitida). Validação e publicação abaixo do canvas, recolhível, com resumo de uma linha.
 - Pendentes: desfazer/refazer, inspector em subseções e modo focado (F4.2); painéis recolhíveis da Execução e inspector operacional com abas (F5); capturas comparativas com o mockup 02.
+
+## Estado de implementação — F4.2 (candidato 2.20.0)
+- Inspector com cabeçalho (nome, tipo, Expandir propriedades, Fechar), nome para exibição e subseções Configuração | Etapa | Lineage | Avançado em abas sublinhadas (`aria-pressed`, `aria-controls`). Subseção visitada fica montada e oculta; overlays dela só ativos quando visível. Marcador âmbar e texto acessível indicam alterações não aplicadas.
+- Aplicar e Descartar alterações no rodapé de cada subseção, com a frase única "Aplicar inclui na Montagem desta aba; Salvar rascunho persiste e Publicar é uma ação separada."
+- Desfazer/Refazer como botões de ícone (32 px) depois do título do canvas, com dica do passo e do atalho; aviso de passo desfeito ou histórico reiniciado numa linha de status sob a barra.
+- Modo focado: a coluna do inspector ocupa a grade, com a mesma altura do canvas e conteúdo limitado a 1024 px; biblioteca e canvas ficam ocultos e montados. Sem modal.
+- Diagnóstico mostrado no topo do inspector em vermelho com par claro/escuro.
+- Pendentes: capturas comparativas com o mockup 02 e revisão no navegador real.

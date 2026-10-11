@@ -12,13 +12,17 @@ import { toast } from '../ui/Toast'
 import { conferirNomeDs, useDsJobs } from '../../lib/dsJobs'
 import { ConferenciaDsJob } from '../console/ConferenciaDsJob'
 
-export default function SharedJobConfiguration({ node, editable, defaults, context, pipelineName, projectName, canApply, onApply, onClose }: {
+// Formulário inline do inspector: edita uma cópia da etapa (base) e, ao aplicar,
+// entrega base e resultado para a Montagem mesclar só os campos alterados.
+export default function SharedJobConfiguration({ node, editable, defaults, context, pipelineName, projectName, canApply, onApply, onStaging, onDiscard, onMaximize }: {
  context?: SecretContext; pipelineName:string;
  projectName:string;
  node: WorkspaceNode; editable: boolean; defaults: JobParamApi[]; canApply: () => boolean;
- onApply: (node: WorkspaceNode) => void; onClose: () => void;
+ onApply: (next: WorkspaceNode, base: WorkspaceNode) => boolean; onStaging: (dirty: boolean) => void; onDiscard: () => void; onMaximize?: () => void;
 }) {
- const [value, setValue] = useState<JobTypeFieldsValue>(() => ({ ...workspaceJobFields(node), python: pythonFromApi(jsonField(jsonField(node.configuration.legacyJob).python_json) as unknown as PythonNodeApi) }))
+ const [base] = useState(node)
+ const [value, setValue] = useState<JobTypeFieldsValue>(() => ({ ...workspaceJobFields(base), python: pythonFromApi(jsonField(jsonField(base.configuration.legacyJob).python_json) as unknown as PythonNodeApi) }))
+ const [dirty, setDirty] = useState(false)
  const touched = useRef(new Set<keyof JobTypeFieldsValue>())
  const current = useRef({ editable, canApply })
  useLayoutEffect(() => { current.current = { editable, canApply } })
@@ -36,20 +40,20 @@ export default function SharedJobConfiguration({ node, editable, defaults, conte
   if (!allowed()) return
   Object.keys(patch).forEach(key => touched.current.add(key as keyof JobTypeFieldsValue))
   setValue(previous => ({ ...previous, ...patch }))
+  if (!dirty) { setDirty(true); onStaging(true) }
  }
  function apply() {
-  if (!allowed()) { toast.info('A sessão de edição mudou. Feche e reabra a configuração após iniciar a edição.'); return }
+  if (!allowed()) { toast.info('A sessão de edição mudou. Inicie a edição para aplicar; o formulário continua aqui.'); return }
   if (errors.length) return
   const patch: WorkspaceJobPatch = {}
   for (const key of touched.current) {
    if (key === 'python') { const python = pythonToApi(value.python); patch.python_json = python ? JSON.stringify(python) : null }
    else if (key !== 'job_type') Object.assign(patch, { [key]: value[key] })
   }
-  try { onApply(applyWorkspaceJobPatch(node, patch)); onClose() }
+  try { onApply(applyWorkspaceJobPatch(base, patch), base) }
   catch (error) { toast.error(error instanceof Error ? error.message : 'Não foi possível aplicar a configuração.') }
  }
  return <div className="space-y-5 min-w-0">
-  <p className="text-sm text-dim">{editable ? 'Configure esta etapa no rascunho. Aplicar mantém as alterações na Montagem; use Salvar rascunho para persistir.' : 'Consulte a configuração desta etapa.'}</p>
   {!editable && <p role="status" className="text-sm text-dim">Modo consulta. Inicie a edição do rascunho para alterar esta configuração.</p>}
   {(ssh.isError || mssql.isError) && <p role="status" className="text-sm text-dim">Não foi possível carregar um catálogo de conexões. Confira a conexão configurada e tente novamente.</p>}
   {errors.length > 0 && <div role="status" className="space-y-1 text-sm text-amber-800 dark:text-amber-300">{errors.map(error => <p key={error}>{error}</p>)}</div>}
@@ -59,10 +63,10 @@ export default function SharedJobConfiguration({ node, editable, defaults, conte
     {(ssh.data?.connections ?? []).map(connection => <option key={connection.conn_id} value={connection.conn_id}>{connection.conn_id}{connection.host ? ` (${connection.host})` : ''}</option>)}
     {value.ssh_conn_id && !(ssh.data?.connections ?? []).some(connection => connection.conn_id === value.ssh_conn_id) && <option value={value.ssh_conn_id}>{value.ssh_conn_id} (fora da lista)</option>}
    </Select></div>}
-   <JobTypeFields value={value} onChange={change} sshConns={ssh.data?.connections ?? []} mssqlConns={mssql.data?.connections ?? []} defaultsOverride={defaults} disableEncrypted disableMaestro={!context} pipeline={pipelineName} jobName={node.id} workspaceMaestro={context?{...context,canApply:allowed,defaults}:undefined} canApply={allowed}/>
+   <JobTypeFields value={value} onChange={change} sshConns={ssh.data?.connections ?? []} mssqlConns={mssql.data?.connections ?? []} defaultsOverride={defaults} onMaximizar={onMaximize} disableEncrypted disableMaestro={!context} pipeline={pipelineName} jobName={node.id} workspaceMaestro={context?{...context,canApply:allowed,defaults}:undefined} canApply={allowed}/>
   </fieldset>
   {node.type === 'datastage' && <section className="space-y-3 border-t border-edge pt-4" aria-label="Conferência do job DataStage"><p className="text-xs text-dim">Projeto do rascunho: {projectName || 'Não informado'}. A consulta confere o nome configurado; não executa o job.</p><Button variant="secondary" disabled={!projectName || dsJobs.isFetching} onClick={()=>{setCheckingDs(true);if(checkingDs)void dsJobs.refetch()}}>Conferir nome no DataStage</Button>{checkingDs && <><ConferenciaDsJob conferencia={conferirNomeDs(value.job_command,dsJobs.data)} project={projectName} carregando={dsJobs.isFetching} onUsarGrafia={editable?name=>change({job_command:name}):undefined}/>{dsJobs.data?.disponivel && <Select label="Jobs do projeto DataStage" value={dsJobs.data.jobs.includes(value.job_command)?value.job_command:''} disabled={!editable} onChange={event=>change({job_command:event.target.value})}><option value="">Selecione um job para usar no editor</option>{dsJobs.data.jobs.map(name=><option key={name}>{name}</option>)}</Select>}</>}</section>}
   {protectedRows.length > 0 && <div className="border-t border-edge pt-4 space-y-2"><h4 className="text-sm font-medium text-ink">Parâmetros protegidos</h4>{protectedRows.map((row, index) => <p key={index} className="text-sm text-dim"><span className="font-medium text-ink">{text(row.param_name)}</span> · preservado por referência</p>)}</div>}
-  <div className="flex flex-wrap justify-end gap-2 border-t border-edge pt-4"><Button variant="secondary" onClick={onClose}>{editable ? 'Cancelar' : 'Fechar'}</Button>{editable && <Button onClick={apply} disabled={errors.length > 0}>Aplicar ao fluxo</Button>}</div>
+  {editable && <div className="space-y-2 border-t border-edge pt-4"><p className="text-xs text-dim">Aplicar inclui na Montagem desta aba; Salvar rascunho persiste e Publicar é uma ação separada.</p><div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" disabled={!dirty} onClick={onDiscard}>Descartar alterações</Button><Button onClick={apply} disabled={!dirty || errors.length > 0}>Aplicar à etapa</Button></div></div>}
  </div>
 }

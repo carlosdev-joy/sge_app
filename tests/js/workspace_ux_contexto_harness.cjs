@@ -54,7 +54,7 @@ const RAIZ = path.resolve(__dirname, '..', '..'), SRC = path.join(RAIZ, 'ui-reac
 const { transform } = require(path.join(RAIZ, 'ui-react', 'node_modules', 'sucrase'))
 const mini = require(path.join(__dirname, 'minireact.cjs'))
 
-const ENTRADAS = ['components/workspace/WorkspaceEditor.tsx', 'components/workspace/WorkspaceOperations.tsx', 'components/ui/Modal.tsx', 'lib/navigationGuard.ts', 'lib/dialogs.ts', 'lib/workspaceTabs.ts', 'lib/workspaceNavigation.ts', 'lib/workspace.ts', 'components/workspace/WorkspaceParameters.tsx', 'components/pipelines/DependenciasModal.tsx']
+const ENTRADAS = ['components/workspace/WorkspaceEditor.tsx', 'components/workspace/WorkspaceOperations.tsx', 'components/ui/Modal.tsx', 'lib/navigationGuard.ts', 'lib/dialogs.ts', 'lib/workspaceTabs.ts', 'lib/workspaceNavigation.ts', 'lib/workspace.ts', 'components/workspace/WorkspaceParameters.tsx', 'components/pipelines/DependenciasModal.tsx', 'components/workspace/SharedJobConfiguration.tsx', 'components/workspace/SpecializedConfiguration.tsx', 'components/workspace/WorkspaceLineage.tsx']
 const DUBLES = {
  'lib/api.ts': `
 const calls = []; let responder = () => ({})
@@ -70,7 +70,7 @@ exports.BASE = '/orquestra'
  // recolher um painel, voltaria ao valor inicial.
  'components/workspace/WorkspaceCanvas.tsx': `
 const { jsx } = require('react/jsx-runtime'); const { useState } = require('react')
-exports.WorkspaceCanvas = function WorkspaceCanvas(p) { const [vista] = useState(() => ({ zoom: 1 })); exports.__vista = vista; return jsx('div', { 'data-canvas': p.definition.nodes.map(n => n.id).join(','), 'data-editable': String(p.editable), 'data-selecionado': p.selected || '' }) }
+exports.WorkspaceCanvas = function WorkspaceCanvas(p) { const [vista] = useState(() => ({ zoom: 1 })); exports.__vista = vista; exports.__props = p; return jsx('div', { 'data-canvas': p.definition.nodes.map(n => n.id).join(','), 'data-editable': String(p.editable), 'data-selecionado': p.selected || '' }) }
 `,
  'components/etapas/FluxoEditor.tsx': `
 const { jsx } = require('react/jsx-runtime')
@@ -115,7 +115,7 @@ function Suspense(p) { return p.children }
 // injetado pelo teste (__contexto), que simula uma área externa, e depois o padrão.
 const __contexto = new Map()
 function useContext(c) { return c.pilha.length ? mini.hooks.useContext(c) : __contexto.has(c) ? __contexto.get(c) : c.padrao }
-module.exports = Object.assign({}, mini.hooks, { createElement: mini.criar, Fragment: mini.FRAGMENT, forwardRef, lazy, Suspense, useContext, __contexto, __lazy, useDeferredValue: v => v, useId: () => 'orq-' + (++seq), useLayoutEffect: fn => { fn() } })
+module.exports = Object.assign({}, mini.hooks, { createElement: mini.criar, Fragment: mini.FRAGMENT, forwardRef, lazy, Suspense, useContext, __contexto, __lazy, memo: C => C, useDeferredValue: v => v, useId: () => 'orq-' + (++seq), useLayoutEffect: fn => { fn() } })
 module.exports.default = module.exports
 `)
  const runtime = `const mini = require(${MINI}); const jsx = (tipo, props, key) => ({ __el: true, tipo, props: props || {}, key }); module.exports = { jsx, jsxs: jsx, jsxDEV: jsx, Fragment: mini.FRAGMENT }`
@@ -559,7 +559,7 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  mt.clicar(mt.achar(n => n.tag === 'button' && n.props.draggable !== undefined && textoDe(n) === 'Shell')[0])
  mt.disparar(controlePor(descendentes(painel('Componentes')), 'Buscar componente'), 'onChange', { target: { value: 'sh' } })
  // Formulário em edição no inspector (JSON avançado ainda não aplicado) e vista do canvas movida.
- mt.clicar(mt.botoes('Configurações avançadas')[0])
+ mt.clicar(mt.achar(n => n.tag === 'button' && String(n.props['aria-controls'] || '').endsWith('-secao-avancado'))[0])
  mt.disparar(controlePor(mt.achar(() => true), 'Configuração completa'), 'onChange', { target: { value: '{"rascunhoLocal":true}' } })
  canvasDuble.__vista.zoom = 0.55
  const estadoMontagem = () => ({ selecao: canvasMt().props['data-selecionado'], zoom: canvasDuble.__vista.zoom, busca: controlePor(descendentes(painel('Componentes')), 'Buscar componente').props.value, staging: controlePor(descendentes(painel('Propriedades')), 'Configuração completa').props.value })
@@ -653,6 +653,303 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  assert.match(fonte(3), /definição publicada atual.*rascunho \(revisão 3\) só é executado depois de publicado/)
  assert.doesNotMatch(fonte(null), /rascunho/)
  resultado.fonteExecucao = true
+
+ // ── 14. F4.2: inspector inline, histórico local e modo focado ─────────────
+ react.__lazy.set('./SharedJobConfiguration', require(path.join(tmp, 'components/workspace/SharedJobConfiguration.js')).default)
+ react.__lazy.set('./SpecializedConfiguration', require(path.join(tmp, 'components/workspace/SpecializedConfiguration.js')).default)
+ react.__lazy.set('./WorkspaceLineage', require(path.join(tmp, 'components/workspace/WorkspaceLineage.js')).default)
+ Object.assign(rq.__dados, { 'ssh-connections': { connections: [{ conn_id: 'ssh_test', host: 'h' }] }, 'mssql-connections': { connections: [{ conn_id: 'sql_test', host: 'h' }] }, 'msg-grupos': { data: [] } })
+ const PLAIN = 'segredo-claro-f42'
+ let revisaoServidor = 7; let validacao14 = null
+ api.__responder(call => {
+  if (call.method === 'GET' && call.p === '/workspace/drafts/draft-1') return structuredClone(draft)
+  if (call.method === 'POST' && call.p === '/workspace/drafts/draft-1/lease') return { ...LEASE }
+  if (call.method === 'PUT' && call.p === '/workspace/drafts/draft-1') { revisaoServidor += 1; return { ...structuredClone(draft), revision: revisaoServidor, definition: call.body.definition, layout: call.body.layout, lease: { ...LEASE } } }
+  if (call.method === 'POST' && call.p === '/workspace/drafts/draft-1/validate') return structuredClone(validacao14)
+  if (call.method === 'POST' && call.p === '/workspace-adapter/secrets/draft-1') return { secretReference: { secretId: 's-novo', pipelineName: NOME, jobName: call.body.jobName, parameterName: call.body.parameterName } }
+  throw new Error(`chamada inesperada ${call.method} ${call.p}`)
+ })
+ api.__calls.length = 0
+ const ed = mini.montar(jsx(Tela, { development: true })).sincronizar()
+ ed.clicar(ed.botoes('Iniciar edição')[0]); await flush(); await flush(); ed.sincronizar()
+ const visiveisDe = n => typeof n === 'string' || n.props.hidden ? [] : [n, ...n.filhos.flatMap(visiveisDe)]
+ const textoVisivel = n => visiveisDe(n).filter(x => typeof x !== 'string').map(x => x.filhos.filter(f => typeof f === 'string').join(' ')).join(' ').replace(/\s+/g, ' ')
+ const inspector = () => ed.achar(n => n.tag === 'aside' && n.props['aria-label'] === 'Propriedades da etapa')[0]
+ const secao = s => descendentes(inspector()).find(n => n.tag === 'section' && String(n.props.id || '').endsWith(`-secao-${s}`))
+ const botaoSecao = s => descendentes(inspector()).find(n => n.tag === 'button' && String(n.props['aria-controls'] || '').endsWith(`-secao-${s}`))
+ const localizar = id => ed.disparar(ed.achar(n => n.tag === 'select' && n.props['aria-label'] === 'Localizar etapa no fluxo')[0], 'onChange', { target: { value: id } })
+ const selecionado = () => ed.achar(n => n.props['data-canvas'] !== undefined)[0].props['data-selecionado']
+ const campo = (escopo, rotulo) => controlePor(descendentes(escopo), rotulo)
+ const historico = rotulo => ed.achar(n => n.tag === 'button' && n.props['aria-label'] === rotulo)[0]
+ const botaoNa = (escopo, rotulo) => descendentes(escopo).find(n => n.tag === 'button' && textoDe(n) === rotulo)
+ const definicaoAtual = () => canvasDuble.__props.definition, layoutAtual = () => canvasDuble.__props.layout
+ const etapa = id => definicaoAtual().nodes.find(n => n.id === id)
+
+ // a) Os 11 tipos abrem com os campos principais do formulário real, sem JSON nem modal.
+ const MARCA = { datastage: /Nome do job DataStage/, sql: /Se a consulta falhar/, python: /Modo/, shell: /Comando \/ Path/, storedproc: /Procedure \(ex: dbo\.sp_nome\)/, http: /URL \(http\/https\)/, decisao: /Se a avaliação falhar/, aguarde: /[Aa]guard|[Ll]iberar/, notificacao: /Grupo \(canal\)/, email: /Assunto/, valida_arquivo: /Valida Arquivo/ }
+ for (const [i, tipo] of TIPOS.entries()) {
+  localizar(`n${i}`)
+  assert.deepEqual(descendentes(inspector()).filter(n => n.tag === 'button' && n.props['aria-controls']).map(textoDe), ['Configuração', 'Etapa', 'Lineage', 'Avançado'], tipo)
+  assert.equal(botaoSecao('configuracao').props['aria-pressed'], true, tipo)
+  assert.match(textoVisivel(secao('configuracao')), MARCA[tipo], tipo)
+  assert.equal(secao('avancado'), undefined, `${tipo}: JSON não é montado sem pedido`)
+  assert.equal(ed.porPapel('dialog').length, 0, `${tipo}: sem modal`)
+ }
+ assert.equal(api.__calls.filter(c => c.method !== 'GET').length, 1, 'percorrer os tipos não escreve nada')
+
+ // b) Shell: staging inline sobrevive a subseção, recolher, Configuração e salvar; Aplicar mescla.
+ localizar('n3')
+ const comando = () => campo(secao('configuracao'), 'Comando / Path')
+ ed.disparar(comando(), 'onChange', { target: { value: '/opt/novo.sh' } })
+ ed.disparar(campo(secao('configuracao'), 'Servidor SSH (conexão Airflow) *'), 'onChange', { target: { value: 'ssh_test' } })
+ assert.match(botaoSecao('configuracao').props['aria-label'] || '', /alterações não aplicadas/)
+ assert.equal(historico('Desfazer').props.disabled, true, 'staging não é passo do histórico')
+ ed.clicar(botaoSecao('lineage')); assert.equal(secao('configuracao').props.hidden, true); ed.clicar(botaoSecao('configuracao'))
+ const alternarPropriedades = () => ed.clicar(ed.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Propriedades')[0])
+ alternarPropriedades(); controle.tab('configuracao'); ed.sincronizar(); controle.tab('montagem'); ed.sincronizar(); alternarPropriedades()
+ assert.equal(comando().props.value, '/opt/novo.sh', 'staging conservado')
+ // Outro campo da mesma etapa muda direto (nome); salvar não leva o que não foi aplicado.
+ ed.disparar(campo(inspector(), 'Nome para exibição'), 'onChange', { target: { value: 'Shell renomeado' } })
+ ed.clicar(ed.botoes('Salvar rascunho')[0]); await flush(); await flush(); ed.sincronizar()
+ let puts = api.__calls.filter(c => c.method === 'PUT')
+ assert.equal(puts.length, 1); assert.equal(puts[0].body.definition.nodes[3].configuration.legacyJob.job_command, 'cmd 3'); assert.equal(puts[0].body.definition.nodes[3].displayName, 'Shell renomeado')
+ assert.equal(comando().props.value, '/opt/novo.sh', 'save preserva o formulário')
+ ed.clicar(botaoNa(secao('configuracao'), 'Aplicar à etapa'))
+ assert.equal(etapa('n3').configuration.legacyJob.job_command, '/opt/novo.sh', 'aplicar após o save (rascunho clonado) mescla')
+ assert.equal(etapa('n3').displayName, 'Shell renomeado', 'outro campo mantido')
+ assert.equal(botaoSecao('configuracao').props['aria-label'], undefined)
+ assert.equal(historico('Desfazer').props.disabled, false)
+ ed.clicar(ed.botoes('Salvar rascunho')[0]); await flush(); await flush(); ed.sincronizar()
+ puts = api.__calls.filter(c => c.method === 'PUT')
+ const salvo3 = structuredClone(puts[1].body.definition.nodes[3]); assert.equal(salvo3.configuration.legacyJob.ssh_conn_id, 'ssh_test'); delete salvo3.displayName; delete salvo3.configuration.legacyJob.ssh_conn_id; salvo3.configuration.legacyJob.job_command = 'cmd 3'
+ assert.deepEqual(salvo3, original.nodes[3], 'só o campo aplicado mudou; desconhecidos e protegidos intactos')
+ assert.deepEqual(puts[1].body.definition.nodes.filter(n => n.id !== 'n3'), original.nodes.filter(n => n.id !== 'n3'))
+ assert.deepEqual([puts[0].body.expectedRevision, puts[1].body.expectedRevision, puts[1].body.fence], [7, 8, 41])
+ assert.equal(historico('Desfazer').props.disabled, true, 'salvar inicia um histórico novo')
+
+ // c) Trocar de etapa com alterações não aplicadas pede confirmação; cancelar conserva.
+ ed.disparar(comando(), 'onChange', { target: { value: '/opt/outro.sh' } })
+ localizar('n4'); await flush()
+ assert.match(dialogs.currentDialog().message, /n3 tem alterações não aplicadas/)
+ dialogs.finishDialog(false); await flush(); ed.sincronizar()
+ assert.equal(selecionado(), 'n3'); assert.equal(comando().props.value, '/opt/outro.sh')
+ localizar('n4'); await flush(); dialogs.finishDialog(true); await flush(); ed.sincronizar()
+ assert.equal(selecionado(), 'n4'); assert.equal(etapa('n3').configuration.legacyJob.job_command, '/opt/novo.sh', 'descartar não aplica')
+ resultado.inspector = { tipos: 11, semJson: true, semModal: true, staging: ['subsecao', 'recolher', 'configuracao', 'salvar'], mesclaAposSave: true, trocaConfirma: true }
+
+ // d) Desfazer/refazer: seleção volta, refazer some após nova edição, nada vai ao servidor.
+ const chamadasAntes = api.__calls.length
+ ed.clicar(ed.achar(n => n.tag === 'button' && n.props.draggable !== undefined && textoDe(n) === 'HTTP')[0])
+ assert.equal(selecionado(), 'http_1')
+ ed.clicar(historico('Desfazer'))
+ assert.equal(etapa('http_1'), undefined); assert.equal(selecionado(), 'n4', 'seleção anterior ao passo')
+ assert.match(ed.texto, /Desfeito: Adicionar etapa/); assert.match(ed.texto, /Alterações ainda não salvas/)
+ ed.clicar(historico('Refazer')); assert(etapa('http_1')); assert.equal(selecionado(), 'http_1')
+ ed.clicar(historico('Desfazer')); assert.equal(historico('Refazer').props.disabled, false)
+ ed.disparar(campo(inspector(), 'Nome para exibição'), 'onChange', { target: { value: 'Etapa 4' } })
+ assert.equal(historico('Refazer').props.disabled, true, 'nova edição invalida o refazer')
+ assert.equal(api.__calls.length, chamadasAntes, 'desfazer/refazer não chamam o servidor')
+
+ // e) Arraste: 20 eventos com duas etapas viram um passo; desfazer volta o layout exato.
+ const layoutAntes = structuredClone(layoutAtual())
+ for (let i = 1; i <= 20; i++) canvasDuble.__props.onPositions([{ type: 'position', id: 'n0', position: { x: 500 + i, y: i }, dragging: true }, { type: 'position', id: 'n1', position: { x: i, y: 600 + i }, dragging: true }])
+ canvasDuble.__props.onPositions([{ type: 'position', id: 'n0', position: { x: 521, y: 21 }, dragging: false }, { type: 'position', id: 'n1', position: { x: 21, y: 621 }, dragging: false }]); ed.sincronizar()
+ assert.equal(layoutAtual().nodes.n0.x, 521)
+ ed.clicar(historico('Desfazer')); assert.deepEqual(layoutAtual(), layoutAntes, 'um desfazer volta o arraste inteiro')
+ assert.equal(etapa('n4').displayName, 'Etapa 4', 'o passo anterior continua')
+
+ // f) Atalhos: só fora de campos de texto e diálogos, e só com a Montagem visível.
+ class Elemento { constructor(tags) { this.tags = tags } closest(sel) { return this.tags.some(t => sel.includes(t)) ? this : null } }
+ let dialogoAberto = false
+ global.Element = Elemento; global.document = { querySelector: sel => dialogoAberto && sel.includes('dialog') ? {} : null }
+ const montagem = () => ed.achar(n => n.tag === 'div' && typeof n.props.onKeyDown === 'function' && 'hidden' in n.props)[0]
+ const tecla = (alvo, extra = {}) => ed.disparar(montagem(), 'onKeyDown', { key: 'z', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, defaultPrevented: false, nativeEvent: { isComposing: false }, target: alvo, ...extra })
+ tecla(new Elemento(['input'])); assert.deepEqual(layoutAtual(), layoutAntes, 'Ctrl+Z num campo é o nativo')
+ tecla(new Elemento([]), { shiftKey: true }); assert.equal(layoutAtual().nodes.n0.x, 521, 'Ctrl+Shift+Z refaz')
+ dialogoAberto = true; tecla(new Elemento([])); assert.equal(layoutAtual().nodes.n0.x, 521, 'diálogo aberto bloqueia'); dialogoAberto = false
+ tecla(new Elemento(['textarea'])); tecla(new Elemento(['contenteditable'])); assert.equal(layoutAtual().nodes.n0.x, 521)
+ tecla(new Elemento([])); assert.deepEqual(layoutAtual(), layoutAntes, 'Ctrl+Z no canvas desfaz')
+ controle.tab('configuracao'); ed.sincronizar(); tecla(new Elemento([])); controle.tab('montagem'); ed.sincronizar()
+ assert.equal(etapa('n4').displayName, 'Etapa 4', 'Montagem oculta não recebe atalho')
+ resultado.historicoEditor = { desfazer: true, refazer: true, redoInvalidado: true, arraste: 1, atalhos: ['campo', 'dialogo', 'oculta'], servidor: 0 }
+
+ // g) Modo focado: inspector ocupa a área do canvas sem modal; o mesmo formulário continua.
+ localizar('n3'); ed.disparar(comando(), 'onChange', { target: { value: '/opt/focado.sh' } })
+ ed.clicar(ed.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Expandir propriedades')[0])
+ assert(ocultoPor(ed, n => n.props['data-canvas'] !== undefined).length >= 1, 'canvas oculto e montado')
+ assert.equal(ed.achar(n => n.props['data-canvas'] !== undefined).length, 1)
+ assert(ocultoPor(ed, n => n.tag === 'button' && n.props.draggable !== undefined).length >= 1, 'biblioteca oculta')
+ assert.equal(ocultoPor(ed, n => n.props['aria-label'] === 'Propriedades da etapa').length, 0, 'inspector visível')
+ assert.equal(ed.porPapel('dialog').length, 0, 'sem modal')
+ assert.equal(comando().props.value, '/opt/focado.sh', 'mesmo staging')
+ tecla(new Elemento(['input']), { key: 'Escape', ctrlKey: false })
+ assert.equal(ocultoPor(ed, n => n.props['data-canvas'] !== undefined).length, 0, 'Esc volta ao canvas')
+ assert.equal(comando().props.value, '/opt/focado.sh')
+ ed.clicar(ed.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Expandir propriedades')[0]); ed.clicar(ed.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Voltar ao canvas')[0])
+ assert.equal(ocultoPor(ed, n => n.props['data-canvas'] !== undefined).length, 0)
+ ed.clicar(botaoNa(secao('configuracao'), 'Descartar alterações')); assert.equal(comando().props.value, '/opt/novo.sh', 'descartar recarrega da etapa')
+ resultado.modoFocado = { canvasConservado: true, mesmoFormulario: true, esc: true, semModal: true }
+
+ // h) Diagnóstico abre a subseção do campo, com o texto da validação; não abre JSON.
+ ed.clicar(ed.botoes('Salvar rascunho')[0]); await flush(); await flush(); ed.sincronizar()
+ validacao14 = { revision: revisaoServidor, valid: false, diagnostics: [{ nodeId: 'n9', field: 'configuration', code: 'node_configuration', message: 'Informe o assunto do e-mail' }, { nodeId: 'n0', field: 'etl_job_lineage', code: 'x', message: 'Lineage incompleto' }, { nodeId: 'n5', field: 'campo_futuro', code: 'x', message: 'Regra nova' }] }
+ ed.clicar(ed.botoes('Validar rascunho')[0]); await flush(); await flush(); ed.sincronizar()
+ const diag = id => ed.achar(n => n.tag === 'button' && textoDe(n) === id && String(n.props.className || '').includes('underline'))[0]
+ ed.clicar(diag('n9')); assert.equal(selecionado(), 'n9'); assert.equal(botaoSecao('configuracao').props['aria-pressed'], true); assert.match(textoDe(inspector()), /Última validação: Informe o assunto do e-mail · campo configuração da etapa/)
+ ed.clicar(diag('n0')); assert.equal(botaoSecao('lineage').props['aria-pressed'], true); assert.equal(secao('lineage').props.hidden, false); assert(!secao('configuracao') || secao('configuracao').props.hidden === true, 'uma subseção visível'); assert.equal(secao('avancado'), undefined, 'JSON não montado')
+ ed.clicar(diag('n5')); assert.equal(botaoSecao('configuracao').props['aria-pressed'], true, 'campo desconhecido: configuração'); assert.match(textoDe(inspector()), /campo campo_futuro/)
+ resultado.diagnostico = { configuracao: true, lineage: true, desconhecido: 'configuracao', semJson: true }
+
+ // i) Valor protegido: aplicado por referência, histórico reiniciado, nada em claro.
+ localizar('n0'); ed.disparar(campo(inspector(), 'Nome para exibição'), 'onChange', { target: { value: 'DataStage X' } })
+ assert.equal(historico('Desfazer').props.disabled, false)
+ ed.clicar(ed.botoes('Adicionar parâmetro protegido')[0])
+ const dlg = () => ed.porPapel('dialog')[0]
+ ed.disparar(campo(dlg(), 'Nome do parâmetro protegido'), 'onChange', { target: { value: 'NOVA_SENHA' } })
+ ed.disparar(campo(dlg(), 'Valor protegido'), 'onChange', { target: { value: PLAIN } })
+ ed.clicar(botaoNa(dlg(), 'Proteger e aplicar referência')); await flush(); await flush(); ed.sincronizar()
+ assert(etapa('n0').configuration.etl_pipeline_job_param.some(p => p.param_name === 'NOVA_SENHA' && p.param_value === '***' && p.secretReference.secretId === 's-novo'))
+ assert.equal(historico('Desfazer').props.disabled, true, 'referência nova reinicia o histórico')
+ assert.match(ed.texto, /histórico de desfazer recomeçou/)
+ ed.clicar(ed.botoes('Salvar rascunho')[0]); await flush(); await flush(); ed.sincronizar()
+ assert.equal(api.__calls.filter(c => c.p === '/workspace-adapter/secrets/draft-1').length, 1)
+ assert(!JSON.stringify(api.__calls.filter(c => c.p !== '/workspace-adapter/secrets/draft-1')).includes(PLAIN), 'valor só no pedido de cifragem')
+ assert(!ed.texto.includes(PLAIN))
+ // O JSON avançado não muda parâmetro protegido (nem com valor em claro).
+ localizar('n3'); ed.clicar(botaoSecao('avancado'))
+ const json14 = () => campo(secao('avancado'), 'Configuração completa')
+ const cfg14 = JSON.parse(json14().props.value); cfg14.etl_pipeline_job_param[0].param_value = PLAIN
+ ed.disparar(json14(), 'onChange', { target: { value: JSON.stringify(cfg14) } }); ed.clicar(botaoNa(secao('avancado'), 'Aplicar configuração'))
+ assert.match(textoDe(secao('avancado')), /Parâmetros protegidos não mudam por aqui/)
+ assert.equal(etapa('n3').configuration.etl_pipeline_job_param[0].param_value, '***')
+ ed.clicar(botaoNa(secao('avancado'), 'Descartar alterações'))
+ resultado.segredoEditor = { referencia: true, historicoReiniciado: true, emClaro: false, jsonProtegido: 'recusado' }
+
+ // k) SQL (painel especializado sobre cópia do rascunho): enquanto o formulário está
+ // aberto, SLA muda na Configuração e outra etapa é arrastada; Aplicar mescla só a etapa.
+ localizar('n1')
+ const select14 = () => descendentes(secao('configuracao')).find(n => n.tag === 'textarea')
+ ed.disparar(select14(), 'onChange', { target: { value: 'SELECT 42' } })
+ controle.tab('configuracao'); ed.sincronizar()
+ ed.clicar(ed.achar(n => n.tag === 'nav' && n.props['aria-label'] === 'Grupos da configuração').flatMap(descendentes).find(n => n.tag === 'button' && textoDe(n) === 'Políticas de execução'))
+ ed.disparar(controlePor(ed.achar(() => true), 'SLA (minutos)'), 'onChange', { target: { value: '30' } })
+ controle.tab('montagem'); ed.sincronizar()
+ canvasDuble.__props.onPositions([{ type: 'position', id: 'n2', position: { x: 900, y: 900 }, dragging: false }]); ed.sincronizar()
+ assert.equal(select14().props.value, 'SELECT 42', 'staging do painel conservado')
+ ed.clicar(botaoNa(secao('configuracao'), 'Aplicar à etapa'))
+ const sqlAplicado = () => JSON.parse(etapa('n1').configuration.legacyJob.sql_json || '{}')
+ assert.equal(sqlAplicado().sql, 'SELECT 42')
+ assert.equal(definicaoAtual().metadata.legacyPipeline.sla_minutos, 30, 'SLA aplicado depois não foi sobrescrito')
+ assert.deepEqual(layoutAtual().nodes.n2, { ...layout.nodes.n2, x: 900, y: 900 }, 'arraste mantido')
+ assert.deepEqual(definicaoAtual().nodes.filter(n => !['n1', 'n0', 'n3', 'n4'].includes(n.id)), original.nodes.filter(n => !['n1', 'n0', 'n3', 'n4'].includes(n.id)))
+ assert.deepEqual(definicaoAtual().edges, original.edges)
+ ed.clicar(historico('Desfazer'))
+ assert.equal(etapa('n1').configuration.legacyJob.sql_json, undefined, 'desfazer reverte só a configuração aplicada')
+ assert.equal(definicaoAtual().metadata.legacyPipeline.sla_minutos, 30); assert.equal(layoutAtual().nodes.n2.x, 900)
+ ed.clicar(historico('Refazer')); assert.equal(sqlAplicado().sql, 'SELECT 42')
+ resultado.especializado = { mescla: 'so-etapa', slaPosterior: 'mantido', arraste: 'mantido', desfazer: 'so-aplicacao' }
+ // Recarregar (confirmado) descarta o histórico: ao retomar a edição não há o que desfazer.
+ ed.clicar(ed.botoes('Recarregar')[0]); await flush(); assert.match(dialogs.currentDialog().message, /Recarregar substitui/)
+ dialogs.finishDialog(true); await flush(); await flush(); ed.sincronizar()
+ assert.match(historico('Desfazer').props.title, /Nada para desfazer/, 'recarregar limpa o histórico na hora')
+ ed.clicar(ed.botoes('Iniciar edição')[0]); await flush(); await flush(); ed.sincronizar()
+ assert.equal(historico('Desfazer').props.disabled, true, 'recarregar limpa o histórico'); assert.equal(historico('Refazer').props.disabled, true)
+ ed.disparar(campo(inspector(), 'Nome para exibição'), 'onChange', { target: { value: 'SQL recarregado' } })
+
+ // l) Posse encerrada: Aplicar e desfazer recusados; o formulário continua com o que foi digitado.
+ ed.clicar(ed.botoes('Salvar rascunho')[0]); await flush(); await flush(); ed.sincronizar()
+ localizar('n3'); ed.disparar(comando(), 'onChange', { target: { value: '/opt/sem-posse.sh' } })
+ // Encerrar com o formulário não aplicado avisa (não é silencioso); cancelar mantém posse e formulário.
+ ed.clicar(ed.botoes('Encerrar edição')[0]); await flush()
+ assert.match(dialogs.currentDialog().message, /alterações não aplicadas no inspector da etapa n3\. As alterações do inspector continuam no formulário/)
+ dialogs.finishDialog(false); await flush(); ed.sincronizar()
+ assert.equal(api.__calls.filter(c => c.method === 'DELETE').length, 0); assert.equal(ed.botoes('Encerrar edição').length, 1); assert.equal(comando().props.value, '/opt/sem-posse.sh')
+ ed.clicar(ed.botoes('Encerrar edição')[0]); await flush(); dialogs.finishDialog(true); await flush(); await flush(); ed.sincronizar()
+ assert.equal(api.__calls.filter(c => c.method === 'DELETE').length, 1)
+ ed.clicar(botaoNa(secao('configuracao'), 'Aplicar à etapa') || { props: { onClick() {} } })
+ assert.notEqual(etapa('n3').configuration.legacyJob.job_command, '/opt/sem-posse.sh', 'sem posse nada é aplicado')
+ assert.equal(historico('Desfazer').props.disabled, true)
+ assert.equal(comando().props.value, '/opt/sem-posse.sh', 'formulário conservado')
+ resultado.semPosse = { aplicar: 'recusado', desfazer: 'indisponivel', formulario: 'conservado' }
+
+ // j) Consulta: sem posse, desfazer e aplicar indisponíveis.
+ const leitura14 = mini.montar(jsx(Tela, { development: true })).sincronizar()
+ assert.equal(leitura14.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Desfazer')[0].props.disabled, true)
+ leitura14.disparar(leitura14.achar(n => n.tag === 'select' && n.props['aria-label'] === 'Localizar etapa no fluxo')[0], 'onChange', { target: { value: 'n3' } })
+ assert.equal(leitura14.botoes('Aplicar à etapa').length, 0); assert(leitura14.achar(n => n.tag === 'fieldset' && n.props.disabled === true).length >= 1)
+ const consulta14 = mini.montar(jsx(Tela, { development: false })).sincronizar()
+ assert.equal(consulta14.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Desfazer').length, 0)
+ delete global.Element; delete global.document
+ resultado.leituraF42 = true
+
+ // ── 15. Saída da sessão com alterações só no inspector (staging) ──────────
+ // O minireact não roda efeitos; aqui roda-se o efeito REAL de registro de
+ // useNavigationGuard (e o aviso de sessão) do último render, como o React faria
+ // ao mudar a dependência, sobre o History simulado da seção 9.
+ const efeitos = [], useEffectReal = react.useEffect; let sessao15 = null, cancelarGuarda = null
+ react.useEffect = fn => { const fonte = String(fn); if (fonte.includes('registerNavigationGuard(') || fonte.includes('onSession')) efeitos.push(fn) }
+ const Tela15 = () => { const [tab, setTab] = mini.hooks.useState('montagem'); controle.tab = setTab; return jsx(WorkspaceEditor, { name: NOME, draft, definition, layout, reasons: [], capabilities: caps, development: true, tab, configGroup: 'identificacao', onConfigGroup() {}, onOpenTab: setTab, onSession: s => { sessao15 = s }, onSaved() {}, onDiscarded() {} }) }
+ const ng = mini.montar(jsx(Tela15, {}))
+ // Efeitos do último render (cliques e disparos já renderizam): sem render novo, nada muda.
+ const efetivar = () => { ng.sincronizar(); if (!efeitos.length) return; const registro = efeitos.filter(f => String(f).includes('registerNavigationGuard(')).pop(), aviso = efeitos.filter(f => String(f).includes('onSession')).pop(); efeitos.length = 0; if (cancelarGuarda) cancelarGuarda(); cancelarGuarda = registro ? registro() : undefined; if (aviso) aviso() }
+ entradas.splice(0, entradas.length, { url: 'http://local/pipelines', state: { idx: 0 } }, { url: `${BASE}/montagem?experiencia=desenvolvimento`, state: { idx: 1 } }); pos = 1
+ efetivar(); guarda.acceptNavigation()
+ ng.clicar(ng.botoes('Iniciar edição')[0]); await flush(); await flush(); efetivar()
+ const insp15 = () => ng.achar(n => n.tag === 'aside' && n.props['aria-label'] === 'Propriedades da etapa')[0]
+ const secao15 = s => descendentes(insp15()).find(n => n.tag === 'section' && String(n.props.id || '').endsWith(`-secao-${s}`))
+ const sql15 = () => descendentes(secao15('configuracao')).find(n => n.tag === 'textarea')
+ const salvar15 = () => ng.botoes('Salvar rascunho')[0]
+ const ir = to => new Promise(resolve => { guarda.guardedNavigation(to, resolve); flush().then(() => resolve(null)) })
+ const CONSULTA = `${BASE}/visao-geral?experiencia=consulta`, PUBLICADO = `${BASE}/montagem?experiencia=consulta&fonte=publicado`
+ // Sem nada pendente a saída é livre.
+ assert.equal(cancelarGuarda, undefined); assert.equal(await ir(CONSULTA), CONSULTA); assert.equal(dialogs.currentDialog(), null)
+ // SQL editado sem Aplicar: não é "não salvo" (Salvar fica desabilitado e não finge levar o formulário).
+ ng.disparar(ng.achar(n => n.tag === 'select' && n.props['aria-label'] === 'Localizar etapa no fluxo')[0], 'onChange', { target: { value: 'n1' } })
+ ng.disparar(sql15(), 'onChange', { target: { value: 'SELECT 2 AS total' } }); efetivar()
+ assert.deepEqual([sessao15.dirty, sessao15.unapplied], [false, true], 'estados separados')
+ assert.equal(salvar15().props.disabled, true); assert.match(salvar15().props.title, /não aplicadas do inspector não entram/)
+ assert.match(ng.texto, /Alterações não aplicadas no inspector \(n1\); Salvar não as inclui/)
+ assert.equal((win.l.beforeunload || []).length, 1, 'fechar a aba também avisa')
+ // Experiência, Definição e Voltar pedem confirmação; cancelar conserva o campo.
+ for (const destino of [CONSULTA, PUBLICADO]) {
+  const indo = ir(destino); await flush()
+  assert.match(dialogs.currentDialog().message, /^Há alterações não aplicadas no inspector da etapa n1\. Sair desta sessão descarta/, destino)
+  dialogs.finishDialog(false); assert.equal(await indo, null, destino); efetivar()
+  assert.equal(sql15().props.value, 'SELECT 2 AS total', destino)
+ }
+ const rotas = router.length; win.history.go(-1); await flush(); await flush()
+ assert.equal(pos, 1, 'voltar desfeito'); assert.equal(router.length, rotas); assert.match(dialogs.currentDialog().message, /não aplicadas no inspector/)
+ dialogs.finishDialog(null); await flush(); efetivar(); assert.equal(pos, 1); assert.equal(sql15().props.value, 'SELECT 2 AS total')
+ // Montagem↔Configuração é a mesma sessão: sem diálogo e o formulário continua.
+ assert.equal(await ir(`${BASE}/configuracao?experiencia=desenvolvimento`), `${BASE}/configuracao?experiencia=desenvolvimento`); assert.equal(dialogs.currentDialog(), null)
+ controle.tab('configuracao'); efetivar(); controle.tab('montagem'); efetivar(); assert.equal(sql15().props.value, 'SELECT 2 AS total')
+ // Não aplicado + não salvo: a mensagem cita os dois.
+ ng.disparar(campo(insp15(), 'Nome para exibição'), 'onChange', { target: { value: 'SQL 15' } }); efetivar()
+ assert.deepEqual([sessao15.dirty, sessao15.unapplied], [true, true]); assert.equal(salvar15().props.disabled, false)
+ const ambos = ir(CONSULTA); await flush(); assert.match(dialogs.currentDialog().message, /^Há alterações não salvas e alterações não aplicadas no inspector da etapa n1\./); dialogs.finishDialog(false); await ambos
+ // Descartar o rascunho avisa que leva o formulário; cancelar não chama o servidor.
+ const escritas = () => api.__calls.filter(c => c.method !== 'GET').length, escritasAntes = escritas()
+ ng.clicar(ng.botoes('Descartar rascunho')[0]); await flush()
+ assert.match(dialogs.currentDialog().message, /Descartar o rascunho também descarta as alterações do inspector/); dialogs.finishDialog(false); await flush(); efetivar()
+ assert.equal(escritas(), escritasAntes); assert.equal(sql15().props.value, 'SELECT 2 AS total')
+ // Recarregar avisa; cancelar conserva; confirmar substitui e descarta o formulário (explicitamente).
+ ng.clicar(ng.botoes('Recarregar')[0]); await flush()
+ assert.match(dialogs.currentDialog().message, /^Recarregar substitui as alterações não salvas desta aba e as alterações não aplicadas no inspector da etapa n1\./)
+ dialogs.finishDialog(false); await flush(); efetivar(); assert.equal(sql15().props.value, 'SELECT 2 AS total'); assert.equal(sessao15.unapplied, true)
+ // Salvar grava só o nome; o formulário continua não aplicado e a saída continua protegida.
+ ng.clicar(salvar15()); await flush(); await flush(); efetivar()
+ assert.deepEqual([sessao15.dirty, sessao15.unapplied], [false, true]); assert.equal(sql15().props.value, 'SELECT 2 AS total'); assert.notEqual(cancelarGuarda, undefined)
+ assert.equal(api.__calls.filter(c => c.method === 'PUT').pop().body.definition.nodes[1].configuration.legacyJob.sql_json, undefined, 'o formulário não foi salvo')
+ // Só o formulário pendente: Recarregar ainda pergunta.
+ ng.clicar(ng.botoes('Recarregar')[0]); await flush()
+ assert.equal(dialogs.currentDialog().message, 'Recarregar substitui as alterações não aplicadas no inspector da etapa n1. Continuar?')
+ dialogs.finishDialog(false); await flush(); efetivar(); assert.equal(sql15().props.value, 'SELECT 2 AS total')
+ ng.clicar(ng.botoes('Recarregar')[0]); await flush(); dialogs.finishDialog(true); await flush(); await flush(); efetivar()
+ assert.notEqual(sql15().props.value, 'SELECT 2 AS total', 'formulário recarregado da etapa'); assert.deepEqual([sessao15.dirty, sessao15.unapplied], [false, false])
+ assert.equal(cancelarGuarda, undefined, 'nada pendente: guarda removida'); assert.equal((win.l.beforeunload || []).length, 0)
+ assert.equal(await ir(CONSULTA), CONSULTA); assert.equal(dialogs.currentDialog(), null)
+ react.useEffect = useEffectReal
+ resultado.saidaComStaging = { experiencia: 'confirma', definicao: 'confirma', voltar: 'confirma', cancelar: 'conserva', mesmaSessao: 'sem diálogo', salvar: 'desabilitado', recarregar: 'confirma+descarta', descartar: 'confirma', estadosSeparados: true }
 
  console.log(JSON.stringify({ ...resultado, passed: true }))
 })().catch(e => { console.error(e); process.exit(1) })

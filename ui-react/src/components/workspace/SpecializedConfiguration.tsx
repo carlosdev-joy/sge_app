@@ -30,13 +30,17 @@ function panelNode(node: WorkspaceNode): Node {
   : node.type === 'valida_arquivo' ? { valida_arquivo: Object.keys(raw).length ? raw : novaValidacao() } : {}
  return { id: node.id, type: node.type, position: { x: 0, y: 0 }, data: { name: node.id, workspace: true, ...config } }
 }
-export default function SpecializedConfiguration({ node, definition, editable, canApply, onApply, onClose }: {
+// Inline no inspector: os painéis editam uma cópia do rascunho (base) e aplicar
+// entrega base e cópia para a Montagem mesclar só o que mudou (etapa e ramos).
+export default function SpecializedConfiguration({ node, definition, editable, canApply, onApply, onStaging, onDiscard, onMaximize }: {
  node: WorkspaceNode; definition: WorkspaceDefinition; editable: boolean; canApply: () => boolean;
- onApply: (definition: WorkspaceDefinition) => void; onClose: () => void;
+ onApply: (next: WorkspaceDefinition, base: WorkspaceDefinition) => boolean; onStaging: (dirty: boolean) => void; onDiscard: () => void; onMaximize?: () => void;
 }) {
  const issue = specializedConfigurationIssue(node)
+ const [base] = useState(definition)
+ const [dirty, setDirty] = useState(false)
  const [staged, setStaged] = useState(() => {
-  const flow = cloneFlow(definition)
+  const flow = cloneFlow(base)
   if (issue || Object.keys(specializedConfiguration(node)).length) return flow
   const data = panelNode(node).data
   const key = { sql: 'sql', decisao: 'condition', email: 'email', notificacao: 'notify', aguarde: 'aguarde', valida_arquivo: 'valida_arquivo' }[node.type]
@@ -55,7 +59,7 @@ export default function SpecializedConfiguration({ node, definition, editable, c
  const directories = defaults.filter(row => ['String','Pathname'].includes(String(row.param_type)) && row.param_source === 'fixo')
  function mutate(operation: (definition: WorkspaceDefinition) => WorkspaceDefinition): boolean {
   if (!allowed()) return false
-  try { const next = operation(current.current.staged); current.current.staged = next; setStaged(next); return true }
+  try { const next = operation(current.current.staged); current.current.staged = next; setStaged(next); if (!dirty) { setDirty(true); onStaging(true) } return true }
   catch (error) { toast.error(error instanceof Error ? error.message : 'Não foi possível alterar a configuração.'); return false }
  }
  const patch = (id: string, value: object) => mutate(flow => patchSpecializedDefinition(flow, id, value as Record<string, unknown>))
@@ -68,17 +72,17 @@ export default function SpecializedConfiguration({ node, definition, editable, c
   if (handle) { const name = handle.startsWith('caso:') ? handle.slice(5) : handle; ramos[name] = [...(ramos[name] ?? []), edge.target] }
  }
  const sqlNames = staged.edges.filter(edge => edge.target === node.id && staged.nodes.some(row => row.id === edge.source && row.type === 'sql')).map(edge => edge.source)
- if (issue) return <div className="space-y-4"><p role="status" className="text-sm text-dim">{issue}</p><Button variant="secondary" onClick={onClose}>Fechar</Button></div>
+ if (issue) return <p role="status" className="text-sm text-dim">{issue}</p>
  return <div className="min-w-0 space-y-4">
-  <p className="text-sm text-dim">{editable ? 'Configure esta etapa no rascunho. Aplicar mantém as alterações na Montagem; use Salvar rascunho para persistir.' : 'Modo consulta. Inicie a edição do rascunho para alterar esta configuração.'}</p>
+  {!editable && <p role="status" className="text-sm text-dim">Modo consulta. Inicie a edição do rascunho para alterar esta configuração.</p>}
   <fieldset disabled={!editable} className="min-w-0">
-   {node.type === 'sql' && <PainelSql {...common} mssqlConns={sql.data?.connections ?? []} onPatchSql={patch} canPreview={allowed}/>}
+   {node.type === 'sql' && <PainelSql {...common} mssqlConns={sql.data?.connections ?? []} onPatchSql={patch} canPreview={allowed} onMaximizar={onMaximize}/>}
    {node.type === 'email' && <PainelEmail {...common} sqlNames={sqlNames} onPatchEmail={patch}/>}
    {node.type === 'notificacao' && <PainelNotificacao {...common} grupos={groups.data?.data ?? []} onPatchNotify={patch}/>}
    {node.type === 'aguarde' && <PainelAguarde {...common} entradas={staged.edges.filter(edge => edge.target === node.id).length} pontasSoltas={pontasSoltas(node.id, staged.nodes.map(row => row.id), staged.edges)} onPatchAguarde={patch} onPrenderPontasSoltas={() => mutate(flow => attachLooseEnds(flow, node.id, pontasSoltas(node.id, flow.nodes.map(row => row.id), flow.edges)))}/>}
-   {node.type === 'decisao' && <PainelDecisao {...common} nodes={nodes} ramos={ramos} jobNames={staged.nodes.map(row => row.id)} sqlNodeNames={sqlNames} mssqlConns={sql.data?.connections ?? []} onPatchCondition={(id, value: Partial<NodeCondition>) => patch(id, value)} onSimular={(_, branch) => toast.info(`Prévia do rascunho: ramo ${branch}. Nenhuma etapa foi executada.`)} canPreview={allowed} onAlternarModo={(_, mode) => caseAction({ type: 'mode', switch: mode })} onAddCaso={() => caseAction({ type: 'add' })} onUpdateCaso={(_, index, value) => caseAction({ type: 'update', index, patch: value })} onRemoveCaso={(_, index) => caseAction({ type: 'remove', index })} onMoveCaso={(_, index, delta) => caseAction({ type: 'move', index, delta })}/>}
+   {node.type === 'decisao' && <PainelDecisao {...common} onMaximizar={onMaximize} nodes={nodes} ramos={ramos} jobNames={staged.nodes.map(row => row.id)} sqlNodeNames={sqlNames} mssqlConns={sql.data?.connections ?? []} onPatchCondition={(id, value: Partial<NodeCondition>) => patch(id, value)} onSimular={(_, branch) => toast.info(`Prévia do rascunho: ramo ${branch}. Nenhuma etapa foi executada.`)} canPreview={allowed} onAlternarModo={(_, mode) => caseAction({ type: 'mode', switch: mode })} onAddCaso={() => caseAction({ type: 'add' })} onUpdateCaso={(_, index, value) => caseAction({ type: 'update', index, patch: value })} onRemoveCaso={(_, index) => caseAction({ type: 'remove', index })} onMoveCaso={(_, index, delta) => caseAction({ type: 'move', index, delta })}/>}
    {node.type === 'valida_arquivo' && <PainelValidaArquivo {...common} pipeline={staged.identity.pipelineName} nodes={nodes} edges={edges} sshConns={ssh.data?.connections ?? []} catalogOverride={defaults as unknown as CatalogoApi[]} canPreview={allowed} onPatchData={(id, value) => patch(id, object(value.valida_arquivo) as unknown as ValidaConfig)} previewOverride={body => apiFetch('/workspace-adapter/valida-arquivo/preview', { method: 'POST', body: JSON.stringify({ ...JSON.parse(body), taskId: node.id, catalog: directories.map(row => ({ param_name: row.param_name, param_type: row.param_type, param_source: row.param_source, param_value: row.param_value })) }) })}/>}
   </fieldset>
-  <div className="flex flex-wrap justify-end gap-2 border-t border-edge pt-4"><Button variant="secondary" onClick={onClose}>{editable ? 'Cancelar' : 'Fechar'}</Button>{editable && <Button onClick={() => { if (!allowed()) { toast.info('A sessão de edição mudou. Feche e reabra a configuração.'); return }; onApply(current.current.staged); onClose() }}>Aplicar ao fluxo</Button>}</div>
+  {editable && <div className="space-y-2 border-t border-edge pt-4"><p className="text-xs text-dim">Aplicar inclui na Montagem desta aba; Salvar rascunho persiste e Publicar é uma ação separada.</p><div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" disabled={!dirty} onClick={onDiscard}>Descartar alterações</Button><Button disabled={!dirty} onClick={() => { if (!allowed()) { toast.info('A sessão de edição mudou. Inicie a edição para aplicar; o formulário continua aqui.'); return }; onApply(current.current.staged, base) }}>Aplicar à etapa</Button></div></div>}
  </div>
 }

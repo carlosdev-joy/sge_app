@@ -1,8 +1,10 @@
 // ── Painel de um nó SQL ──────────────────────────────────────────────────────
 // Edita a query (SELECT que retorna 1 valor) + conexão/banco e oferece um
 // Pré-visualizar (POST /jobs/sql-preview) com grid de amostra (≤100 linhas).
-// Fase 4 do redesign: layout LARGO para o dock inferior — 2 colunas no lg+
-// (esquerda = SELECT grande + conexão/banco/on_error; direita = preview).
+// Fase 4 do redesign: layout LARGO para o dock inferior — 2 colunas quando o
+// próprio painel tem ≥42rem, ~300px por coluna (esquerda = SELECT grande + conexão/banco/on_error;
+// direita = preview). A largura vem do container, não da viewport: no inspector
+// estreito da Montagem as colunas empilham; no modo focado e no dock, lado a lado.
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Node } from '@xyflow/react'
@@ -94,7 +96,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
   }
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex flex-1 flex-col [container-type:inline-size]">
       {/* Cabeçalho do painel — o Excluir mora no topo direito (mesmo padrão
           nos 4 painéis). */}
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
@@ -110,8 +112,8 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
         </Button>}
       </div>
 
-      {/* 2 colunas no lg+: esquerda = consulta; direita = pré-visualização. */}
-      <div className="grid gap-4 p-4 lg:grid-cols-2">
+      {/* 2 colunas com espaço no painel: esquerda = consulta; direita = pré-visualização. */}
+      <div className="grid gap-4 p-4 [@container(min-width:42rem)]:grid-cols-2">
         {/* ── Coluna esquerda: SELECT + conexão/banco/on_error ────────────── */}
         <div className="flex min-w-0 flex-col gap-2">
           <NomeField readOnly={!!node.data.workspace} id={node.id} name={d.name} isNew={isNew} placeholder="ex: LE_CONTROLE" onRename={onRename} />
@@ -136,6 +138,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
               label="SELECT *"
               hint={'Somente leitura: comece com SELECT/WITH — sem \';\' nem DML.\nA primeira célula alimenta a Decisão; as colunas e linhas alimentam a tabela do e-mail.'}
               value={cfg.sql ?? ''}
+              data-diagnostic-field="sql_json.sql"
               rows={10}
               onChange={e => patch({ sql: e.target.value })}
               placeholder="ex: SELECT MAX(flag) FROM dbo.Controle WHERE ..."
@@ -156,6 +159,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
           <Select
             label="Conexão MSSQL *"
             value={cfg.mssql_conn_id ?? ''}
+            data-diagnostic-field="sql_json.mssql_conn_id"
             onChange={onConnChange}
             className="text-xs"
           >
@@ -174,6 +178,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
               label="Banco *"
               hint={'Banco onde o SELECT roda, no servidor da conexão.\nVazio = banco default da conexão — preencha se o SELECT usa nomes sem banco.'}
               value={cfg.database ?? ''}
+              data-diagnostic-field="sql_json.database"
               onChange={e => { patch({ database: e.target.value || null }); setPreview(null) }}
               disabled={!host}
               className={`text-xs ${!host ? 'opacity-60' : ''}`}
@@ -194,6 +199,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
               label="Se a consulta falhar"
               hint={'Falhar (recomendado): a execução para e o erro fica visível.\nPublicar nulo segue em silêncio — uma decisão a jusante pode rotear o ramo errado.'}
               value={cfg.on_error === 'nulo' ? 'nulo' : 'falhar'}
+              data-diagnostic-field="sql_json.on_error"
               onChange={e => patch({ on_error: e.target.value === 'nulo' ? 'nulo' : 'falhar' })}
               className="text-xs"
             >
@@ -215,7 +221,7 @@ export function PainelSql({ node, mssqlConns, onRename, onPatchSql, onDelete, on
         </div>
 
         {/* ── Coluna direita: pré-visualização (amostra ≤ 100 linhas) ─────── */}
-        <div className="flex min-w-0 flex-col gap-2 lg:border-l lg:border-edge lg:pl-4">
+        <div className="flex min-w-0 flex-col gap-2 [@container(min-width:42rem)]:border-l [@container(min-width:42rem)]:border-edge [@container(min-width:42rem)]:pl-4">
           <Button
             variant="secondary"
             size="sm"
