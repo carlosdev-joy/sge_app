@@ -176,7 +176,9 @@ def test_tela_nos_quatro_lugares():
     nav = NAV.read_text(encoding="utf-8")
     assert re.search(r"to:\s*'/utilitarios',\s*label:\s*'Utilitários',\s*icon:\s*Wrench,\s*group:\s*'Operação',\s*perm:\s*'tela_utilitarios'", nav)
     app = APP.read_text(encoding="utf-8")
-    assert "'/utilitarios': <Utilitarios />" in app and "from './pages/Utilitarios'" in app
+    assert "'/utilitarios': <Utilitarios />" in app
+    assert ("from './pages/Utilitarios'" in app or
+            re.search(r"const\s+Utilitarios\s*=\s*lazy\(\(\)\s*=>\s*import\('\./pages/Utilitarios'\)\)", app))
     rbac = RBAC_TS.read_text(encoding="utf-8")
     assert "['tela_utilitarios', 'Utilitários']" in rbac
     mig = MIGRATION.read_text(encoding="utf-8")

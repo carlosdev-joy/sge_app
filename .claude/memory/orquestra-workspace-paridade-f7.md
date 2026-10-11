@@ -39,3 +39,6 @@ F7D branch feat/workspace-paridade-f7d basee3a44bc9. Desenho de contrato anexado
 
 ## F7D candidato validado — 2026-10-11
 Lineage capturado por nó com contrato hash1, compatibilidade hash0 e restore histórico sem captura em consulta. Maestro usa contexto draft com fence/revision, propostas locais e filtro estrutural de credenciais. SQL78PASS0skip;pytest7325PASS8conhecidas51skip/0NEW;297focados;lint73/73/0NEW;build4PASS;fontes0NUL;browser7+teclado;reviewer ship e documenter preserve incumbente. PR/offline/DEV ainda pendentes, sem declaração de deploy. F8/F9 continuam.
+
+## F7D DEV final — 2026-10-11
+PR494 MERGED; feature8ae76382/DEV555af58a;2.16.0/160. Backup verificado, offline/rebuild/health/assets/permissions PASS. Own inactive fixture lineage A→B→restoreA duplicadas e segredosS1→S2→restoreS1; históricoRO/save409; zero drafts/comandos ativos. Ver /srv/segundo-cerebro/registros/orquestra/2026-10-11-workspace-paridade-f7d-dev-final-codex.md. F8 iniciou baseline, F9 e Caixa/IAreais pendentes; main/prod não autorizados.

@@ -1,0 +1,1 @@
+var e=`/assets/lari-avatar-D8ZZX5zu.png`,t=`/assets/diego-avatar-DqKEAgbk.png`;export{e as n,t};

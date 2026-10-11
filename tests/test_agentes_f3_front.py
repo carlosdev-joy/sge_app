@@ -78,7 +78,8 @@ def codigo(p: Path) -> str:
 
 def test_rota_agentes_registrada_no_app():
     fonte = ler(APP)
-    assert re.search(r"import\s+Agentes\s+from\s+'\./pages/Agentes'", fonte), \
+    assert (re.search(r"import\s+Agentes\s+from\s+'\./pages/Agentes'", fonte) or
+            re.search(r"const\s+Agentes\s*=\s*lazy\(\(\)\s*=>\s*import\('\./pages/Agentes'\)\)", fonte)), \
         "App.tsx não importa a página Agentes"
     assert re.search(r"'/agentes':\s*<Agentes\s*/>", fonte), \
         "App.tsx não tem PAGE_ELEMENT['/agentes'] — o item do menu cairia no catch-all"
