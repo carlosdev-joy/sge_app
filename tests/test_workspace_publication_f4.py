@@ -189,3 +189,21 @@ def test_new_pipeline_time_must_be_valid_and_old_unsupported_time_remains_preser
     assert not validate_projection(definition,LAYOUT,{'etl_pipeline':[{field:'25:99'}]},CONNECTIONS)[0]
     definition['metadata']['legacyPipeline'][field]='20:30'
     assert not validate_projection(definition,LAYOUT,{},CONNECTIONS)[0]
+
+
+def test_restore_without_legacy_csv_explicitly_clears_previous_predecessors():
+    definition=flow()
+    definition['metadata']['legacyTables']={'etl_pipeline_dependencia':[]}
+    existing={'etl_pipeline':[{'pipeline_name':'PUB','depends_on':'Previous'}]}
+    projected=materialize(definition,LAYOUT,existing)
+    assert projected['etl_pipeline'][0]['depends_on'] is None
+    assert projected['etl_pipeline_dependencia']==[]
+    assert 'depends_on' not in definition['metadata']['legacyPipeline']
+
+
+def test_missing_dependency_csv_is_derived_but_explicit_divergence_is_preserved_for_rejection():
+    definition=flow()
+    definition['metadata']['legacyTables']={'etl_pipeline_dependencia':[{'pipeline_name':'PUB','depende_de':'Parent','tipo':'PIPELINE'}]}
+    assert materialize(definition,LAYOUT,{})['etl_pipeline'][0]['depends_on']=='Parent'
+    definition['metadata']['legacyPipeline']['depends_on']='Wrong'
+    assert materialize(definition,LAYOUT,{})['etl_pipeline'][0]['depends_on']=='Wrong'

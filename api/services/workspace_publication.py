@@ -108,6 +108,9 @@ def materialize(definition,layout,existing):
  if set(related)-{'etl_pipeline_param','etl_pipeline_dependencia','etl_pipeline_owner'}:raise PublicationBlocked('unsupported_configuration','Tabela adicional não é projetável pelo adaptador')
  for table in ('etl_pipeline_param','etl_pipeline_dependencia','etl_pipeline_owner'):
   projected[table]=[dict(row) for row in related.get(table,[])]
+ # O snapshot pode omitir o CSV, mas uma lista vazia é remoção explícita.
+ # Projetar NULL impede que UPDATE parcial conserve predecessores de outra versão.
+ pipeline.setdefault('depends_on',','.join(str(row.get('depende_de') or '') for row in projected['etl_pipeline_dependencia'] if row.get('tipo')=='PIPELINE') or None)
  positions=layout.get('nodes') or {};nodes=definition.get('nodes') or [];edges=definition.get('edges') or []
  for order,node in enumerate(nodes,1):
   cfg=node.get('configuration') or {}
