@@ -7,6 +7,7 @@ import os
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
@@ -579,7 +580,9 @@ async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
 
       1. ``dag_run_id`` explícito → o operador JÁ escolheu (o canvas mostra o
          aviso de ambiguidade da F3 e deixa clicar numa candidata). Usa como
-         veio; a ambiguidade já foi resolvida por gente.
+         veio; a ambiguidade já foi resolvida por gente. Se a string não
+         traduz o ts_nodash, ``_completa_corrida_exata`` lê ESSA corrida no
+         Airflow (o dag_run_id devolvido continua o pedido).
       2. ``execution_id`` (ts_nodash) → o caminho HISTÓRICO do modal de Logs e
          do Dashboard, preservado byte a byte: casa o dag_run pela logical date
          com ``_escolhe_dag_run``. É uma corrida concreta, não há o que
@@ -662,7 +665,63 @@ async def _resolve_alvo_rerun(pipeline: str, *, exec_id: str, dag_run_id: str,
         raise HTTPException(
             status_code=404,
             detail=f"Nenhum ciclo de '{oficial}' na data de referência.")
+    # Só depois das recusas: run_id que a string não traduz (`workspace__<uuid>`
+    # do Executar guiado, `manual__<odate>__…`) volta do banco sem ts_nodash, e
+    # a pausa recusava com 409 uma corrida que o Airflow conhece (smoke F5 do
+    # DEV). O GET de execução já completava; os gestos, não.
+    ident = await _completa_corrida_exata(oficial, ident)
     return oficial, ident, data_ref
+
+
+# Teto da leitura da corrida exata dentro de um gesto. Menor que o timeout do
+# client (15 s): o operador espera uma resposta, não um Airflow travado.
+_TIMEOUT_CORRIDA_EXATA_S = 8
+
+
+async def _completa_corrida_exata(oficial: str, ident: dict) -> dict:
+    """Completa o ts_nodash com o dag_run EXATO do Airflow
+    (``GET /dags/{dag}/dagRuns/{run_id}``) — nunca com a lista nem por
+    proximidade.
+
+    Só pergunta quando a identidade tem run_id e não tem ts_nodash e
+    ``precisa_airflow`` concorda (fora do modo degradado, da ambiguidade e da
+    falta de corrida). run_id traduzível pela string não gera leitura.
+
+    Falha de rede, timeout ou resposta inesperada devolvem a identidade como
+    estava (cada gesto mantém a recusa que já tinha); 404 marca
+    ``sem_dag_run_correspondente``. As guardas de corrida, DAG e logical date
+    ficam em ``ident_svc.completa_com_dag_run_exato``. O corpo da resposta não
+    vai para o log: o ``conf`` da corrida pode trazer parâmetros.
+    """
+    run_id = str(ident.get("run_id") or "").strip()
+    if not run_id or ident.get("ts_nodash") or not ident_svc.precisa_airflow(ident):
+        return ident
+    if not _DAG_ID_RE.match(oficial or ""):
+        log.warning("[IDENT] '%s' não é um dag_id válido — corrida %s não "
+                    "consultada no Airflow", oficial, run_id)
+        return ident
+    url = f"/api/v1/dags/{quote(oficial, safe='')}/dagRuns/{quote(run_id, safe='')}"
+    try:
+        async with get_airflow_client() as client:
+            r = await asyncio.wait_for(client.get(url),
+                                       timeout=_TIMEOUT_CORRIDA_EXATA_S)
+    except Exception as e:  # noqa: BLE001 — timeout/rede: a identidade fica como estava
+        log.warning("[IDENT] leitura da corrida %s de %s no Airflow falhou: %s",
+                    run_id, oficial, type(e).__name__)
+        return ident
+    if r.status_code == 404:
+        return ident_svc.completa_com_airflow(ident, [])
+    if not r.is_success:
+        log.warning("[IDENT] Airflow devolveu %s para a corrida %s de %s",
+                    r.status_code, run_id, oficial)
+        return ident
+    try:
+        run = r.json()
+    except Exception:  # noqa: BLE001 — corpo ilegível não completa nada
+        log.warning("[IDENT] corpo ilegível do Airflow para a corrida %s de %s",
+                    run_id, oficial)
+        return ident
+    return ident_svc.completa_com_dag_run_exato(ident, oficial, run)
 
 
 # A frase do aviso por razão — o operador precisa saber O QUE consertar, e as
@@ -1763,7 +1822,10 @@ async def criar_pausa(body: dict = Body(default={}),
             detail={"erro": "corrida_sem_execution_id",
                     "mensagem": ("Não foi possível identificar o execution_id "
                                  "(ts_nodash) deste ciclo — sem ele o portão "
-                                 "da etapa não tem como reconhecer a pausa.")})
+                                 "da etapa não tem como reconhecer a pausa."),
+                    # Aditivo: diz POR QUE (Airflow sem resposta, corrida que
+                    # ele não tem…) no vocabulário fechado da identidade.
+                    "motivo": ident.get("motivo")})
     # O que vale contra o Airflow é o dag_run_id; guardá-lo agora é o que
     # permite CANCELAR a execução depois sem re-resolver identidade.
     run_airflow = (ident.get("dag_run_id") or ident.get("run_id") or "") or None
