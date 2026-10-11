@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#081d43">
+  <title>ORQUESTRA · Pipeline — protótipo navegável</title>
+  <style>:root{--navy:#081d43;--blue:#165ce5;--ink:#182c4b;--muted:#65758e;--line:#e2e8f1;--bg:#f4f7fb;--green:#168553;--red:#c53747;--amber:#95600c;--radius:10px;--shadow:0 12px 36px #081d4312;font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:var(--ink);font-size:14px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg)}button,input,select,textarea{font:inherit}button,a,input,select,textarea{outline-offset:4px}button:focus-visible,a:focus-visible{outline:3px solid #79a8ff}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.45}a{color:var(--blue);text-decoration:none}button{border:0;background:none;color:inherit}input,select,textarea{border:1px solid #cbd5e4;border-radius:6px;padding:9px 11px;background:white;color:var(--ink);width:100%}input:focus,select:focus,textarea:focus{outline:2px solid #a9c8ff;border-color:var(--blue)}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;font-weight:600;color:#435570;margin-bottom:7px}h1,h2,h3,p{margin:0}h1{font-size:25px;letter-spacing:-.6px;font-weight:650}h2{font-size:18px;letter-spacing:-.3px}h3{font-size:14px;font-weight:650}p{line-height:1.65}small{font-size:12px}.muted{color:var(--muted)}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}.skip-link{position:fixed;top:-80px;left:15px;z-index:99;background:white;padding:12px}.skip-link:focus{top:12px}
+.topbar{height:60px;background:var(--navy);color:#fff;display:flex;align-items:center;padding:0 23px;gap:25px}.brand{color:white;font-weight:700;font-size:19px;letter-spacing:1px;display:flex;align-items:center;gap:8px}.brand-symbol{color:#8eb2ff;font-size:28px}.product-name{font-size:13px;color:#b9c9e6;border-left:1px solid #355078;padding-left:23px}.prototype-tag{font-size:11px;color:#c2d4f8;background:#1c365c;padding:5px 9px;border-radius:4px}.topbar-end{margin-left:auto;display:flex;align-items:center;gap:15px}.topbar select{background:#173156;color:white;border-color:#36537b;width:172px;font-size:12px;padding:7px}.avatar{width:30px;height:30px;border-radius:50%;background:#cce0ff;color:#1e477d;display:grid;place-items:center;font-size:11px;font-weight:700}
+.shell{display:flex;min-height:calc(100vh - 60px)}.rail{width:164px;flex-shrink:0;padding:26px 12px 18px;background:white;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:5px}.rail-group{font-size:11px;color:#7b8aa1;padding:0 13px;margin:0 0 6px}.rail-group:not(:first-child){margin-top:22px}.rail-link{text-align:left;display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:6px;font-size:13px}.rail-link.active{color:var(--blue);background:#edf3ff;font-weight:600}.rail-link:hover{background:#f0f4fb}.rail-link>span:first-child{font-size:19px;line-height:15px}.soon{font-size:9px;color:#8290a4;margin-left:auto}.rail-bottom{margin-top:auto;font-size:11px;color:var(--muted);padding:20px 10px 0;line-height:1.8}.rail-bottom small{padding-left:12px;font-size:10px}.env-dot{display:inline-block;width:6px;height:6px;background:#5a89e9;border-radius:50%;margin-right:5px}.rail-bottom button{display:block;margin-top:12px}main{flex:1;min-width:0;outline:0}.workspace-heading{background:white;padding:22px 26px 0}.breadcrumb{font-size:12px;color:var(--muted);margin-bottom:16px;display:flex;gap:8px;align-items:center}.breadcrumb button{font-size:12px;color:var(--muted);padding:0}.title-row{display:flex;align-items:center;gap:18px;justify-content:space-between}.title-detail{display:flex;gap:10px;align-items:center;margin-top:8px;font-size:12px;flex-wrap:wrap}.technical-id{color:#6b7e98;font-size:11px}.badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;background:#eef2f8;color:#596980;border-radius:5px;padding:4px 7px;white-space:nowrap}.badge.blue{background:#edf3ff;color:#1c57bd}.badge.green{background:#edf9f2;color:#18774e}.badge.amber{background:#fff7e6;color:#946319}.badge.red{background:#fff0f1;color:#a82d3d}.dot{width:6px;height:6px;border-radius:50%;background:currentColor}.actions{display:flex;gap:8px;align-items:center}.button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 13px;font-size:12px;font-weight:600;border:1px solid #d5deeb;background:white;border-radius:6px;white-space:nowrap}.button:hover{border-color:#91b5f2;background:#f7faff}.button.primary{background:var(--blue);border-color:var(--blue);color:white}.button.primary:hover{background:#0b4bc6}.button.danger{color:var(--red)}.button.small{padding:6px 9px;font-size:11px}.text-button{color:var(--blue);font-size:12px;padding:0}.icon-button{height:30px;min-width:30px;display:inline-grid;place-items:center;border-radius:5px;color:#647894;font-size:16px}.icon-button:hover{background:#eaf1fc;color:var(--blue)}.tabs{display:flex;gap:25px;margin-top:22px;overflow-x:auto}.tabs button{font-size:12px;padding:0 2px 14px;color:#6b7b93;white-space:nowrap;border-bottom:3px solid transparent}.tabs button.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:650}.context-line{padding:10px 26px;background:#f9fbff;border-top:1px solid var(--line);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:#637898}.context-line .editable{display:flex;align-items:center;gap:7px}.mini-avatar{display:inline-grid;place-items:center;background:#dfe9fa;width:21px;height:21px;border-radius:50%;font-size:9px;color:#3d619a}.status-note{color:var(--amber)}
+.flow-toolbar{display:flex;align-items:center;padding:14px 21px;gap:12px;flex-wrap:wrap}.segmented{border:1px solid #d7e0ed;padding:3px;border-radius:7px;display:flex;background:white}.segmented button{padding:7px 14px;font-size:12px;border-radius:4px;color:var(--muted)}.segmented button.active{background:#edf3ff;color:var(--blue);font-weight:650}.toolbar-end{margin-left:auto;display:flex;gap:8px;align-items:center}.flow-layout{margin:0 20px 20px;display:grid;grid-template-columns:182px minmax(0,1fr) 288px;gap:12px;align-items:start}.flow-layout.without-library{grid-template-columns:minmax(0,1fr) 288px}.flow-layout.without-inspector{grid-template-columns:182px minmax(0,1fr)}.flow-layout.without-library.without-inspector{grid-template-columns:minmax(0,1fr)}.panel{background:white;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}.panel-title{display:flex;align-items:center;justify-content:space-between;padding:15px 14px;border-bottom:1px solid var(--line)}.library{min-height:535px}.library-search{padding:12px}.library-search input{font-size:11px;padding:8px}.library-group{padding:9px 13px 5px;font-size:11px;font-weight:600;color:#7788a2}.library-item{display:flex;text-align:left;gap:9px;align-items:center;padding:11px 12px;width:100%;font-size:12px}.library-item:hover{background:#f1f6ff}.library-item small{display:block;font-size:10px;color:var(--muted);margin-top:3px;line-height:1.5}.type-icon{display:inline-flex;justify-content:center;align-items:center;width:28px;height:28px;border-radius:7px;background:#edf3ff;color:#3972d3;font-size:17px;flex-shrink:0}.type-icon.quality{background:#f0edff;color:#7864c3}.type-icon.delivery{background:#eaf7f2;color:#2a8e68}.type-icon.control{background:#fff5e5;color:#ba8635}.library-help{font-size:11px;color:var(--muted);padding:15px;border-top:1px solid var(--line);margin-top:15px;line-height:1.6}.canvas-card{overflow:hidden}.canvas-top{padding:11px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);font-size:11px;color:#71819a}.canvas-tools{display:flex;align-items:center;gap:1px}.canvas-scroll{height:450px;overflow:auto;position:relative;background-color:#fbfcfe;background-image:radial-gradient(#cdd7e9 .7px,transparent .7px);background-size:16px 16px}.graph{position:relative;width:825px;height:435px;transform-origin:top left;transform:scale(var(--zoom,1))}.graph svg{position:absolute;inset:0;overflow:visible;pointer-events:none}.edge{fill:none;stroke:#b7c8e3;stroke-width:2}.edge.success{stroke:#379a6b}.edge.running{stroke:#4f85ee;stroke-dasharray:7 5;animation:flow 1s linear infinite}.edge.failed{stroke:#d58d95}.node{position:absolute;width:154px;min-height:86px;background:white;border:1px solid #cbd8e9;border-radius:9px;box-shadow:0 3px 8px #14316006;text-align:left;padding:11px 12px;touch-action:none;cursor:pointer;user-select:none;color:var(--ink)}.node.selected{border:2px solid var(--blue);padding:10px 11px;box-shadow:0 0 0 4px #e7efff}.node:hover{border-color:#6395e6}.node:focus-visible{outline:3px solid #79a8ff;outline-offset:4px}.node-top{display:flex;gap:8px;align-items:center;margin-bottom:8px}.node .type-icon{width:23px;height:23px;font-size:15px;border-radius:5px}.node-name{font-size:12px;font-weight:650;line-height:1.35}.node-meta{font-size:10px;color:#7487a3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.node-status{display:flex;align-items:center;gap:5px;font-size:10px;margin-top:8px;color:#7487a3}.node-status .status-symbol{font-size:11px}.node.success{border-color:#67b58c;background:#f5fcf8}.node.success .node-status{color:var(--green)}.node.running{border-color:#3879eb;box-shadow:0 0 0 4px #dbe9ff;background:#f4f8ff}.node.running .node-status{color:var(--blue)}.node.running .status-symbol{animation:pulse 1.1s ease-in-out infinite}.node.failed{border-color:#d76775;background:#fff7f8}.node.failed .node-status{color:var(--red)}.node.blocked{border-style:dashed;background:#f5f7fa}.node.capacity{border-color:#d6aa58;background:#fffaf0}.node.capacity .node-status{color:var(--amber)}.node.skipped{border-style:dashed;color:#718096}.canvas-foot{padding:11px 14px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;font-size:10px;color:#71819a}.empty-canvas{padding:130px 30px;text-align:center}.empty-canvas h3{font-size:17px;margin-bottom:8px}.empty-canvas p{font-size:12px;color:var(--muted)}.empty-canvas button{margin-top:18px}.validation{margin-top:12px}.validation-head{padding:14px;display:flex;align-items:center;gap:8px;font-size:12px}.validation-head>button{margin-left:auto}.validation-content{border-top:1px solid var(--line);padding:12px 14px;font-size:12px}.issue{padding:7px 0;color:var(--red);display:block;text-align:left}.validation-good{color:var(--green);font-size:12px}
+.inspector{min-height:535px}.inspector-body{padding:15px}.inspector-intro{display:flex;align-items:center;gap:9px;margin-bottom:17px}.inspector-intro h3{font-size:14px;line-height:1.4}.inspector-intro small{display:block;color:var(--muted);font-size:10px;margin-top:3px}.field{margin-bottom:15px}.field small{color:var(--muted);display:block;line-height:1.6;margin-top:6px;font-size:11px}.inspector .field input,.inspector .field select,.inspector .field textarea{font-size:12px}.inspector .field label{font-size:11px}.inspector details{border-top:1px solid var(--line);padding-top:13px;margin-top:13px}.inspector summary{cursor:pointer;font-size:12px;font-weight:600;margin-bottom:12px}.dep-check{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:400;margin-bottom:9px}.dep-check input{width:13px;height:13px;accent-color:var(--blue)}.danger-area{padding-top:16px;margin-top:16px;border-top:1px solid var(--line)}.inspector-tabs{display:flex;border-bottom:1px solid var(--line);gap:15px;padding:0 14px}.inspector-tabs button{padding:12px 0;font-size:11px;color:var(--muted);border-bottom:2px solid transparent}.inspector-tabs button.active{color:var(--blue);border-color:var(--blue)}.definition-list{display:grid;grid-template-columns:1fr 1fr;gap:16px 12px;margin:0}.definition-list dt{font-size:11px;color:var(--muted);margin-bottom:5px}.definition-list dd{font-size:12px;margin:0;font-weight:600;overflow-wrap:anywhere}.logs{font-family:Consolas,'Courier New',monospace;font-size:11px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;background:#101f37;color:#d6e4fa;padding:14px;border-radius:6px;margin-top:14px;max-height:340px;overflow:auto}.run-strip{display:flex;align-items:center;gap:17px;flex-wrap:wrap;margin:0 20px 13px;padding:13px 16px;background:white;border:1px solid var(--line);border-radius:8px;font-size:12px}.run-strip small{font-size:10px;color:var(--muted)}.run-progress{height:5px;width:100px;border-radius:4px;overflow:hidden;background:#e6edf7}.run-progress>span{display:block;height:100%;background:var(--green);transition:width .25s}.lab-controls{display:flex;align-items:center;gap:7px;font-size:11px;margin-left:auto}.lab-controls select{padding:5px;font-size:11px;width:136px}.connection-alert{background:#fff7e7;color:#815a17;padding:10px 20px;font-size:12px;border-bottom:1px solid #e9d6ae}.run-empty{padding:70px 24px;text-align:center}.run-empty p{color:var(--muted);margin:10px 0 20px;font-size:13px}.legend{display:flex;gap:12px;flex-wrap:wrap;padding:12px 14px;font-size:10px;color:#687b97}.legend span{display:flex;gap:5px;align-items:center}.legend i{width:7px;height:7px;border-radius:50%;display:inline-block}
+.page-body{padding:24px 26px;max-width:1260px}.overview-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(240px,1fr);gap:18px}.overview-main{padding:26px}.overview-main .purpose{font-size:16px;line-height:1.8;margin-top:14px;color:#425675;max-width:680px}.overview-main .definition-list{margin-top:26px}.overview-main .button{margin-top:24px}.overview-side{padding:23px}.overview-side p{font-size:12px;color:var(--muted);margin:12px 0 20px}.section-divider{border-top:1px solid var(--line);margin-top:24px;padding-top:20px}.section-divider h3{margin-bottom:12px}.journey{display:flex;gap:12px;margin-top:24px;flex-wrap:wrap}.journey button{flex:1;min-width:160px;text-align:left;padding:18px 20px;background:white;border:1px solid var(--line);border-radius:8px}.journey button:hover{border-color:#91b5f2}.journey strong{display:block;font-size:13px;margin-bottom:8px}.journey span{font-size:12px;color:var(--muted);line-height:1.6}.config-layout{display:grid;grid-template-columns:198px minmax(0,1fr);gap:20px;max-width:1030px}.config-nav{display:flex;flex-direction:column;gap:4px}.config-nav button{text-align:left;padding:12px 14px;border-radius:6px;font-size:12px;color:var(--muted)}.config-nav button.active{background:#e9f0fd;color:var(--blue);font-weight:650}.config-form{padding:25px 28px;max-width:760px}.config-form>p{font-size:12px;color:var(--muted);margin:9px 0 23px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}.span-2{grid-column:1/-1}.form-footer{border-top:1px solid var(--line);padding-top:17px;margin-top:8px;display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted)}.readonly-note{padding:12px 16px;background:#edf3ff;color:#456692;font-size:12px;border-radius:7px;margin-bottom:18px}.list-heading{display:flex;justify-content:space-between;align-items:center;gap:15px;margin:15px 0 22px}.list-heading p{color:var(--muted);font-size:13px;margin-top:8px}.table-tools{display:flex;gap:12px;padding:15px;border-bottom:1px solid var(--line)}.table-tools input{max-width:330px;font-size:12px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left;font-size:12px;white-space:nowrap}th{font-size:11px;color:#72839c;font-weight:600;background:#fafbfe;padding:12px 18px}td{padding:17px 18px;border-top:1px solid var(--line)}td small{display:block;font-size:10px;color:var(--muted);margin-top:4px}td button{text-align:left}tbody tr:hover{background:#fafcff}.table-primary{font-weight:600;font-size:13px;color:var(--ink)}.table-primary:hover{color:var(--blue)}.list-empty{text-align:center;padding:55px 20px;color:var(--muted);font-size:13px}.publication-note{font-size:12px;color:var(--muted);margin-top:15px}.version-card{display:flex;align-items:center;gap:20px;padding:22px;margin-top:14px}.version-card .version-no{font-size:20px;font-weight:650}.version-card p{font-size:12px;color:var(--muted);margin-top:5px}.version-card .actions{margin-left:auto}.version-diff{margin-top:17px;border-top:1px solid var(--line);padding-top:17px}.diff-row{font-size:12px;padding:8px;border-bottom:1px solid #edf1f7;line-height:1.5}.diff-row strong{color:var(--blue)}
+dialog{border:0;border-radius:13px;padding:0;width:min(560px,calc(100vw - 32px));box-shadow:0 22px 90px #06193945;color:var(--ink)}dialog::backdrop{background:#0a1e3b6b;backdrop-filter:blur(2px)}.dialog-heading{display:flex;align-items:center;justify-content:space-between;padding:23px 25px 17px}.dialog-heading h2{font-size:21px}.dialog-body{padding:0 25px 24px}.dialog-body>p{font-size:13px;color:var(--muted);margin-bottom:22px}.dialog-actions{padding:16px 25px;background:#f7f9fc;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:9px}.dialog-errors{padding:10px 12px;background:#fff0f1;color:var(--red);font-size:12px;margin-bottom:16px;border-radius:5px}.review-row{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:12px 0;font-size:12px}.review-row span{color:var(--muted)}.info-block{background:#edf4ff;color:#426394;border:1px solid #d7e5fc;padding:12px 14px;border-radius:7px;font-size:12px;line-height:1.6;margin:17px 0}.guide-list{padding-left:22px;line-height:1.9;font-size:13px}.guide-list li{margin-bottom:10px}#toast{position:fixed;bottom:25px;left:50%;transform:translate(-50%,20px);background:#132d52;color:white;border-radius:8px;box-shadow:var(--shadow);padding:13px 20px;font-size:12px;opacity:0;pointer-events:none;z-index:60;transition:opacity .2s,transform .2s;max-width:90vw}#toast.visible{opacity:1;transform:translate(-50%,0)}.mobile-only{display:none}.disabled-input{opacity:.7}.simulation-caption{font-size:10px;color:#8190a4;margin-top:9px;line-height:1.6}
+.disconnected .edge,.disconnected .status-symbol{animation:none!important}
+@keyframes flow{to{stroke-dashoffset:-24}}@keyframes pulse{50%{opacity:.35}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+@media(min-width:1650px){.flow-layout{grid-template-columns:200px minmax(0,1fr) 320px}.flow-layout.without-library{grid-template-columns:minmax(0,1fr) 320px}.flow-layout.without-inspector{grid-template-columns:200px minmax(0,1fr)}.canvas-scroll{height:510px}.inspector,.library{min-height:595px}}
+@media(max-width:1200px){.rail{width:140px;padding:26px 8px}.flow-layout{grid-template-columns:158px minmax(0,1fr) 258px;gap:9px;margin:0 14px 18px}.flow-layout.without-library{grid-template-columns:minmax(0,1fr) 258px}.flow-layout.without-inspector{grid-template-columns:158px minmax(0,1fr)}.workspace-heading{padding:20px 20px 0}.actions .button{padding:8px 10px}.topbar{gap:18px}.library-item{font-size:11px;padding:11px 9px}.node-name{font-size:13px}.flow-toolbar{padding:12px 14px}.run-strip{margin:0 14px 12px}.inspector-body{padding:13px}}
+@media(max-width:1020px){.rail{width:65px;align-items:center;padding:20px 6px}.rail-link{font-size:0;padding:12px}.rail-link>span:first-child{font-size:20px}.rail-group,.soon,.rail-bottom{display:none}.flow-layout{grid-template-columns:minmax(0,1fr) 280px}.library{display:none}.flow-layout.without-inspector{grid-template-columns:minmax(0,1fr)}.flow-layout.library-open{grid-template-columns:170px minmax(0,1fr)}.flow-layout.library-open .library{display:block}.flow-layout.library-open .inspector{display:none}.title-row{align-items:flex-start}.overview-grid{grid-template-columns:1fr}.config-layout{grid-template-columns:170px minmax(0,1fr)}.product-name{display:none}.prototype-tag{font-size:10px}.toolbar-end{margin-left:0}.canvas-scroll{height:460px}.workspace-heading h1{font-size:23px}}
+@media(max-width:720px){.topbar{height:auto;min-height:60px;padding:10px 14px;gap:10px;flex-wrap:wrap}.brand{font-size:16px;letter-spacing:.7px}.brand-symbol{font-size:24px}.prototype-tag{order:3;margin-left:31px;font-size:9px}.topbar-end{gap:8px}.topbar select{width:141px;font-size:11px}.avatar{display:none}.rail{display:none}.shell{min-height:calc(100vh - 84px)}.workspace-heading{padding:18px 16px 0}.breadcrumb{margin-bottom:12px}.title-row{display:block}.actions{margin-top:15px}.title-detail{gap:7px}.tabs{gap:20px;margin-top:20px}.context-line{padding:10px 16px;flex-wrap:wrap;font-size:10px}.flow-toolbar{gap:9px;padding:12px 14px}.segmented button{padding:7px 12px}.toolbar-end{margin-left:auto;gap:3px}.toolbar-end .button{font-size:10px;padding:7px 8px}.flow-layout,.flow-layout.without-library,.flow-layout.without-inspector,.flow-layout.library-open{display:flex;flex-direction:column;margin:0 12px 15px;gap:12px}.flow-layout>*{width:100%}.library{display:none;min-height:auto}.flow-layout.library-open .library{display:block}.flow-layout.library-open .inspector{display:block}.library-group{display:none}.library-item{display:inline-flex;width:49%;font-size:12px}.library-help{display:none}.library-search{padding:10px}.library-search input{font-size:12px}.inspector{min-height:auto}.canvas-scroll{height:385px}.graph{--zoom:1!important}.canvas-foot{font-size:9px}.canvas-tools .zoom-label{display:none}.flow-layout.without-inspector .inspector{display:none}.canvas-card{order:1}.library{order:0}.inspector{order:2}.flow-center{width:100%}.run-strip{gap:10px;padding:12px;margin:0 12px 12px}.lab-controls{margin-left:0;width:100%;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--line)}.page-body{padding:20px 15px}.overview-main,.overview-side{padding:20px}.overview-main .purpose{font-size:14px}.config-layout{display:block}.config-nav{flex-direction:row;overflow:auto;margin-bottom:15px}.config-nav button{white-space:nowrap;font-size:11px;padding:10px}.config-form{padding:20px}.form-grid{display:block}.form-footer{gap:10px;align-items:flex-start}.list-heading{align-items:flex-start}.list-heading h1{font-size:22px}.list-heading p{font-size:12px}.version-card{flex-wrap:wrap;gap:12px;padding:18px}.version-card .actions{margin-left:0;width:100%;margin-top:0}.table-tools input{width:100%}.journey{gap:9px}.journey button{padding:15px}.mobile-only{display:inline-flex}.run-empty{padding:45px 20px}.dialog-heading{padding:19px 20px 14px}.dialog-body{padding:0 20px 20px}.dialog-actions{padding:14px 20px}.title-detail .technical-id{width:100%}}
+</style>
+  
+  
+</head>
+<body>
+  <a class="skip-link" href="#content">Ir para o espaço de trabalho</a>
+  <header class="topbar">
+    <a class="brand" href="#" data-action="home" aria-label="ORQUESTRA, pipelines"><span class="brand-symbol" aria-hidden="true">◈</span> ORQUESTRA</a>
+    <span class="product-name">Workspace</span>
+    <span class="prototype-tag">Protótipo · dados simulados</span>
+    <div class="topbar-end"><label class="sr-only" for="role">Experiência simulada</label><select id="role"><option value="dev">Desenvolvimento</option><option value="read">Consulta</option><option value="ops">Sustentação</option></select><span class="avatar" title="Usuário de demonstração">AL</span></div>
+  </header>
+  <div class="shell">
+    <nav class="rail" aria-label="Navegação principal">
+      <span class="rail-group">Construção</span>
+      <button class="rail-link active" data-action="home"><span aria-hidden="true">◇</span> Pipelines</button>
+      <button class="rail-link" data-action="future"><span aria-hidden="true">▦</span> Malhas <span class="soon">Depois</span></button>
+      <span class="rail-group">Operação</span>
+      <button class="rail-link" data-action="all-runs"><span aria-hidden="true">◷</span> Execuções</button>
+      <div class="rail-bottom"><span class="env-dot"></span> Ambiente de exemplo<br><small>UX em validação</small><button class="text-button" data-action="guide">Como testar</button></div>
+    </nav>
+    <main id="content" tabindex="-1"></main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+<script>/* Modelo exclusivo de demonstração. Sem chamadas ao backend ou dados reais. */
+(function (root) {
+  'use strict';
+  const clone = value => JSON.parse(JSON.stringify(value));
+  function validate(pipeline) {
+    const issues = [];
+    const { config, nodes } = pipeline;
+    if (!config.name.trim()) issues.push({ field: 'name', message: 'Informe o nome do pipeline.' });
+    if (!/^[A-Z][A-Z0-9_]{2,59}$/.test(config.id)) issues.push({ field: 'id', message: 'Use um identificador com 3 a 60 letras maiúsculas, números ou _.' });
+    if (!nodes.length) issues.push({ message: 'Adicione a primeira etapa ao fluxo.' });
+    for (const [key, min, max] of [['concurrency', 1, 50], ['timeout', 1, 1440], ['retries', 0, 10]]) {
+      const label = { concurrency: 'execuções simultâneas', timeout: 'tempo limite em minutos', retries: 'tentativas adicionais' }[key];
+      if (config[key] != null && (!/^\d+$/.test(config[key]) || Number(config[key]) < min || Number(config[key]) > max)) issues.push({ field: key, message: `Revise ${label}: informe um número de ${min} a ${max}.` });
+    }
+    const ids = new Set(nodes.map(n => n.id));
+    for (const node of nodes) {
+      if (!node.name.trim()) issues.push({ node: node.id, message: 'Uma etapa precisa de nome.' });
+      if (!node.job.trim()) issues.push({ node: node.id, message: `Selecione o recurso de ${node.name}.` });
+      for (const [key, min, max] of [['timeout', 1, 1440], ['retries', 0, 10]]) if (node[key] != null && (!/^\d+$/.test(node[key]) || Number(node[key]) < min || Number(node[key]) > max)) issues.push({ node: node.id, message: `Revise o tratamento de falha de ${node.name}.` });
+      for (const dep of node.deps) if (!ids.has(dep)) issues.push({ node: node.id, message: 'Dependência inexistente.' });
+    }
+    const visiting = new Set(), visited = new Set();
+    function walk(id) {
+      if (visiting.has(id)) return true;
+      if (visited.has(id)) return false;
+      visiting.add(id);
+      const node = nodes.find(n => n.id === id);
+      if (node && node.deps.some(walk)) return true;
+      visiting.delete(id); visited.add(id); return false;
+    }
+    if (nodes.some(n => walk(n.id))) issues.push({ message: 'Há um ciclo nas dependências. Remova a ligação circular.' });
+    return issues;
+  }
+  function newRun(version, scenario, now, serial) {
+    return {
+      id: `SIM-${String(serial).padStart(4, '0')}`, version: version.number,
+      snapshot: clone(version.snapshot), scenario, started: now, finished: null, status: 'running',
+      tasks: Object.fromEntries(version.snapshot.nodes.map(n => [n.id, {
+        state: 'pending', attempt: 0, started: null, finished: null, history: [], logs: []
+      }]))
+    };
+  }
+  function advance(run, now) {
+    if (run.status !== 'running') return run;
+    const nodes = run.snapshot.nodes;
+    for (const node of nodes) {
+      const task = run.tasks[node.id];
+      if (task.state === 'running' && now - task.started >= node.duration * 1000) {
+        const failed = run.scenario === 'failure' && node.kind === 'quality' && task.attempt === 1;
+        task.state = failed ? 'failed' : 'success'; task.finished = now;
+        task.logs.push({ time: now, message: failed ? 'Falha simulada: regra de qualidade não atendida.' : 'Etapa concluída na simulação.' });
+        task.history.push({ attempt: task.attempt, state: task.state, started: task.started, finished: now });
+      }
+    }
+    for (const node of nodes) {
+      const task = run.tasks[node.id];
+      if (!['pending', 'dependencies', 'capacity'].includes(task.state)) continue;
+      const deps = node.deps.map(id => run.tasks[id]?.state);
+      if (deps.some(s => ['failed', 'blocked'].includes(s))) { task.state = 'blocked'; continue; }
+      if (!deps.every(s => ['success', 'skipped'].includes(s))) { task.state = 'dependencies'; continue; }
+      if (run.scenario === 'capacity' && now - run.started < 4000) { task.state = 'capacity'; continue; }
+      if (run.scenario === 'skip' && node.kind === 'delivery') {
+        task.state = 'skipped'; task.finished = now;
+        task.logs.push({ time: now, message: 'Entrega pulada pela condição simulada.' }); continue;
+      }
+      task.state = 'running'; task.attempt += 1; task.started = now; task.finished = null;
+      task.logs.push({ time: now, message: `Tentativa ${task.attempt} iniciada na simulação.` });
+    }
+    if (Object.values(run.tasks).every(t => ['success', 'failed', 'blocked', 'skipped'].includes(t.state))) {
+      run.status = Object.values(run.tasks).some(t => t.state === 'failed') ? 'failed' : 'success';
+      run.finished = now;
+    }
+    return run;
+  }
+  function retry(run, id) {
+    const task = run.tasks[id];
+    if (!task || task.state !== 'failed') return false;
+    task.state = 'pending'; task.started = null; task.finished = null;
+    for (const value of Object.values(run.tasks)) if (value.state === 'blocked') value.state = 'pending';
+    run.status = 'running'; run.finished = null; return true;
+  }
+  const api = { clone, validate, newRun, advance, retry };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.PipelineDemo = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+/* ORQUESTRA UX lab. Dados fictícios em memória, sem integração com o produto. */
+(() => {
+  'use strict';
+  const M = window.PipelineDemo;
+  const $ = selector => document.querySelector(selector);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+  const kinds = {
+    control: { name: 'Validação de entrada', icon: '⌁', job: 'validar_arquivo', connection: 'Storage de exemplo', duration: 1.5 },
+    source: { name: 'Extração de dados', icon: '⇥', job: 'extrair_dados', connection: 'SQL de exemplo', duration: 3 },
+    transform: { name: 'Transformação', icon: '⋈', job: 'transformar_dados', connection: 'Lake de exemplo', duration: 3 },
+    quality: { name: 'Qualidade de dados', icon: '✓', job: 'validar_qualidade', connection: 'Lake de exemplo', duration: 2 },
+    delivery: { name: 'Entrega de dados', icon: '⇧', job: 'publicar_dados', connection: 'Lake de exemplo', duration: 1.5 }
+  };
+  const stateLabels = {
+    pending: ['Não iniciada', '○'], dependencies: ['Aguarda dependência', '◷'], capacity: ['Aguarda capacidade', '◷'],
+    running: ['Em execução', '◉'], success: ['Concluída', '✓'], failed: ['Falhou', '!'], blocked: ['Bloqueada pela falha', '⊘'], skipped: ['Pulada por condição', '↷']
+  };
+  const sections = { identity: 'Identificação', schedule: 'Agenda e dependências', parameters: 'Parâmetros', execution: 'Execução', notifications: 'Notificações', docs: 'Documentação' };
+  const nowText = value => value == null ? '—' : new Date(value).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const duration = ms => ms == null ? '—' : `${Math.max(0, ms / 1000).toFixed(1).replace('.', ',')} s`;
+  const initial = {
+    key: 'cobranca', revision: 7, dirty: false,
+    config: { name: 'Cobrança diária', id: 'COBRANCA_DIARIA', domain: 'Financeiro', owner: 'Ana Lima', description: 'Consolida contratos e pagamentos, valida a qualidade e disponibiliza a base de cobrança para o time financeiro.', destination: 'DEV', schedule: 'Diariamente', hour: '06:00', timezone: 'America/Sao_Paulo', dependency: 'Arquivo de contratos disponível', date: 'D-1', output: '/dados/cobranca', concurrency: '1', timeout: '60', retries: '2', notification: 'Falhas e atrasos', channel: 'Equipe financeira', documentation: 'Responsável: equipe de dados. Em caso de falha de qualidade, revise a etapa e tente novamente antes de liberar a entrega.' },
+    nodes: [
+      { id: 'entrada', name: 'Validar entrada', kind: 'control', job: 'validar_arquivo', connection: 'Storage de exemplo', deps: [], x: 20, y: 172, duration: 1.5, retries: '2', timeout: '10', parameter: 'arquivo_contratos' },
+      { id: 'contratos', name: 'Extrair contratos', kind: 'source', job: 'extrair_contratos', connection: 'SQL de exemplo', deps: ['entrada'], x: 220, y: 68, duration: 3, retries: '2', timeout: '20', parameter: 'data_referencia' },
+      { id: 'pagamentos', name: 'Extrair pagamentos', kind: 'source', job: 'extrair_pagamentos', connection: 'SQL de exemplo', deps: ['entrada'], x: 220, y: 280, duration: 4, retries: '2', timeout: '20', parameter: 'data_referencia' },
+      { id: 'consolidar', name: 'Consolidar base', kind: 'transform', job: 'consolidar_cobranca', connection: 'Lake de exemplo', deps: ['contratos', 'pagamentos'], x: 420, y: 172, duration: 3, retries: '2', timeout: '30', parameter: 'data_referencia' },
+      { id: 'qualidade', name: 'Validar qualidade', kind: 'quality', job: 'regras_cobranca', connection: 'Lake de exemplo', deps: ['consolidar'], x: 620, y: 68, duration: 2, retries: '2', timeout: '10', parameter: 'limite_inconsistencias=0' },
+      { id: 'entrega', name: 'Publicar dados', kind: 'delivery', job: 'entregar_cobranca', connection: 'Lake de exemplo', deps: ['qualidade'], x: 620, y: 280, duration: 1.5, retries: '2', timeout: '10', parameter: 'destino_financeiro' }
+    ], versions: [], runs: []
+  };
+  const snapshot = pipeline => ({ config: M.clone(pipeline.config), nodes: M.clone(pipeline.nodes) });
+  initial.versions.push({ number: '2.4', time: 'Exemplo publicado', revision: 7, snapshot: snapshot(initial), notes: 'Base de cobrança com verificação de qualidade.' });
+  initial.saved = snapshot(initial);
+  let pipelines = [M.clone(initial)], current = 'cobranca', page = 'workspace', tab = 'flow', mode = 'build', role = 'dev';
+  let selected = 'consolidar', configSection = 'identity', inspectorTab = 'summary', libraryOpen = innerWidth > 1360, inspectorOpen = true;
+  let history = [], future = [], issues = null, showIssues = false, activeRun = null, serial = 0, scenario = 'success';
+  let connected = true, frozenRun = null, lastSignal = null, zoom = null, filter = '', dragging = null, toastTimer, observer;
+  const pipeline = () => pipelines.find(p => p.key === current);
+  const writable = () => role === 'dev';
+  const executable = () => role !== 'read';
+  const viewRun = () => connected ? activeRun : frozenRun;
+  const activeNodes = () => mode === 'run' && viewRun() ? viewRun().snapshot.nodes : pipeline().nodes;
+  function notify(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 4200); }
+  function mutate(change) {
+    if (!writable()) return;
+    history.push(snapshot(pipeline())); if (history.length > 50) history.shift(); future = [];
+    change(pipeline()); pipeline().dirty = JSON.stringify(snapshot(pipeline())) !== JSON.stringify(pipeline().saved);
+    issues = null;
+  }
+  function refreshEditedUI() {
+    const p = pipeline();
+    document.querySelectorAll('[data-action="save"]').forEach(button => button.disabled = !p.dirty || !writable());
+    const detail = $('.title-detail');
+    const dirtyBadge = detail?.querySelector('.badge.amber');
+    if (p.dirty && !dirtyBadge && detail) detail.insertAdjacentHTML('beforeend', badge('Alterações não salvas', 'amber'));
+    if (!p.dirty) dirtyBadge?.remove();
+    if ($('.workspace-heading h1') && mode !== 'run') $('.workspace-heading h1').textContent = p.config.name;
+    const footer = $('.form-footer>span');
+    if (footer) footer.textContent = `${p.dirty ? 'Há alterações não salvas.' : 'Rascunho salvo nesta sessão.'} Publicar é uma ação separada.`;
+    if (mode === 'build' && $('#graph')) { $('#canvas-scroll').innerHTML = graphPage(); observer?.disconnect(); fitGraph(); }
+    const intro = $('.inspector-intro h3'), node = p.nodes.find(n => n.id === selected);
+    if (intro && node) intro.textContent = node.name;
+    const validation = $('.validation'); if (validation) validation.outerHTML = validationPage();
+  }
+  function badge(label, style = '') { return `<span class="badge ${style}">${esc(label)}</span>`; }
+  function button(action, label, cls = '', disabled = false) { return `<button class="button ${cls}" data-action="${action}" ${disabled || (action === 'execute' && !connected) ? 'disabled' : ''}>${label}</button>`; }
+  function icon(kind) { return `<span class="type-icon ${kind}" aria-hidden="true">${kinds[kind].icon}</span>`; }
+  function field(label, name, value, extra = {}) {
+    const id = `field-${name}`, disabled = !writable() || extra.disabled;
+    const attrs = `id="${id}" ${extra.target === 'node' ? 'data-node-field' : 'data-config-field'}="${name}" ${disabled ? 'disabled' : ''} ${extra.required ? 'required' : ''}`;
+    let control = `<input ${attrs} type="${extra.type || 'text'}" value="${esc(value)}" ${extra.min != null ? `min="${extra.min}"` : ''} ${extra.max != null ? `max="${extra.max}"` : ''}>`;
+    if (extra.options) control = `<select ${attrs}>${extra.options.map(option => `<option ${option === value ? 'selected' : ''}>${esc(option)}</option>`).join('')}</select>`;
+    if (extra.area) control = `<textarea ${attrs}>${esc(value)}</textarea>`;
+    return `<div class="field ${extra.wide ? 'span-2' : ''}"><label for="${id}">${label}</label>${control}${extra.help ? `<small>${extra.help}</small>` : ''}</div>`;
+  }
+  function shellHeading() {
+    const p = pipeline(), running = mode === 'run' && activeRun && tab === 'flow';
+    const readPublished = role !== 'dev' || (mode === 'run' && tab === 'flow');
+    const version = p.versions.at(-1);
+    const metadata = running ? activeRun.snapshot.config : readPublished && version ? version.snapshot.config : p.config;
+    return `<div class="workspace-heading">
+      <div class="breadcrumb"><button data-action="home">Pipelines</button><span aria-hidden="true">/</span><span>${esc(metadata.domain || 'Sem domínio')}</span></div>
+      <div class="title-row"><div><h1>${esc(metadata.name)}</h1><div class="title-detail"><span class="technical-id">${esc(metadata.id)}</span>${badge(metadata.destination, 'blue')}${badge(running ? `Versão ${activeRun.version} · ${activeRun.id}` : readPublished && version ? `Versão ${version.number}` : `Rascunho · revisão ${p.revision}`, running ? 'green' : '')}${p.dirty && !running && writable() ? badge('Alterações não salvas', 'amber') : ''}</div></div>
+      <div class="actions">${writable() && !(tab === 'flow' && mode === 'run') ? `${button('save', 'Salvar rascunho', '', !p.dirty)}${button('validate', 'Validar')}${button('publish', 'Publicar', 'primary')}` : button('execute', '▶ Executar simulação', 'primary', !executable() || !version || activeRun?.status === 'running')}</div></div>
+      <nav class="tabs" aria-label="Áreas do pipeline">${[['overview', 'Visão geral'], ['flow', 'Fluxo'], ['runs', 'Execuções'], ['config', 'Configuração'], ['versions', 'Versões']].map(([key, label]) => `<button data-tab="${key}" class="${tab === key ? 'active' : ''}" aria-current="${tab === key ? 'page' : 'false'}">${label}</button>`).join('')}</nav>
+    </div><div class="context-line"><span class="editable">${running ? 'Você está acompanhando uma versão publicada · rascunho separado' : writable() ? `<span class="mini-avatar">AL</span> Você está editando o rascunho <span class="muted">· publicação separada</span>` : `<span class="mini-avatar">AL</span> Ana Lima tem um rascunho em desenvolvimento · exemplo de visibilidade`}</span><span>${running ? 'Acompanhamento de execução simulada' : role === 'read' ? 'Consulta · leitura' : role === 'ops' ? 'Sustentação · ações operacionais' : 'Dados fictícios · nenhuma alteração no DEV'}</span></div>`;
+  }
+  function render() {
+    observer?.disconnect();
+    $('.rail-link.active')?.classList.remove('active');
+    $(`[data-action="${page === 'workspace' && tab === 'runs' ? 'all-runs' : 'home'}"].rail-link`)?.classList.add('active');
+    $('#role').value = role;
+    if (page === 'list') $('#content').innerHTML = listPage();
+    else {
+      $('#content').innerHTML = shellHeading() + (tab === 'flow' ? flowPage() : tab === 'overview' ? overviewPage() : tab === 'config' ? configurationPage() : tab === 'runs' ? runsPage() : versionsPage());
+    }
+    if (tab === 'flow' && page === 'workspace') fitGraph();
+  }
+  function listPage() {
+    return `<div class="page-body"><div class="breadcrumb">Construção / Pipelines</div><div class="list-heading"><div><h1>Pipelines</h1><p>Encontre um fluxo, acompanhe a execução ou comece um novo.</p></div>${button('create', '+ Criar pipeline', 'primary', !writable())}</div><div class="panel"><div class="table-tools"><label class="sr-only" for="pipeline-search">Buscar pipeline</label><input id="pipeline-search" placeholder="Buscar por nome, identificador ou domínio" value="${esc(filter)}"><span class="badge">${pipelines.length} pipeline${pipelines.length > 1 ? 's' : ''}</span></div><div class="table-wrap"><table><thead><tr><th>Pipeline</th><th>Domínio</th><th>Publicação</th><th>Desenvolvimento</th><th>Última execução</th></tr></thead><tbody id="pipeline-rows">${listRows()}</tbody></table></div><div id="list-empty" class="list-empty" ${listRows() ? 'hidden' : ''}>Nenhum pipeline encontrado. Tente outro nome.</div></div><p class="publication-note">Rascunhos e versões publicadas aparecem juntos. O rascunho informa quem está desenvolvendo; publicar cria uma versão executável.</p></div>`;
+  }
+  function listRows() {
+    return pipelines.filter(p => `${p.config.name} ${p.config.id} ${p.config.domain}`.toLowerCase().includes(filter.toLowerCase())).map(p => `<tr><td><button class="table-primary" data-open-pipeline="${p.key}">${esc(p.config.name)}</button><small>${esc(p.config.id)}</small></td><td>${esc(p.config.domain || 'Sem domínio')}</td><td>${p.versions.length ? badge(`v${p.versions.at(-1).number}`, 'green') : badge('Ainda não publicado')}</td><td>${badge('Rascunho', 'blue')}<small>Ana Lima · revisão ${p.revision}</small></td><td>${p.runs.length ? badge(p.runs.at(-1).status === 'success' ? 'Concluída' : p.runs.at(-1).status === 'failed' ? 'Falhou' : 'Em execução', p.runs.at(-1).status === 'success' ? 'green' : p.runs.at(-1).status === 'failed' ? 'red' : 'blue') : 'Sem execução'}</td></tr>`).join('');
+  }
+  function libraryPage() {
+    return `<aside class="panel library" aria-label="Biblioteca de etapas"><div class="panel-title"><h3>Etapas</h3><button class="icon-button" data-action="library" aria-label="Recolher biblioteca">‹</button></div><div class="library-search"><label class="sr-only" for="library-search">Buscar etapa na biblioteca</label><input id="library-search" placeholder="Buscar etapa"></div><div class="library-group">Integração de dados</div>${['source', 'transform', 'quality', 'delivery', 'control'].map(kind => `<button class="library-item" draggable="${writable()}" data-kind="${kind}" ${!writable() ? 'disabled' : ''}>${icon(kind)}<span>${kinds[kind].name}<small>${kind === 'source' ? 'Conecte uma origem' : kind === 'transform' ? 'Prepare e consolide' : kind === 'quality' ? 'Aplique regras de qualidade' : kind === 'delivery' ? 'Disponibilize a saída' : 'Verifique a entrada'}</small></span></button>`).join('')}<p class="library-help">Clique para adicionar. Arraste a etapa para posicioná-la. Selecione as dependências no painel de detalhes.</p></aside>`;
+  }
+  function flowPage() {
+    const p = pipeline(), run = viewRun();
+    return `${mode === 'run' && !connected ? `<div class="connection-alert" role="status">Sem atualização da simulação. Último sinal: ${nowText(lastSignal)}. Os estados estão congelados e as animações suspensas.</div>` : ''}
+      <div class="flow-toolbar"><div class="segmented" aria-label="Modo do fluxo"><button data-mode="build" class="${mode === 'build' ? 'active' : ''}" ${!writable() ? 'disabled' : ''}>Montagem</button><button data-mode="run" class="${mode === 'run' ? 'active' : ''}">Execução</button></div><span class="muted" style="font-size:11px">${mode === 'build' ? `${p.nodes.length} etapas · dependências no mesmo fluxo` : 'Estados por etapa · histórico de tentativas'}</span><div class="toolbar-end">${mode === 'build' ? `<button class="icon-button" data-action="undo" aria-label="Desfazer" title="Desfazer (Ctrl+Z)" ${!history.length ? 'disabled' : ''}>↶</button><button class="icon-button" data-action="redo" aria-label="Refazer" title="Refazer (Ctrl+Shift+Z)" ${!future.length ? 'disabled' : ''}>↷</button>${button('library', 'Etapas', 'small')}` : ''}${button('inspector', inspectorOpen ? 'Ocultar detalhes' : 'Mostrar detalhes', 'small')}</div></div>
+      ${mode === 'run' ? run ? runStrip(run) : `<div class="page-body"><div class="panel run-empty"><h2>Veja o pipeline acontecer</h2><p>Execute a versão publicada em uma simulação. Cada etapa mostra progresso, dependências e resultado.</p>${button('execute', '▶ Executar simulação', 'primary', !executable() || !p.versions.length)}<p class="simulation-caption">Sem conexão ao motor de execução. Tempos e logs são fictícios.</p></div></div>` : ''}
+      ${mode === 'run' && !run ? '' : `<div class="flow-layout ${mode === 'run' || !libraryOpen ? 'without-library' : ''} ${!inspectorOpen ? 'without-inspector' : ''} ${libraryOpen && mode === 'build' ? 'library-open' : ''}">${mode === 'build' && libraryOpen ? libraryPage() : ''}<div class="flow-center"><section class="panel canvas-card" aria-label="Canvas do pipeline"><div class="canvas-top"><span>${mode === 'build' ? 'Montagem do fluxo' : `${esc(run.id)} · versão ${esc(run.version)}`}</span><div class="canvas-tools"><button class="icon-button" data-action="zoom-out" aria-label="Diminuir zoom">−</button><span id="zoom-label" class="zoom-label">100%</span><button class="icon-button" data-action="zoom-in" aria-label="Aumentar zoom">+</button><button class="icon-button" data-action="fit" aria-label="Ajustar fluxo ao canvas" title="Ajustar fluxo">⛶</button></div></div><div class="canvas-scroll" id="canvas-scroll">${activeNodes().length ? graphPage() : `<div class="empty-canvas"><h3>Seu fluxo começa aqui</h3><p>Adicione uma etapa e escolha o que ela vai executar.</p>${button('add-source', '+ Adicionar extração', 'primary', !writable())}</div>`}</div><div class="canvas-foot"><span>${mode === 'build' ? 'Selecione uma etapa para editar · arraste para organizar' : 'Clique na etapa para investigar · dados simulados'}</span><span>${mode === 'build' ? 'Dependências explícitas' : 'Atualização local: 250 ms'}</span></div>${mode === 'run' ? legend() : ''}</section>${mode === 'build' ? validationPage() : ''}</div>${inspectorOpen ? inspectorPage() : ''}</div>`}`;
+  }
+  function graphPage() {
+    const nodes = activeNodes(), run = viewRun();
+    const width = Math.max(825, ...nodes.map(n => n.x + 184)), height = Math.max(435, ...nodes.map(n => n.y + 130));
+    return `<div class="graph" id="graph" style="width:${width}px;height:${height}px"><svg width="${width}" height="${height}" aria-hidden="true"><defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7" fill="#8ba7d0"/></marker></defs>${nodes.flatMap(n => n.deps.map(dep => {
+      const from = nodes.find(x => x.id === dep); if (!from) return '';
+      let path; const x1 = from.x + 154, y1 = from.y + 43, x2 = n.x, y2 = n.y + 43;
+      if (from.x === n.x) path = `M${from.x + 77},${from.y + 86} V${n.y}`;
+      else path = `M${x1},${y1} H${(x1 + x2) / 2} V${y2} H${x2}`;
+      const status = mode === 'run' ? run?.tasks[dep]?.state : '';
+      return `<path class="edge ${status || ''}" data-edge="${esc(dep)}-${esc(n.id)}" d="${path}" marker-end="url(#arrow)"/>`;
+    })).join('')}</svg>${nodes.map(node => {
+      const task = mode === 'run' ? run?.tasks[node.id] : null;
+      const status = task ? stateLabels[task.state] : null;
+      return `<button class="node ${selected === node.id ? 'selected' : ''} ${task?.state || ''}" style="left:${node.x}px;top:${node.y}px" data-node="${esc(node.id)}" aria-pressed="${selected === node.id}" aria-label="${esc(node.name)}${status ? `, ${status[0]}` : ''}"><span class="node-top">${icon(node.kind)}<span class="node-name">${esc(node.name)}</span></span><span class="node-meta">${esc(node.job || 'Selecione um recurso')}</span>${status ? `<span class="node-status"><span class="status-symbol" aria-hidden="true">${status[1]}</span><span>${status[0]}</span></span>` : `<span class="node-status">${node.deps.length ? `${node.deps.length} dependência${node.deps.length > 1 ? 's' : ''}` : 'Início do fluxo'}</span>`}</button>`;
+    }).join('')}</div>`;
+  }
+  function fitGraph() {
+    const canvas = $('#canvas-scroll'), graph = $('#graph'); if (!canvas || !graph) return;
+    canvas.classList.toggle('disconnected', mode === 'run' && !connected);
+    const update = () => {
+      const value = innerWidth <= 720 ? 1 : zoom || Math.min(1, Math.max(.78, (canvas.clientWidth - 24) / parseFloat(graph.style.width)));
+      graph.style.setProperty('--zoom', value);
+      $('#zoom-label').textContent = `${Math.round(value * 100)}%`;
+      canvas.style.height = innerWidth <= 720 ? '385px' : `${Math.max(450, parseFloat(graph.style.height) * value + 20)}px`;
+    };
+    update(); observer = new ResizeObserver(update); observer.observe(canvas);
+  }
+  function validationPage() {
+    return `<section class="panel validation"><div class="validation-head"><span style="color:${issues?.length ? 'var(--red)' : 'var(--green)'}">${issues?.length ? '!' : '✓'}</span><strong>${issues === null ? 'Validação do fluxo' : issues.length ? `${issues.length} ponto${issues.length > 1 ? 's' : ''} para corrigir` : 'Fluxo válido para publicação'}</strong><button class="text-button" data-action="validate">${issues === null ? 'Validar agora' : 'Validar novamente'}</button></div>${showIssues && issues !== null ? `<div class="validation-content">${issues.length ? issues.map((i, idx) => `<button class="issue" data-issue="${idx}">${esc(i.message)}</button>`).join('') : '<span class="validation-good">Nomes, recursos e dependências verificados no protótipo. A integração com o motor será validada pelo produto.</span>'}</div>` : ''}</section>`;
+  }
+  function inspectorPage() {
+    const node = activeNodes().find(n => n.id === selected);
+    if (!node) return `<aside class="panel inspector"><div class="panel-title"><h3>Detalhes da etapa</h3></div><div class="inspector-body"><p class="muted" style="font-size:12px">Selecione uma etapa no fluxo para consultar ou editar seus detalhes.</p></div></aside>`;
+    const intro = `<div class="inspector-intro">${icon(node.kind)}<div><h3>${esc(node.name)}</h3><small>${kinds[node.kind].name}</small></div></div>`;
+    if (mode === 'run') {
+      const run = viewRun(), task = run.tasks[node.id];
+      return `<aside class="panel inspector"><div class="panel-title"><h3>Detalhes da execução</h3><button class="icon-button" data-action="inspector" aria-label="Fechar detalhes">×</button></div><div class="inspector-tabs">${[['summary','Resumo'],['attempts','Tentativas'],['logs','Logs']].map(([key,label]) => `<button data-inspector-tab="${key}" class="${inspectorTab === key ? 'active' : ''}">${label}</button>`).join('')}</div><div class="inspector-body">${intro}${inspectorTab === 'summary' ? `${badge(stateLabels[task.state][0], task.state === 'success' ? 'green' : task.state === 'failed' ? 'red' : task.state === 'running' ? 'blue' : '')}<dl class="definition-list" style="margin-top:23px"><div><dt>Início</dt><dd>${nowText(task.started)}</dd></div><div><dt>Duração</dt><dd id="task-duration">${duration(task.started == null ? null : (task.finished ?? (connected ? Date.now() : lastSignal)) - task.started)}</dd></div><div><dt>Tentativa atual</dt><dd>${task.attempt || '—'}</dd></div><div><dt>Recurso</dt><dd>${esc(node.job)}</dd></div></dl><div class="section-divider"><h3>Dependências</h3><p class="muted" style="font-size:12px">${node.deps.map(id => esc(run.snapshot.nodes.find(n => n.id === id)?.name)).join(', ') || 'Esta etapa inicia o fluxo.'}</p></div>${task.state === 'capacity' ? '<div class="info-block">A fila de capacidade é simulada por 4 segundos. No produto, este motivo deverá vir do motor e mostrar tempo de espera e posição quando disponíveis.</div>' : ''}${task.state === 'failed' ? `<div class="info-block">A regra de qualidade falhou neste exemplo. A segunda tentativa foi preparada para concluir a demonstração.</div>${button('retry', '↶ Tentar etapa novamente', 'primary', !executable() || !connected || run !== activeRun)}` : ''}` : inspectorTab === 'attempts' ? `<p class="muted" style="font-size:12px">Histórico preservado para esta execução.</p>${task.history.map(attempt => `<div class="review-row"><span>Tentativa ${attempt.attempt}<small style="display:block">${duration(attempt.finished - attempt.started)}</small></span>${badge(stateLabels[attempt.state][0], attempt.state === 'failed' ? 'red' : 'green')}</div>`).join('') || '<div class="info-block">Nenhuma tentativa concluída.</div>'}` : `<p class="muted" style="font-size:11px">Logs fictícios · ${esc(run.id)} · ${esc(node.id)}</p><div class="logs">${task.logs.map(log => `${nowText(log.time)}  ${esc(log.message)}`).join('\n') || 'Aguardando início da etapa.'}</div>`}<p class="simulation-caption">Telemetria simulada. O rascunho não altera esta versão em execução.</p></div></aside>`;
+    }
+    return `<aside class="panel inspector"><div class="panel-title"><h3>Detalhes da etapa</h3><button class="icon-button" data-action="inspector" aria-label="Fechar detalhes">×</button></div><div class="inspector-body">${intro}${field('Nome da etapa', 'name', node.name, { target: 'node', required: true })}${field('Conexão de exemplo', 'connection', node.connection, { target: 'node', options: ['SQL de exemplo', 'Lake de exemplo', 'Storage de exemplo'] })}${field('Recurso a executar', 'job', node.job, { target: 'node', help: 'Referência fictícia. Nenhum job real será executado.' })}<details open><summary>Dependências</summary>${pipeline().nodes.filter(n => n.id !== node.id).map(n => `<label class="dep-check"><input type="checkbox" data-dependency="${esc(n.id)}" ${node.deps.includes(n.id) ? 'checked' : ''} ${!writable() ? 'disabled' : ''}>${esc(n.name)}</label>`).join('') || '<small class="muted">Adicione outra etapa para criar dependências.</small>'}</details><details><summary>Parâmetros da etapa</summary>${field('Valor de exemplo', 'parameter', node.parameter, { target: 'node' })}</details><details><summary>Tratamento de falha</summary>${field('Tentativas adicionais', 'retries', node.retries, { target: 'node', type: 'number', min: 0, max: 10 })}${field('Tempo limite (minutos)', 'timeout', node.timeout, { target: 'node', type: 'number', min: 1, max: 1440 })}</details><div class="danger-area">${button('delete-node', 'Remover etapa', 'danger small', !writable())}</div></div></aside>`;
+  }
+  function legend() { return `<div class="legend"><span><i style="background:#3879eb"></i>Em execução</span><span><i style="background:#168553"></i>Concluída</span><span><i style="background:#c53747"></i>Falhou</span><span><i style="background:#bc923d"></i>Capacidade</span><span><i style="background:#96a4b8"></i>Dependência / pulada</span></div>`; }
+  function runStrip(run) {
+    const finished = Object.values(run.tasks).filter(t => ['success','skipped'].includes(t.state)).length;
+    const total = run.snapshot.nodes.length;
+    return `<div class="run-strip"><div>${badge(run.status === 'success' ? 'Concluída' : run.status === 'failed' ? 'Falhou' : 'Em execução', run.status === 'success' ? 'green' : run.status === 'failed' ? 'red' : 'blue')}</div><div><strong id="run-count">${finished}/${total}</strong><small> etapas concluídas ou puladas</small><div class="run-progress"><span id="run-progress" style="width:${total ? finished / total * 100 : 0}%"></span></div></div><div><small>Duração simulada</small><br><strong id="run-duration">${duration((run.finished ?? (connected ? Date.now() : lastSignal)) - run.started)}</strong></div><div class="lab-controls"><label for="scenario" style="margin:0;font-size:10px">Cenário</label><select id="scenario" ${activeRun?.status === 'running' ? 'disabled' : ''}><option value="success" ${scenario === 'success' ? 'selected' : ''}>Sucesso</option><option value="failure" ${scenario === 'failure' ? 'selected' : ''}>Falha na qualidade</option><option value="capacity" ${scenario === 'capacity' ? 'selected' : ''}>Espera por capacidade</option><option value="skip" ${scenario === 'skip' ? 'selected' : ''}>Entrega pulada</option></select>${button('connection', connected ? 'Simular desconexão' : 'Reconectar', 'small')}${button('execute', '▶ Nova simulação', 'small', !executable() || activeRun?.status === 'running' || !connected)}</div></div>`;
+  }
+  function displayConfig() { return !writable() && pipeline().versions.length ? pipeline().versions.at(-1).snapshot.config : pipeline().config; }
+  function overviewPage() {
+    const p = pipeline(), c = displayConfig(), version = p.versions.at(-1), last = p.runs.at(-1);
+    return `<div class="page-body"><div class="overview-grid"><section class="panel overview-main"><h2>O que este pipeline faz</h2><p class="purpose">${esc(c.description || 'Adicione a finalidade do pipeline em Configuração → Identificação.')}</p><dl class="definition-list"><div><dt>Domínio</dt><dd>${esc(c.domain || 'Não informado')}</dd></div><div><dt>Responsável</dt><dd>${esc(c.owner)}</dd></div><div><dt>Agenda</dt><dd>${esc(c.schedule)}${c.schedule === 'Diariamente' ? ` às ${esc(c.hour)}` : ''}</dd></div><div><dt>Destino de publicação</dt><dd>${esc(c.destination)}</dd></div><div><dt>Dependência externa</dt><dd>${esc(c.dependency || 'Sem dependência')}</dd></div><div><dt>Fuso horário</dt><dd>${esc(c.timezone)}</dd></div></dl>${button('edit-identity', writable() ? 'Editar identificação' : 'Consultar configuração')}<div class="section-divider"><h3>Como acontece</h3><p class="muted" style="font-size:12px">${p.nodes.length} etapas compõem o fluxo. As dependências e a configuração de cada etapa estão no canvas.</p><button class="text-button" style="margin-top:12px" data-tab="flow">${writable() ? 'Abrir montagem do fluxo' : 'Abrir acompanhamento'}</button></div></section><aside class="panel overview-side"><h3>Pronto para acompanhar</h3><p>${version ? `A versão ${version.number} está disponível para a execução simulada.` : 'Este pipeline ainda é um rascunho. Valide e publique para liberar a execução simulada.'}</p>${button('execute', '▶ Executar simulação', 'primary', !executable() || !version || activeRun?.status === 'running')}<div class="section-divider"><h3>Última execução</h3>${last ? `<p>${last.id} · versão ${last.version}</p>${badge(last.status === 'success' ? 'Concluída' : last.status === 'failed' ? 'Falhou' : 'Em execução', last.status === 'success' ? 'green' : last.status === 'failed' ? 'red' : 'blue')}` : '<p>Nenhuma execução neste protótipo.</p>'}</div><div class="section-divider"><h3>Em desenvolvimento</h3><p>Ana Lima · revisão ${p.revision}<br>${p.dirty ? 'Há alterações locais ainda não salvas.' : 'Rascunho salvo na sessão de demonstração.'}</p><p class="simulation-caption">O bloqueio de edição é uma proposta de comportamento. Este protótipo não implementa colaboração real.</p></div></aside></div><div class="journey"><button data-tab="flow"><strong>Montar e entender</strong><span>Etapas e dependências no fluxo.</span></button><button data-tab="config"><strong>Configurar uma vez</strong><span>Agenda, parâmetros e políticas.</span></button><button data-tab="runs"><strong>Investigar execução</strong><span>Corridas, tentativas e logs.</span></button></div></div>`;
+  }
+  function configurationPage() {
+    const c = displayConfig(); let fields;
+    if (configSection === 'identity') fields = field('Nome do pipeline', 'name', c.name, { required: true, wide: true }) + field('Identificador', 'id', c.id, { disabled: true, help: 'Definido na criação.' }) + field('Domínio', 'domain', c.domain, { options: ['Financeiro','Comercial','Operações','Sem domínio'] }) + field('Responsável', 'owner', c.owner) + field('Destino de publicação', 'destination', c.destination, { options: ['DEV','HML','PROD'], help: 'Destino fictício da versão publicada.' }) + field('Finalidade', 'description', c.description, { area: true, wide: true });
+    if (configSection === 'schedule') fields = field('Frequência', 'schedule', c.schedule, { options: ['Diariamente','Manual'] }) + field('Horário', 'hour', c.hour, { type: 'time', help: 'O protótipo não cria agendamentos reais.' }) + field('Fuso horário', 'timezone', c.timezone, { options: ['America/Sao_Paulo','UTC'], wide: true }) + field('Dependência externa', 'dependency', c.dependency, { wide: true, help: 'Condições externas pertencem ao pipeline. Ligações entre etapas ficam no fluxo.' });
+    if (configSection === 'parameters') fields = field('Data de referência', 'date', c.date, { help: 'Parâmetro global herdado pelas etapas.' }) + field('Pasta de saída', 'output', c.output) + '<div class="info-block span-2">Parâmetros específicos de uma etapa ficam nos detalhes dela. Valores de conexões e segredos não fazem parte deste protótipo.</div>';
+    if (configSection === 'execution') fields = field('Execuções simultâneas deste pipeline', 'concurrency', c.concurrency, { type: 'number', min: 1, max: 50, help: 'Política de exemplo. Não representa a ocupação dos 50 slots globais.' }) + field('Tempo limite do pipeline (minutos)', 'timeout', c.timeout, { type: 'number', min: 1, max: 1440 }) + field('Tentativas adicionais por padrão', 'retries', c.retries, { type: 'number', min: 0, max: 10 }) + '<div class="info-block span-2">Capacidade global, gargalos por horário e recomendações de agenda deverão usar métricas históricas reais no monitor operacional. Essa evolução não está simulada como previsão confiável aqui.</div>';
+    if (configSection === 'notifications') fields = field('Quando notificar', 'notification', c.notification, { options: ['Falhas e atrasos','Somente falhas','Não notificar'] }) + field('Equipe destinatária', 'channel', c.channel, { help: 'Nome fictício; nenhuma mensagem será enviada.' });
+    if (configSection === 'docs') fields = field('Orientação para consulta e sustentação', 'documentation', c.documentation, { area: true, wide: true, help: 'Futura base para ajuda contextual, documentação e Academy.' });
+    return `<div class="page-body">${!writable() ? '<div class="readonly-note">Configuração da versão publicada em leitura. As permissões do perfil são apenas demonstrativas.</div>' : ''}<div class="config-layout"><nav class="config-nav" aria-label="Grupos de configuração">${Object.entries(sections).map(([key,label]) => `<button data-config-section="${key}" class="${configSection === key ? 'active' : ''}" aria-current="${configSection === key ? 'page' : 'false'}">${label}</button>`).join('')}</nav><section class="panel config-form"><h2>${sections[configSection]}</h2><p>Configurações do pipeline em um único lugar. Alterações compõem o mesmo rascunho do fluxo.</p><div class="form-grid">${fields}</div><div class="form-footer"><span>${pipeline().dirty ? 'Há alterações não salvas.' : 'Rascunho salvo nesta sessão.'} Publicar é uma ação separada.</span>${button('save', 'Salvar rascunho', '', !writable() || !pipeline().dirty)}</div></section></div></div>`;
+  }
+  function runsPage() {
+    const runs = pipeline().runs;
+    return `<div class="page-body"><div class="list-heading"><div><h2>Execuções do pipeline</h2><p>Abra uma execução para acompanhar o mesmo fluxo e investigar as etapas.</p></div>${button('execute', '▶ Executar simulação', 'primary', !executable() || !pipeline().versions.length || activeRun?.status === 'running')}</div><div class="panel table-wrap"><table><thead><tr><th>Execução</th><th>Versão</th><th>Estado</th><th>Início</th><th>Duração</th><th>Detalhes</th></tr></thead><tbody>${runs.slice().reverse().map(run => `<tr><td><strong>${run.id}</strong><small>Dados simulados</small></td><td>v${run.version}</td><td>${badge(run.status === 'success' ? 'Concluída' : run.status === 'failed' ? 'Falhou' : 'Em execução', run.status === 'success' ? 'green' : run.status === 'failed' ? 'red' : 'blue')}</td><td>${nowText(run.started)}</td><td>${duration((run.finished ?? Date.now()) - run.started)}</td><td><button class="text-button" data-open-run="${run.id}">Abrir fluxo</button></td></tr>`).join('')}</tbody></table>${!runs.length ? '<div class="list-empty">Sem execuções. Publique uma versão e execute a primeira simulação.</div>' : ''}</div></div>`;
+  }
+  function versionsPage() {
+    return `<div class="page-body"><h2>Versões publicadas</h2><p class="publication-note">Cada versão preserva a configuração e o fluxo usados na execução. Salvar o rascunho não modifica uma versão publicada.</p>${pipeline().versions.slice().reverse().map((version, index) => `<section class="panel version-card"><div class="version-no">v${esc(version.number)}</div><div><strong style="font-size:12px">${esc(version.notes)}</strong><p>${esc(version.time)} · revisão ${version.revision} · ${version.snapshot.nodes.length} etapas</p></div>${index === 0 ? badge('Publicada atual', 'green') : ''}<div class="actions"><button class="button small" data-compare="${esc(version.number)}">Comparar rascunho</button><button class="button small" data-restore="${esc(version.number)}" ${!writable() ? 'disabled' : ''}>Usar como rascunho</button></div></section>`).join('') || '<div class="panel list-empty" style="margin-top:20px">Ainda não há versão publicada. Valide seu fluxo e publique quando estiver pronto.</div>'}</div>`;
+  }
+  function showDialog(title, body, actions) {
+    $('#dialog').innerHTML = `<div class="dialog-heading"><h2 id="dialog-title">${title}</h2><button class="icon-button" data-action="close-dialog" aria-label="Fechar janela">×</button></div><div class="dialog-body">${body}</div><div class="dialog-actions">${actions}</div>`;
+    $('#dialog').showModal();
+  }
+  function createDialog() {
+    if (!writable()) return;
+    showDialog('Criar pipeline', `<p>Dê um nome ao fluxo. As etapas e configurações serão definidas no espaço de trabalho.</p><form id="create-form"><div id="create-errors" class="dialog-errors" hidden></div><div class="field"><label for="create-name">Nome do pipeline</label><input id="create-name" required placeholder="Ex.: Atualização de clientes" autofocus maxlength="100"></div><div class="field"><label for="create-id">Identificador</label><input id="create-id" required placeholder="ATUALIZACAO_CLIENTES" pattern="[A-Z][A-Z0-9_]{2,59}" maxlength="60"><small>Único no protótipo. Letras maiúsculas, números e _.</small></div><div class="field"><label for="create-domain">Domínio</label><select id="create-domain"><option>Financeiro</option><option>Comercial</option><option>Operações</option><option>Sem domínio</option></select></div></form><div class="info-block">Você começará em um rascunho privado de edição, visível no catálogo. A publicação acontecerá depois da montagem e validação.</div>`, `${button('close-dialog','Cancelar')}<button class="button primary" type="submit" form="create-form">Criar e montar</button>`);
+  }
+  function createPipeline(event) {
+    event.preventDefault(); if (!writable()) return;
+    const name = $('#create-name').value.trim(), id = $('#create-id').value.trim();
+    const errors = [];
+    if (!name) errors.push('Informe o nome do pipeline.');
+    if (!/^[A-Z][A-Z0-9_]{2,59}$/.test(id)) errors.push('Informe um identificador válido.');
+    if (pipelines.some(p => p.config.id === id)) errors.push('Este identificador já existe. Escolha outro.');
+    if (errors.length) { $('#create-errors').hidden = false; $('#create-errors').textContent = errors.join(' '); return; }
+    const key = `pipeline-${Date.now()}`;
+    const p = { key, config: { ...M.clone(initial.config), name, id, domain: $('#create-domain').value, description: '', dependency: '', schedule: 'Manual' }, nodes: [], versions: [], runs: [], revision: 1, dirty: false };
+    p.saved = snapshot(p); pipelines.push(p); current = key; history = []; future = []; selected = null; issues = null; activeRun = null; connected = true; page = 'workspace'; tab = 'flow'; mode = 'build'; libraryOpen = true; inspectorOpen = true; zoom = null;
+    $('#dialog').close(); render(); notify('Pipeline criado como rascunho na sessão de demonstração.');
+  }
+  function addNode(kind, position) {
+    if (!writable()) return;
+    const spec = kinds[kind], n = pipeline().nodes.length;
+    const node = { id: `etapa-${Date.now()}`, name: spec.name, kind, job: spec.job, connection: spec.connection, duration: spec.duration, deps: [], x: position?.x ?? 30 + (n % 4) * 190, y: position?.y ?? 35 + Math.floor(n / 4) * 140, retries: '2', timeout: '20', parameter: '' };
+    mutate(p => p.nodes.push(node)); selected = node.id; inspectorOpen = true; if (innerWidth <= 1020) libraryOpen = false; render(); notify('Etapa adicionada. Escolha as dependências nos detalhes.');
+  }
+  function save() {
+    if (!writable() || !pipeline().dirty) return;
+    pipeline().revision += 1; pipeline().saved = snapshot(pipeline()); pipeline().dirty = false; render(); notify(`Rascunho salvo · revisão ${pipeline().revision}. A versão publicada permanece a mesma.`);
+  }
+  function validate() {
+    issues = M.validate(pipeline()); showIssues = true; tab = 'flow'; mode = 'build'; page = 'workspace'; render();
+    notify(issues.length ? 'Revise os pontos indicados abaixo do fluxo.' : 'Validação do protótipo concluída. Fluxo sem erros.');
+    return issues.length === 0;
+  }
+  function publishDialog() {
+    if (!writable() || !validate()) return;
+    const p = pipeline(), previous = p.versions.at(-1), number = previous ? `${previous.number.split('.')[0]}.${Number(previous.number.split('.')[1]) + 1}` : '1.0';
+    showDialog('Publicar pipeline', `<p>Revise a versão que ficará disponível para execução.</p><div class="review-row"><span>Pipeline</span><strong>${esc(p.config.name)}</strong></div><div class="review-row"><span>Nova versão</span><strong>v${number}</strong></div><div class="review-row"><span>Destino de exemplo</span>${badge(p.config.destination,'blue')}</div><div class="review-row"><span>Etapas validadas</span><strong>${p.nodes.length}</strong></div><div class="field" style="margin-top:18px"><label for="release-notes">Descrição da versão</label><input id="release-notes" placeholder="Ex.: Nova validação antes da entrega" maxlength="180"></div><div class="info-block">Publicação simulada. No produto, a confirmação dependerá da validação e sincronização efetiva com o motor de execução.</div>`, `${button('close-dialog','Cancelar')}${button('confirm-publish','Publicar versão simulada','primary')}`);
+  }
+  function confirmPublish() {
+    if (!writable()) return;
+    const p = pipeline(), previous = p.versions.at(-1), number = previous ? `${previous.number.split('.')[0]}.${Number(previous.number.split('.')[1]) + 1}` : '1.0';
+    const notes = $('#release-notes').value.trim() || 'Versão publicada na demonstração.';
+    if (p.dirty) { p.revision += 1; p.saved = snapshot(p); p.dirty = false; }
+    p.versions.push({ number, snapshot: snapshot(p), notes, revision: p.revision, time: `Simulada às ${nowText(Date.now())}` });
+    $('#dialog').close(); tab = 'versions'; render(); notify(`Versão ${number} publicada apenas na simulação. Você pode executá-la.`);
+  }
+  function startRun() {
+    if (!executable() || activeRun?.status === 'running' || !connected) return;
+    const p = pipeline(), version = p.versions.at(-1); if (!version) { notify('Publique uma versão antes de executar.'); return; }
+    activeRun = M.newRun(version, scenario, Date.now(), ++serial); M.advance(activeRun, Date.now()); p.runs.push(activeRun); frozenRun = null; connected = true; lastSignal = Date.now(); tab = 'flow'; mode = 'run'; page = 'workspace'; selected = version.snapshot.nodes[0]?.id; inspectorTab = 'summary'; inspectorOpen = true; zoom = null; render(); notify(`Simulação ${activeRun.id} iniciada com a versão ${version.number}.`);
+  }
+  function compare(number) {
+    const p = pipeline(), version = p.versions.find(v => v.number === number), rows = [];
+    for (const [key, value] of Object.entries(p.config)) if (JSON.stringify(value) !== JSON.stringify(version.snapshot.config[key])) rows.push(`<div class="diff-row"><strong>${esc(key)}</strong><br>${esc(version.snapshot.config[key])} → ${esc(value)}</div>`);
+    const before = version.snapshot.nodes;
+    for (const node of p.nodes) {
+      const old = before.find(n => n.id === node.id);
+      if (!old) rows.push(`<div class="diff-row"><strong>Etapa adicionada:</strong> ${esc(node.name)}</div>`);
+      else if (JSON.stringify(node) !== JSON.stringify(old)) rows.push(`<div class="diff-row"><strong>Etapa alterada:</strong> ${esc(node.name)}</div>`);
+    }
+    for (const old of before) if (!p.nodes.some(n => n.id === old.id)) rows.push(`<div class="diff-row"><strong>Etapa removida:</strong> ${esc(old.name)}</div>`);
+    showDialog(`Rascunho × versão ${esc(number)}`, `<p>Compare o rascunho atual com a versão publicada.</p><div class="version-diff">${rows.join('') || '<p class="validation-good">Nenhuma diferença. O rascunho corresponde a esta versão.</p>'}</div>`, button('close-dialog','Fechar','primary'));
+  }
+  function guide() {
+    showDialog('Explore a nova experiência', `<p>Este protótipo é uma proposta de UX. Tudo acontece nesta sessão, com dados fictícios.</p><ol class="guide-list"><li><strong>Montagem:</strong> selecione, arraste e adicione etapas. Mude dependências nos detalhes. Desfaça com Ctrl+Z.</li><li><strong>Configuração:</strong> altere agenda e parâmetros em um único lugar. Salve o rascunho e publique em ações separadas.</li><li><strong>Execução:</strong> execute uma simulação e acompanhe as etapas ficarem verdes. Escolha outros cenários para testar fila, falha e ramo pulado.</li><li><strong>Investigação:</strong> clique na etapa e consulte logs e tentativas. Na falha, tente a etapa novamente.</li><li><strong>Perfis:</strong> alterne Desenvolvimento, Consulta e Sustentação no topo. Crie um pipeline pelo catálogo.</li></ol><div class="info-block">Ao recarregar a página, os exemplos são restaurados. Publicação, perfis, logs e capacidade são simulações. Não há execução real, autenticação, colaboração multiusuário ou previsão de melhor horário.</div>`, button('close-dialog','Começar a explorar','primary'));
+  }
+  function handleAction(action) {
+    if (action === 'home') { page = 'list'; filter = ''; render(); }
+    else if (action === 'all-runs') { page = 'workspace'; tab = 'runs'; render(); }
+    else if (action === 'future') showDialog('Malhas · próxima experiência', '<p>A malha reunirá vários pipelines com dependências, agenda e acompanhamento próprios. Esta validação está concentrada no workspace de Pipeline.</p><div class="info-block">A mesma linguagem visual deverá servir às malhas, aos monitores de operação e capacidade e, futuramente, à Academy.</div>', button('close-dialog','Voltar ao pipeline','primary'));
+    else if (action === 'guide') guide();
+    else if (action === 'close-dialog') $('#dialog').close();
+    else if (action === 'create') createDialog();
+    else if (action === 'save') save();
+    else if (action === 'validate') validate();
+    else if (action === 'publish') publishDialog();
+    else if (action === 'confirm-publish') confirmPublish();
+    else if (action === 'execute') startRun();
+    else if (action === 'library') { libraryOpen = !libraryOpen; if (innerWidth > 720 && innerWidth <= 1020) inspectorOpen = !libraryOpen; render(); }
+    else if (action === 'inspector') { inspectorOpen = !inspectorOpen; if (inspectorOpen && innerWidth <= 1020) libraryOpen = false; render(); }
+    else if (action === 'add-source') addNode('source');
+    else if (action === 'edit-identity') { tab = 'config'; configSection = 'identity'; render(); }
+    else if (action === 'undo' && history.length && writable()) { future.push(snapshot(pipeline())); Object.assign(pipeline(), history.pop()); pipeline().dirty = JSON.stringify(snapshot(pipeline())) !== JSON.stringify(pipeline().saved); issues = null; render(); }
+    else if (action === 'redo' && future.length && writable()) { history.push(snapshot(pipeline())); Object.assign(pipeline(), future.pop()); pipeline().dirty = JSON.stringify(snapshot(pipeline())) !== JSON.stringify(pipeline().saved); issues = null; render(); }
+    else if (action === 'delete-node' && selected && writable()) {
+      const node = pipeline().nodes.find(n => n.id === selected); if (!node) return;
+      showDialog('Remover etapa', `<p>Remover “${esc(node.name)}” também remove suas ligações. Você poderá desfazer a alteração antes de publicar.</p>`, `${button('close-dialog','Cancelar')}${button('confirm-delete','Remover etapa','danger')}`);
+    }
+    else if (action === 'confirm-delete' && writable()) { const removed = selected; mutate(p => { p.nodes = p.nodes.filter(n => n.id !== removed); p.nodes.forEach(n => n.deps = n.deps.filter(id => id !== removed)); }); selected = null; $('#dialog').close(); render(); notify('Etapa removida. Você pode desfazer.'); }
+    else if (action === 'retry' && connected && executable() && activeRun && M.retry(activeRun, selected)) { M.advance(activeRun, Date.now()); render(); notify('Nova tentativa simulada iniciada. O histórico anterior foi preservado.'); }
+    else if (action === 'connection' && activeRun) { connected = !connected; frozenRun = connected ? null : M.clone(activeRun); lastSignal = Date.now(); render(); }
+    else if (action === 'fit') { zoom = null; fitGraph(); }
+    else if (action === 'zoom-in' || action === 'zoom-out') { zoom = Math.max(.5, Math.min(1.6, (zoom || Number($('#graph')?.style.getPropertyValue('--zoom')) || 1) + (action === 'zoom-in' ? .1 : -.1))); fitGraph(); }
+  }
+  document.addEventListener('click', event => {
+    const element = event.target.closest('button,a[data-action]'); if (!element || element.disabled) return;
+    if (element.tagName === 'A') event.preventDefault();
+    if (element.dataset.action) return handleAction(element.dataset.action);
+    if (element.dataset.tab) { tab = element.dataset.tab; if (tab === 'flow' && !writable()) mode = 'run'; render(); }
+    else if (element.dataset.mode) { mode = element.dataset.mode; if (mode === 'build' && !writable()) return; selected = activeNodes()[0]?.id; render(); }
+    else if (element.dataset.kind) addNode(element.dataset.kind);
+    else if (element.dataset.node) { if (dragging?.moved) return; selected = element.dataset.node; inspectorOpen = true; if (innerWidth <= 1020) libraryOpen = false; render(); }
+    else if (element.dataset.configSection) { configSection = element.dataset.configSection; render(); }
+    else if (element.dataset.inspectorTab) { inspectorTab = element.dataset.inspectorTab; render(); }
+    else if (element.dataset.openPipeline) { current = element.dataset.openPipeline; page = 'workspace'; tab = 'flow'; mode = writable() ? 'build' : 'run'; history = []; future = []; issues = null; selected = pipeline().nodes[0]?.id; activeRun = pipeline().runs.at(-1) || null; connected = true; frozenRun = null; zoom = null; render(); }
+    else if (element.dataset.openRun) { activeRun = pipeline().runs.find(r => r.id === element.dataset.openRun); connected = true; frozenRun = null; tab = 'flow'; mode = 'run'; selected = activeRun.snapshot.nodes[0]?.id; render(); }
+    else if (element.dataset.compare) compare(element.dataset.compare);
+    else if (element.dataset.restore && writable()) {
+      const version = pipeline().versions.find(v => v.number === element.dataset.restore); mutate(p => Object.assign(p, M.clone(version.snapshot))); tab = 'flow'; mode = 'build'; selected = pipeline().nodes[0]?.id; render(); notify(`Versão ${version.number} copiada para o rascunho. Nenhuma versão publicada foi alterada.`);
+    }
+    else if (element.dataset.issue) { const issue = issues[Number(element.dataset.issue)]; if (issue.node) { selected = issue.node; inspectorOpen = true; render(); } else if (issue.field) { tab = 'config'; configSection = ['concurrency','timeout','retries'].includes(issue.field) ? 'execution' : 'identity'; render(); } }
+  });
+  document.addEventListener('submit', event => { if (event.target.id === 'create-form') createPipeline(event); });
+  document.addEventListener('input', event => {
+    if (event.target.dataset.configField && writable() && event.target.tagName !== 'SELECT') {
+      const name = event.target.dataset.configField;
+      if (pipeline().config[name] !== event.target.value) { mutate(p => p.config[name] = event.target.value); refreshEditedUI(); }
+    }
+    if (event.target.dataset.nodeField && writable() && event.target.tagName !== 'SELECT') {
+      const name = event.target.dataset.nodeField, node = pipeline().nodes.find(n => n.id === selected);
+      if (node && node[name] !== event.target.value) { mutate(p => p.nodes.find(n => n.id === selected)[name] = event.target.value); refreshEditedUI(); }
+    }
+    if (event.target.id === 'create-name' && !$('#create-id').dataset.manual) $('#create-id').value = event.target.value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,60);
+    if (event.target.id === 'create-id') event.target.dataset.manual = 'true';
+    if (event.target.id === 'pipeline-search') { filter = event.target.value; $('#pipeline-rows').innerHTML = listRows(); $('#list-empty').hidden = !!listRows(); }
+    if (event.target.id === 'library-search') document.querySelectorAll('.library-item').forEach(item => item.hidden = !item.textContent.toLowerCase().includes(event.target.value.toLowerCase()));
+  });
+  document.addEventListener('change', event => {
+    const target = event.target;
+    if (target.id === 'role') { role = target.value; mode = writable() ? 'build' : 'run'; connected = true; frozenRun = null; render(); notify(`Experiência de ${target.options[target.selectedIndex].text} ativada. Permissões simuladas.`); }
+    else if (target.id === 'scenario') scenario = target.value;
+    else if (target.dataset.configField && writable() && target.tagName === 'SELECT') { const name = target.dataset.configField; mutate(p => p.config[name] = target.value); refreshEditedUI(); }
+    else if (target.dataset.nodeField && writable() && target.tagName === 'SELECT') { const name = target.dataset.nodeField; mutate(p => p.nodes.find(n => n.id === selected)[name] = target.value); refreshEditedUI(); }
+    else if (target.dataset.dependency && writable()) {
+      const id = target.dataset.dependency, checked = target.checked;
+      const draft = snapshot(pipeline()), node = draft.nodes.find(n => n.id === selected); node.deps = checked ? [...node.deps, id] : node.deps.filter(dep => dep !== id);
+      if (M.validate(draft).some(i => /ciclo/.test(i.message))) { target.checked = !checked; notify('Essa dependência criaria um ciclo. Escolha outra etapa.'); return; }
+      mutate(p => p.nodes.find(n => n.id === selected).deps = node.deps); refreshEditedUI();
+    }
+  });
+  document.addEventListener('keydown', event => {
+    const editing = /INPUT|TEXTAREA|SELECT/.test(event.target.tagName);
+    if (event.key === 'Escape' && $('#dialog').open) $('#dialog').close();
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!$('#dialog').open) save(); }
+    if (!editing && !$('#dialog').open && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); handleAction(event.shiftKey ? 'redo' : 'undo'); }
+    if (!editing && !$('#dialog').open && event.key === 'Delete' && mode === 'build' && tab === 'flow') handleAction('delete-node');
+  });
+  document.addEventListener('dragstart', event => {
+    const item = event.target.closest('[data-kind]'); if (item && writable()) event.dataTransfer.setData('text/plain', item.dataset.kind);
+  });
+  document.addEventListener('dragover', event => { if (event.target.closest('#canvas-scroll') && writable() && mode === 'build') event.preventDefault(); });
+  document.addEventListener('drop', event => {
+    const canvas = event.target.closest('#canvas-scroll'); if (!canvas || !writable() || mode !== 'build') return;
+    event.preventDefault(); const kind = event.dataTransfer.getData('text/plain'); if (!kinds[kind]) return;
+    const rect = canvas.getBoundingClientRect(), scale = Number($('#graph')?.style.getPropertyValue('--zoom')) || 1;
+    addNode(kind, { x: Math.max(10, (event.clientX - rect.left + canvas.scrollLeft) / scale - 77), y: Math.max(10, (event.clientY - rect.top + canvas.scrollTop) / scale - 43) });
+  });
+  document.addEventListener('pointerdown', event => {
+    const element = event.target.closest('[data-node]'); if (!element || mode !== 'build' || !writable() || event.button !== 0) return;
+    const node = pipeline().nodes.find(n => n.id === element.dataset.node);
+    dragging = { element, id: node.id, x: node.x, y: node.y, startX: event.clientX, startY: event.clientY, moved: false, nextX: node.x, nextY: node.y };
+    element.setPointerCapture(event.pointerId);
+  });
+  document.addEventListener('pointermove', event => {
+    if (!dragging) return;
+    const scale = Number($('#graph')?.style.getPropertyValue('--zoom')) || 1;
+    if (Math.abs(event.clientX - dragging.startX) + Math.abs(event.clientY - dragging.startY) > 5) dragging.moved = true;
+    if (!dragging.moved) return;
+    dragging.nextX = Math.max(10, Math.min(1400, dragging.x + (event.clientX - dragging.startX) / scale));
+    dragging.nextY = Math.max(10, Math.min(800, dragging.y + (event.clientY - dragging.startY) / scale));
+    dragging.element.style.left = `${dragging.nextX}px`; dragging.element.style.top = `${dragging.nextY}px`;
+  });
+  document.addEventListener('pointerup', () => {
+    if (!dragging) return;
+    const drag = dragging;
+    if (drag.moved) { mutate(p => { const node = p.nodes.find(n => n.id === drag.id); node.x = Math.round(drag.nextX); node.y = Math.round(drag.nextY); }); selected = drag.id; render(); }
+    setTimeout(() => dragging = null, 0);
+  });
+  document.addEventListener('pointercancel', () => { dragging = null; render(); });
+  setInterval(() => {
+    const runningRuns = pipelines.flatMap(p => p.runs).filter(run => run.status === 'running');
+    if (!runningRuns.length) return;
+    const time = Date.now(), before = activeRun ? JSON.stringify(Object.values(activeRun.tasks).map(t => [t.state,t.attempt])) : '';
+    for (const run of runningRuns) M.advance(run, time);
+    if (!connected) return;
+    lastSignal = time;
+    if (page === 'workspace' && tab === 'flow' && mode === 'run' && activeRun) {
+      const after = JSON.stringify(Object.values(activeRun.tasks).map(t => [t.state,t.attempt]));
+      if (before !== after) render();
+      else {
+        if ($('#run-duration')) $('#run-duration').textContent = duration((activeRun.finished ?? time) - activeRun.started);
+        const task = activeRun.tasks[selected]; if (task && $('#task-duration')) $('#task-duration').textContent = duration(task.started == null ? null : (task.finished ?? time) - task.started);
+      }
+    }
+  }, 250);
+  render();
+})();
+</script></body>
+</html>

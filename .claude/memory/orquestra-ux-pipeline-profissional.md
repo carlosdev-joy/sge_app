@@ -8,3 +8,7 @@ DEV observado: QA5_A vazio; cabeçalho rascunho em Execuções com fonte publica
 Não houve edição/publicação/disparo no DEV. Evidências F9 anteriores não são nova rodada de testes.
 Elaboração da proposta autorizada; revisão do documento/protótipo precede implementação. Produção/main não autorizadas.
 Próxima etapa: revisar spec, prototipar jornada com simulações identificadas e planejar fases contra develop; seguir CLAUDE.md, QA adversarial e gates vigentes. Não reabrir F1–F9 técnicos nem prometer50pipelines/IA integral.
+
+
+## 2026-10-11 — protótipo autorizado e preparado
+Usuário autorizou seguir com o protótipo navegável nesta conversa. Fonte em `docs/prototypes/pipeline-workspace/`, com HTML portátil, README, testes do modelo e evidências. Implementação no DEV não foi realizada. Antes de alterar o produto, obter a validação visual e adaptar a base React/.NET existente; não copiar motor, autenticação ou permissões simuladas para produção. A presença de Ana Lima e um rascunho em edição é fictícia e não demonstra lease multiusuário.

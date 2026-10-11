@@ -1,7 +1,7 @@
 # Spec: UX profissional do Pipeline — ORQUESTRA
-Data: 2026-10-11 · Status: rascunho para revisão
+Data: 2026-10-11 · Status: especificação detalhada; protótipo disponível para validação visual
 Base analisada: develop `df1a81caa3ef5400877bf3ab2f798011552143b2` (DEV 2.17.1).
-Direção aprovada: ferramenta bonita, funcional e fácil de utilizar; eliminar configurações concorrentes e alcançar a composição dos mockups. Esta aprovação permite detalhar a proposta; os critérios e mudanças abaixo ainda precisam de revisão antes da implementação.
+Direção aprovada: ferramenta bonita, funcional e fácil de utilizar; eliminar configurações concorrentes e alcançar a composição dos mockups. A autorização inclui detalhar a proposta e preparar o protótipo navegável de UX. A validação visual do protótipo e a revisão dos critérios precedem a implementação no DEV.
 
 ## 1. Visão
 Desenvolvedores precisam montar e publicar sem procurar a configuração em várias telas. Leitores precisam entender finalidade, dependências e estado. Sustentação precisa identificar o que executa, por que espera e como investigar sem perder a corrida.
@@ -246,3 +246,8 @@ l) Registrar screenshot por estado e evidência funcional correspondente; não c
 - [Databricks: histórico por tarefa](https://docs.databricks.com/aws/en/jobs/monitor).
 - [Control-M: monitoramento/esperas/logs](https://documents.bmc.com/supportu/9.0.22/en-US/Documentation/Monitoring.htm).
 As referências externas orientam princípios; não alteram contratos do ORQUESTRA nem prometem paridade de recursos desses produtos.
+
+
+## Protótipo navegável de referência (F1)
+Preparado em 11/10/2026 e isolado do produto. Veja [o roteiro e os limites](prototypes/pipeline-workspace/README.md), [a verificação](prototypes/pipeline-workspace/VALIDACAO.md) e [o HTML portátil](prototypes/pipeline-workspace/pipeline-workspace.html). Baixe o HTML para interagir; o GitHub mostra o código.
+O protótipo demonstra catálogo com rascunhos, criação, montagem, configuração única, publicação/versões e execução com estados, falha, retomada e investigação. Perfis, editor ativo e telemetria são ilustrativos; não implementam autenticação, lease ou execução reais. A implementação produtiva continua pendente no DEV. A fonte canônica para os critérios de aceitação permanece esta especificação; divergências simplificadas do protótipo estão registradas no README.

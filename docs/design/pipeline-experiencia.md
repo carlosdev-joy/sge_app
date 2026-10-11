@@ -102,3 +102,7 @@ Verificar: criar→retomar, iniciar edição→configurar→salvar, montar→val
 Medir sucesso da tarefa, tempo, retornos desnecessários e dúvidas com representantes dos três públicos; ausência de representante é pendência explícita, não sucesso presumido.
 Capturas obrigatórias: montagem vazia/populada/seleção/diagnóstico, configuração, publicação pendente/erro, execução running/success/failure/skipped/fonte indisponível, inspector/log, lista com draft, versões.
 Simulações testam estados/UI; execução real própria testa integração. Cada registro identifica qual tipo de evidência é.
+
+
+## Referência interativa
+O [protótipo de Pipeline](../prototypes/pipeline-workspace/README.md) materializa a composição e as principais interações desta proposta. Sua [verificação e capturas](../prototypes/pipeline-workspace/VALIDACAO.md) distinguem o que foi testado do que é conceitual. Validar com o usuário antes de adaptar as telas React do produto. Nenhuma integração com DEV foi realizada.
