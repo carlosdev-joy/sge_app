@@ -38,7 +38,9 @@ def test_legacy_routes_are_all_aliased():
 
 
 def test_execution_investigation_opens_only_attempts_of_the_shown_run():
-    assert _run()["execucao"] == {"corrente": 3, "historica": 1, "inventada": False, "outraCorrida": False, "texto": True}
+    # F5: a investigação passou ao inspector operacional; detalhes em test_workspace_ux_execucao.
+    out = _run()["execucao"]
+    assert out["logTexto"] is True and out["outraCorrida"] is False and out["graficos"] == 1
 
 
 def test_hidden_area_modal_stays_mounted_without_dialog_role():

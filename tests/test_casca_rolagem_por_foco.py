@@ -56,6 +56,9 @@ _SR_ONLY_CONHECIDOS = {
     "components/admin/casca/MenuAdmin.tsx": 1,
     # "(abre em nova aba)" do link para o admin (F4) — dentro do próprio <a relative>
     "components/admin/LinkAdmin.tsx": 1,
+    # anúncio da etapa selecionada (aria-live) da Execução — dentro do <aside relative>
+    # do inspector operacional (resumo da corrida e investigação da etapa)
+    "components/workspace/WorkspaceRunInspector.tsx": 1,
 }
 
 
@@ -93,3 +96,5 @@ def test_regioes_aria_live_sr_only_vivem_em_ancestral_posicionado():
     assert invólucro and "relative" in invólucro.group(1).split(), "a região sr-only da faixa precisa de um pai relative"
     modal = _sem_comentarios((SRC / "components/utilitarios/ModalEnvioArquivo.tsx").read_text(encoding="utf-8"))
     assert modal.index("<Modal ") < modal.index('className="sr-only"')
+    inspector = _sem_comentarios((SRC / "components/workspace/WorkspaceRunInspector.tsx").read_text(encoding="utf-8"))
+    assert inspector.count('<aside className="relative ') == 2, "o anúncio sr-only do inspector precisa de um pai relative"

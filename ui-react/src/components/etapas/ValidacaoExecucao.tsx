@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api'
+import { useAuthStore } from '../../store/auth'
 import { erroCatalogo } from '../../lib/pipelineCatalogo'
 import { conclusaoLabel, decisaoLabel, type ValidaConfig } from '../../lib/validaArquivo'
 import { Button } from '../ui/Button'
@@ -12,10 +13,13 @@ interface Historico {
   conclusao: { resultado: string; liberar_dependentes: boolean; notificar: boolean } | null
 }
 // `active=false`: vista conservada oculta (workspace); não acompanha o servidor.
-export function ValidacaoExecucao({ pipeline, runId, active = true }: { pipeline: string; runId: string; active?: boolean }) {
-  const q = useQuery<Historico>({ queryKey: ['validacao-execucao', pipeline, runId],
-    queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/validacao-execucao?run_id=${encodeURIComponent(runId)}`),
-    refetchInterval: active ? 15_000 : false })
+// `enabled=false` (opcional): nem a primeira leitura acontece (aba do navegador
+// oculta); ao voltar, revalida. Chave por sessão; troca de chave cancela a leitura.
+export function ValidacaoExecucao({ pipeline, runId, active = true, enabled = true }: { pipeline: string; runId: string; active?: boolean; enabled?: boolean }) {
+  const token = useAuthStore(s => s.token)
+  const q = useQuery<Historico>({ queryKey: ['validacao-execucao', token, pipeline, runId],
+    queryFn: ({ signal }) => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/validacao-execucao?run_id=${encodeURIComponent(runId)}`, { signal }),
+    enabled, refetchOnWindowFocus: active && enabled, refetchInterval: active && enabled ? 15_000 : false })
   const h = q.data
   if (h && !h.original) return null
   return <details className="max-h-72 shrink-0 overflow-y-auto border-b border-edge bg-panel px-4 py-2 text-xs text-ink">

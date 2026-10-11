@@ -1,0 +1,1 @@
+import{n as e}from"./jsx-runtime-DQnQMehK.js";var t=e(`ban`,[[`circle`,{cx:`12`,cy:`12`,r:`10`,key:`1mglay`}],[`path`,{d:`M4.929 4.929 19.07 19.071`,key:`196cmz`}]]),n=e(`circle-slash`,[[`circle`,{cx:`12`,cy:`12`,r:`10`,key:`1mglay`}],[`line`,{x1:`9`,x2:`15`,y1:`15`,y2:`9`,key:`1dfufj`}]]);export{t as n,n as t};

@@ -125,3 +125,4 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Desempenho do workspace F8](orquestra-workspace-desempenho-f8.md) — DEV2.16.1 validado, carga fria/canvas e limites de medição documentados.
 - [Homologação do workspace F9](orquestra-workspace-homologacao-f9.md) — DEV2.17.1 validado; matriz19linhas/11tipos, recuperação e restore nativos, aceites externos separados.
 - [Restore de dependências](orquestra-workspace-restore-dependencias.md) — PR497/2.17.1 corrige CSV omitido sem alterar snapshots ou contornar gate.
+- [UX profissional do Pipeline](orquestra-ux-pipeline-profissional.md) — spec, cinco destinos; 2.18.0–2.20.0 no DEV (F3 inicial, F4.1, F4.2); F5 candidata 2.21.0 pronta para PR, com cercas de identidade e lote de teclado/movimento reduzido no canvas (prova nativa pendente); gotchas de bancada/QueryClient/sr-only.
