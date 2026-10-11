@@ -1,15 +1,21 @@
 import { confirmAction } from '../../lib/dialogs'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { CheckCircle2, Upload, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Upload, ShieldCheck } from 'lucide-react'
 import { workspaceApi } from '../../lib/workspaceApi'
 import type { WorkspaceDraft, WorkspacePublication, WorkspaceValidation } from '../../lib/workspace'
 import { useAuthStore } from '../../store/auth'
 import { Button } from '../ui/Button'
 const labels: Record<string, string> = { pendente: 'Publicação solicitada', projetado: 'Configuração aplicada; aguardando DAG', gerando: 'Confirmando versão no Airflow', publicado: 'Versão publicada e confirmada', erro: 'Publicação interrompida' }
 // `active=false`: painel conservado numa vista oculta; o acompanhamento não consulta o servidor.
-export function WorkspacePublicationPanel({ embedded = false, active = true, draft, fence, canPublish, dirty, busy, onFreeze, onConfirmed, onSelect }: { embedded?: boolean; active?: boolean; draft: WorkspaceDraft; fence: number | undefined; canPublish: boolean; dirty: boolean; busy: boolean; onFreeze: (value: boolean) => void; onConfirmed: () => void; onSelect: (id: string) => void }) {
+// `actionsHost`: Validar/Publicar desta mesma instância vão para a barra do cabeçalho
+// (mesmas mutações e gates); sem host, ficam no próprio painel. O diagnóstico é
+// recolhível e o resumo continua legível fechado.
+export function WorkspacePublicationPanel({ embedded = false, active = true, actionsHost, draft, fence, canPublish, dirty, busy, onFreeze, onConfirmed, onSelect }: { embedded?: boolean; active?: boolean; actionsHost?: HTMLElement | null; draft: WorkspaceDraft; fence: number | undefined; canPublish: boolean; dirty: boolean; busy: boolean; onFreeze: (value: boolean) => void; onConfirmed: () => void; onSelect: (id: string) => void }) {
  const token = useAuthStore(s => s.token)
+ const detailsId = useId()
+ const [open, setOpen] = useState(false)
  const [validation, setValidation] = useState<WorkspaceValidation | null>(null)
  const [error, setError] = useState('')
  const [sent, setSent] = useState<WorkspacePublication | null>(null)
@@ -20,7 +26,7 @@ export function WorkspacePublicationPanel({ embedded = false, active = true, dra
  const pending = !!operation && !['erro', 'publicado'].includes(operation.state)
  useEffect(() => { onFreeze(pending) }, [pending, operation, draft.revision, onFreeze])
  useEffect(() => { if (operation?.state === 'publicado' && confirmed.current !== operation.operationId) { confirmed.current = operation.operationId; onConfirmed() } }, [operation, onConfirmed])
- const validate = useMutation({ mutationFn: () => workspaceApi.validate(draft.draftId), onSuccess: value => { setValidation(value); setError('') }, onError: value => setError(value.message) })
+ const validate = useMutation({ mutationFn: () => workspaceApi.validate(draft.draftId), onSuccess: value => { setValidation(value); setError(''); if (!value.valid) setOpen(true) }, onError: value => setError(value.message) })
  const publish = useMutation({ mutationFn: async () => {
   if (!fence || dirty) throw new Error('Salve o rascunho e mantenha a sessão de edição antes de publicar.')
   if (!command.current || command.current.revision !== draft.revision) command.current = { revision: draft.revision, id: crypto.randomUUID() }
@@ -30,15 +36,25 @@ export function WorkspacePublicationPanel({ embedded = false, active = true, dra
  const currentGate=useRef({allowed:false,fence,draftId:draft.draftId,revision:draft.revision})
  const valid = validation?.revision === draft.revision && validation.valid && !dirty
  useLayoutEffect(()=>{currentGate.current={allowed:!!fence&&!!valid&&canPublish&&!busy&&!pending&&!validate.isPending&&!publish.isPending,fence,draftId:draft.draftId,revision:draft.revision}})
- return <section className={`${embedded ? 'border-t border-edge' : 'border border-edge rounded-lg'} bg-panel px-4 py-3 space-y-2`} aria-label="Validação e publicação">
-  <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-sm text-ink">Validar e publicar</h2></div><div className="flex flex-wrap gap-2">
-   <Button size="sm" variant="secondary" disabled={dirty || busy || pending || publish.isPending} loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck size={15}/>Validar rascunho</Button>
-   {canPublish && <Button size="sm" disabled={!fence || !valid || busy || pending || validate.isPending} loading={publish.isPending} onClick={async () => { if (await confirmAction('Publicar esta revisão e substituir a configuração ativa do pipeline?',()=>currentGate.current.allowed&&currentGate.current.fence===fence&&currentGate.current.draftId===draft.draftId&&currentGate.current.revision===draft.revision)) publish.mutate() }}><Upload size={15}/>Publicar versão</Button>}
-  </div></div>
-  {dirty && <p className="text-sm text-dim">Salve as alterações para validar esta revisão.</p>}
+ const current = validation?.revision === draft.revision && !dirty ? validation : null
+ const problems = current?.diagnostics.length ?? 0
+ const summary = [dirty ? 'Salve as alterações para validar esta revisão' : current ? current.valid ? `Revisão ${current.revision} validada` : `${problems} ${problems === 1 ? 'problema' : 'problemas'} na revisão ${current.revision}` : `Revisão ${draft.revision} ainda não validada`, operation && `${labels[operation.state] ?? 'Estado de publicação indisponível'} (revisão ${operation.revision})`].filter(Boolean).join(' · ')
+ const buttons = <>
+  <Button size="sm" variant="secondary" disabled={dirty || busy || pending || publish.isPending} loading={validate.isPending} onClick={() => validate.mutate()}><ShieldCheck size={15}/>Validar rascunho</Button>
+  {canPublish && <Button size="sm" disabled={!fence || !valid || busy || pending || validate.isPending} loading={publish.isPending} onClick={async () => { if (await confirmAction('Publicar esta revisão e substituir a configuração ativa do pipeline?',()=>currentGate.current.allowed&&currentGate.current.fence===fence&&currentGate.current.draftId===draft.draftId&&currentGate.current.revision===draft.revision)) publish.mutate() }}><Upload size={15}/>Publicar versão</Button>}
+ </>
+ return <section className={`${embedded ? 'border-t border-edge' : 'border border-edge rounded-lg'} bg-panel px-4 py-2.5 space-y-2`} aria-label="Validação e publicação">
+  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+   <h2 className="text-sm"><button type="button" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(value => !value)} className="inline-flex items-center gap-1.5 rounded font-semibold text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600"><ChevronRight size={15} className={`text-dim transition-transform duration-150 motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}/>Validação e publicação</button></h2>
+   <p aria-live="polite" className={`min-w-0 flex-1 text-xs ${current && !current.valid ? 'text-red-700 dark:text-red-400' : 'text-dim'}`}>{summary}</p>
+   {actionsHost ? createPortal(buttons, actionsHost) : <div className="flex flex-wrap gap-2">{buttons}</div>}
+  </div>
+  <div id={detailsId} hidden={!open} className="max-h-64 overflow-y-auto space-y-2">
   {!canPublish && <p className="text-sm text-dim">Sua sessão pode consultar os diagnósticos. Publicar exige a permissão de publicação.</p>}
-  {validation?.revision === draft.revision && !dirty && <div aria-live="polite">{validation.valid ? <p className="flex gap-2 text-sm text-green-800 dark:text-green-300"><CheckCircle2 size={16}/>Revisão {validation.revision} validada</p> : <ul className="space-y-2 text-sm">{validation.diagnostics.map((item, index) => <li key={index} className="text-red-700 dark:text-red-400">{item.nodeId && <button className="font-semibold underline mr-2" onClick={() => onSelect(item.nodeId!)}>{item.nodeId}</button>}{item.message}<span className="block text-xs text-dim">{item.field}</span></li>)}</ul>}</div>}
+  {current && (current.valid ? <p className="flex gap-2 text-sm text-green-800 dark:text-green-300"><CheckCircle2 size={16}/>Revisão {current.revision} validada</p> : <ul className="space-y-2 text-sm">{current.diagnostics.map((item, index) => <li key={index} className="text-red-700 dark:text-red-400">{item.nodeId && <button className="font-semibold underline mr-2" onClick={() => onSelect(item.nodeId!)}>{item.nodeId}</button>}{item.message}<span className="block text-xs text-dim">{item.field}</span></li>)}</ul>)}
+  {!current && !dirty && !operation && <p className="text-sm text-dim">Valide a revisão salva para conferir os diagnósticos antes de publicar.</p>}
   {operation && <div role="status" className="text-sm text-ink"><p className="font-medium">{labels[operation.state] ?? 'Estado de publicação indisponível'}</p><p className="text-xs text-dim mt-1">Revisão {operation.revision} · {operation.attempts} tentativa(s). A operação continua no servidor após fechar esta tela.</p>{operation.state === 'erro' && <p className="text-sm text-dim mt-2">Corrija e salve o rascunho para publicar uma nova revisão, ou retome a mesma operação após resolver a dependência. O motor permanece protegido até a confirmação.</p>}{operation.error && <p className="text-red-700 dark:text-red-400 mt-2">{operation.error}</p>}{operation.state === 'erro' && canPublish && <Button size="sm" variant="secondary" className="mt-3" disabled={!fence || dirty || busy || draft.revision !== operation.revision} loading={retry.isPending} onClick={() => retry.mutate()}>Retomar esta publicação</Button>}</div>}
+  </div>
   {(error || operations.isError) && <p role="alert" className="text-sm text-red-700 dark:text-red-400">{error || operations.error?.message}</p>}
  </section>
 }

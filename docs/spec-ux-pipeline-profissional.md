@@ -276,3 +276,8 @@ Implementação autorizada pelo usuário em 11/10/2026 sobre `develop` `df1a81ca
 - F2: `pipeline-index` e lista unificada (fora desta entrega por decisão de escopo).
 - Edição do nome amigável do pipeline e de responsável não existe no contrato atual; Identificação mostra ambos em leitura.
 - Grupo de Configuração e vista da Execução ficam na URL (`grupo`, `vista`). Alterações locais seguem em cache de memória da aba, sem sobreviver a fechar o navegador; ao trocar Experiência ou Definição a sessão é outra (remonta, como antes).
+
+**Fechamento (registro do Codex):** PR #499 integrada em `develop` `8a57ac6a` e publicada no DEV como 2.18.0. Smoke próprio PASS com duas sessões (incluindo a resposta 409 à sessão concorrente) e limpeza das fixtures; navegador PASS para saída pelo histórico e troca de Experiência com rascunho sujo. Sem motor/DataStage real e sem piloto com usuários. Estado das fases em [ux-pipeline-progresso.md](ux-pipeline-progresso.md).
+
+## Entrega F4.1 — canvas amplo, painéis recolhíveis e barra de publicação (candidato 2.19.0)
+Base `develop` `8a57ac6a`, branch `feat/ux-pipeline-montagem-f4`, migration 165. Montagem e Execução usam a largura da área de conteúdo (a moldura de 1600 px do shell era a causa das faixas laterais); Visão geral, Configuração e Versões conservam a largura anterior. Biblioteca e inspector recolhíveis sem perder seleção, vista, busca, formulário em edição ou posse; Salvar/Validar/Publicar no cabeçalho reutilizando a instância única de publicação; diagnóstico recolhível com resumo; Execução nomeia a fonte. Detalhes e limites nas [release notes](release-notes/2.19.0-pipeline-ux-montagem.md). Pendentes: F4.2 (desfazer/refazer, inspector em subseções), F5, F2 e F6.
