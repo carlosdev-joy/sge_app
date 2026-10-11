@@ -29,6 +29,17 @@ export default {
           mid:   '#0F4C88',
         },
       },
+      // Etapa em execução confirmada: ciclo suave de 1,6 s, só opacidade e
+      // escala do anel (sem deslocar layout). Use com `motion-safe:`.
+      keyframes: {
+        'run-indicator': {
+          '0%, 100%': { opacity: '1', transform: 'scale(1)' },
+          '50%': { opacity: '0.35', transform: 'scale(0.82)' },
+        },
+      },
+      animation: {
+        'run-indicator': 'run-indicator 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+      },
     },
   },
   plugins: [],

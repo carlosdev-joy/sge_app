@@ -3307,3 +3307,89 @@ async def workspace_task_log(pipeline_name: str, run_id: str, task_id: str, try_
         raise
     except Exception:
         raise HTTPException(503, "Log desta tentativa indisponível") from None
+
+
+# Situações gravadas em etl_pipeline_execucao (067); filtro fora desta lista é 422.
+_RUN_HISTORY_STATUS = frozenset({"EXECUTANDO", "AGUARDANDO_DEPENDENCIA", "SUCESSO", "FALHA", "PULADO", "NAO_LIBEROU"})
+
+
+def _history_date(value: str | None, label: str):
+    if value is None or value == "":
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(422, f"Data {label} inválida") from None
+
+
+@router.get("/pipeline-run-history", tags=["execucoes"])
+def workspace_run_history(
+    pipeline_name: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    status: str | None = None,
+    version: int | None = None,
+    limit: int = 25,
+    offset: int = 0,
+    auth: dict = Depends(get_current_user),
+):
+    """Histórico paginado das corridas de UM pipeline para a aba Execução.
+
+    Leitura: nome exato (sem LIKE), filtros fechados e só identidade/situação da
+    corrida e a versão publicada vinculada; nunca conf, parâmetros ou logs.
+    """
+    _workspace_read_permissions(auth)
+    if not pipeline_name or len(pipeline_name) > 200 or any(ord(c) < 32 for c in pipeline_name):
+        raise HTTPException(422, "Pipeline inválido")
+    start, end = _history_date(date_from, "inicial"), _history_date(date_to, "final")
+    if start and end and start > end:
+        raise HTTPException(422, "A data inicial deve ser anterior ou igual à final")
+    situation = (status or "").strip().upper()
+    if situation and situation not in _RUN_HISTORY_STATUS:
+        raise HTTPException(422, "Situação inválida")
+    if version is not None and not 1 <= version <= 2_147_483_647:
+        raise HTTPException(422, "Versão inválida")
+    if not 1 <= limit <= 100 or not 0 <= offset <= 1_000_000:
+        raise HTTPException(422, "Paginação inválida")
+    connection = cursor = None
+    try:
+        connection = get_db_conn(); cursor = connection.cursor()
+        if not cursor.execute("SELECT OBJECT_ID('dbo.etl_pipeline_execucao','U')").fetchone()[0]:
+            raise HTTPException(503, "Histórico de corridas indisponível; aplique migration 067")
+        versions = bool(cursor.execute("SELECT CASE WHEN OBJECT_ID('dbo.etl_workspace_execucao','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_versao','U') IS NOT NULL THEN 1 ELSE 0 END").fetchone()[0])
+        replaced = bool(cursor.execute("SELECT CASE WHEN COL_LENGTH('dbo.etl_pipeline_execucao','substituida_em') IS NULL THEN 0 ELSE 1 END").fetchone()[0])
+        source = "Registro operacional das corridas"
+        if version is not None and not versions:
+            return {"total": 0, "limit": limit, "offset": offset, "items": [], "versionsAvailable": False, "source": source}
+        where, params = ["e.pipeline_name = ?"], [pipeline_name]
+        if start:
+            where.append("e.data_referencia >= ?"); params.append(start)
+        if end:
+            where.append("e.data_referencia <= ?"); params.append(end)
+        if situation:
+            where.append("e.status = ?"); params.append(situation)
+        if version is not None:
+            where.append("v.numero = ?"); params.append(version)
+        joins = (" LEFT JOIN dbo.etl_workspace_execucao w ON w.pipeline_name = e.pipeline_name AND w.run_id = e.execution_id"
+                 " LEFT JOIN dbo.etl_workspace_versao v ON v.version_id = w.version_id") if versions else ""
+        clause = " WHERE " + " AND ".join(where)
+        total = cursor.execute("SELECT COUNT(*) FROM dbo.etl_pipeline_execucao e" + joins + clause, params).fetchone()[0]
+        rows = cursor.execute(
+            "SELECT e.execution_id, e.data_referencia, e.status, e.inicio, e.fim, e.disparado_por, "
+            + ("e.substituida_em" if replaced else "NULL") + ", " + ("v.numero" if versions else "NULL")
+            + " FROM dbo.etl_pipeline_execucao e" + joins + clause
+            + " ORDER BY e.data_referencia DESC, e.inicio DESC, e.id DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+            params + [offset, limit]).fetchall()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Histórico de corridas indisponível") from None
+    finally:
+        if cursor: cursor.close()
+        if connection: connection.close()
+    items = [{
+        "runId": row[0], "date": row[1].strftime("%Y-%m-%d") if hasattr(row[1], "strftime") else row[1],
+        "status": row[2], "startedAt": _fmt_dt(row[3]), "finishedAt": _fmt_dt(row[4]), "triggeredBy": row[5],
+        "replacedAt": _fmt_dt(row[6]), "versionNumber": row[7], "snapshot": row[7] is not None,
+    } for row in rows]
+    return {"total": int(total or 0), "limit": limit, "offset": offset, "items": items, "versionsAvailable": versions, "source": source}

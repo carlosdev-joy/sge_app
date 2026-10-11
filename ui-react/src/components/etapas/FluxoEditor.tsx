@@ -46,9 +46,6 @@ import {
   type EdgeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { WorkspaceRunProperties } from '../workspace/WorkspaceRunProperties'
-import { WorkspaceFlowNode } from '../workspace/WorkspaceFlowNode'
-import './workspaceReference.css'
 import { apiFetch } from '../../lib/api'
 import { normalizeBusca } from '../../lib/busca'
 import { Button } from '../ui/Button'
@@ -97,7 +94,6 @@ import { ModalRerunEtapa } from './ModalRerunEtapa'
 import { ModalPausaEtapa } from './ModalPausaEtapa'
 import { useAuthStore } from '../../store/auth'
 
-const workspaceNodeTypes = Object.fromEntries(['etapa','decisao','notificacao','sql','aguarde','email','valida_arquivo'].map(type=>[type,WorkspaceFlowNode]))
 const nodeTypes = { etapa: EtapaNode, decisao: DecisaoNode, notificacao: NotificacaoNode, sql: SqlNode,
                     aguarde: AguardeNode, email: EmailNode, valida_arquivo: ValidaArquivoNode }
 
@@ -548,7 +544,6 @@ function Paleta({
 
 interface Props {
   pipeline: string
-  workspace?: { flow: FluxoResp; runId: string | null; onRun: (id: string | null) => void; canReprocess: boolean; canPause: boolean; active?: boolean; stage?: string | null; onStage?: (id: string | null) => void } // active=false: vista oculta, sem teclado nem polling; stage/onStage: etapa investigada (URL)
   // Somente leitura (perfil consulta): esconde paleta/ações e bloqueia edição.
   // A autoridade continua sendo a API (PERM_EDITAR no POST /fluxo).
   readOnly?: boolean
@@ -574,7 +569,7 @@ export function FluxoEditor(props: Props) {
 
 function FluxoEditorInner({
   pipeline, readOnly = false, modoExecucao = false, dataExecucao = null,
-  onDataExecucao, workspace,
+  onDataExecucao,
 }: Props) {
   const qc = useQueryClient()
   const colorMode = useColorMode()
@@ -602,8 +597,7 @@ function FluxoEditorInner({
   // POST /execucoes/rerun (e do GET da prévia, que revela a topologia).
   const usuarioAtual = useAuthStore(s => s.user)
   const ehAdmin = useAuthStore(s => s.isAdmin)
-  const podeExecutar = workspace ? workspace.canReprocess || workspace.canPause : ehAdmin() || !!usuarioAtual?.permissoes?.includes('acao_executar')
-  const sessionToken = useAuthStore(s => s.token)
+  const podeExecutar = ehAdmin() || !!usuarioAtual?.permissoes?.includes('acao_executar')
   const [rerunAberto, setRerunAberto] = useState(false)
 
   // ── F5: etapa em espera (pausa de runtime) ────────────────────────────────
@@ -624,22 +618,20 @@ function FluxoEditorInner({
   // do pipeline ANTERIOR).
   const [escolhaCorrida, setEscolhaCorrida] =
     useState<{ pipeline: string; data: string | null; runId: string } | null>(null)
-  const corridaEscolhida = workspace ? workspace.runId :
+  const corridaEscolhida =
     (escolhaCorrida && escolhaCorrida.pipeline === pipeline
       && escolhaCorrida.data === (dataExecucao ?? null))
       ? escolhaCorrida.runId
       : null
   const escolherCorrida = useCallback((runId: string | null) => {
-    if (workspace) { workspace.onRun(runId); return }
     setEscolhaCorrida(runId
       ? { pipeline, data: dataExecucao ?? null, runId }
       : null)
-  }, [pipeline, dataExecucao, workspace])
+  }, [pipeline, dataExecucao])
 
   const execQuery = useQuery<PipelineExecucaoApi>({
-    queryKey: workspace ? ['workspace-execution', sessionToken, pipeline, dataExecucao ?? '', corridaEscolhida ?? ''] : ['pipeline-execucao', pipeline, dataExecucao ?? null, corridaEscolhida],
+    queryKey: ['pipeline-execucao', pipeline, dataExecucao ?? null, corridaEscolhida],
     queryFn: () => {
-      if (workspace) return apiFetch(`/workspace/executions?${new URLSearchParams({name:pipeline,...(dataExecucao?{date:dataExecucao}:{}),...(corridaEscolhida?{runId:corridaEscolhida}:{})})}`)
       const base = `/pipelines/${encodeURIComponent(pipeline)}/execucao`
       if (corridaEscolhida) {
         return apiFetch(`${base}?run_id=${encodeURIComponent(corridaEscolhida)}`)
@@ -648,11 +640,11 @@ function FluxoEditorInner({
         ? `?data_referencia=${encodeURIComponent(dataExecucao)}` : ''))
     },
     enabled: !!pipeline && emExecucao,
-    refetchInterval: workspace?.active === false ? false : 30_000,   // leitura de painel: acompanha o dia rodando
+    refetchInterval: 30_000,   // leitura de painel: acompanha o dia rodando
   })
   const execData = emExecucao ? execQuery.data : undefined
   // A data exibida: a pedida, ou a que o servidor calculou (ODATE corrente).
-  const dataExibida = (workspace?.runId ? execData?.data_referencia : dataExecucao) ?? execData?.data_referencia ?? ''
+  const dataExibida = dataExecucao ?? execData?.data_referencia ?? ''
 
   // Camada de execução (pura). Fora do modo Execução é `null` e as duas
   // decorações abaixo devolvem os arrays ORIGINAIS por identidade — a montagem
@@ -864,9 +856,9 @@ function FluxoEditorInner({
   const flowQuery = useQuery<FluxoResp>({
     queryKey: ['fluxo', pipeline],
     queryFn: () => apiFetch(`/pipelines/${encodeURIComponent(pipeline)}/fluxo`),
-    enabled: !!pipeline && !workspace,
+    enabled: !!pipeline,
   })
-  const data = workspace?.flow ?? flowQuery.data
+  const data = flowQuery.data
   const {isLoading, isError, error} = flowQuery
 
   // Espelho do dirty p/ o guard do rebuild (ref: fora das deps de propósito —
@@ -899,8 +891,7 @@ function FluxoEditorInner({
   // barra e os avisos, e um fit feito antes disso enquadra uma altura que
   // deixou de existir. Só a PRESENÇA entra na chave — o refetch de 30s traz
   // um objeto novo, mas a chave continua a mesma e o enquadramento não pula.
-  const workspaceShape = workspace?.flow.nodes.map(n=>`${n.job_name}:${n.layout_x??''}:${n.layout_y??''}`).join('|') ?? ''
-  const chaveFit = `${pipeline}|${emExecucao ? 'exec' : 'montagem'}|${workspaceShape}`
+  const chaveFit = `${pipeline}|${emExecucao ? 'exec' : 'montagem'}`
     + `|${emExecucao && execData ? 'carregado' : '-'}`
   // ⚠️ ESPERA a MEDIÇÃO dos nós (`useNodesInitialized`). Antes desta fase o fit
   // saía 90 ms depois do payload, e nesse instante o React Flow ainda não tinha
@@ -1992,7 +1983,7 @@ function FluxoEditorInner({
   const temModalAberto = !!(delNodeIds?.length) || !!renamePedido || showPublish
     || rerunAberto || pausaAberta
   useEffect(() => {
-    if (temModalAberto || workspace?.active === false) return // vista oculta do workspace: o teclado é da vista visível
+    if (temModalAberto) return
     const onKey = (e: KeyboardEvent) => {
       // Overlay na frente = quem trata teclado é ele. A lista `temModalAberto`
       // só enxerga os modais DESTE componente; o navegador de pastas do anexo
@@ -2038,27 +2029,7 @@ function FluxoEditorInner({
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [selectedId, temModalAberto, workspace?.active, closePanel, dockEstado, nodes, dirty, saving, travado, setNodes, salvar, realceLimpar])
-
-  // Workspace: a etapa investigada é contrato com a vista Tabela (URL `etapa`).
-  // URL → canvas quando a etapa existe no grafo; canvas → URL quando o operador
-  // seleciona. `etapaAplicada` é a última etapa da URL já refletida no canvas.
-  const etapaPedida = workspace?.stage ?? null
-  const aoTrocarEtapa = workspace?.onStage
-  const [etapaAplicada, setEtapaAplicada] = useState<string | null>(null)
-  if (aoTrocarEtapa && etapaPedida !== etapaAplicada && (!etapaPedida || nodes.some(n => n.id === etapaPedida))) {
-    setEtapaAplicada(etapaPedida)
-    if (etapaPedida !== selectedId) {
-      setSelectedId(etapaPedida)
-      if (etapaPedida) setDockEstado(e => (e === 'colapsado' ? 'aberto' : e))
-    }
-  }
-  useEffect(() => {
-    if (!aoTrocarEtapa || selectedId === etapaAplicada) return
-    // Ainda carregando o grafo da etapa pedida: não apagar a URL.
-    if (selectedId === null && etapaPedida && !nodes.some(n => n.id === etapaPedida)) return
-    aoTrocarEtapa(selectedId)
-  }, [aoTrocarEtapa, selectedId, etapaAplicada, etapaPedida, nodes])
+  }, [selectedId, temModalAberto, closePanel, dockEstado, nodes, dirty, saving, travado, setNodes, salvar, realceLimpar])
 
   // ── Pendências por nó (validação leve, AO VIVO) — padrão ADF: o grafo
   // sinaliza o que falta configurar sem precisar abrir nó por nó. A régua é a
@@ -2267,16 +2238,16 @@ function FluxoEditorInner({
   // painel nunca é inútil"): colapsado mantém a barra fina; senão mostra as
   // propriedades do PIPELINE. 'max' sem seleção rebaixa para 'aberto' (o modo
   // focado é para editar um nó; o resumo do pipeline não pede a tela inteira).
-  const dockColapsado = !workspace && dockEstado === 'colapsado'
-  const dockRedimensionavel = !workspace && (selNode ? dockEstado === 'aberto' : !dockColapsado)
+  const dockColapsado = dockEstado === 'colapsado'
+  const dockRedimensionavel = selNode ? dockEstado === 'aberto' : !dockColapsado
 
   return (
-    <div className={`flex h-full w-full flex-col overflow-hidden rounded-lg border border-edge bg-canvas ${workspace?'workspace-reference-operation':''}`}>
+    <div className="flex h-full w-full flex-col overflow-hidden rounded-lg border border-edge bg-canvas">
       {/* (F3) Chrome do modo Execução: barra de data/janela/resumo + avisos
           honestos. Não existe na Montagem — o modo Montagem segue exatamente
           o de antes desta fase. */}
       {emExecucao && (
-        <div className={workspace?'workspace-reference-toolbar':undefined}><BarraExecucao
+        <BarraExecucao
           pipeline={pipeline}
           dataExibida={dataExibida}
           dataPedida={dataExecucao ?? null}
@@ -2286,30 +2257,12 @@ function FluxoEditorInner({
           erro={execQuery.isError ? (execQuery.error as Error) : null}
           corridaEscolhida={corridaEscolhida}
           onCorrida={escolherCorrida}
-        /></div>
+        />
       )}
-      {emExecucao && execData?.identidade?.run_id && <div className={workspace?'workspace-reference-validation':undefined}><ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} active={workspace?.active !== false} /></div>}
-      {workspace && emExecucao && nodes.length > 0 && (
-        <label className="workspace-reference-locator flex items-center gap-2 border-b border-edge px-3 py-2 text-sm">
-          <span className="shrink-0">Localizar etapa</span>
-          <select className="min-w-0 flex-1 rounded border border-edge bg-panel px-2 py-1 text-ink"
-            value={selectedId ?? ''}
-            onChange={event => {
-              const id = event.target.value
-              setSelectedId(id || null)
-              if (!id) { rf.fitView({ padding: 0.2, duration: 250 }); return }
-              setDockEstado(e => e === 'colapsado' ? 'aberto' : e)
-              realceFocarNo(id)
-              rf.fitView({ nodes: [{ id }], minZoom: 0.8, maxZoom: 1, padding: 0.3, duration: 250 })
-            }}>
-            <option value="">Todas as etapas</option>
-            {nodes.map(node => <option key={node.id} value={node.id}>{node.id}</option>)}
-          </select>
-        </label>
-      )}
+      {emExecucao && execData?.identidade?.run_id && <ValidacaoExecucao pipeline={pipeline} runId={execData.identidade.run_id} />}
       {/* Linha principal: paleta FIXA à esquerda (recolhível) + canvas.
           As propriedades moram no dock inferior (fase 3) — nada sobrepõe o grafo. */}
-      <div className={`flex min-h-0 flex-1 ${workspace?'workspace-reference-canvas':''}`}>
+      <div className="flex min-h-0 flex-1">
         {!travado && (
           <Paleta open={paletaOpen} onToggle={() => setPaletaOpen(o => !o)} />
         )}
@@ -2326,7 +2279,7 @@ function FluxoEditorInner({
         <ReactFlow
           nodes={realce.nodesRealce}
           edges={edgesRender}
-          nodeTypes={workspace?workspaceNodeTypes:nodeTypes}
+          nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
@@ -2354,16 +2307,16 @@ function FluxoEditorInner({
         >
           <Background gap={18} size={1} />
           <Controls />
-          {!workspace && <MiniMap
+          <MiniMap
             pannable
             zoomable
             nodeColor={miniMapColor}
             className="!bg-panel"
-          />}
+          />
 
           {/* (F1) Painel do realce — só existe com algo em foco; sem clique o
               canvas é exatamente o de sempre. */}
-          {!workspace && realce.cadeia && realce.rotuloFoco && (
+          {realce.cadeia && realce.rotuloFoco && (
             <Panel position="top-left">
               <PainelRealce
                 foco={realce.rotuloFoco}
@@ -2374,7 +2327,7 @@ function FluxoEditorInner({
                 onLimpar={realce.limpar}
                 textoTras={realceTextos.tras}
                 textoFrente={realceTextos.frente}
-                acesos={!workspace && realce.cadeia.nos.size}
+                acesos={realce.cadeia.nos.size}
                 total={nodes.length}
               />
             </Panel>
@@ -2433,13 +2386,13 @@ function FluxoEditorInner({
       </div>
 
       {/* (F3) Legenda do modo Execução — mesma leitura de painel da malha. */}
-      {emExecucao && <div className={workspace?'workspace-reference-legend':undefined}><LegendaExecucao /></div>}
+      {emExecucao && <LegendaExecucao />}
 
       {/* (F4) Confirmação do rerun. Montada só quando aberta: a prévia é uma
           chamada de rede (dry_run no Airflow + fecho de dependências) e não
           pode disparar por ter um nó selecionado. `selectedId` é o task_id no
           Airflow — no grafo gerado o id do nó É o job_name/task_id. */}
-      {emExecucao && (!workspace || workspace.canReprocess) && rerunAberto && selectedId && (
+      {emExecucao && rerunAberto && selectedId && (
         <ModalRerunEtapa
           open
           onClose={() => setRerunAberto(false)}
@@ -2454,7 +2407,7 @@ function FluxoEditorInner({
 
       {/* (F5) Pausar / liberar / cancelar. Montado só quando aberto, como o de
           rerun (padrão D31: o Modal não desmonta com open=false). */}
-      {emExecucao && (!workspace || workspace.canPause) && pausaAberta && selectedId && (
+      {emExecucao && pausaAberta && selectedId && (
         <ModalPausaEtapa
           open
           onClose={() => setPausaAberta(false)}
@@ -2488,8 +2441,7 @@ function FluxoEditorInner({
       <div
         className={[
           'relative flex shrink-0 flex-col border-t border-edge bg-panel',
-          workspace ? 'workspace-reference-properties' : '',
-          !workspace && selNode && dockEstado === 'max' ? 'h-[70%]' : '',
+          selNode && dockEstado === 'max' ? 'h-[70%]' : '',
           dockRedimensionavel ? 'max-h-[60%]' : '',
         ].join(' ')}
         style={dockRedimensionavel ? { height: dockAltura } : undefined}
@@ -2501,7 +2453,6 @@ function FluxoEditorInner({
             className="absolute -top-1 left-0 right-0 z-10 h-2.5 cursor-row-resize"
           />
         )}
-
 
         {/* Header do dock: resumo do nó selecionado + controles de estado */}
         <div className="flex h-9 shrink-0 items-center gap-2 border-b border-edge px-3">
@@ -2677,7 +2628,7 @@ function FluxoEditorInner({
                 ) : null
               })()}
               <div className="ml-auto flex shrink-0 items-center gap-0.5 text-dim">
-                {!workspace && (dockEstado !== 'max' ? (
+                {dockEstado !== 'max' ? (
                   <button
                     onClick={() => setDockEstado('max')}
                     title="Maximizar (modo focado) — duplo-clique no nó também abre assim"
@@ -2693,8 +2644,8 @@ function FluxoEditorInner({
                   >
                     <Minimize2 size={13} />
                   </button>
-                ))}
-                {!workspace && (dockEstado === 'colapsado' ? (
+                )}
+                {dockEstado === 'colapsado' ? (
                   <button
                     onClick={() => setDockEstado('aberto')}
                     title="Expandir propriedades"
@@ -2710,7 +2661,7 @@ function FluxoEditorInner({
                   >
                     <ChevronDown size={14} />
                   </button>
-                ))}
+                )}
                 <button
                   onClick={closePanel}
                   title="Fechar propriedades (Esc)"
@@ -2736,7 +2687,7 @@ function FluxoEditorInner({
                 </span>
               )}
               <div className="ml-auto flex shrink-0 items-center gap-0.5 text-dim">
-                {!workspace && (dockColapsado ? (
+                {dockColapsado ? (
                   <button
                     onClick={() => setDockEstado('aberto')}
                     title="Expandir propriedades do pipeline"
@@ -2752,7 +2703,7 @@ function FluxoEditorInner({
                   >
                     <ChevronDown size={14} />
                   </button>
-                ))}
+                )}
               </div>
             </>
           )}
@@ -2765,9 +2716,9 @@ function FluxoEditorInner({
             <PainelPipeline pipeline={pipeline} contagem={contagemNos} readOnly={travado} />
           </div>
         )}
-        {selNode && (workspace || dockEstado !== 'colapsado') && (
+        {selNode && dockEstado !== 'colapsado' && (
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {workspace ? <WorkspaceRunProperties node={selNode} step={camadaExec?.porJob.get(selNode.id.trim().toLowerCase())} pipeline={pipeline} runId={corridaEscolhida??execData?.identidade?.run_id??null}/> : <PropriedadesPanel
+            <PropriedadesPanel
               node={selNode}
               pipeline={pipeline}
               nodes={nodes}
@@ -2798,9 +2749,8 @@ function FluxoEditorInner({
               onUpdateCaso={atualizarCaso}
               onRemoveCaso={removerCaso}
               onMoveCaso={moverCaso}
-            />}
-            {workspace && realce.cadeia && realce.rotuloFoco && <details className="p-3 border-t border-edge"><summary className="text-xs text-dim cursor-pointer mb-2">Examinar dependências da etapa</summary><PainelRealce foco={realce.rotuloFoco} sentido={realce.sentido} onSentido={realce.mudarSentido} isolar={realce.isolar} onIsolar={realce.alternarIsolar} onLimpar={realce.limpar} textoTras={realceTextos.tras} textoFrente={realceTextos.frente} acesos={realce.cadeia.nos.size} total={nodes.length}/></details>}
-      </div>
+            />
+          </div>
         )}
       </div>
 

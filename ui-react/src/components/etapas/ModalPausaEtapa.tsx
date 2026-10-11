@@ -60,11 +60,15 @@ interface Props {
    *  'portao_desconhecido' (ausente = API anterior, que não sabia responder).
    *  Ver o bloco de aviso abaixo — é a segunda metade do deploy da F5. */
   portao?: string | null
+  /** (opcional) confere, no instante do envio, se o alvo aberto ainda é o
+   *  atual; devolve o motivo da recusa e nada é enviado. Sem ele, o modal se
+   *  comporta como sempre (telas legadas). */
+  guard?: () => string | null
 }
 
 export function ModalPausaEtapa({
   open, onClose, pipeline, jobName, dataReferencia, runId, status, pausa,
-  historico, etapasPausaveis, portao,
+  historico, etapasPausaveis, portao, guard,
 }: Props) {
   const qc = useQueryClient()
   const [motivo, setMotivo] = useState('')
@@ -87,6 +91,12 @@ export function ModalPausaEtapa({
   const semPortao = portao === 'dag_sem_portao'
   const portaoIncerto = portao === 'portao_desconhecido'
 
+  // Recusa antes de qualquer POST quando o alvo aberto deixou de ser o atual.
+  const conferido = <T,>(enviar: () => Promise<T>) => () => {
+    const recusa = guard?.()
+    return recusa ? Promise.reject(new Error(recusa)) : enviar()
+  }
+
   const invalida = () => {
     qc.invalidateQueries({ queryKey: ['pipeline-execucao'] })
     qc.invalidateQueries({ queryKey: ['execucoes'] })
@@ -101,7 +111,7 @@ export function ModalPausaEtapa({
   }
 
   const pedir = useMutation<RespostaPausa>({
-    mutationFn: () => apiFetch('/execucoes/pausas', {
+    mutationFn: conferido(() => apiFetch<RespostaPausa>('/execucoes/pausas', {
       method: 'POST',
       body: JSON.stringify({
         pipeline_name: pipeline,
@@ -110,7 +120,7 @@ export function ModalPausaEtapa({
         ...(runId ? { dag_run_id: runId } : {}),
         ...(dataReferencia ? { data_referencia: dataReferencia } : {}),
       }),
-    }),
+    })),
     onSuccess: (r) => {
       // `ja_existia` não é erro nem sucesso novo: alguém (ou outra aba) já
       // tinha pausado esta etapa. Dizer isso é diferente de fingir que o
@@ -125,19 +135,19 @@ export function ModalPausaEtapa({
   })
 
   const liberar = useMutation<RespostaPausa>({
-    mutationFn: () => apiFetch(`/execucoes/pausas/${pausa?.id}/liberar`, {
+    mutationFn: conferido(() => apiFetch<RespostaPausa>(`/execucoes/pausas/${pausa?.id}/liberar`, {
       method: 'POST',
       body: JSON.stringify({ observacao: observacao.trim() || undefined }),
-    }),
+    })),
     onSuccess: feito(`Etapa "${jobName}" liberada — a execução segue daqui.`),
     onError: (e: unknown) => toast.error(mensagemErro(e)),
   })
 
   const cancelar = useMutation<RespostaPausa>({
-    mutationFn: () => apiFetch(`/execucoes/pausas/${pausa?.id}/cancelar`, {
+    mutationFn: conferido(() => apiFetch<RespostaPausa>(`/execucoes/pausas/${pausa?.id}/cancelar`, {
       method: 'POST',
       body: JSON.stringify({ observacao: observacao.trim() || undefined }),
-    }),
+    })),
     onSuccess: feito('Execução cancelada — o ciclo foi marcada como falha.'),
     onError: (e: unknown) => toast.error(mensagemErro(e)),
   })

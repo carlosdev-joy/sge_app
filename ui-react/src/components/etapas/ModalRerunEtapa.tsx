@@ -132,6 +132,10 @@ interface Props {
   runId: string | null
   /** status da etapa — só para o texto; o gesto NÃO exige FALHA (§4) */
   status: string | null
+  /** (opcional) confere, no instante do envio, se o alvo aberto ainda é o
+   *  atual; devolve o motivo da recusa e nada é enviado. Sem ele, o modal se
+   *  comporta como sempre (telas legadas). */
+  guard?: () => string | null
 }
 
 const RAZOES: Record<string, string> = {
@@ -159,7 +163,7 @@ const RAZOES: Record<string, string> = {
 }
 
 export function ModalRerunEtapa({
-  open, onClose, pipeline, taskId, jobName, dataReferencia, runId, status,
+  open, onClose, pipeline, taskId, jobName, dataReferencia, runId, status, guard,
 }: Props) {
   const qc = useQueryClient()
   const [cascata, setCascata] = useState(false)
@@ -213,7 +217,10 @@ export function ModalRerunEtapa({
   const sobreposicoes = overridesParaEnviar(parametrosPrevia, overrides)
 
   const executar = useMutation<RespostaRerun>({
-    mutationFn: () => apiFetch('/execucoes/rerun', {
+    mutationFn: () => {
+      const recusa = guard?.()
+      if (recusa) return Promise.reject(new Error(recusa))
+      return apiFetch('/execucoes/rerun', {
       method: 'POST',
       body: JSON.stringify({
         pipeline_name: pipeline,
@@ -227,7 +234,8 @@ export function ModalRerunEtapa({
           ? { parametros: sobreposicoes, ...(p?.dag_run_id ? { dag_run_id: p.dag_run_id } : {}) }
           : {}),
       }),
-    }),
+      })
+    },
     onSuccess: (r) => {
       const extra = r.cascata && r.dependentes_reabertos.length
         ? ` · ${r.dependentes_reabertos.length} dependente(s) reaberto(s)`

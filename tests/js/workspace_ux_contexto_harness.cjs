@@ -16,9 +16,16 @@
 //  6. Vistas conservadas: Montagem continua renderizada (oculta) na Configuração
 //     com uma única instância de publicação; todo elemento com `hidden` fica sem
 //     utilitário de display que anule o atributo.
-//  7. WorkspaceOperations real: etapa/tentativa da URL abrem o log da tentativa
-//     corrente ou histórica da corrida exibida, nunca uma tentativa inventada ou
-//     de outra corrida; texto do log é texto; vista inativa não abre log nem ação.
+//  7. WorkspaceOperations real (F5): um único gráfico (o renderer da Montagem,
+//     sem edição), estados por etapa, inspector Resumo/Tentativas/Logs/Parâmetros,
+//     anúncio só da etapa selecionada, log como texto e nunca de outra corrida,
+//     tabela alternativa, vista oculta sem consulta, fonte indisponível sem
+//     animação, solicitação guiada (Solicitado ≠ Em fila ≠ Executando) e
+//     histórico sob demanda com filtros e paginação. Cerca de identidade: resposta
+//     de outro pipeline (mesmo run_id), outra corrida ou outra data não define
+//     desenho, versão nem estados; reprocessar mira o task_id real; confirmação
+//     de reprocesso/execução aberta para um alvo some ao mudar etapa, corrida ou
+//     sessão e, se o envio acontecer na corrida, nada é postado.
 //  8. Modal real dentro de área oculta (contexto injetado): fica montado, sem
 //     role de diálogo e com display none.
 //  9. Guarda de navegação real (lib/navigationGuard) contra um History simulado
@@ -41,12 +48,12 @@
 //     abre quando há problema e reabre o inspector na etapa; gates de revisão
 //     validada, alteração local e permissão; um pedido por clique; publicar envia
 //     a revisão salva e a fence da sessão uma vez, após confirmar.
-// 13. Execução identifica a fonte e avisa que o rascunho só executa publicado.
+// 13. Execução identifica a fonte (snapshot ou publicada atual, nunca o rascunho)
+//     e avisa que o rascunho só executa publicado.
 //
 // Limites da bancada (minireact): useEffect não roda (sem renovação/intervalos);
 // useLayoutEffect roda durante o render para atualizar as refs de guarda, como o
-// React faria antes do próximo evento. O canvas React Flow e o FluxoEditor são
-// dublês. O estado do minireact é por caminho, então a bancada NÃO prova
+// React faria antes do próximo evento. O canvas React Flow é dublê. O estado do minireact é por caminho, então a bancada NÃO prova
 // preservação de instância nem CSS/foco/overlay no DOM: isso é do navegador real.
 'use strict'
 const fs = require('fs'), os = require('os'), path = require('path'), assert = require('assert/strict')
@@ -54,7 +61,7 @@ const RAIZ = path.resolve(__dirname, '..', '..'), SRC = path.join(RAIZ, 'ui-reac
 const { transform } = require(path.join(RAIZ, 'ui-react', 'node_modules', 'sucrase'))
 const mini = require(path.join(__dirname, 'minireact.cjs'))
 
-const ENTRADAS = ['components/workspace/WorkspaceEditor.tsx', 'components/workspace/WorkspaceOperations.tsx', 'components/ui/Modal.tsx', 'lib/navigationGuard.ts', 'lib/dialogs.ts', 'lib/workspaceTabs.ts', 'lib/workspaceNavigation.ts', 'lib/workspace.ts', 'components/workspace/WorkspaceParameters.tsx', 'components/pipelines/DependenciasModal.tsx', 'components/workspace/SharedJobConfiguration.tsx', 'components/workspace/SpecializedConfiguration.tsx', 'components/workspace/WorkspaceLineage.tsx']
+const ENTRADAS = ['components/workspace/WorkspaceEditor.tsx', 'components/workspace/WorkspaceOperations.tsx', 'components/ui/Modal.tsx', 'lib/navigationGuard.ts', 'lib/dialogs.ts', 'lib/workspaceTabs.ts', 'lib/workspaceNavigation.ts', 'lib/workspace.ts', 'components/workspace/WorkspaceParameters.tsx', 'components/pipelines/DependenciasModal.tsx', 'components/workspace/SharedJobConfiguration.tsx', 'components/workspace/SpecializedConfiguration.tsx', 'components/workspace/WorkspaceLineage.tsx', 'components/workspace/WorkspaceRunHistory.tsx', 'components/workspace/WorkspaceRunRequest.tsx', 'components/etapas/ModalRerunEtapa.tsx', 'components/etapas/ModalPausaEtapa.tsx']
 const DUBLES = {
  'lib/api.ts': `
 const calls = []; let responder = () => ({})
@@ -71,10 +78,6 @@ exports.BASE = '/orquestra'
  'components/workspace/WorkspaceCanvas.tsx': `
 const { jsx } = require('react/jsx-runtime'); const { useState } = require('react')
 exports.WorkspaceCanvas = function WorkspaceCanvas(p) { const [vista] = useState(() => ({ zoom: 1 })); exports.__vista = vista; exports.__props = p; return jsx('div', { 'data-canvas': p.definition.nodes.map(n => n.id).join(','), 'data-editable': String(p.editable), 'data-selecionado': p.selected || '' }) }
-`,
- 'components/etapas/FluxoEditor.tsx': `
-const { jsx } = require('react/jsx-runtime')
-exports.FluxoEditor = function FluxoEditor(p) { exports.__ultimo = p; return jsx('div', { 'data-grafo': p.pipeline, 'data-ativo': String(p.workspace.active), 'data-etapa': p.workspace.stage || '' }) }
 `,
 }
 function resolver(de, esp) {
@@ -115,7 +118,7 @@ function Suspense(p) { return p.children }
 // injetado pelo teste (__contexto), que simula uma área externa, e depois o padrão.
 const __contexto = new Map()
 function useContext(c) { return c.pilha.length ? mini.hooks.useContext(c) : __contexto.has(c) ? __contexto.get(c) : c.padrao }
-module.exports = Object.assign({}, mini.hooks, { createElement: mini.criar, Fragment: mini.FRAGMENT, forwardRef, lazy, Suspense, useContext, __contexto, __lazy, memo: C => C, useDeferredValue: v => v, useId: () => 'orq-' + (++seq), useLayoutEffect: fn => { fn() } })
+module.exports = Object.assign({}, mini.hooks, { createElement: mini.criar, Fragment: mini.FRAGMENT, forwardRef, lazy, Suspense, useContext, __contexto, __lazy, memo: C => C, useDeferredValue: v => v, useId: () => 'orq-' + (++seq), useLayoutEffect: fn => { fn() }, useSyncExternalStore: (_assinar, ler) => ler() })
 module.exports.default = module.exports
 `)
  const runtime = `const mini = require(${MINI}); const jsx = (tipo, props, key) => ({ __el: true, tipo, props: props || {}, key }); module.exports = { jsx, jsxs: jsx, jsxDEV: jsx, Fragment: mini.FRAGMENT }`
@@ -126,7 +129,11 @@ module.exports.default = module.exports
  pacote('@tanstack/react-query', `
 const fixtures = { 'pipeline-projects': { projects: ['PROJ_A'] }, 'pipeline-domains': { domains: ['FIN'] }, 'agenda-calendarios': { calendarios: [{ calendario_nome: 'NACIONAL' }] } }
 exports.__dados = fixtures
-exports.useQuery = o => { const f = fixtures[o.queryKey[0]]; return { data: typeof f === 'function' ? f(o.queryKey) : f, isPending: false, isError: false, error: null, fetchStatus: 'idle', refetch() {} } }
+// __opcoes guarda as opções da última leitura por chave (frequência, identidade);
+// __estados sobrepõe o estado da consulta (erro, carimbos) quando o teste pede.
+const opcoes = {}, estados = {}
+exports.__opcoes = opcoes; exports.__estados = estados
+exports.useQuery = o => { opcoes[o.queryKey[0]] = o; const f = fixtures[o.queryKey[0]]; const data = typeof f === 'function' ? f(o.queryKey) : f; return Object.assign({ data, isPending: false, isError: false, error: null, fetchStatus: 'idle', isFetching: false, dataUpdatedAt: data === undefined ? 0 : 1_760_000_000_000, errorUpdatedAt: 0, refetch() {} }, estados[o.queryKey[0]] || {}) }
 exports.useMutation = o => ({ isPending: false, mutate(v) { Promise.resolve().then(() => { if (o.onMutate) o.onMutate(v); return o.mutationFn(v) }).then(r => { if (o.onSuccess) o.onSuccess(r, v) }, e => { if (o.onError) o.onError(e, v) }).finally(() => { if (o.onSettled) o.onSettled() }) } })
 exports.useQueryClient = () => ({ invalidateQueries() {}, setQueryData() {} })
 `)
@@ -338,64 +345,230 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  assert.equal(api.__calls.length, 0, 'leitura não chama a API de escrita')
  resultado.leitura = true
 
- // ── 7. Execução: investigação pela URL, vistas e log ──────────────────────
+ // ── 7. Execução (F5): visualizador comum, inspector operacional, histórico e
+ //    solicitação guiada. Uma leitura alimenta gráfico, tabela e inspector. ──
  const rq = require(path.join(tmp, 'node_modules/@tanstack/react-query/index.js'))
- const fluxo = require(path.join(tmp, 'components/etapas/FluxoEditor.js'))
  const { WorkspaceOperations } = require(path.join(tmp, 'components/workspace/WorkspaceOperations.js'))
- rq.__dados['workspace-execution'] = { data_referencia: '2026-10-10', identidade: { run_id: 'r1', dag_run_id: 'manual__r1', candidatos: [{ run_id: 'manual__r1', status: 'success' }] }, workspaceVersion: { number: 4, definition, layout }, etapas: [
-  { job_name: 'carga', task_id: 'carga', status: 'success', inicio: '10:00', attempt: 3, tentativas: [{ attempt: 1 }, { attempt: 2 }], total_tentativas: 3, sem_execucao: false },
-  { job_name: 'aviso', task_id: null, status: null, inicio: null, attempt: null, tentativas: [], total_tentativas: 0, sem_execucao: true } ] }
+ const canvas = require(path.join(tmp, 'components/workspace/WorkspaceCanvas.js'))
+ // Histórico, pedido de execução e confirmações são lazy (fora da entrada da Execução): a bancada registra os módulos reais.
+ const reactShim = require(path.join(tmp, 'node_modules/react/index.js'))
+ for (const [alvo, arquivo, nome] of [['./WorkspaceRunHistory', 'components/workspace/WorkspaceRunHistory.js', 'WorkspaceRunHistory'], ['./WorkspaceRunRequest', 'components/workspace/WorkspaceRunRequest.js', 'WorkspaceRunRequest'], ['../etapas/ModalRerunEtapa', 'components/etapas/ModalRerunEtapa.js', 'ModalRerunEtapa'], ['../etapas/ModalPausaEtapa', 'components/etapas/ModalPausaEtapa.js', 'ModalPausaEtapa']]) reactShim.__lazy.set(alvo, require(path.join(tmp, arquivo))[nome])
+ const passo = (job, status, extra = {}) => ({ job_name: job, task_id: job, job_type: 'shell', no_desenho: true, sem_execucao: !status, status, inicio: status ? '2026-10-10 10:00:00' : null, fim: status && status !== 'RUNNING' ? '2026-10-10 10:01:00' : null, duration_seconds: status && status !== 'RUNNING' ? 60 : null, status_code: null, attempt: status ? 1 : null, log_file: null, host: null, tentativas: [], total_tentativas: status ? 1 : 0, depends_on_jobs: [], execution_order: 1, ...extra })
+ const CORRIDA = { pipeline_name: NOME, data_referencia: '2026-10-10', identidade: { resolvido: true, run_id: 'r1', dag_run_id: 'manual__r1', ambiguo: false, candidatos: [{ run_id: 'manual__r1', status: 'EXECUTANDO' }] }, corrida: { run_id: 'manual__r1', status: 'EXECUTANDO', disparado_por: 'manual' }, workspaceVersion: { number: 4, definition, layout }, pausas: [], etapas: [
+  passo('n0', 'SUCCESS', { attempt: 3, tentativas: [{ attempt: 1, status: 'FAILED' }, { attempt: 2, status: 'FAILED' }], total_tentativas: 3 }), passo('n1', 'RUNNING'), passo('n2', 'SKIPPED'), passo('n3', null), passo('n4', 'FAILED'), passo('n5', 'UP_FOR_RETRY'), passo('fora', 'SUCCESS', { no_desenho: false }) ] }
+ let execucao = CORRIDA
+ rq.__dados['workspace-execution'] = chave => typeof execucao === 'function' ? execucao(chave) : execucao
  rq.__dados['workspace-log'] = chave => `<script>alert("x")</script> tentativa ${chave[5]}`
- const op = { investigacoes: [] }
- const capsOp = { ...caps, actions: { ...caps.actions, execute: true } }
- function Operacao() {
-  const [view, setView] = mini.hooks.useState('grafo'); const [stage, setStage] = mini.hooks.useState(''); const [attempt, setAttempt] = mini.hooks.useState(null); const [ativo, setAtivo] = mini.hooks.useState(true); const [runId, setRunId] = mini.hooks.useState('')
-  Object.assign(op, { setView, setStage, setAttempt, setAtivo, setRunId })
-  return jsx(WorkspaceOperations, { name: NOME, date: '2026-10-10', runId, stage, attempt, definition, layout, caps: capsOp, view, active: ativo, onView: setView, onDate() {}, onRun: setRunId, onInvestigate: (s, a) => { op.investigacoes.push([s, a]); setStage(s || ''); setAttempt(a) }, actionsHost: null })
+ const op = { investigacoes: [], abertas: [] }
+ const auth = require(path.join(tmp, 'store/auth.js')).useAuthStore
+ auth.setState({ token: 'sessao-a' })
+ const capsOp = { ...caps, actions: { ...caps.actions, execute: true, reprocess: true, pauseStages: true } }
+ function Operacao({ capacidades = capsOp, revisao = null, def = definition }) {
+  const [view, setView] = mini.hooks.useState('grafo'); const [stage, setStage] = mini.hooks.useState(''); const [attempt, setAttempt] = mini.hooks.useState(null); const [ativo, setAtivo] = mini.hooks.useState(true); const [runId, setRunId] = mini.hooks.useState(''); const [, setTick] = mini.hooks.useState(0)
+  // tick: redesenha após mudança externa (dados da consulta, sessão), que a bancada não observa sozinha.
+  Object.assign(op, { setView, setStage, setAttempt, setAtivo, setRunId, runId, tick: () => setTick(t => t + 1) })
+  return jsx(WorkspaceOperations, { name: NOME, date: '2026-10-10', runId, stage, attempt, definition: def, layout, draftRevision: revisao, caps: capacidades, view, active: ativo, onView: setView, onDate() {}, onRun: setRunId, onOpenRun: (id, dia) => { op.abertas.push([id, dia]); setRunId(id) }, onInvestigate: (s, a) => { op.investigacoes.push([s, a]); setStage(s || ''); setAttempt(a) }, actionsHost: { id: 'acoes' } })
  }
  const ex = mini.montar(jsx(Operacao, {})).sincronizar()
- const tabela = n => n.props['aria-label'] === 'Etapas, tentativas e logs da corrida'
- const grafo = () => ex.achar(n => n.props['data-grafo'] !== undefined)
+ const canvases = () => ex.achar(n => n.props['data-canvas'] !== undefined)
+ const estadosRun = () => canvas.__props.run.states
  const logDe = () => ex.achar(n => n.tag === 'section' && n.props['aria-label'] === 'Log da tentativa')
- const mensagem = () => ex.achar(n => n.tag === 'p' && n.props.role === 'status').map(textoDe)
- assert.equal(grafo().length, 1); assert.equal(grafo()[0].props['data-ativo'], 'true'); assert(ocultoPor(ex, tabela).length, 'tabela oculta no gráfico')
- assert.equal(ex.botoes('Executar pipeline').length, 1)
- // Etapa vinda do gráfico/link sem tentativa: abre a tentativa corrente (3) desta corrida.
- op.setStage('carga'); ex.sincronizar(); assert.equal(grafo()[0].props['data-etapa'], 'carga')
- op.setView('tabela'); ex.sincronizar()
- assert.equal(grafo().length, 1, 'gráfico conservado na Tabela'); assert.equal(grafo()[0].props['data-ativo'], 'false'); assert(ocultoPor(ex, n => n.props['data-grafo'] !== undefined).length)
- assert.equal(logDe().length, 1); assert.match(textoDe(logDe()[0]), /carga · tentativa 3 · Airflow/)
- const pre = descendentes(logDe()[0]).find(n => n.tag === 'pre')
- assert.deepEqual(pre.filhos, ['<script>alert("x")</script> tentativa 3'], 'log é texto, não HTML')
+ const mensagens = () => ex.achar(n => n.props.role === 'status').map(textoDe)
+ const anuncio = () => textoDe(ex.achar(n => n.props['aria-live'] === 'polite')[0])
+ const tabelaOculta = () => ocultoPor(ex, n => n.tag === 'table').length > 0
+ const aba = rotulo => ex.achar(n => n.tag === 'button' && n.props['aria-controls'] && textoDe(n).startsWith(rotulo))[0]
+ // Um único gráfico (o renderer da Montagem, sem edição) e nenhuma ferramenta de montagem.
+ assert.equal(canvases().length, 1); assert.equal(canvas.__props.editable, false); assert.equal(canvas.__props.label, 'Canvas da execução')
+ assert.equal(ex.botoes('Organizar').length + ex.botoes('Desfazer').length + ex.achar(n => n.props.draggable !== undefined).length, 0, 'sem ferramentas de montagem')
+ assert(tabelaOculta(), 'tabela é alternativa, oculta no gráfico')
+ // Estados: sucesso, executando (indicador só com telemetria ativa), pulada, sem telemetria, falha e desconhecido.
+ assert.deepEqual(['n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6'].map(id => estadosRun().get(id)?.kind ?? 'ausente'), ['success', 'running', 'skipped', 'none', 'failed', 'unknown', 'ausente'])
+ assert.equal(estadosRun().get('n1').animate, true); assert.equal(estadosRun().get('n0').animate, false); assert.equal(estadosRun().get('n5').label, 'Estado UP_FOR_RETRY')
+ assert.match(ex.texto, /Executando/); assert.match(ex.texto, /1 de 11 etapas concluídas/)
+ assert.match(ex.texto, /Desenho da versão 4 vinculada a esta corrida/)
+ assert.match(ex.texto, /Uma etapa executada não está no desenho exibido: fora/)
+ // Executar fica nas ações do cabeçalho; frequência visível (30 s sem medição).
+ assert.equal(ex.achar(n => n.props['data-portal'] === 'acoes').length, 1); assert.equal(ex.botoes('Executar pipeline').length, 1)
+ assert.match(ex.texto, /atualiza a cada 30 s/)
+ const opcoes = rq.__opcoes['workspace-execution']
+ assert.deepEqual(opcoes.queryKey.slice(2), [NOME, '2026-10-10', ''])
+ assert.equal(opcoes.refetchInterval({ state: { data: CORRIDA } }), 30_000, 'corrida ativa sem medição: 30 s')
+ assert.equal(opcoes.refetchIntervalInBackground, false)
+ // Sem seleção, o inspector resume a corrida; não é cadastro.
+ assert.match(textoDe(ex.achar(n => n.props['aria-label'] === 'Resumo da corrida')[0]), /manual__r1.*Versão 4/)
+ // Selecionar etapa: inspector com Resumo/Tentativas/Logs/Parâmetros, anúncio da etapa.
+ canvas.__props.onSelect('n0'); ex.sincronizar()
+ assert.deepEqual(op.investigacoes.at(-1), ['n0', null]); assert.equal(canvas.__props.selected, 'n0')
+ assert.deepEqual(ex.achar(n => n.tag === 'button' && n.props['aria-controls'] && n.props['aria-pressed'] !== undefined && /^(Resumo|Tentativas|Logs|Parâmetros)/.test(textoDe(n))).map(textoDe), ['Resumo', 'Tentativas 3', 'Logs', 'Parâmetros'])
+ assert.equal(anuncio(), 'Etapa n0: Concluída, tentativa 3')
+ // Nova consulta com outra etapa mudando não gera anúncio da selecionada.
+ execucao = { ...CORRIDA, etapas: CORRIDA.etapas.map(row => row.job_name === 'n1' ? passo('n1', 'SUCCESS') : row) }; op.setView('tabela'); ex.sincronizar(); op.setView('grafo'); ex.sincronizar()
+ assert.equal(anuncio(), 'Etapa n0: Concluída, tentativa 3'); execucao = CORRIDA
+ // Tentativas → log da tentativa histórica, texto escapado.
+ ex.clicar(aba('Tentativas')); assert.equal(ex.achar(n => n.tag === 'li' && /Tentativa \d/.test(textoDe(n))).length, 3)
+ ex.clicar(ex.botoes('Ver log')[2]); assert.deepEqual(op.investigacoes.at(-1), ['n0', 1])
+ assert.equal(logDe().length, 1); assert.match(textoDe(logDe()[0]), /n0 · tentativa 1 · Airflow/)
+ assert.deepEqual(descendentes(logDe()[0]).find(n => n.tag === 'pre').filhos, ['<script>alert("x")</script> tentativa 1'], 'log é texto, não HTML')
  assert.equal(ex.achar(n => n.props.dangerouslySetInnerHTML !== undefined).length, 0)
- assert.equal(controlePor(ex.achar(() => true), 'Buscar etapa nesta corrida').props.value, '', 'busca vazia já mostra a etapa')
- assert.equal(ex.achar(n => n.tag === 'tr' && n.props['aria-current'] === 'true').map(textoDe)[0].startsWith('carga'), true)
- // Tentativa histórica pela tabela: grava etapa+tentativa (contrato da URL).
- ex.clicar(ex.botoes('Tentativa 1')[0]); assert.deepEqual(op.investigacoes.at(-1), ['carga', 1]); assert.match(textoDe(logDe()[0]), /tentativa 1 · Airflow/)
+ // Execução, log e validação só leem com a aba exibida (e o navegador visível).
+ assert.deepEqual([rq.__opcoes['workspace-execution'].enabled, rq.__opcoes['workspace-log'].enabled], [true, true])
+ op.setAtivo(false); ex.sincronizar()
+ assert.deepEqual([rq.__opcoes['workspace-execution'].enabled, rq.__opcoes['workspace-log'].enabled, rq.__opcoes['workspace-execution'].refetchOnWindowFocus], [false, false, false], 'aba oculta: nenhuma leitura, nem por foco')
+ op.setAtivo(true); ex.sincronizar(); assert.deepEqual([rq.__opcoes['workspace-execution'].enabled, rq.__opcoes['workspace-log'].enabled], [true, true], 'voltar revalida')
+ assert.equal(rq.__opcoes['workspace-execution'].staleTime, 5_000, 'leitura com mais de 5 s é refeita ao voltar (o padrão global de 30 s não segura)')
  // Tentativa que não pertence à corrida: nenhum log, motivo explícito.
- op.setAttempt(7); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagem().some(t => /tentativa 7 da etapa carga não pertence a esta corrida/.test(t)), mensagem())
- // Corrida pedida diferente da exibida: não abre log de outra corrida.
- op.setAttempt(null); op.setRunId('manual__r2'); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagem().some(t => /corrida pedida/.test(t)))
+ op.setAttempt(7); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagens().some(t => /tentativa 7 da etapa n0 não pertence a esta corrida/.test(t)), mensagens())
+ // Corrida pedida diferente da resposta: sem estados nem log de outra corrida.
+ op.setAttempt(null); op.setRunId('manual__r2'); ex.sincronizar()
+ assert.match(ex.texto, /não corresponde à corrida pedida \( ?manual__r2 ?\)/); assert.match(ex.texto, /Corrida manual__r2/); assert.equal(estadosRun(), null); assert.equal(logDe().length, 0)
  op.setRunId('manual__r1'); ex.sincronizar(); assert.equal(logDe().length, 1, 'corrida fixada pelo dag_run_id')
  op.setRunId('r1'); ex.sincronizar(); assert.equal(logDe().length, 1, 'corrida fixada pelo run_id')
+ // Resposta de outro pipeline com o MESMO run_id, ou de outra corrida/data: nada
+ // dela define desenho, versão, título nem estados; o publicado fica, rotulado.
+ const ERRADO = { ...definition, identity: { ...definition.identity, displayName: 'TITULO_ERRADO' }, nodes: [{ ...definition.nodes[0], id: 'NO_ERRADO' }], edges: [] }
+ const cercado = (resposta, run, rotulo) => {
+  execucao = resposta; op.setRunId(run); op.tick(); ex.sincronizar()
+  assert.equal(estadosRun(), null, rotulo); assert.equal(logDe().length, 0, rotulo)
+  assert.equal(canvas.__props.definition, definition, `${rotulo}: desenho publicado`)
+  assert.doesNotMatch(ex.texto, /NO_ERRADO|TITULO_ERRADO|[Vv]ersão 99/, rotulo)
+  assert.match(ex.texto, /A resposta não corresponde/, rotulo)
+ }
+ cercado({ ...CORRIDA, pipeline_name: 'OUTRO_PIPELINE', workspaceVersion: { number: 99, definition: ERRADO, layout } }, 'manual__r1', 'outro pipeline, mesmo run_id')
+ assert.match(ex.texto, /Corrida ainda não confirmada: o desenho é a configuração publicada atual, sem estados/)
+ cercado({ ...CORRIDA, identidade: { ...CORRIDA.identidade, run_id: 'rx', dag_run_id: 'manual__rx' }, workspaceVersion: { number: 99, definition: ERRADO, layout } }, 'manual__r1', 'outra corrida')
+ cercado({ ...CORRIDA, data_referencia: '2026-10-01', workspaceVersion: { number: 99, definition: ERRADO, layout } }, '', 'outra data')
+ execucao = CORRIDA; op.setRunId('manual__r1'); op.tick(); ex.sincronizar(); assert.equal(logDe().length, 1, 'resposta certa volta a valer')
+ assert.equal(rq.__opcoes['workspace-execution'].refetchInterval({ state: { data: { ...CORRIDA, pipeline_name: 'OUTRO_PIPELINE' } } }), 30_000)
  // Etapa sem tentativa: nada inventado.
- ex.disparar(controlePor(ex.achar(() => true), 'Buscar etapa nesta corrida'), 'onChange', { target: { value: '' } })
- assert.equal(textoDe(ex.achar(n => n.tag === 'tr' && textoDe(n).startsWith('aviso'))[0]).includes('Sem tentativas'), true)
- assert.equal(ex.achar(n => n.tag === 'tr' && textoDe(n).startsWith('aviso')).flatMap(descendentes).filter(n => n.tag === 'button').length, 0)
- op.setStage('aviso'); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagem().some(t => /aviso ainda não tem tentativas/.test(t)))
- // Busca local continua ao alternar vistas (não depende da vista).
- ex.disparar(controlePor(ex.achar(() => true), 'Buscar etapa nesta corrida'), 'onChange', { target: { value: 'avi' } })
- op.setView('grafo'); ex.sincronizar(); op.setView('tabela'); ex.sincronizar()
- assert.equal(controlePor(ex.achar(() => true), 'Buscar etapa nesta corrida').props.value, 'avi')
- // Etapa escolhida no gráfico que a busca esconderia: a busca passa a mostrá-la.
- op.setStage('carga'); ex.sincronizar(); assert.equal(controlePor(ex.achar(() => true), 'Buscar etapa nesta corrida').props.value, 'carga')
- // Execução oculta (outro destino): sem log, sem ação no cabeçalho, gráfico inativo.
- op.setStage('carga'); op.setAtivo(false); ex.sincronizar()
- assert.equal(logDe().length, 0); assert.equal(ex.botoes('Executar pipeline').length, 0)
- op.setView('grafo'); ex.sincronizar(); assert.equal(grafo()[0].props['data-ativo'], 'false')
- assert.deepEqual(hiddenAnulado(ex).map(n => n.props.className), [])
- assert.equal(typeof fluxo.__ultimo.workspace.onStage, 'function')
- resultado.execucao = { corrente: 3, historica: 1, inventada: false, outraCorrida: false, texto: true }
+ op.setStage('n3'); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagens().some(t => /n3 ainda não tem tentativas/.test(t)))
+ // Tabela: alternativa com a mesma seleção; o gráfico continua montado e oculto.
+ op.setView('tabela'); ex.sincronizar(); assert(!tabelaOculta()); assert.equal(canvases().length, 1); assert(ocultoPor(ex, n => n.props['data-canvas'] !== undefined).length)
+ assert.equal(ex.achar(n => n.tag === 'tr' && n.props['aria-current'] === 'true').map(textoDe)[0].startsWith('n3'), true)
+ assert.match(textoDe(ex.achar(n => n.tag === 'tr' && textoDe(n).startsWith('fora'))[0]), /fora do desenho exibido/)
+ ex.clicar(ex.achar(n => n.tag === 'button' && textoDe(n) === 'n4')[0]); assert.deepEqual(op.investigacoes.at(-1), ['n4', null])
+ ex.disparar(controlePor(ex.achar(() => true), 'Buscar etapa nesta corrida'), 'onChange', { target: { value: 'n2' } })
+ assert.deepEqual(ex.achar(n => n.tag === 'tbody')[0].filhos.map(r => textoDe(r).split(' ')[0]), ['n2'])
+ // Ações autorizadas no inspector; reprocessar explica o alcance (não é executar tudo).
+ assert.match(ex.botoes('Reprocessar a partir desta etapa')[0].props.title, /não executa o pipeline inteiro/)
+ assert.equal(ex.botoes('Pausar…').length, 1)
+ assert.doesNotMatch(ex.botoes('Reprocessar a partir desta etapa')[0].props.title, /e as seguintes/, 'não promete alcance que a confirmação decide')
+ execucao = { ...CORRIDA, etapas: CORRIDA.etapas.map(row => row.job_name === 'n4' ? { ...row, task_id: 'grupo.n4' } : row) }
+ const PREVIA = { pipeline_name: NOME, task_id: 'grupo.n4', data_referencia: '2026-10-10', dag_run_id: 'manual__r1', airflow_indisponivel: false, dag_pausada: false, etapas: ['grupo.n4'], tasks_de_apoio: 0, total_tasks: 1, cascata: { disponivel: false, razao: null, dependentes: [], com_corrida: [], sem_corrida: [], corridas: {}, truncado: false } }
+ rq.__dados['rerun-previa'] = PREVIA
+ const reprocessos = []
+ api.__responder(call => { if (call.method === 'POST' && call.p === '/execucoes/rerun') { reprocessos.push(call.body); return { ok: true, tasks_cleared: 1, cascata: false, dependentes_reabertos: [], corridas_substituidas: 0, corridas_irmas_aposentadas: 0, auditado: true, avisos: [] } } throw new Error(`chamada inesperada ${call.method} ${call.p}`) })
+ const confirmacao = () => ex.porPapel('dialog').filter(n => /Reexecutar a partir de/.test(textoDe(n)))
+ const abrirReprocesso = () => { ex.clicar(ex.botoes('Reprocessar a partir desta etapa')[0]); assert.equal(confirmacao().length, 1) }
+ op.tick(); ex.sincronizar(); abrirReprocesso()
+ assert.equal(rq.__opcoes['rerun-previa'].queryKey[2], 'grupo.n4', 'prévia pelo task_id da telemetria, não pelo job_name')
+ // Trocar a etapa descarta a confirmação; voltar não a reabre.
+ op.setStage('n0'); ex.sincronizar(); assert.equal(confirmacao().length, 0, 'outra etapa: confirmação descartada')
+ op.setStage('n4'); ex.sincronizar(); assert.equal(confirmacao().length, 0, 'voltar à etapa não reabre a intenção antiga')
+ // Trocar a corrida e a sessão também descartam.
+ abrirReprocesso(); op.setRunId('r1'); ex.sincronizar(); assert.equal(confirmacao().length, 1, 'mesma corrida por outro identificador: intenção mantida')
+ op.setRunId('manual__r9'); ex.sincronizar(); assert.equal(confirmacao().length, 0, 'outra corrida pedida: descartada')
+ op.setRunId('manual__r1'); ex.sincronizar(); assert.equal(confirmacao().length, 0, 'voltar à corrida não reabre')
+ abrirReprocesso(); auth.setState({ token: 'sessao-b' }); op.tick(); ex.sincronizar(); assert.equal(confirmacao().length, 0, 'outra sessão: descartada'); auth.setState({ token: 'sessao-a' }); op.tick(); ex.sincronizar()
+ // Mudança no instante do envio (antes de a tela redesenhar): nada é postado.
+ abrirReprocesso(); auth.setState({ token: 'sessao-b' })
+ ex.clicar(ex.botoes('Reexecutar apenas este')[0]); await flush(); await flush()
+ assert.equal(reprocessos.length, 0, 'guarda no envio: sessão trocada não posta'); auth.setState({ token: 'sessao-a' }); op.tick(); ex.sincronizar()
+ abrirReprocesso(); ex.clicar(ex.botoes('Reexecutar apenas este')[0]); await flush(); await flush(); ex.sincronizar()
+ assert.deepEqual(reprocessos, [{ pipeline_name: NOME, task_id: 'grupo.n4', cascata: false, dag_run_id: 'manual__r1', data_referencia: '2026-10-10' }], 'um envio, alvo congelado e task_id real')
+ assert.equal(confirmacao().length, 0, 'concluído, a confirmação fecha')
+ delete rq.__dados['rerun-previa']; execucao = CORRIDA; op.setRunId(''); op.tick(); ex.sincronizar()
+ resultado.cerca = { outroPipelineMesmoRun: 'sem desenho/versão/estados', outraCorrida: 'sem desenho/versão/estados', outraData: 'sem desenho/versão/estados', reprocessoTaskId: 'grupo.n4', intencaoDescartada: ['etapa', 'corrida', 'sessão'], envioComSessaoTrocada: 0, leiturasOcultas: false }
+ const semAcoes = mini.montar(jsx(Operacao, { capacidades: { ...caps, actions: { ...caps.actions, execute: false } } })).sincronizar()
+ canvas.__props.onSelect('n0'); semAcoes.sincronizar()
+ assert.equal(semAcoes.botoes('Reprocessar').length + semAcoes.botoes('Pausar').length + semAcoes.botoes('Executar pipeline').length, 0, 'sem capacidade, sem ação')
+ // Execução oculta (outro destino): sem ação no cabeçalho, sem consulta periódica, sem animação.
+ const oculto = mini.montar(jsx(Operacao, {})).sincronizar(); op.setAtivo(false); oculto.sincronizar()
+ assert.equal(oculto.botoes('Executar pipeline').length, 0); assert.equal(rq.__opcoes['workspace-execution'].refetchInterval({ state: { data: CORRIDA } }), false); assert.equal(rq.__opcoes['workspace-execution'].enabled, false)
+ assert.equal(canvas.__props.run.states.get('n1').animate, false); assert.match(canvas.__props.run.states.get('n1').label, /Último registro/)
+ assert.deepEqual(hiddenAnulado(oculto).map(n => n.props.className), [])
+ // Fonte indisponível: último estado com carimbo, sem atividade atual.
+ rq.__estados['workspace-execution'] = { isError: true, error: new Error('Consulta de execução indisponível'), errorUpdatedAt: 1_760_000_000_500 }
+ const fora = mini.montar(jsx(Operacao, {})).sincronizar()
+ assert.match(fora.texto, /Fonte indisponível: mostrando o último estado recebido às/); assert.equal(canvas.__props.run.states.get('n1').animate, false); assert.equal(fora.botoes('Tentar novamente').length, 1)
+ delete rq.__estados['workspace-execution']
+ resultado.execucao = { graficos: 1, estados: 6, anuncioSelecionada: true, logTexto: true, outraCorrida: false, ocultaSemPolling: true, indisponivelSemAnimacao: true }
+
+ // Solicitação guiada: sem JSON obrigatório, identificador estável, Solicitado ≠ Em fila ≠ Executando.
+ const pedidos = []; let respostaRun = () => ({ runId: '', state: 'queued' })
+ api.__responder(call => { if (call.method === 'POST' && call.p.startsWith('/workspace/runs?')) { pedidos.push(call); return respostaRun(call) } throw new Error(`chamada inesperada ${call.method} ${call.p}`) })
+ const sol = mini.montar(jsx(Operacao, {})).sincronizar()
+ // Diálogo aberto num contexto: trocar a corrida exibida ou a sessão o descarta.
+ sol.clicar(sol.botoes('Executar pipeline')[0]); assert.equal(sol.porPapel('dialog').length, 1)
+ op.setRunId('manual__r1'); sol.sincronizar(); assert.equal(sol.porPapel('dialog').length, 0, 'outra corrida exibida: diálogo descartado')
+ op.setRunId(''); sol.sincronizar(); assert.equal(sol.porPapel('dialog').length, 0, 'voltar não reabre')
+ sol.clicar(sol.botoes('Executar pipeline')[0]); auth.setState({ token: 'sessao-b' }); op.tick(); sol.sincronizar(); assert.equal(sol.porPapel('dialog').length, 0, 'outra sessão: diálogo descartado')
+ auth.setState({ token: 'sessao-a' }); op.tick(); sol.sincronizar()
+ // Sessão trocada no instante do envio: recusa antes do POST.
+ sol.clicar(sol.botoes('Executar pipeline')[0]); auth.setState({ token: 'sessao-b' })
+ sol.disparar(sol.achar(n => n.tag === 'form')[0], 'onSubmit', {}); await flush(); await flush(); await flush()
+ assert.equal(pedidos.length, 0, 'sessão trocada: nada é postado'); resultado.cercaSolicitacao = { descartada: ['corrida exibida', 'sessão'], envioComSessaoTrocada: 0 }; auth.setState({ token: 'sessao-a' }); op.tick(); sol.sincronizar()
+ sol.clicar(sol.botoes('Executar pipeline')[0]); assert.equal(sol.porPapel('dialog').length, 1)
+ assert.equal(sol.achar(n => n.tag === 'textarea').length, 0, 'JSON só sob demanda')
+ const runIdPedido = textoDe(sol.achar(n => n.tag === 'dd' && /^workspace__/.test(textoDe(n)))[0]); assert.match(runIdPedido, /^workspace__[0-9a-f-]{36}$/)
+ const formulario = () => sol.achar(n => n.tag === 'form')[0]
+ const odate = () => controlePor(sol.achar(() => true), 'Data de referência (ODATE)')
+ sol.disparar(odate(), 'onChange', { target: { value: '2026-02-30' } })
+ sol.disparar(formulario(), 'onSubmit', {}); await flush(); await flush(); sol.sincronizar()
+ assert.equal(pedidos.length, 0, 'data inválida não dispara'); assert.match(sol.texto, /data de referência válida/)
+ sol.disparar(odate(), 'onChange', { target: { value: '2026-10-10' } })
+ respostaRun = () => { const e = new Error('Execução recusada; confira publicação, versão e atividade do pipeline'); e.status = 409; throw e }
+ sol.disparar(formulario(), 'onSubmit', {}); await flush(); await flush(); await flush(); sol.sincronizar()
+ assert.match(sol.texto, /Nenhuma nova corrida foi criada/); assert(sol.botoes('Tentar novamente').length >= 1)
+ // JSON avançado preserva chaves e devolve a data ao campo guiado.
+ sol.clicar(sol.botoes('Editar parâmetros em JSON')[0])
+ assert.deepEqual(JSON.parse(sol.achar(n => n.tag === 'textarea')[0].props.value), { data_referencia: '2026-10-10' })
+ sol.disparar(sol.achar(n => n.tag === 'textarea')[0], 'onChange', { target: { value: '{"x": 1, "data_referencia": "2026-10-11"}' } })
+ sol.clicar(sol.botoes('Voltar ao formulário')[0]); assert.equal(odate().props.value, '2026-10-11'); assert.match(sol.texto, /parâmetros avançados: x/)
+ respostaRun = call => ({ runId: call.body.dag_run_id, state: 'queued' })
+ const solicitado = id => ({ pipeline_name: NOME, data_referencia: '2026-10-11', identidade: { resolvido: false, run_id: id, dag_run_id: id, ambiguo: false, candidatos: [] }, corrida: null, pausas: [], vazio: true, razao: 'sem_execucao_na_data', etapas: [passo('n0', null)] })
+ execucao = chave => chave[4] ? solicitado(chave[4]) : CORRIDA
+ sol.disparar(formulario(), 'onSubmit', {}); await flush(); await flush(); await flush(); sol.sincronizar()
+ assert.equal(pedidos.length, 2); assert.equal(pedidos[0].body.dag_run_id, pedidos[1].body.dag_run_id, 'nova tentativa usa o mesmo identificador')
+ assert.deepEqual(pedidos[1].body, { conf: { x: 1, data_referencia: '2026-10-11' }, dag_run_id: runIdPedido })
+ assert.equal(op.runId, runIdPedido, 'corrida retornada fica selecionada'); assert.equal(sol.porPapel('dialog').length, 0)
+ assert.match(sol.texto, /Solicitado/); assert.match(sol.texto, /Solicitação workspace__[0-9a-f-]+ recebida \(o Airflow informou: queued\)/); assert.doesNotMatch(sol.texto, /Nenhuma execução deste pipeline nesta data/)
+ assert.equal(estadosRun().get('n0').animate, false)
+ execucao = chave => ({ ...solicitado(chave[4]), corrida: { run_id: chave[4], status: 'AGUARDANDO' }, vazio: false }); op.setView('tabela'); sol.sincronizar()
+ assert.match(sol.texto, /Em fila/); assert.doesNotMatch(sol.texto, /Solicitação workspace__/)
+ execucao = chave => ({ ...solicitado(chave[4]), corrida: { run_id: chave[4], status: 'EXECUTANDO' }, vazio: false, etapas: [passo('n0', 'RUNNING')] }); op.setView('grafo'); sol.sincronizar()
+ assert.match(sol.texto, /Executando/); assert.equal(estadosRun().get('n0').animate, true)
+ execucao = CORRIDA
+ resultado.solicitacao = { semJson: true, invalidaNaoDispara: true, mesmoIdentificador: true, estados: ['Solicitado', 'Em fila', 'Executando'] }
+
+ // Histórico sob demanda: filtros, paginação, abrir corrida no mesmo visualizador.
+ const PAGINA = { total: 60, limit: 25, offset: 0, versionsAvailable: true, source: 'Registro operacional das corridas (etl_pipeline_execucao)', items: [{ runId: 'manual__r1', date: '2026-10-10', status: 'EXECUTANDO', startedAt: '2026-10-10 10:00:00', finishedAt: null, triggeredBy: 'manual', replacedAt: null, versionNumber: 4, snapshot: true }, { runId: 'scheduled__antiga', date: '2026-10-09', status: 'SUCESSO', startedAt: '2026-10-09 06:00:00', finishedAt: '2026-10-09 06:10:00', triggeredBy: 'agenda', replacedAt: null, versionNumber: null, snapshot: false }] }
+ rq.__dados['workspace-run-history'] = chave => ({ ...PAGINA, offset: chave[3].page * 25 })
+ const hist = mini.montar(jsx(Operacao, {})).sincronizar(); op.setRunId('manual__r1'); hist.sincronizar()
+ const tabelaHistorico = () => hist.achar(n => n.tag === 'table' && /^Corridas de /.test(n.props['aria-label'] || ''))
+ assert.equal(tabelaHistorico().length, 0, 'histórico fechado não ocupa a tela')
+ hist.clicar(hist.botoes('Histórico')[0]); assert.equal(hist.porPapel('dialog').length, 1); assert.equal(tabelaHistorico().length, 1, 'tabela nomeada sem sr-only')
+ assert.match(hist.texto, /Página 1 de 3 · 60 corridas/); assert.match(hist.texto, /Registro operacional das corridas/); assert.doesNotMatch(hist.texto, /etl_/, 'sem nome técnico de tabela')
+ assert.equal(rq.__opcoes['workspace-run-history'].enabled, true); op.setAtivo(false); hist.sincronizar(); assert.equal(rq.__opcoes['workspace-run-history'].enabled, false, 'aba oculta: histórico não lê'); op.setAtivo(true); hist.sincronizar()
+ assert.equal(hist.botoes('Em exibição').length, 1); assert.match(hist.texto, /Não vinculada/)
+ hist.clicar(hist.botoes('Próximas')[0]); assert.match(hist.texto, /Página 2 de 3/)
+ hist.disparar(controlePor(hist.achar(() => true), 'Situação'), 'onChange', { target: { value: 'FALHA' } })
+ assert.equal(rq.__opcoes['workspace-run-history'].queryKey[3].page, 0, 'filtro volta à primeira página'); assert.equal(rq.__opcoes['workspace-run-history'].queryKey[3].status, 'FALHA')
+ hist.disparar(controlePor(hist.achar(() => true), 'Data de referência a partir de'), 'onChange', { target: { value: '2026-10-12' } })
+ hist.disparar(controlePor(hist.achar(() => true), 'Data de referência até'), 'onChange', { target: { value: '2026-10-01' } })
+ assert.match(hist.texto, /data inicial deve ser anterior/); assert.equal(rq.__opcoes['workspace-run-history'].enabled, false)
+ hist.disparar(controlePor(hist.achar(() => true), 'Data de referência até'), 'onChange', { target: { value: '' } })
+ hist.clicar(hist.botoes('Abrir corrida')[0]); assert.deepEqual(op.abertas.at(-1), ['scheduled__antiga', '2026-10-09']); assert.equal(hist.porPapel('dialog').length, 0)
+ hist.clicar(hist.botoes('Histórico')[0]); assert.equal(controlePor(hist.achar(() => true), 'Situação').props.value, 'FALHA', 'filtros conservados ao reabrir')
+ rq.__estados['workspace-run-history'] = { isError: true, data: undefined, error: Object.assign(new Error('proibido'), { status: 403 }) }; op.setView('tabela'); hist.sincronizar()
+ assert.match(hist.texto, /não tem permissão para consultar o histórico/); delete rq.__estados['workspace-run-history']
+ resultado.historico = { sobDemanda: true, paginas: 3, filtros: ['data', 'situação', 'versão'], abre: 'mesmo visualizador' }
+ // As seções seguintes usam o servidor sintético da sessão (rascunho, posse e save).
+ api.__responder(call => {
+  if (call.method === 'GET' && call.p === '/workspace/drafts/draft-1') return structuredClone(draft)
+  if (call.method === 'POST' && call.p === '/workspace/drafts/draft-1/lease') return { ...LEASE }
+  if (call.method === 'PUT' && call.p === '/workspace/drafts/draft-1') return { ...structuredClone(draft), revision: 8, definition: call.body.definition, layout: call.body.layout, lease: { ...LEASE } }
+  throw new Error(`chamada inesperada ${call.method} ${call.p}`)
+ })
 
  // Identidade e retorno à Malha.
  assert.notEqual(tabs.runIdentityOrigin(NOME, '2026-10-10', ''), tabs.runIdentityOrigin(NOME, '2026-10-11', ''))
@@ -648,10 +821,15 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  resultado.publicacao = { barra: ['Validar rascunho', 'Publicar versão'], instancias: 1, validacoes: 3, publicacoes: 1, revisao: 8, fence: 41, diagnosticoAbreInspector: true, semPermissao: 'sem Publicar' }
 
  // ── 13. Execução identifica a fonte; o rascunho não entra ─────────────────
- rq.__dados['workspace-execution'] = { data_referencia: '2026-10-10', identidade: { run_id: null, dag_run_id: null, candidatos: [] }, etapas: [] }
- const fonte = revisao => textoDe(mini.montar(jsx(WorkspaceOperations, { name: NOME, date: '', runId: '', stage: '', attempt: null, definition, layout, draftRevision: revisao, caps, view: 'grafo', active: true, onView() {}, onDate() {}, onRun() {}, onInvestigate() {} })).sincronizar().achar(n => n.tag === 'p' && /^Fonte:/.test(textoDe(n)))[0])
- assert.match(fonte(3), /definição publicada atual.*rascunho \(revisão 3\) só é executado depois de publicado/)
+ // Corrida sem versão vinculada: rótulo honesto e o desenho publicado como está
+ // (ex.: publicado sem ligações enquanto o rascunho tem duas) — nunca o rascunho.
+ const publicado = { ...definition, edges: [] }
+ execucao = { ...CORRIDA, workspaceVersion: undefined }
+ const fonte = revisao => textoDe(mini.montar(jsx(Operacao, { revisao, def: publicado })).sincronizar().achar(n => n.tag === 'section' && n.props['aria-label'] === 'Corrida em exibição')[0])
+ assert.match(fonte(3), /Corrida sem versão vinculada: o desenho é a configuração publicada atual.*rascunho \(revisão 3\) só é executado depois de publicado/)
+ assert.equal(canvas.__props.definition.edges.length, 0, 'desenho publicado preservado, sem ligações do rascunho')
  assert.doesNotMatch(fonte(null), /rascunho/)
+ execucao = CORRIDA
  resultado.fonteExecucao = true
 
  // ── 14. F4.2: inspector inline, histórico local e modo focado ─────────────
