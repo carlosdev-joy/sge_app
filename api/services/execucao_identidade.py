@@ -111,8 +111,9 @@ CONVENÇÕES
 • Todas as funções recebem ``cur`` (cursor aberto); o CHAMADOR é dono da
   transação e da conexão. **Nenhuma função deste módulo faz I/O de rede**: a
   leitura do Airflow fica no router (que é quem tem o client, o timeout e a
-  política de degradação) e entra aqui pela função PURA
-  ``completa_com_airflow``. Isso mantém o módulo testável sem Airflow.
+  política de degradação) e entra aqui pelas funções PURAS
+  ``completa_com_airflow`` (lista de dag_runs) e ``completa_com_dag_run_exato``
+  (um dag_run lido por id). Isso mantém o módulo testável sem Airflow.
 • Comparação de nome de pipeline/job é sempre case-insensitive
   (``casefold``): a colação do banco é CI e a grafia gravada diverge — o
   incidente da PR #236 (grafia dupla de pipeline_name) nasceu de dict
@@ -157,6 +158,13 @@ _RUN_ID_ISO_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)$"
 )
 
+# A logical date como o Airflow a devolve na leitura de UM dag_run: ISO com
+# segundos, fração opcional e fuso EXPLÍCITO. Só ela alimenta o ts_nodash da
+# corrida exata (``ts_nodash_de_logical_date``).
+_LOGICAL_DATE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$"
+)
+
 
 # ═════════════════════════════ conversões puras ══════════════════════════════
 
@@ -186,6 +194,29 @@ def ts_nodash_do_run_id(run_id) -> str | None:
     """
     m = _RUN_ID_ISO_RE.match(str(run_id or "").strip())
     return ts_nodash(m.group(1)) if m else None
+
+
+def ts_nodash_de_logical_date(logical) -> str | None:
+    """logical date de UM dag_run → ts_nodash, **só quando é inequívoca** — ou
+    ``None``.
+
+    Inequívoca = ISO completa, data e hora de calendário válidas e fuso UTC
+    explícito (``Z``, ``+00:00`` ou ``-00:00``). É o formato que o Airflow
+    devolve, e a telemetria grava o ts_nodash da logical date em UTC. Sem fuso,
+    ou com outro fuso, cortar a string daria um ts_nodash deslocado — a mesma
+    armadilha do docstring do módulo — então volta ``None`` e a identidade fica
+    como estava.
+    """
+    if not isinstance(logical, str):
+        return None
+    m = _LOGICAL_DATE_RE.match(logical.strip())
+    if not m or m.group(2) not in ("Z", "+00:00", "-00:00"):
+        return None
+    try:
+        datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+    return ts_nodash(m.group(1))
 
 
 def escolhe_dag_run(runs: list, exec_id: str) -> dict:
@@ -387,6 +418,56 @@ def completa_com_airflow(ident: dict, runs: list) -> dict:
         novo["origem"] = _com_origem(novo.get("origem"), ORIGEM_AIRFLOW)
         novo["motivo"] = None
         novo["resolvido"] = True
+    return novo
+
+
+def completa_com_dag_run_exato(ident: dict, dag_id: str, run) -> dict:
+    """Fecha a identidade com o dag_run lido POR ID — **função PURA**.
+
+    O router faz o ``GET /api/v1/dags/{dag}/dagRuns/{run_id}`` (a corrida
+    EXATA, não a lista) e entrega o corpo aqui. É o caminho dos run_ids que a
+    string não traduz (``workspace__<uuid>``, ``manual__<odate>__…``) quando o
+    gesto precisa do ts_nodash — a pausa da F5 é o caso: sem ele o portão da
+    etapa não reconhece a pausa.
+
+    Guardas — qualquer uma falhando devolve a identidade intacta (dict novo),
+    nunca outra corrida:
+      • ``run`` é um objeto e o ``dag_run_id`` dele é o run_id da identidade;
+      • o ``dag_id`` dele é ``dag_id`` (a grafia oficial; o Airflow distingue
+        caixa) — o mesmo run_id em outra DAG é outra corrida;
+      • a logical date passa em ``ts_nodash_de_logical_date``.
+    Passando, delega para ``completa_com_airflow`` — a MESMA regra do caminho
+    pela lista — com uma CÓPIA do dag_run cuja logical date é a validada, sem
+    espaços nas pontas: o ``ts_nodash`` legado corta 19 caracteres crus, e
+    ``'  2026-…'`` viraria um ts_nodash que o portão nunca reconhece. O legado
+    fica como está; quem normaliza é este caminho.
+    """
+    run_id = str(ident.get("run_id") or "").strip()
+    intacta = dict(ident)
+    intacta["candidatos"] = list(ident.get("candidatos") or [])
+    if not run_id or not isinstance(run, dict):
+        return intacta
+    if str(run.get("dag_run_id") or "").strip() != run_id:
+        log.warning("[IDENT] Airflow devolveu outro dag_run para run_id=%s — "
+                    "identidade não completada", run_id)
+        return intacta
+    if str(run.get("dag_id") or "").strip() != str(dag_id or "").strip():
+        log.warning("[IDENT] dag_run %s pertence a outra DAG no Airflow — "
+                    "identidade não completada", run_id)
+        return intacta
+    logical = run.get("logical_date") or run.get("execution_date")
+    ts = ts_nodash_de_logical_date(logical)
+    if ts is None:
+        log.warning("[IDENT] logical date inválida para run_id=%s — "
+                    "identidade não completada", run_id)
+        return intacta
+    exato = dict(run)
+    exato["logical_date"] = logical.strip()
+    novo = completa_com_airflow(ident, [exato])
+    if novo.get("ts_nodash") != ts:
+        log.warning("[IDENT] ts_nodash da corrida %s diverge da logical date "
+                    "validada — identidade não completada", run_id)
+        return intacta
     return novo
 
 
