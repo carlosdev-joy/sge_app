@@ -1,5 +1,5 @@
 # Complemento executável: paridade do workspace — Orquestra
-Data: 2026-10-11 · Status: autorizada, F7A/F7B/F7C/F7D/F8 entregues em DEV; execução F9
+Data: 2026-10-11 · Status: autorizada, F7A/F7B/F7C/F7D/F8/F9 entregues em DEV2.17.1; aceites externos separados
 
 ## 1. Visão
 Completar os requisitos de paridade de docs/spec-pipeline-workspace-dotnet.md, confrontados em docs/workspace-paridade-f6.md. Autorização explícita do usuário: seguir até encerrar os pontos listados, preservando a spec existente e a referência visual. Não substitui arquitetura, contratos ou escopo da spec original.
@@ -104,3 +104,14 @@ Achados F9 confirmados antes da correção: importação JSON alternativa cria n
 
 ### Falha de restore confirmada no DEV F9 e correção pontual
 PR496/DEVdf08be2a2.17.0 entregues, mas smoke nativo revelou que restaurar snapshot cuja tabela de dependências é vazia e CSV omitido removia linhas sem limpar o CSV ativo. Factory recusou divergência, preservando arquivo anterior/gate; não se declara F9 encerrada antes da recuperação. Derivar CSV somente quando ausente, incluindoNULL para tabela vazia, na projeção do snapshot. Valores explícitos divergentes continuam sujeitos à validação. Não reescrever snapshots/erro/gate nem alterar DAGs/.NET; corrigir pelo fluxo autorizado de nova revisão e operação corretiva, confirmando histórico, CSV/tabela/hash, restore e ausência de execuções. Branchfix/workspace-restore-dependencias; migration patch seguinte disponível163.
+
+
+## Fechamento DEV — 2026-10-11
+
+F9 encerrada no escopo DEV em2.17.1, fonte funcional22045507efde12118d19ba5aac03bf455ce7c7b4 (PR497), após PR496/2.17.0. A homologação revelou restore que removia tabela de dependências mas conservava CSV omitido pelo snapshot; factory recusou e preservou DAG/gate. A correção deriva o CSV ausente da tabela, incluindoNULL para lista vazia, sem mutar snapshot ou aceitar divergência explícita.
+
+Recuperação real pelo rascunho original, nova revisão e publicação corretiva confirmou CSVNULL/tabela[]/gate liberado, com erro original e snapshots históricos preservados. Um ciclo independente confirmou cinco publicações: fonte sob demanda, filho vazio, filho com predecessor/janelas, restore do filho vazio, fonte inativada. UI salvou09:00/10:00 e recarregou sem diálogos Chrome ou erros JS; tentativa de assinatura compilada forjada recusada422. Fixtures próprias antigas e novas terminaram inativas/pausadas, sem execuções, drafts ativos ou comandos.
+
+Fix7335PASS/8mesmas falhas/51skip/zeroNEW; lint73/73/0NEW; tsc-b/buildPASS com dist idêntico, zeroNULnovo (lineageIsx.ts preexistente preservado). QA adversarial e segurança manual sem bloqueios confirmados. Saúde/versão/assets15PASS;163migrations sem pendências; migration163 reexecutada duas vezes sem duplicação. BackupCOPY_ONLY/CHECKSUM/VERIFYONLY verificado. Somente API reiniciada. .NET/DAG/worker/offline inalterados, com provas de identidade do artefatoF7D. UI idêntica mantém revisãoF9SHIP/10capturas e negativas4/experiências16. Rota fria239973bytesgzip e APIp95máximo37,8ms medidos em2.17.0 são evidências anteriores reutilizadas para superfícies/contratos de leitura inalterados, não novas medições em2.17.1.
+
+Evidências /root/orquestra-f9-restore-evidencias/{health-dev.json,recovery-dev.json,smoke-dev.json,migration-idempotence-dev.json,validation-summary.json,reuse-proofs.json}; conjunto inicialF9 em /root/orquestra-f9-evidencias. Fechamento documental não muda código executável nem versão; registrar seu SHA publicado separadamente da fonte funcional. Caixa/DataStage/InformationServer, IA real, INP de campo e planos SQL/IO permanecem ensaios externos. Não certificar100% desses ambientes nem promovermain/produção sem autorização.
