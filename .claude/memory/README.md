@@ -120,4 +120,8 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 
 - [Edição no Fluxo](orquestra-workspace-edicao-no-fluxo.md) — candidato2.12.6; consultar entrega DEV final.
 
-- [Paridade do workspace F7](orquestra-workspace-paridade-f7.md) — continuidade autorizada pela spec; F7A/F7B2.14.0 em DEV, candidato F7C2.15.0; entregas finais nos registros compartilhados.
+- [Paridade do workspace F7](orquestra-workspace-paridade-f7.md) — F7A–D concluídas em DEV2.16.0; entregas finais nos registros compartilhados.
+
+- [Desempenho do workspace F8](orquestra-workspace-desempenho-f8.md) — DEV2.16.1 validado, carga fria/canvas e limites de medição documentados.
+- [Homologação do workspace F9](orquestra-workspace-homologacao-f9.md) — DEV2.17.1 validado; matriz19linhas/11tipos, recuperação e restore nativos, aceites externos separados.
+- [Restore de dependências](orquestra-workspace-restore-dependencias.md) — PR497/2.17.1 corrige CSV omitido sem alterar snapshots ou contornar gate.
