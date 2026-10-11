@@ -14,7 +14,7 @@ import { Button } from '../ui/Button'
 import { Hint } from '../ui/Hint'
 import { Input, Select, Textarea } from '../ui/Input'
 import { toast } from '../ui/Toast'
-import { MaestroChat } from './MaestroChat'
+import { MaestroChat, type WorkspaceMaestroContext } from './MaestroChat'
 
 export type { JobParam } from '../../lib/dsParams'
 
@@ -124,6 +124,7 @@ export interface JobTypeFieldsProps {
   // Workspace: herança do próprio draft e guarda de respostas assíncronas.
   defaultsOverride?: JobParamApi[]
   disableEncrypted?: boolean
+  workspaceMaestro?: WorkspaceMaestroContext
   disableMaestro?: boolean
   canApply?: () => boolean
 }
@@ -622,7 +623,7 @@ export function JobParamsEditor({ params, onChange, compact, modo = 'storedproc'
 // ── Componente principal ─────────────────────────────────────────────────────
 
 export function JobTypeFields({
-  value, onChange, sshConns, mssqlConns, compact, onMaximizar, pipeline, jobName, defaultsOverride, disableEncrypted, disableMaestro, canApply,
+  value, onChange, sshConns, mssqlConns, compact, onMaximizar, pipeline, jobName, defaultsOverride, disableEncrypted, disableMaestro, canApply, workspaceMaestro,
 }: JobTypeFieldsProps) {
   const { job_type } = value
   const fieldId = useId()
@@ -827,6 +828,7 @@ export function JobTypeFields({
             )}
             {!disableMaestro && maestro.enabled && (
               <MaestroChat
+                workspace={workspaceMaestro}
                 pipeline={pipeline}
                 jobName={(jobName ?? '').trim() || undefined}
                 params={value.params}

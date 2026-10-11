@@ -41,7 +41,7 @@ export function importWorkspaceRows(definition: WorkspaceDefinition, rows: Works
   if (!/^[A-Za-z0-9_.-]+$/.test(name) || name.length>200 || names.has(name.toLowerCase())) throw new Error('Cada etapa exige identificador único, sem espaços.')
   if (!types.has(row.type)) throw new Error('Selecione um tipo de componente válido.')
   names.add(name.toLowerCase())
-  return { id:name, type:row.type, configuration:{legacyJob:{pipeline_name:definition.identity.pipelineName,job_name:name,job_type:row.type,job_command:row.command||null,execution_order:definition.nodes.length+index+1},etl_pipeline_job_param:[]} }
+  return { id:name, type:row.type, configuration:{legacyJob:{pipeline_name:definition.identity.pipelineName,job_name:name,job_type:row.type,job_command:row.command||null,execution_order:definition.nodes.length+index+1},etl_pipeline_job_param:[],...(object(definition.metadata).workspaceLineageVersion===1?{etl_job_lineage:[]}: {})} }
  })
  let next:WorkspaceDefinition={...definition,nodes:[...definition.nodes,...nodes]}
  for (const row of rows) if (row.parent) next=connectWorkspaceDecision(next,row.parent,row.name.trim(),row.branch||undefined)

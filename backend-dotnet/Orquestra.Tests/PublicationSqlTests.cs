@@ -33,14 +33,14 @@ public sealed class PublicationSqlTests
     INSERT dbo.etl_pipeline_param VALUES('PUB','SEGREDO','Encrypted','cipher-never-return'),('PUB','segredo','Encrypted','other-cipher');
     """);
    var folder=Path.GetDirectoryName(Environment.GetEnvironmentVariable("WORKSPACE_TEST_SCHEMA_PATH"))!;
-   foreach(var name in new[]{"141_workspace_rascunhos.sql","144_workspace_publicacao.sql","144_workspace_publicacao.sql","146_workspace_comandos.sql","146_workspace_comandos.sql"})foreach(var batch in Regex.Split(await File.ReadAllTextAsync(Path.Combine(folder,name)),@"^\s*GO\s*$",RegexOptions.Multiline|RegexOptions.IgnoreCase))if(!string.IsNullOrWhiteSpace(batch))await Execute(c,batch);
+   foreach(var name in new[]{"141_workspace_rascunhos.sql","144_workspace_publicacao.sql","144_workspace_publicacao.sql","146_workspace_comandos.sql","146_workspace_comandos.sql","159_workspace_lineage_hash.sql","159_workspace_lineage_hash.sql"})foreach(var batch in Regex.Split(await File.ReadAllTextAsync(Path.Combine(folder,name)),@"^\s*GO\s*$",RegexOptions.Multiline|RegexOptions.IgnoreCase))if(!string.IsNullOrWhiteSpace(batch))await Execute(c,batch);
    var repository=new SqlDraftRepository(options);Assert.True(await repository.PublicationSchemaAsync(default));
    var draft=await repository.ImportAsync("pub",Actor(),default);Assert.DoesNotContain("cipher-never",JsonSerializer.Serialize(draft,DraftValidation.Json));
    var lease=await repository.LeaseAsync(draft.DraftId,new(),Actor(),default);var command=new PublicationCommand(Guid.NewGuid(),draft.Revision,lease.Fence);
    Assert.Equal("permission_denied",(await Assert.ThrowsAsync<WorkspaceException>(()=>repository.PublishAsync(draft.DraftId,command,Actor(false),default))).Code);
    Assert.Equal("lease_conflict",(await Assert.ThrowsAsync<WorkspaceException>(()=>repository.PublishAsync(draft.DraftId,command with{Fence=lease.Fence+1},Actor(),default))).Code);
    await Execute(c,"INSERT dbo.etl_pipeline_execucao VALUES('PUB','RUNNING')");Assert.Equal("execution_active",(await Assert.ThrowsAsync<WorkspaceException>(()=>repository.PublishAsync(draft.DraftId,command,Actor(),default))).Code);await Execute(c,"UPDATE dbo.etl_pipeline_execucao SET status='AGUARDANDO_DEPENDENCIA'");Assert.Equal("execution_active",(await Assert.ThrowsAsync<WorkspaceException>(()=>repository.PublishAsync(draft.DraftId,command,Actor(),default))).Code);await Execute(c,"DELETE dbo.etl_pipeline_execucao");
-   var before=(string)(await Scalar(c,"EXEC dbo.sp_workspace_active_hash @name='PUB'"))!;
+   var before=(string)(await Scalar(c,"EXEC dbo.sp_workspace_active_hash @name='PUB',@include_lineage=1"))!;
    var op=await repository.PublishAsync(draft.DraftId,command,Actor(),default);Assert.Equal("pendente",op.State);Assert.Equal(op,await repository.PublishAsync(draft.DraftId,command,Actor(),default));
    Assert.Equal("operation_conflict",(await Assert.ThrowsAsync<WorkspaceException>(()=>repository.PublishAsync(draft.DraftId,command with{OperationId=Guid.NewGuid()},Actor(),default))).Code);
    var pendingContext=await repository.ContextAsync("PUB",Actor(),true,default);Assert.Equal("true",pendingContext.Published!.Value.GetProperty("definition").GetProperty("nodes")[0].GetProperty("configuration").GetProperty("legacyJob").GetProperty("job_command").GetString());

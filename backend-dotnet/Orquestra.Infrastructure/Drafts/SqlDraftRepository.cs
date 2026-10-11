@@ -94,7 +94,7 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
         await CurrentSession(c, t, actor, ct);
         await using var check = Command(c, t, "SELECT pipeline_name FROM dbo.etl_pipeline WITH(UPDLOCK,HOLDLOCK) WHERE pipeline_name=@name", ("@name", request.Definition.Identity.PipelineName));
         if (await check.ExecuteScalarAsync(ct) is not null) throw Conflict("pipeline_exists", "Pipeline já publicado; importe sua configuração");
-        return await Insert(c, t, request.Definition, request.Layout, null, [], actor, ct);
+        return await Insert(c, t, WorkspaceLineage.Initialize(request.Definition), request.Layout, null, [], actor, ct);
     }, ct);
     public Task<Draft> ImportAsync(string name, WorkspacePrincipal actor, CancellationToken ct) => Run(async (c, t) =>
     {
@@ -121,6 +121,7 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
         await OwnedLease(c, t, id, request.Fence, actor, ct);
         if (!string.Equals(old.PipelineName, request.Definition.Identity.PipelineName, StringComparison.Ordinal)) DraftValidation.Invalid("Identidade do pipeline não pode ser alterada");
         if (request.Definition.IsReadOnly) DraftValidation.Invalid("Tipo de nó não suportado para edição");
+        WorkspaceLineage.Validate(old.Definition, request.Definition);
         await ValidateSecretReferences(c, t, id, old.Definition, request.Definition, ct);
         await using var cmd = Command(c, t, "UPDATE dbo.etl_workspace_rascunho SET definition_json=@definition,layout_json=@layout,revision=revision+1,atualizado_em=SYSUTCDATETIME(),responsavel=@actor WHERE draft_id=@id", ("@id", id), ("@definition", JsonSerializer.Serialize(request.Definition, DraftValidation.Json)), ("@layout", JsonSerializer.Serialize(request.Layout, DraftValidation.Json)), ("@actor", actor.Matricula));
         await cmd.ExecuteNonQueryAsync(ct);

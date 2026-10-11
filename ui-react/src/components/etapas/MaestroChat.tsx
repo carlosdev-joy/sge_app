@@ -9,7 +9,7 @@
 // escuta Escape lá) — o usuário fecha o chat, não a etapa. Não usa
 // `useOverlay`: o chat é flutuante e o usuário precisa continuar editando a
 // etapa com ele aberto.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { apiFetch, type ErroApi } from '../../lib/api'
 import {
@@ -19,10 +19,13 @@ import {
 } from '../../lib/maestro'
 import { Button } from '../ui/Button'
 import { toast } from '../ui/Toast'
+import { trapTabKey } from '../ui/overlay'
 import { MaestroAvatar } from './MaestroAvatar'
 import { MaestroPainel } from './MaestroPainel'
 
+export interface WorkspaceMaestroContext { draftId:string; expectedRevision:number; fence:number; canApply:()=>boolean; defaults?:unknown[] }
 export interface MaestroChatProps {
+  workspace?: WorkspaceMaestroContext
   pipeline?: string
   jobName?: string
   /** As linhas ATUAIS do editor (contexto do pedido; sem valor Encrypted ao sair). */
@@ -37,11 +40,12 @@ export interface MaestroChatProps {
   nivel?: MaestroNivel
 }
 
-export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, onAplicar, compact, nivel = 'etapa' }: MaestroChatProps) {
+export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, onAplicar, compact, workspace, nivel = 'etapa' }: MaestroChatProps) {
   // A conversa é guardada por chave (nível + pipeline + job) fora do
   // componente: trocar de passo no wizard (ou reabrir o mesmo cadastro) volta
   // com a conversa e a proposta ainda não aplicada, em vez de zerar.
-  const chave = chaveDaConversa(nivel, pipeline, jobName)
+  const [instance]=useState(novoConversaId)
+  const chave = workspace ? `draft:${workspace.draftId}:${workspace.expectedRevision}:${workspace.fence}:${nivel}:${jobName??""}:${instance}` : chaveDaConversa(nivel, pipeline, jobName)
   const guardada = lerConversaGuardada(chave)
   const [aberto, setAberto] = useState(guardada?.aberto ?? false)
   const [conversaId, setConversaId] = useState(() => guardada?.conversaId ?? novoConversaId())
@@ -51,14 +55,28 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
   const [historico, setHistorico] = useState<MaestroHistoricoConversa[] | null>(null)
   const [historicoCarregando, setHistoricoCarregando] = useState(false)
   const rolagemRef = useRef<HTMLDivElement>(null)
+  const gatilhoRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!aberto) return
+    const gatilho = gatilhoRef.current
+    document.querySelector<HTMLTextAreaElement>('[data-maestro-painel] textarea')?.focus()
+    return () => { if (gatilho?.isConnected) gatilho.focus() }
+  }, [aberto])
   const proximoId = useRef((guardada?.mensagens ?? []).reduce((m, x) => Math.max(m, x.id), 0) + 1)
 
   useEffect(() => {
-    guardarConversa(chave, { conversaId, mensagens, aberto })
-  }, [chave, conversaId, mensagens, aberto])
+    if(!workspace)guardarConversa(chave, { conversaId, mensagens, aberto })
+  }, [chave, conversaId, mensagens, aberto, workspace])
   // Pedido vigente: uma resposta que chega depois de "Nova conversa" / abrir
   // outra conversa (ou um histórico pedido e já fechado) é descartada em vez
   // de cair na conversa errada (achados 3 e 4 da revisão adversarial da F2).
+  const mounted=useRef(true)
+  const current=useRef({workspace,params,referencia,chave})
+  useLayoutEffect(()=>{current.current={workspace,params,referencia,chave}})
+  const proposals=useRef(new Map<number,string>())
+  function stamp(){const now=current.current;return JSON.stringify([now.chave,now.params,now.referencia,now.workspace?.defaults])}
+  function allowed(){return !current.current.workspace||current.current.workspace.canApply()}
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false}},[])
   const pedidoRef = useRef(0)
   const historicoPedidoRef = useRef(0)
 
@@ -73,7 +91,8 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
 
   async function enviar(texto?: string) {
     const pergunta = (texto ?? entrada).trim()
-    if (!pergunta || carregando) return
+    if (!pergunta || carregando || !allowed()) return
+    const opening=stamp()
     if (pergunta.length > MAESTRO_MAX_MENSAGEM) {
       toast.error(`A mensagem passa de ${MAESTRO_MAX_MENSAGEM} caracteres.`)
       return
@@ -85,32 +104,36 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
     setEntrada('')
     setCarregando(true)
     try {
-      const r = await apiFetch<MaestroResposta>('/maestro/conversar', {
+      const r = await apiFetch<MaestroResposta>(workspace?`/workspace-adapter/maestro/${encodeURIComponent(workspace.draftId)}`:'/maestro/conversar', {
         method: 'POST',
         body: JSON.stringify({
+          ...(workspace?{expectedRevision:workspace.expectedRevision,fence:workspace.fence,draftDefaults:workspace.defaults}:{}),
           conversa_id: conversaId,
           mensagens: historicoParaEnvio(historicoAtual),
           contexto: contextoDoEditor(pipeline, jobName, params, referencia, nivel),
         }),
       })
-      if (pedidoRef.current !== meuPedido) return   // a conversa mudou enquanto esperava
+      if (!mounted.current || pedidoRef.current !== meuPedido || !allowed() || stamp()!==opening) return
       if (r.conversa_id && r.conversa_id !== conversaId) setConversaId(r.conversa_id)
       const { conversa_id: _cid, resposta, ...resultado } = r
       void _cid
-      setMensagens(prev => [...prev, novaMensagem({ papel: 'assistant', texto: resposta || '(sem texto)', resultado })])
+      const message=novaMensagem({ papel: 'assistant', texto: resposta || '(sem texto)', resultado })
+      proposals.current.set(message.id,opening)
+      setMensagens(prev => [...prev, message])
     } catch (e: unknown) {
-      if (pedidoRef.current !== meuPedido) return
+      if (!mounted.current || pedidoRef.current !== meuPedido || !allowed() || stamp()!==opening) return
       const texto = mensagemDeErro(e as ErroApi)
       setMensagens(prev => [...prev, novaMensagem({ papel: 'assistant', texto, erro: true })])
       toast.error(texto)
     } finally {
-      if (pedidoRef.current === meuPedido) setCarregando(false)
+      if (mounted.current && pedidoRef.current === meuPedido) setCarregando(false)
     }
   }
 
   function aplicar(m: MaestroMensagem) {
     const itens = m.resultado?.proposta?.params
-    if (!itens?.length || m.aplicada) return
+    if (!itens?.length || m.aplicada || !allowed()) return
+    if(workspace&&proposals.current.get(m.id)!==stamp()){toast.info("O contexto mudou. Solicite uma nova proposta antes de aplicar.");return}
     onAplicar(propostaParaEditor(itens))
     setMensagens(prev => prev.map(x => (x.id === m.id ? { ...x, aplicada: true } : x)))
   }
@@ -126,6 +149,7 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
   }
 
   async function alternarHistorico() {
+    if(workspace){toast.info("As conversas deste rascunho são mantidas apenas nesta edição.");return}
     if (historico) {
       historicoPedidoRef.current++   // um fetch em voo não reabre a lista
       setHistorico(null)
@@ -182,6 +206,7 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
       rolagemRef={rolagemRef}
       onKeyDown={e => {
         if (e.key === 'Escape') { e.stopPropagation(); setAberto(false) }
+        if (e.key === 'Tab') { e.stopPropagation(); trapTabKey(e, e.currentTarget) }
       }}
     />,
     document.body,
@@ -189,7 +214,7 @@ export function MaestroChat({ pipeline, jobName, params, referencia, sugestoes, 
 
   return (
     <>
-      <Button size="sm" variant="ghost" onClick={() => setAberto(v => !v)}
+      <Button size="sm" variant="ghost" onClick={e => { gatilhoRef.current = e.currentTarget; setAberto(v => !v) }}
               title={`Descreva o cenário e o ${MAESTRO_NOME} diz como preencher cada parâmetro`}
               aria-expanded={aberto}
               className={compact ? 'text-[11px]' : ''}

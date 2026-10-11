@@ -271,6 +271,7 @@ export function MaestroPainel({
                 if (podeEnviar) onEnviar()
               }
             }}
+            aria-label="Mensagem para o Maestro"
             placeholder="Descreva o cenário…"
             rows={2}
             disabled={carregando}
