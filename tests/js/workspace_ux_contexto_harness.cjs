@@ -30,6 +30,18 @@
 //     Parâmetros fica inerte ao voltar para Identificação, reativa com o conteúdo
 //     conservado ao voltar ao grupo, e nenhum grupo reativa overlay de aba
 //     oculta (Execução, ou área externa inativa). Posse e rascunho seguem os mesmos.
+// 11. F4.1 — moldura por rota (lib/shellFrame: workspace amplo sem max-w e com
+//     gutter lateral menor que o p-6 anterior em todo breakpoint, demais
+//     telas com a moldura de antes) e painéis Componentes/Propriedades recolhíveis
+//     com aria-expanded/aria-controls: recolher e reabrir (inclusive trocando de
+//     destino) conserva seleção, vista do canvas, busca e o JSON avançado ainda
+//     não aplicado; nada é aplicado, salvo ou pede posse; grade sem coluna reservada.
+// 12. Barra Salvar/Validar/Publicar: Validar/Publicar da instância única de
+//     publicação no encaixe da barra (uma ação de cada); diagnóstico recolhível que
+//     abre quando há problema e reabre o inspector na etapa; gates de revisão
+//     validada, alteração local e permissão; um pedido por clique; publicar envia
+//     a revisão salva e a fence da sessão uma vez, após confirmar.
+// 13. Execução identifica a fonte e avisa que o rascunho só executa publicado.
 //
 // Limites da bancada (minireact): useEffect não roda (sem renovação/intervalos);
 // useLayoutEffect roda durante o render para atualizar as refs de guarda, como o
@@ -54,9 +66,11 @@ exports.esquecerConversasDeAgentes = () => {}
 exports.currentToken = () => null
 exports.BASE = '/orquestra'
 `,
+ // A vista (zoom/posição) é estado do próprio canvas: se ele fosse desmontado ao
+ // recolher um painel, voltaria ao valor inicial.
  'components/workspace/WorkspaceCanvas.tsx': `
-const { jsx } = require('react/jsx-runtime')
-exports.WorkspaceCanvas = function WorkspaceCanvas(p) { return jsx('div', { 'data-canvas': p.definition.nodes.map(n => n.id).join(','), 'data-editable': String(p.editable) }) }
+const { jsx } = require('react/jsx-runtime'); const { useState } = require('react')
+exports.WorkspaceCanvas = function WorkspaceCanvas(p) { const [vista] = useState(() => ({ zoom: 1 })); exports.__vista = vista; return jsx('div', { 'data-canvas': p.definition.nodes.map(n => n.id).join(','), 'data-editable': String(p.editable), 'data-selecionado': p.selected || '' }) }
 `,
  'components/etapas/FluxoEditor.tsx': `
 const { jsx } = require('react/jsx-runtime')
@@ -106,7 +120,8 @@ module.exports.default = module.exports
 `)
  const runtime = `const mini = require(${MINI}); const jsx = (tipo, props, key) => ({ __el: true, tipo, props: props || {}, key }); module.exports = { jsx, jsxs: jsx, jsxDEV: jsx, Fragment: mini.FRAGMENT }`
  escrever('react', 'jsx-runtime.js', runtime); escrever('react', 'jsx-dev-runtime.js', runtime)
- pacote('react-dom', 'module.exports = { createPortal: el => el }; module.exports.default = module.exports')
+ // Portal renderiza no lugar da chamada, marcado com o destino (sem DOM não há outro lugar).
+ pacote('react-dom', `const { jsx } = require('react/jsx-runtime'); module.exports = { createPortal: (el, host) => jsx('div', { 'data-portal': host && host.id || 'host', children: el }) }; module.exports.default = module.exports`)
  pacote('react-router-dom', `const { jsx } = require('react/jsx-runtime'); exports.__navegacoes = []; const navegar = to => exports.__navegacoes.push(to); exports.useNavigate = () => navegar; exports.useLocation = () => ({ pathname: '/', search: '', hash: '', key: 'k' }); exports.Link = p => jsx('a', Object.assign({}, p, { href: p.to }))`)
  pacote('@tanstack/react-query', `
 const fixtures = { 'pipeline-projects': { projects: ['PROJ_A'] }, 'pipeline-domains': { domains: ['FIN'] }, 'agenda-calendarios': { calendarios: [{ calendario_nome: 'NACIONAL' }] } }
@@ -204,10 +219,10 @@ api.__responder(call => {
 })
 const caps = { schemaVersion: 1, enabled: true, knownNodeTypes: TIPOS, actions: { consultDefinition: true, consultStages: true, consultLogs: true, consultVersions: true, editDraft: true, administer: false, publish: false, execute: false } }
 const controle = {}
-function Tela({ development }) {
+function Tela({ development, capabilities = caps }) {
  const [tab, setTab] = mini.hooks.useState('montagem'); const [grupo, setGrupo] = mini.hooks.useState('identificacao')
  controle.tab = setTab; controle.grupo = setGrupo
- return jsx(WorkspaceEditor, { name: NOME, draft, definition, layout, reasons: [], capabilities: caps, development, tab, configGroup: grupo, onConfigGroup: setGrupo, onOpenTab: setTab, onSaved: next => { controle.salvo = next }, onDiscarded() {} })
+ return jsx(WorkspaceEditor, { name: NOME, draft, definition, layout, reasons: [], capabilities, development, tab, configGroup: grupo, onConfigGroup: setGrupo, onOpenTab: setTab, onSaved: next => { controle.salvo = next }, onDiscarded() {} })
 }
 const textoDe = n => typeof n === 'string' ? n : n.filhos.map(textoDe).join(' ').replace(/\s+/g, ' ').trim()
 const descendentes = n => typeof n === 'string' ? [] : [n, ...n.filhos.flatMap(descendentes)]
@@ -516,6 +531,128 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  assert.match(cfg.texto, /Você está editando o rascunho · revisão 7/)
  assert.deepEqual(hiddenAnulado(cfg).map(n => n.props.className), [])
  resultado.overlayGrupo = { voltar: 'inerte', porGrupo: true, abaOculta: 'inerte', herdadoInativo: 'inerte', reativa: 'conservado', posses: 1 }
+
+ // ── 11. F4.1: largura do workspace e painéis recolhíveis da Montagem ──────
+ const shell = require(path.join(tmp, 'lib/shellFrame.js'))
+ for (const p of ['/pipelines/PIPE_VIDA/montagem', '/pipelines/PIPE_VIDA/execucao', '/pipelines/PIPE_VIDA', `/pipelines/${encodeURIComponent(NOME)}/configuracao`]) assert.equal(shell.shellFrame(p), 'wide', p)
+ for (const p of ['/', '/pipelines', '/pipelines/', '/pipelines/novo', '/malha', '/pipelinesX/a', '/admin/versoes', '/caixa-seguro-x']) assert.equal(shell.shellFrame(p), 'framed', p)
+ for (const p of ['/caixa-seguro', '/caixa-seguro/painel']) assert.equal(shell.shellFrame(p), 'bleed', p)
+ assert.equal(shell.SHELL_FRAME_CLASS.framed, 'p-6 max-w-[1600px] mx-auto', 'demais telas mantêm a moldura')
+ // Largura real da área de conteúdo, sem atalhos que mascaram o layout.
+ assert(!/max-w|(^|\s)-m|100vw|overflow-hidden/.test(shell.SHELL_FRAME_CLASS.wide), shell.SHELL_FRAME_CLASS.wide)
+ assert.equal(shell.SHELL_FRAME_CLASS.bleed, 'min-h-full', 'caixa-seguro segue em tela inteira')
+ // Gutter compacto: em nenhum breakpoint a margem lateral do workspace passa do
+ // p-6 (24 px) da moldura anterior, então o canvas nunca perde largura.
+ assert(!/(^|\s)(\w+:)?(p|pl|pr|ps|pe)-|px-\[|vw/.test(shell.SHELL_FRAME_CLASS.wide), shell.SHELL_FRAME_CLASS.wide)
+ const gutters = [...shell.SHELL_FRAME_CLASS.wide.matchAll(/(?:^|\s)(?:(\w+):)?px-(\d+)(?=\s|$)/g)].map(m => ({ bp: m[1] || 'base', px: Number(m[2]) * 4 }))
+ assert.deepEqual(gutters, [{ bp: 'base', px: 12 }, { bp: 'sm', px: 16 }])
+ for (const g of gutters) assert(g.px < 24, `gutter ${g.bp} ${g.px}px não pode exceder o p-6 anterior`)
+ const canvasDuble = require(path.join(tmp, 'components/workspace/WorkspaceCanvas.js'))
+ api.__calls.length = 0
+ const mt = mini.montar(jsx(Tela, { development: true })).sincronizar()
+ mt.clicar(mt.botoes('Iniciar edição')[0]); await flush(); await flush(); mt.sincronizar()
+ const alternador = rotulo => { const b = mt.achar(n => n.tag === 'button' && n.props['aria-label'] === rotulo); assert.equal(b.length, 1, rotulo); return b[0] }
+ const painel = rotulo => { const alvo = mt.achar(n => n.props.id === alternador(rotulo).props['aria-controls']); assert.equal(alvo.length, 1, `painel ${rotulo}`); return alvo[0] }
+ const canvasMt = () => mt.achar(n => n.props['data-canvas'] !== undefined)[0]
+ const grade = () => mt.achar(n => n.tag === 'div' && /(^|\s)grid(\s|$)/.test(String(n.props.className || '')) && descendentes(n).some(d => typeof d !== 'string' && d.props['data-canvas'] !== undefined))[0]
+ for (const r of ['Componentes', 'Propriedades']) { assert.equal(alternador(r).props.type, 'button'); assert.equal(alternador(r).props['aria-expanded'], true); assert.equal(painel(r).props.hidden, false) }
+ mt.clicar(mt.achar(n => n.tag === 'button' && n.props.draggable !== undefined && textoDe(n) === 'Shell')[0])
+ mt.disparar(controlePor(descendentes(painel('Componentes')), 'Buscar componente'), 'onChange', { target: { value: 'sh' } })
+ // Formulário em edição no inspector (JSON avançado ainda não aplicado) e vista do canvas movida.
+ mt.clicar(mt.botoes('Configurações avançadas')[0])
+ mt.disparar(controlePor(mt.achar(() => true), 'Configuração completa'), 'onChange', { target: { value: '{"rascunhoLocal":true}' } })
+ canvasDuble.__vista.zoom = 0.55
+ const estadoMontagem = () => ({ selecao: canvasMt().props['data-selecionado'], zoom: canvasDuble.__vista.zoom, busca: controlePor(descendentes(painel('Componentes')), 'Buscar componente').props.value, staging: controlePor(descendentes(painel('Propriedades')), 'Configuração completa').props.value })
+ const montagemAntes = estadoMontagem()
+ assert.deepEqual(montagemAntes, { selecao: 'shell_1', zoom: 0.55, busca: 'sh', staging: '{"rascunhoLocal":true}' })
+ mt.clicar(alternador('Propriedades')); mt.clicar(alternador('Componentes'))
+ for (const r of ['Componentes', 'Propriedades']) { assert.equal(alternador(r).props['aria-expanded'], false, r); assert.equal(painel(r).props.hidden, true, r) }
+ assert.equal(ocultoPor(mt, n => n.props['aria-label'] === 'Propriedades da etapa').length >= 1, true, 'inspector montado e oculto')
+ assert.equal(ocultoPor(mt, n => n.props['data-canvas'] !== undefined).length, 0, 'canvas visível')
+ assert.equal(ocultoPor(mt, n => n.props['aria-label'] === 'Componentes' || n.props['aria-label'] === 'Propriedades').length, 0, 'alternadores seguem visíveis (foco não se perde)')
+ assert(!/\d+px/.test(grade().props.className), `grade sem coluna reservada: ${grade().props.className}`)
+ assert.deepEqual(estadoMontagem(), montagemAntes, 'recolher conserva seleção, vista, busca e formulário')
+ // Trocar de destino conserva o estado dos painéis.
+ controle.tab('configuracao'); mt.sincronizar(); controle.tab('montagem'); mt.sincronizar()
+ assert.equal(alternador('Propriedades').props['aria-expanded'], false)
+ mt.clicar(alternador('Componentes')); mt.clicar(alternador('Propriedades'))
+ for (const r of ['Componentes', 'Propriedades']) assert.equal(painel(r).props.hidden, false, r)
+ assert.deepEqual(estadoMontagem(), montagemAntes, 'reabrir devolve o mesmo trabalho')
+ assert.deepEqual(hiddenAnulado(mt).map(n => n.props.className), [])
+ // Recolher/reabrir não aplica, não salva e não pede nova posse; salvar não leva o JSON não aplicado.
+ assert.deepEqual(api.__calls.filter(c => c.method !== 'GET').map(c => c.p), ['/workspace/drafts/draft-1/lease'])
+ mt.clicar(mt.botoes('Salvar rascunho')[0]); await flush(); await flush(); mt.sincronizar()
+ const salvo = api.__calls.filter(c => c.method === 'PUT')
+ assert.equal(salvo.length, 1); assert.equal(salvo[0].body.fence, 41)
+ assert.equal(JSON.stringify(salvo[0].body.definition).includes('rascunhoLocal'), false, 'aplicar é separado de salvar')
+ resultado.paineis = { alternadores: 2, conservado: ['selecao', 'zoom', 'busca', 'staging'], posses: 1, saves: 1, naoAplicado: true }
+
+ // ── 12. Barra Salvar/Validar/Publicar e diagnóstico recolhível ────────────
+ const capsPub = { ...caps, actions: { ...caps.actions, publish: true } }
+ let validacao = null; const publicados = []
+ api.__responder(call => {
+  if (call.method === 'GET' && call.p === '/workspace/drafts/draft-1') return structuredClone(draft)
+  if (call.method === 'POST' && call.p === '/workspace/drafts/draft-1/lease') return { ...LEASE }
+  if (call.method === 'PUT' && call.p === '/workspace/drafts/draft-1') return { ...structuredClone(draft), revision: 8, definition: call.body.definition, layout: call.body.layout, lease: { ...LEASE } }
+  if (call.method === 'POST' && call.p === '/workspace/drafts/draft-1/validate') return structuredClone(validacao)
+  if (call.method === 'POST' && call.p === '/workspace/drafts/draft-1/publish') { publicados.push(call.body); return { operationId: call.body.operationId, revision: call.body.expectedRevision, state: 'pendente', attempts: 1 } }
+  throw new Error(`chamada inesperada ${call.method} ${call.p}`)
+ })
+ api.__calls.length = 0
+ const pb = mini.montar(jsx(Tela, { development: true, capabilities: capsPub })).sincronizar()
+ pb.clicar(pb.botoes('Iniciar edição')[0]); await flush(); await flush(); pb.sincronizar()
+ // A barra do editor oferece um encaixe; a instância única de publicação o ocupa (o ref é do navegador).
+ const encaixe = pb.achar(n => n.tag === 'div' && n.props.className === 'contents' && typeof n.props.ref === 'function')
+ assert.equal(encaixe.length, 1); encaixe[0].props.ref({ id: 'barra-publicacao' }); pb.sincronizar()
+ const naBarra = rotulo => pb.achar(n => n.props['data-portal'] === 'barra-publicacao').flatMap(descendentes).filter(n => n.tag === 'button' && textoDe(n).includes(rotulo))
+ for (const r of ['Validar rascunho', 'Publicar versão']) { assert.equal(pb.botoes(r).length, 1, `uma ação ${r}`); assert.equal(naBarra(r).length, 1, `${r} na barra`) }
+ const publicar = () => pb.botoes('Publicar versão')[0], validar = () => pb.botoes('Validar rascunho')[0]
+ const secaoPub = () => publicacoes(pb)[0]
+ const resumo = () => textoDe(descendentes(secaoPub()).find(n => n.tag === 'p' && n.props['aria-live'] === 'polite'))
+ const detalhes = () => { const botao = descendentes(secaoPub()).find(n => n.tag === 'button' && n.props['aria-expanded'] !== undefined); return { botao, corpo: descendentes(secaoPub()).find(n => n.props.id === botao.props['aria-controls']) } }
+ const chamadas = sufixo => api.__calls.filter(c => c.p.endsWith(sufixo)).length
+ assert.equal(publicar().props.disabled, true, 'sem validação não publica')
+ assert.equal(detalhes().botao.props['aria-expanded'], false); assert.equal(detalhes().corpo.props.hidden, true)
+ assert.match(resumo(), /Revisão 7 ainda não validada/)
+ // Com o inspector recolhido, um diagnóstico reabre o inspector na etapa.
+ pb.clicar(pb.achar(n => n.tag === 'button' && n.props['aria-label'] === 'Propriedades')[0])
+ validacao = { revision: 7, valid: false, diagnostics: [{ nodeId: 'n3', field: 'job_command', message: 'Comando obrigatório' }] }
+ pb.clicar(validar()); await flush(); await flush(); pb.sincronizar()
+ assert.equal(chamadas('/validate'), 1, 'um pedido por clique')
+ assert.equal(detalhes().botao.props['aria-expanded'], true, 'problema abre o diagnóstico'); assert.equal(detalhes().corpo.props.hidden, false)
+ assert.match(resumo(), /1 problema na revisão 7/); assert.equal(publicar().props.disabled, true)
+ pb.clicar(descendentes(detalhes().corpo).find(n => n.tag === 'button' && textoDe(n) === 'n3'))
+ assert.equal(pb.achar(n => n.props['aria-label'] === 'Propriedades')[0].props['aria-expanded'], true, 'inspector reaberto')
+ assert.equal(pb.achar(n => n.props['data-canvas'] !== undefined)[0].props['data-selecionado'], 'n3')
+ assert.equal(ocultoPor(pb, n => n.props['aria-label'] === 'Propriedades da etapa').length, 0)
+ pb.clicar(detalhes().botao); assert.equal(detalhes().corpo.props.hidden, true); assert.match(resumo(), /1 problema/, 'resumo legível recolhido')
+ validacao = { revision: 7, valid: true, diagnostics: [] }
+ pb.clicar(validar()); await flush(); await flush(); pb.sincronizar()
+ assert.equal(publicar().props.disabled, false)
+ // Alteração local trava validar/publicar; salvar não publica nem reaproveita a validação da revisão anterior.
+ pb.clicar(pb.achar(n => n.tag === 'button' && n.props.draggable !== undefined && textoDe(n) === 'SQL')[0])
+ assert.equal(publicar().props.disabled, true); assert.equal(validar().props.disabled, true); assert.match(resumo(), /Salve as alterações/)
+ pb.clicar(pb.botoes('Salvar rascunho')[0]); await flush(); await flush(); pb.sincronizar()
+ assert.equal(publicados.length, 0, 'salvar não publica')
+ assert.equal(publicar().props.disabled, true); assert.match(resumo(), /Revisão 8 ainda não validada/)
+ validacao = { revision: 8, valid: true, diagnostics: [] }
+ pb.clicar(validar()); await flush(); await flush(); pb.sincronizar()
+ pb.clicar(publicar()); await flush()
+ assert.match(dialogs.currentDialog().message, /Publicar esta revisão/)
+ dialogs.finishDialog(true); await flush(); await flush(); await flush(); pb.sincronizar()
+ assert.equal(publicados.length, 1); assert.equal(publicados[0].expectedRevision, 8); assert.equal(publicados[0].fence, 41); assert.match(publicados[0].operationId, /^[0-9a-f-]{36}$/)
+ assert.match(resumo(), /Publicação solicitada/)
+ assert.deepEqual({ posses: chamadas('/lease'), saves: api.__calls.filter(c => c.method === 'PUT').length, validacoes: chamadas('/validate'), publicacoes: chamadas('/publish') }, { posses: 1, saves: 1, validacoes: 3, publicacoes: 1 })
+ const semPermissao = mini.montar(jsx(Tela, { development: true })).sincronizar()
+ assert.equal(semPermissao.botoes('Publicar versão').length, 0); assert.equal(semPermissao.botoes('Validar rascunho').length, 1)
+ resultado.publicacao = { barra: ['Validar rascunho', 'Publicar versão'], instancias: 1, validacoes: 3, publicacoes: 1, revisao: 8, fence: 41, diagnosticoAbreInspector: true, semPermissao: 'sem Publicar' }
+
+ // ── 13. Execução identifica a fonte; o rascunho não entra ─────────────────
+ rq.__dados['workspace-execution'] = { data_referencia: '2026-10-10', identidade: { run_id: null, dag_run_id: null, candidatos: [] }, etapas: [] }
+ const fonte = revisao => textoDe(mini.montar(jsx(WorkspaceOperations, { name: NOME, date: '', runId: '', stage: '', attempt: null, definition, layout, draftRevision: revisao, caps, view: 'grafo', active: true, onView() {}, onDate() {}, onRun() {}, onInvestigate() {} })).sincronizar().achar(n => n.tag === 'p' && /^Fonte:/.test(textoDe(n)))[0])
+ assert.match(fonte(3), /definição publicada atual.*rascunho \(revisão 3\) só é executado depois de publicado/)
+ assert.doesNotMatch(fonte(null), /rascunho/)
+ resultado.fonteExecucao = true
 
  console.log(JSON.stringify({ ...resultado, passed: true }))
 })().catch(e => { console.error(e); process.exit(1) })

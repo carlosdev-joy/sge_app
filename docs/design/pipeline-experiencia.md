@@ -122,3 +122,9 @@ Base `develop` `df1a81ca`; documentos `52c0c589`. Implementado com tokens e comp
 - Execução sem biblioteca, toolbar de montagem ou formulário de pipeline; alternância Gráfico | Tabela e logs.
 
 Não implementado nesta entrega: barra Salvar/Validar/Publicar unificada, painel de validação recolhível, recolher biblioteca/inspector, inspector operacional com abas, movimento/estados F5. Capturas comparativas ainda não registradas.
+
+## Estado de implementação — F4.1 (candidato 2.19.0)
+- Workspace do Pipeline sem a moldura de 1600 px do shell: margem lateral compacta `px-3 sm:px-4` (12/16 px, sempre menor que o `p-6` anterior); Visão geral, Configuração e Versões limitadas à largura útil anterior (1552 px), com cabeçalho e abas estáveis entre destinos.
+- Montagem: grade 160/1fr/260 (lg), 192/1fr/320 (xl) e 216/1fr/352 (2xl); painel recolhido sai da grade. Alternadores Componentes e Propriedades na barra do canvas, com o localizador de etapa e Organizar. Biblioteca e inspector com rolagem interna no desktop. Altura do canvas `max(470px, 100dvh − 26rem)`; na Execução `max(620px, 100dvh − 21rem)`.
+- Cabeçalho: Salvar rascunho, Validar rascunho e Publicar versão (primária quando permitida). Validação e publicação abaixo do canvas, recolhível, com resumo de uma linha.
+- Pendentes: desfazer/refazer, inspector em subseções e modo focado (F4.2); painéis recolhíveis da Execução e inspector operacional com abas (F5); capturas comparativas com o mockup 02.
