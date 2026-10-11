@@ -1,17 +1,23 @@
 import { requestText } from '../../lib/dialogs'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useLayoutEffect, useRef, useState } from 'react'
 import { Button } from '../ui/Button'
 import { Input, Textarea } from '../ui/Input'
 import { encryptedParameter, nodeLabel, object, patchLegacy, text, type JsonObject, type WorkspaceNode } from '../../lib/workspace'
 import { typeLabel } from './workspaceCatalog'
 import { Trash2, X } from 'lucide-react'
+import { Modal } from '../ui/Modal'
+import { hasSharedJobFields } from '../../lib/workspaceJobFields'
+import type { JobParamApi } from '../../lib/dsParams'
+const SharedJobConfiguration = lazy(() => import('./SharedJobConfiguration'))
 function AdvancedConfiguration({node,editable,onApply,onClose}:{node:WorkspaceNode;editable:boolean;onApply:(configuration:JsonObject)=>void;onClose:()=>void}) {
  const [value,setValue]=useState(()=>JSON.stringify(node.configuration,null,2));const [error,setError]=useState('')
  function apply(){try{const parsed:unknown=JSON.parse(value);if(!parsed||Array.isArray(parsed)||typeof parsed!=='object')throw new Error();onApply(object(parsed));onClose()}catch{setError('Use um objeto JSON válido. Os valores protegidos devem continuar por referência.')}}
  return <div className="space-y-3"><Textarea label="Configuração completa" value={value} onChange={e=>setValue(e.target.value)} readOnly={!editable} rows={15} className="font-mono text-xs" error={error}/><p className="text-xs text-dim">Campos adicionais são preservados. Use identificadores de conexão; valores protegidos permanecem na origem.</p><div className="flex gap-2">{editable&&<Button onClick={apply}>Aplicar configuração</Button>}<Button variant="secondary" onClick={onClose}>Voltar</Button></div></div>
 }
-export function NodeProperties({node,editable,onChange,onDelete,onClose,diagnosticRequest,onRename,canRename}:{canRename?:()=>boolean;onRename:(id:string)=>void;diagnosticRequest?:number;node:WorkspaceNode;editable:boolean;onChange:(node:WorkspaceNode)=>void;onDelete:()=>void;onClose:()=>void}) {
- const current=useRef({editable,nodeId:node.id});useLayoutEffect(()=>{current.current={editable,nodeId:node.id}})
+export function NodeProperties({node,editable,onChange,onDelete,onClose,diagnosticRequest,onRename,canRename,defaults=[]}:{defaults?:JobParamApi[];canRename?:()=>boolean;onRename:(id:string)=>void;diagnosticRequest?:number;node:WorkspaceNode;editable:boolean;onChange:(node:WorkspaceNode)=>void;onDelete:()=>void;onClose:()=>void}) {
+ const current=useRef({editable,nodeId:node.id,node,onChange});useLayoutEffect(()=>{current.current={editable,nodeId:node.id,node,onChange}})
+ const [configuration,setConfiguration]=useState<{node:WorkspaceNode;allowed:()=>boolean}|null>(null)
+ const shared=hasSharedJobFields(node.type)
  const [advanced,setAdvanced]=useState(!!diagnosticRequest);const legacy=object(node.configuration.legacyJob);const rows=Array.isArray(node.configuration.etl_pipeline_job_param)?node.configuration.etl_pipeline_job_param.map(object):[]
  function field(key:string,value:string){onChange(patchLegacy(node,key,value))}
  return <aside className="bg-panel border border-edge rounded-lg p-4 min-w-0" aria-label="Propriedades da etapa">
@@ -19,12 +25,15 @@ export function NodeProperties({node,editable,onChange,onDelete,onClose,diagnost
   {advanced?<AdvancedConfiguration node={node} editable={editable} onApply={configuration=>onChange({...node,configuration})} onClose={()=>setAdvanced(false)}/>:<div className="space-y-4">
    <Input label="Nome para exibição" value={text(node.displayName)||node.id} readOnly={!editable} onChange={e=>onChange({...node,displayName:e.target.value})}/>
    <Input label="Identificador da etapa" value={node.id} readOnly className="font-mono"/>{editable&&<Button size="sm" variant="secondary" onClick={async()=>{const id=await requestText("Novo identificador da etapa",node.id,()=>current.current.editable&&current.current.nodeId===node.id&&(!canRename||canRename()));if(id&&id!==node.id)onRename(id)}}>Renomear identificador</Button>}
-   <Textarea label={node.type==='datastage'?'Comando do job':'Comando / código'} value={text(legacy.job_command)} readOnly={!editable} onChange={e=>field('job_command',e.target.value)} rows={4}/>
-   <Input label="Ordem de execução" type="number" min={1} value={String(Number(legacy.execution_order)||1)} readOnly={!editable} onChange={e=>onChange({...node,configuration:{...node.configuration,legacyJob:{...legacy,execution_order:Number(e.target.value)}}})}/><Input label="Conexão SSH (identificador)" value={text(legacy.ssh_conn_id)} readOnly={!editable} onChange={e=>field('ssh_conn_id',e.target.value)}/>
-   {['sql','storedproc','email','python'].includes(node.type)&&<><Input label="Conexão SQL (identificador)" value={text(legacy.mssql_conn_id)} readOnly={!editable} onChange={e=>field('mssql_conn_id',e.target.value)}/><Input label="Banco de dados" value={text(legacy.mssql_database)} readOnly={!editable} onChange={e=>field('mssql_database',e.target.value)}/></>}
-   {!!rows.length&&<div className="border-t border-edge pt-4"><h4 className="text-sm font-medium text-ink mb-3">Parâmetros da etapa</h4><div className="space-y-3">{rows.map((row,index)=>encryptedParameter(row)?<div key={index} className="text-xs text-dim"><span className="font-medium text-ink">{text(row.param_name)}</span><p>Valor protegido na origem</p></div>:<Input key={index} label={text(row.param_name)} value={text(row.param_value)} readOnly={!editable} onChange={e=>onChange({...node,configuration:{...node.configuration,etl_pipeline_job_param:rows.map((r,i)=>i===index?{...r,param_value:e.target.value}:r)}})}/>)}</div></div>}
+   {shared?<div className="space-y-2"><p className="text-xs text-dim break-words">{text(legacy.job_command)||'Configure os campos desta etapa.'}</p><Button variant="secondary" className="w-full justify-center" onClick={()=>setConfiguration({node,allowed:canRename??(()=>current.current.editable)})}>{editable?'Configurar componente':'Consultar configuração'}</Button></div>:<Textarea label={node.type==='datastage'?'Comando do job':'Comando / código'} value={text(legacy.job_command)} readOnly={!editable} onChange={e=>field('job_command',e.target.value)} rows={4}/>}
+   <Input label="Ordem de execução" type="number" min={1} value={String(Number(legacy.execution_order)||1)} readOnly={!editable} onChange={e=>onChange({...node,configuration:{...node.configuration,legacyJob:{...legacy,execution_order:Number(e.target.value)}}})}/>{!shared&&<Input label="Conexão SSH (identificador)" value={text(legacy.ssh_conn_id)} readOnly={!editable} onChange={e=>field('ssh_conn_id',e.target.value)}/>}
+   {!shared&&['sql','storedproc','email','python'].includes(node.type)&&<><Input label="Conexão SQL (identificador)" value={text(legacy.mssql_conn_id)} readOnly={!editable} onChange={e=>field('mssql_conn_id',e.target.value)}/><Input label="Banco de dados" value={text(legacy.mssql_database)} readOnly={!editable} onChange={e=>field('mssql_database',e.target.value)}/></>}
+   {!shared&&!!rows.length&&<div className="border-t border-edge pt-4"><h4 className="text-sm font-medium text-ink mb-3">Parâmetros da etapa</h4><div className="space-y-3">{rows.map((row,index)=>encryptedParameter(row)?<div key={index} className="text-xs text-dim"><span className="font-medium text-ink">{text(row.param_name)}</span><p>Valor protegido na origem</p></div>:<Input key={index} label={text(row.param_name)} value={text(row.param_value)} readOnly={!editable} onChange={e=>onChange({...node,configuration:{...node.configuration,etl_pipeline_job_param:rows.map((r,i)=>i===index?{...r,param_value:e.target.value}:r)}})}/>)}</div></div>}
    <Button variant="secondary" className="w-full justify-center" onClick={()=>setAdvanced(true)}>Configurações avançadas</Button>
    {editable&&<Button variant="danger" size="sm" onClick={onDelete}><Trash2 size={14}/>Remover etapa</Button>}
   </div>}
+  <Modal open={!!configuration} onClose={()=>setConfiguration(null)} title={`${typeLabel(node.type)} · ${nodeLabel(node)}`} size="xl">
+   {configuration&&<Suspense fallback={<p role="status" className="text-sm text-dim">Carregando configuração…</p>}><SharedJobConfiguration node={configuration.node} editable={editable} defaults={defaults} canApply={()=>current.current.editable&&current.current.node===configuration.node&&configuration.allowed()} onApply={next=>{if(current.current.editable&&current.current.node===configuration.node&&configuration.allowed())current.current.onChange(next)}} onClose={()=>setConfiguration(null)}/></Suspense>}
+  </Modal>
  </aside>
 }
