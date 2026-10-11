@@ -34,6 +34,7 @@ import { estiloStatus } from '../malhas/statusExecucao'
 interface Props {
   pipelineAtual: string
   isEdit: boolean
+  draft?: boolean
   // Criação: seleção local do formulário. Edição: fallback (CSV espelho) para
   // quando o pipeline não aparece no /estado (ex.: inativo ou 067 pendente).
   selecionadas: string[]
@@ -41,7 +42,7 @@ interface Props {
   onConfirmar: (nomes: string[]) => void
 }
 
-export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose, onConfirmar }: Props) {
+export function DependenciasModal({ pipelineAtual, isEdit, draft = false, selecionadas, onClose, onConfirmar }: Props) {
   const qc = useQueryClient()
   const [busca, setBusca] = useState('')
   const [projeto, setProjeto] = useState('Todos')
@@ -104,14 +105,14 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
   // entrada do próprio pipeline no /estado (campo ADITIVO compilada_por).
   const compiladaPorPred = useMemo(() => {
     const m = new Map<string, { malha: string | null; no: number }>()
-    if (!isEdit) return m
+    if (!isEdit && !draft) return m
     const entrada = (estadoQuery.data?.data ?? []).find(
       d => d.pipeline_name.toLowerCase() === pipelineAtual.toLowerCase())
     for (const p of entrada?.predecessores ?? []) {
       if (p.compilada_por) m.set(p.nome.toLowerCase(), p.compilada_por)
     }
     return m
-  }, [isEdit, estadoQuery.data, pipelineAtual])
+  }, [isEdit, draft, estadoQuery.data, pipelineAtual])
 
   // Grafo GLOBAL de dependências (source = predecessor → target = dependente):
   // é sobre ele que o criaCiclo desabilita candidato que fecharia ciclo —
@@ -255,6 +256,7 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
   }
 
   function confirmar() {
+    if (draft) { onConfirmar(lista); onClose(); return }
     if (isEdit) { void aplicarEdicao(); return }
     onConfirmar(lista)
     onClose()
@@ -269,7 +271,8 @@ export function DependenciasModal({ pipelineAtual, isEdit, selecionadas, onClose
           Este pipeline só vai iniciar depois que <strong className="text-ink">todos</strong> os
           escolhidos concluírem com sucesso na mesma data de referência.
         </p>
-        {isEdit && !travado && (
+        {draft && <p className="text-xs text-dim">Confirmar altera somente o rascunho. Salvar e publicar continuam ações separadas.</p>}
+        {isEdit && !draft && !travado && (
           <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/40 rounded-lg px-3 py-2">
             Em edição a dependência é <strong>real e global</strong>: “Aplicar” grava na hora,
             independente do “Salvar alterações” do assistente — cancelar o assistente depois não desfaz.
