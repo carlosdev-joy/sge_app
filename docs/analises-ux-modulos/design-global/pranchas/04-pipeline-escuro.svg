@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc"><title id="title">Orquestra: Pipeline, proposta conceitual</title><desc id="desc">Dados fictícios. Direção visual global para revisão; não é produto implementado.</desc><style>text{font-family:Inter,Segoe UI,Arial,sans-serif} .mono{font-family:Consolas,monospace}</style>
+<rect x="0" y="0" width="1440" height="900" rx="0" fill="#0F1117" stroke="none"/>
+<rect x="0" y="0" width="1440" height="56" rx="0" fill="#1A1D27" stroke="none"/>
+<path d="M0 56 L1440 56" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="24" y="36" font-size="24" font-weight="700" fill="#80B2FF">ORQ</text>
+<text x="85" y="35" font-size="16" font-weight="600" fill="#E2E8F0">Orquestra</text>
+<rect x="370" y="12" width="410" height="32" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="386" y="33" font-size="13" font-weight="400" fill="#94A3B8">Buscar pipeline, malha ou execução</text>
+<text x="1110" y="34" font-size="12" font-weight="400" fill="#94A3B8">Ambiente de demonstração</text>
+<text x="1336" y="34" font-size="12" font-weight="400" fill="#94A3B8">Tema</text>
+<rect x="0" y="56" width="200" height="812" rx="0" fill="#1A1D27" stroke="none"/>
+<path d="M200 56 L200 868" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="24" y="94" font-size="12" font-weight="600" fill="#94A3B8">Projetar</text>
+<rect x="12" y="112" width="176" height="36" rx="6" fill="#203454" stroke="none"/>
+<text x="28" y="136" font-size="14" font-weight="600" fill="#80B2FF">Pipelines</text>
+<text x="28" y="178" font-size="14" font-weight="400" fill="#E2E8F0">Malhas</text>
+<text x="24" y="233" font-size="12" font-weight="600" fill="#94A3B8">Operar</text>
+<text x="28" y="276" font-size="14" font-weight="400" fill="#E2E8F0">Execuções</text>
+<text x="28" y="318" font-size="14" font-weight="400" fill="#E2E8F0">Falhas</text>
+<text x="28" y="360" font-size="14" font-weight="400" fill="#E2E8F0">Logs</text>
+<text x="24" y="405" font-size="12" font-weight="600" fill="#94A3B8">Governar</text>
+<text x="28" y="448" font-size="14" font-weight="400" fill="#E2E8F0">Inventário</text>
+<text x="28" y="490" font-size="14" font-weight="400" fill="#E2E8F0">Governança</text>
+<text x="28" y="574" font-size="14" font-weight="400" fill="#E2E8F0">Administração</text>
+<text x="24" y="800" font-size="12" font-weight="400" fill="#94A3B8">Ajuda e documentação</text>
+<text x="24" y="836" font-size="12" font-weight="400" fill="#94A3B8">Densidade: confortável</text>
+<text x="224" y="90" font-size="12" font-weight="400" fill="#94A3B8">Pipeline / Pedidos diários</text>
+<text x="224" y="126" font-size="24" font-weight="600" fill="#E2E8F0">Pedidos diários</text>
+<text x="224" y="152" font-size="13" font-weight="400" fill="#94A3B8">Editando rascunho · versão publicada 8</text>
+<rect x="1118" y="104" width="122" height="36" rx="6" fill="#1A1D27" stroke="#2A2D3A"/>
+<text x="1132" y="127" font-size="13" font-weight="500" fill="#E2E8F0">Validar</text>
+<rect x="1252" y="104" width="164" height="36" rx="6" fill="#80B2FF" stroke="#80B2FF"/>
+<text x="1266" y="127" font-size="13" font-weight="500" fill="#0F1117">Salvar rascunho</text>
+<text x="224" y="198" font-size="14" font-weight="400" fill="#94A3B8">Visão geral</text>
+<text x="360" y="198" font-size="14" font-weight="400" fill="#94A3B8">Configuração</text>
+<text x="496" y="198" font-size="14" font-weight="600" fill="#80B2FF">Montagem</text>
+<path d="M496 210 L608 210" stroke="#80B2FF" stroke-width="2" fill="none"/>
+<text x="632" y="198" font-size="14" font-weight="400" fill="#94A3B8">Execução</text>
+<text x="768" y="198" font-size="14" font-weight="400" fill="#94A3B8">Versões</text>
+<path d="M224 211 L1416 211" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<rect x="224" y="228" width="224" height="580" rx="8" fill="#1A1D27" stroke="#2A2D3A"/>
+<text x="240" y="258" font-size="16" font-weight="600" fill="#E2E8F0">Etapas</text>
+<rect x="240" y="276" width="192" height="34" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="252" y="298" font-size="12" font-weight="400" fill="#94A3B8">Encontrar tipo de etapa</text>
+<text x="240" y="344" font-size="14" font-weight="500" fill="#E2E8F0">DataStage</text>
+<text x="240" y="364" font-size="12" font-weight="400" fill="#94A3B8">Integração</text>
+<path d="M240 380 L432 380" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="240" y="412" font-size="14" font-weight="500" fill="#E2E8F0">Python</text>
+<text x="240" y="432" font-size="12" font-weight="400" fill="#94A3B8">Código</text>
+<path d="M240 448 L432 448" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="240" y="480" font-size="14" font-weight="500" fill="#E2E8F0">SQL</text>
+<text x="240" y="500" font-size="12" font-weight="400" fill="#94A3B8">Dados</text>
+<path d="M240 516 L432 516" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="240" y="548" font-size="14" font-weight="500" fill="#E2E8F0">Decisão</text>
+<text x="240" y="568" font-size="12" font-weight="400" fill="#94A3B8">Controle</text>
+<path d="M240 584 L432 584" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="240" y="616" font-size="14" font-weight="500" fill="#E2E8F0">Aguarde</text>
+<text x="240" y="636" font-size="12" font-weight="400" fill="#94A3B8">Controle</text>
+<path d="M240 652 L432 652" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="240" y="684" font-size="14" font-weight="500" fill="#E2E8F0">E-mail</text>
+<text x="240" y="704" font-size="12" font-weight="400" fill="#94A3B8">Comunicação</text>
+<path d="M240 720 L432 720" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="240" y="774" font-size="11" font-weight="400" fill="#94A3B8">6 de 11 tipos nesta prancha</text>
+<text x="476" y="254" font-size="13" font-weight="400" fill="#94A3B8">Desenho do pipeline</text>
+<text x="900" y="254" font-size="12" font-weight="400" fill="#94A3B8">−   100%   +   Ajustar</text>
+<path d="M726 394 H748.0 V394 H770" stroke="#94A3B8" stroke-width="1.6" fill="none"/>
+<path d="M763 390 L770 394 L763 398" stroke="#94A3B8" fill="none"/>
+<path d="M880 438 H880.0 V540 H880" stroke="#94A3B8" stroke-width="1.6" fill="none"/>
+<path d="M873 536 L880 540 L873 544" stroke="#94A3B8" fill="none"/>
+<text x="886.0" y="481.0" font-size="11" font-weight="400" fill="#94A3B8">Sim</text>
+<rect x="506" y="350" width="220" height="88" rx="8" fill="#1A1D27" stroke="#2A2D3A"/>
+<rect x="520" y="364" width="28" height="28" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="526" y="384" font-size="12" font-weight="600" fill="#80B2FF">Py</text>
+<text x="558" y="383" font-size="14" font-weight="600" fill="#E2E8F0">Preparar pedidos</text>
+<text x="558" y="405" font-size="12" font-weight="400" fill="#94A3B8">Python</text>
+<rect x="770" y="350" width="222" height="88" rx="8" fill="#203454" stroke="#80B2FF"/>
+<rect x="784" y="364" width="28" height="28" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="790" y="384" font-size="12" font-weight="600" fill="#80B2FF">?</text>
+<text x="822" y="383" font-size="14" font-weight="600" fill="#E2E8F0">Validar total</text>
+<text x="822" y="405" font-size="12" font-weight="400" fill="#94A3B8">Decisão</text>
+<rect x="770" y="540" width="222" height="88" rx="8" fill="#1A1D27" stroke="#2A2D3A"/>
+<rect x="784" y="554" width="28" height="28" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="790" y="574" font-size="12" font-weight="600" fill="#80B2FF">DB</text>
+<text x="822" y="573" font-size="14" font-weight="600" fill="#E2E8F0">Publicar resultado</text>
+<text x="822" y="595" font-size="12" font-weight="400" fill="#94A3B8">SQL</text>
+<rect x="1032" y="228" width="384" height="580" rx="8" fill="#1A1D27" stroke="#2A2D3A"/>
+<text x="1052" y="260" font-size="16" font-weight="600" fill="#E2E8F0">Validar total</text>
+<text x="1052" y="286" font-size="12" font-weight="400" fill="#94A3B8">Decisão · etapa selecionada</text>
+<path d="M1052 304 L1396 304" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="1052" y="336" font-size="14" font-weight="600" fill="#E2E8F0">Condição</text>
+<text x="1052" y="365" font-size="12" font-weight="400" fill="#94A3B8">Campo</text>
+<rect x="1052" y="378" width="344" height="38" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="1064" y="402" font-size="14" font-weight="400" fill="#E2E8F0">Quantidade de registros</text>
+<text x="1052" y="445" font-size="12" font-weight="400" fill="#94A3B8">Operador</text>
+<rect x="1052" y="458" width="344" height="38" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="1064" y="482" font-size="14" font-weight="400" fill="#E2E8F0">Maior que</text>
+<text x="1052" y="525" font-size="12" font-weight="400" fill="#94A3B8">Valor</text>
+<rect x="1052" y="538" width="344" height="38" rx="6" fill="#0F1117" stroke="#2A2D3A"/>
+<text x="1064" y="562" font-size="14" font-weight="400" fill="#E2E8F0">0</text>
+<text x="1052" y="610" font-size="14" font-weight="600" fill="#E2E8F0">Saídas</text>
+<text x="1052" y="640" font-size="13" font-weight="400" fill="#E2E8F0">Sim: Publicar resultado</text>
+<text x="1052" y="669" font-size="13" font-weight="400" fill="#E2E8F0">Não: Encerrar conforme política</text>
+<text x="1052" y="720" font-size="13" font-weight="400" fill="#80B2FF">Avançado e parâmetros</text>
+<rect x="1052" y="752" width="344" height="36" rx="6" fill="#80B2FF" stroke="#80B2FF"/>
+<text x="1066" y="775" font-size="13" font-weight="500" fill="#0F1117">Aplicar à etapa</text>
+<rect x="224" y="824" width="1192" height="34" rx="6" fill="#1A1D27" stroke="#2A2D3A"/>
+<text x="240" y="846" font-size="12" font-weight="400" fill="#94A3B8">Proposta conceitual • dados fictícios • menus e dimensões sujeitos à revisão • nenhum controle é funcional</text>
+<path d="M0 868 L1440 868" stroke="#2A2D3A" stroke-width="1" fill="none"/>
+<text x="224" y="889" font-size="11" font-weight="400" fill="#94A3B8">ORQUESTRA / Design global premium e fácil de usar / 12.10.2026</text>
+<text x="1100" y="889" font-size="11" font-weight="400" fill="#94A3B8">Pipeline · Escuro</text>
+</svg>

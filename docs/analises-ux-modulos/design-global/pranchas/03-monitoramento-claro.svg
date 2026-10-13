@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc"><title id="title">Orquestra: Monitoramento, proposta conceitual</title><desc id="desc">Dados fictícios. Direção visual global para revisão; não é produto implementado.</desc><style>text{font-family:Inter,Segoe UI,Arial,sans-serif} .mono{font-family:Consolas,monospace}</style>
+<rect x="0" y="0" width="1440" height="900" rx="0" fill="#F8FAFC" stroke="none"/>
+<rect x="0" y="0" width="1440" height="56" rx="0" fill="#FFFFFF" stroke="none"/>
+<path d="M0 56 L1440 56" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<text x="24" y="36" font-size="24" font-weight="700" fill="#0051DC">ORQ</text>
+<text x="85" y="35" font-size="16" font-weight="600" fill="#1E293B">Orquestra</text>
+<rect x="370" y="12" width="410" height="32" rx="6" fill="#F8FAFC" stroke="#E2E8F0"/>
+<text x="386" y="33" font-size="13" font-weight="400" fill="#64748B">Buscar pipeline, malha ou execução</text>
+<text x="1110" y="34" font-size="12" font-weight="400" fill="#64748B">Ambiente de demonstração</text>
+<text x="1336" y="34" font-size="12" font-weight="400" fill="#64748B">Tema</text>
+<rect x="0" y="56" width="200" height="812" rx="0" fill="#FFFFFF" stroke="none"/>
+<path d="M200 56 L200 868" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<text x="24" y="94" font-size="12" font-weight="600" fill="#64748B">Projetar</text>
+<text x="28" y="136" font-size="14" font-weight="400" fill="#1E293B">Pipelines</text>
+<text x="28" y="178" font-size="14" font-weight="400" fill="#1E293B">Malhas</text>
+<text x="24" y="233" font-size="12" font-weight="600" fill="#64748B">Operar</text>
+<rect x="12" y="252" width="176" height="36" rx="6" fill="#EFF6FF" stroke="none"/>
+<text x="28" y="276" font-size="14" font-weight="400" fill="#0051DC">Execuções</text>
+<text x="28" y="318" font-size="14" font-weight="400" fill="#1E293B">Falhas</text>
+<text x="28" y="360" font-size="14" font-weight="400" fill="#1E293B">Logs</text>
+<text x="24" y="405" font-size="12" font-weight="600" fill="#64748B">Governar</text>
+<text x="28" y="448" font-size="14" font-weight="400" fill="#1E293B">Inventário</text>
+<text x="28" y="490" font-size="14" font-weight="400" fill="#1E293B">Governança</text>
+<text x="28" y="574" font-size="14" font-weight="400" fill="#1E293B">Administração</text>
+<text x="24" y="800" font-size="12" font-weight="400" fill="#64748B">Ajuda e documentação</text>
+<text x="24" y="836" font-size="12" font-weight="400" fill="#64748B">Densidade: confortável</text>
+<text x="224" y="90" font-size="12" font-weight="400" fill="#64748B">Execuções / Fechamento diário</text>
+<text x="224" y="126" font-size="24" font-weight="600" fill="#1E293B">Fechamento diário</text>
+<text x="224" y="152" font-size="13" font-weight="400" fill="#64748B">Data de negócio: 12/10/2026 · execução demonstrativa</text>
+<rect x="1118" y="104" width="122" height="36" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+<text x="1132" y="127" font-size="13" font-weight="500" fill="#1E293B">Abrir histórico</text>
+<rect x="1252" y="104" width="164" height="36" rx="6" fill="#0051DC" stroke="#0051DC"/>
+<text x="1266" y="127" font-size="13" font-weight="500" fill="#FFFFFF">Abrir definição</text>
+<text x="224" y="198" font-size="14" font-weight="400" fill="#64748B">Visão geral</text>
+<text x="360" y="198" font-size="14" font-weight="400" fill="#64748B">Composição</text>
+<text x="496" y="198" font-size="14" font-weight="600" fill="#0051DC">Execução</text>
+<path d="M496 210 L608 210" stroke="#0051DC" stroke-width="2" fill="none"/>
+<text x="632" y="198" font-size="14" font-weight="400" fill="#64748B">Histórico</text>
+<path d="M224 211 L1416 211" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<rect x="224" y="228" width="1192" height="70" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+<text x="244" y="252" font-size="12" font-weight="400" fill="#64748B">Execução demonstrativa</text>
+<text x="244" y="278" font-size="18" font-weight="600" fill="#166534">Concluída</text>
+<text x="580" y="253" font-size="12" font-weight="400" fill="#64748B">Duração</text>
+<text x="580" y="279" font-size="18" font-weight="600" fill="#1E293B">17s</text>
+<text x="870" y="253" font-size="12" font-weight="400" fill="#64748B">Tarefas</text>
+<text x="870" y="279" font-size="18" font-weight="600" fill="#1E293B">3 concluídas</text>
+<text x="1190" y="253" font-size="12" font-weight="400" fill="#64748B">Origem</text>
+<text x="1190" y="279" font-size="18" font-weight="600" fill="#1E293B">Manual</text>
+<text x="224" y="334" font-size="13" font-weight="400" fill="#0051DC">Mapa    Linha do tempo    Lista</text>
+<text x="1110" y="334" font-size="12" font-weight="400" fill="#64748B">Colunas    Densidade    Filtros</text>
+<rect x="224" y="354" width="760" height="44" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+<text x="240" y="381" font-size="12" font-weight="600" fill="#64748B">Etapa</text>
+<text x="520" y="381" font-size="12" font-weight="600" fill="#64748B">Estado</text>
+<text x="685" y="381" font-size="12" font-weight="600" fill="#64748B">Tipo</text>
+<text x="877" y="381" font-size="12" font-weight="600" fill="#64748B">Duração</text>
+<rect x="224" y="398" width="760" height="58" rx="0" fill="#FFFFFF" stroke="none"/>
+<text x="240" y="433" font-size="14" font-weight="500" fill="#1E293B">avaliar_condicao</text>
+<text x="520" y="433" font-size="13" font-weight="400" fill="#166534">✓ Concluída</text>
+<text x="685" y="433" font-size="13" font-weight="400" fill="#64748B">Decisão</text>
+<text x="880" y="433" font-size="13" font-weight="400" fill="#1E293B">1s</text>
+<path d="M224 456 L984 456" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<rect x="224" y="456" width="760" height="58" rx="0" fill="#FFFFFF" stroke="none"/>
+<text x="240" y="491" font-size="14" font-weight="500" fill="#1E293B">confirmar_dependencia</text>
+<text x="520" y="491" font-size="13" font-weight="400" fill="#166534">✓ Concluída</text>
+<text x="685" y="491" font-size="13" font-weight="400" fill="#64748B">Decisão</text>
+<text x="880" y="491" font-size="13" font-weight="400" fill="#1E293B">1s</text>
+<path d="M224 514 L984 514" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<rect x="224" y="514" width="760" height="58" rx="0" fill="#EFF6FF" stroke="none"/>
+<text x="240" y="549" font-size="14" font-weight="500" fill="#1E293B">validar_fixture</text>
+<text x="520" y="549" font-size="13" font-weight="400" fill="#166534">✓ Concluída</text>
+<text x="685" y="549" font-size="13" font-weight="400" fill="#64748B">Notebook</text>
+<text x="880" y="549" font-size="13" font-weight="400" fill="#1E293B">14s</text>
+<path d="M224 572 L984 572" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<rect x="1000" y="354" width="416" height="454" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+<text x="1020" y="386" font-size="16" font-weight="600" fill="#1E293B">validar_fixture</text>
+<text x="1020" y="414" font-size="12" font-weight="400" fill="#64748B">Saída da tarefa · somente leitura</text>
+<path d="M1020 432 L1396 432" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<text x="1020" y="473" font-size="14" font-weight="600" fill="#1E293B">Resultado verificado</text>
+<text x="1020" y="510" font-size="14" font-weight="400" fill="#1E293B">2 registros fictícios</text>
+<text x="1020" y="544" font-size="14" font-weight="400" fill="#1E293B">Total: 30</text>
+<text x="1020" y="590" font-size="12" font-weight="400" fill="#64748B">Notebook em memória, sem dados externos</text>
+<text x="1020" y="639" font-size="13" font-weight="400" fill="#0051DC">Eventos e detalhes da tentativa</text>
+<rect x="1020" y="716" width="376" height="36" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+<text x="1034" y="739" font-size="13" font-weight="500" fill="#1E293B">Voltar à definição</text>
+<text x="224" y="640" font-size="14" font-weight="400" fill="#64748B">Estado, tipo, duração e identidade juntos.</text>
+<text x="224" y="666" font-size="14" font-weight="400" fill="#64748B">O detalhe usa a mesma corrida selecionada.</text>
+<rect x="224" y="824" width="1192" height="34" rx="6" fill="#FFFFFF" stroke="#E2E8F0"/>
+<text x="240" y="846" font-size="12" font-weight="400" fill="#64748B">Proposta conceitual • dados fictícios • menus e dimensões sujeitos à revisão • nenhum controle é funcional</text>
+<path d="M0 868 L1440 868" stroke="#E2E8F0" stroke-width="1" fill="none"/>
+<text x="224" y="889" font-size="11" font-weight="400" fill="#64748B">ORQUESTRA / Design global premium e fácil de usar / 12.10.2026</text>
+<text x="1100" y="889" font-size="11" font-weight="400" fill="#64748B">Monitoramento · Claro</text>
+</svg>

@@ -1,0 +1,202 @@
+[
+  {
+    "path": ".gitattributes",
+    "sha256": "39a5c46b2cddaed094094ef1f48bd6a3c1a0cb4ae9d5d5e1b68a3b71d3eb35df",
+    "bytes": 67
+  },
+  {
+    "path": "design-global/arquitetura-e-adocao-global.md",
+    "sha256": "de8e67fa13651ac26841683c4051e74446954e6a9a8c68ff1b977ecda82e2aaf",
+    "bytes": 6812
+  },
+  {
+    "path": "design-global/direcao-e-percepcao-visual.md",
+    "sha256": "6326d0756e420718c3651faced7e6053243a4e24d65f486d30e3e64ab4e5382a",
+    "bytes": 4953
+  },
+  {
+    "path": "design-global/pranchas/01-pipeline-claro.svg",
+    "sha256": "8fe8c5e785752a980feb4bea15b7ead48a454dac6a8418176e72358b001c66a3",
+    "bytes": 10102
+  },
+  {
+    "path": "design-global/pranchas/02-malha-claro.svg",
+    "sha256": "7f8f8dcb6e99f28ceccc07cea13e985e8f88fbb654a1d0168a4a3b2a9839e5cb",
+    "bytes": 8823
+  },
+  {
+    "path": "design-global/pranchas/03-monitoramento-claro.svg",
+    "sha256": "1b678a624bb18706d01ad3650a2525393c3c385f26bababb85362c704a3fa433",
+    "bytes": 8696
+  },
+  {
+    "path": "design-global/pranchas/04-pipeline-escuro.svg",
+    "sha256": "d9f52eb3e3e30d8716c869924f9cd9af305b9b1158b7c8da9ae0994cfe964216",
+    "bytes": 10103
+  },
+  {
+    "path": "design-global/pranchas/README.md",
+    "sha256": "02a6b8eaa087f61bc1df3a9f7e491345e07e1a3a19db2571f17d1d5c618c45b4",
+    "bytes": 1741
+  },
+  {
+    "path": "design-global/README.md",
+    "sha256": "ecee30301aec5feebf14b6cbaaf4ce89419a5fe43fb96866c0d217cadedb0b47",
+    "bytes": 2438
+  },
+  {
+    "path": "design-global/sistema-visual.md",
+    "sha256": "9ccae0f392422d800a06582c10a75098bb0a20dbfd5a4a4c2b76f39b2b7faee6",
+    "bytes": 7993
+  },
+  {
+    "path": "evidencias/DB-004-demo-tarefas.jpg",
+    "sha256": "adc12197374c608687b93dc2125f3a2e186935a19c8c6ab8747d525f10094021",
+    "bytes": 46570
+  },
+  {
+    "path": "evidencias/DB-010-demo-salva.jpg",
+    "sha256": "2a947a6f74b2c75378da04eb7730f33c0a3fc6af9ebe3830c5c6787ee2c4e3f0",
+    "bytes": 52899
+  },
+  {
+    "path": "evidencias/DB-012-execucao-fixture.jpg",
+    "sha256": "58b5a148d7bcbc0d4e9770c0a670c0f1475ae18e0518af51d816f286edca41e8",
+    "bytes": 59623
+  },
+  {
+    "path": "evidencias/fontes-dev.md",
+    "sha256": "67e2cc0dd93c978fb26300ff3354b33122c6161893d5d1e05d98bc6ef9aa4140",
+    "bytes": 9410
+  },
+  {
+    "path": "evidencias/fontes-documentais.md",
+    "sha256": "5e97eb7a95cad3057b98cd086c37db652eee71d7ac4e619d3fb5a089b73b2657",
+    "bytes": 13160
+  },
+  {
+    "path": "evidencias/manifesto-fontes-orquestra.md",
+    "sha256": "ea1fea8cb1ba5c35c682381963114bb531ccc26679ee6520450ff72bcbace7a9",
+    "bytes": 6451
+  },
+  {
+    "path": "evidencias/registro-ui.md",
+    "sha256": "565b452dd5109351f64b4a9780c4cbbdbaaa40e5aa82c5503ba563518e421a55",
+    "bytes": 9211
+  },
+  {
+    "path": "geral/glossario-e-nomenclatura.md",
+    "sha256": "9fc2813fefd9269c856cdb3a495dcfe5d6b9e1d7325b06ea7bec48552fbecb0e",
+    "bytes": 14454
+  },
+  {
+    "path": "geral/inventario-e-cobertura.md",
+    "sha256": "d85eade6139f6d018620fe0b1f0aaac00c464830fa278a22c592eefb02edcd04",
+    "bytes": 12290
+  },
+  {
+    "path": "geral/mapa-documentos-originais.md",
+    "sha256": "ad9e4896ea8c9372aa7d21c03aaffc5d387dcbd6e08227d7665d2cb7057f052b",
+    "bytes": 2619
+  },
+  {
+    "path": "geral/visao-geral-da-analise.md",
+    "sha256": "f3a50859d3b1f2ba17095972a2b102bc13e92ace75f4cb97d995ef9de119c80a",
+    "bytes": 9585
+  },
+  {
+    "path": "GUIA-DO-AGENTE.md",
+    "sha256": "7289acc2219b7526996e93450779cad6d6afcf1396690a012891a580ec01515a",
+    "bytes": 6840
+  },
+  {
+    "path": "modulos/configuracao-agendas/README.md",
+    "sha256": "8406a91111239e3835b4362a74e0fd5724383788207364c47405c5012264e8d0",
+    "bytes": 1211
+  },
+  {
+    "path": "modulos/governanca-personalizacao/README.md",
+    "sha256": "d900663b1bdb044967a38d32b613dedd8e099493c21753d8a909405e0be10248",
+    "bytes": 1083
+  },
+  {
+    "path": "modulos/malhas/conceitos-e-reestruturacao.md",
+    "sha256": "4d61862ca47f28441b3a1a24f44a5252fdab548e89662621f2fb55cbd17c48a6",
+    "bytes": 9456
+  },
+  {
+    "path": "modulos/malhas/README.md",
+    "sha256": "6f3944418ac4818c1ff94bdeb7f2122e19a9c5e30b5350ffd2ebe06cbd383845",
+    "bytes": 1098
+  },
+  {
+    "path": "modulos/monitoramento/README.md",
+    "sha256": "4be9d90ecb19272faf7cb1138f4a8ac037f41454074ee5e96643356e64e6a37e",
+    "bytes": 1179
+  },
+  {
+    "path": "modulos/pipelines/matriz-comparativa.md",
+    "sha256": "9f9c23acef3471a14fc52c11d29be32787e38bf0b791fe83575a26332626a307",
+    "bytes": 35725
+  },
+  {
+    "path": "modulos/pipelines/proposta-ux.md",
+    "sha256": "c44195b0937caf062a939365cabb19650bdbb4a3078714527b7774945ac9c2bc",
+    "bytes": 14287
+  },
+  {
+    "path": "modulos/pipelines/README.md",
+    "sha256": "07b86d758188a078bbbff5ccfbba3b809a53e2450060502cd761343db60648e0",
+    "bytes": 987
+  },
+  {
+    "path": "planejamento/backlog-e-criterios-de-aceite.md",
+    "sha256": "cb3958a229a39da5942800fdb3f085dd44112a4b669fb34f26fec96d9dd9482f",
+    "bytes": 33681
+  },
+  {
+    "path": "planejamento/preservacao-funcional-e-validacao.md",
+    "sha256": "a7075ce1f1ab98edd21bd0ff6ee1801978c99ab87ea8f3fcf17d030bb0ace26b",
+    "bytes": 34263
+  },
+  {
+    "path": "README.md",
+    "sha256": "30ef27a4a60b99e96ec3c2195071cb000e35a2b162eefc8e8b0c5a156290c768",
+    "bytes": 3373
+  },
+  {
+    "path": "referencias/control-m/jornadas-e-limites.md",
+    "sha256": "10a28171d26418b11ec1a7f20894c3986ef722e7d76954d7c132d9918e00a079",
+    "bytes": 4564
+  },
+  {
+    "path": "referencias/control-m/README.md",
+    "sha256": "a5549ff46b85845e02d39109d7f1a3597388c61abce387263c0608e7d6d142b9",
+    "bytes": 1010
+  },
+  {
+    "path": "referencias/databricks/jornadas-e-execucoes.md",
+    "sha256": "05bc3b29a4593e5315edbeeccc4cd0882bac702932456313aada9529b697b4a5",
+    "bytes": 12079
+  },
+  {
+    "path": "referencias/databricks/README.md",
+    "sha256": "f8750a83e54a32342a739d1427e66af8a6f7817b5ca3d281f5e95b91a801e101",
+    "bytes": 1031
+  },
+  {
+    "path": "referencias/informatica/jornadas-data-integration.md",
+    "sha256": "f79c4e94d0e3a8b0031aa7b8bc27a579acae193f13b48c06620c03bbe7e14946",
+    "bytes": 12807
+  },
+  {
+    "path": "referencias/informatica/README.md",
+    "sha256": "6dc18c416a0c118861d4468ac76a6fd5274122d10ac89db7ff59d7d102a819ab",
+    "bytes": 758
+  },
+  {
+    "path": "referencias/roteiro-comparativo.md",
+    "sha256": "2a69d166c6e99d7a0d68a149ecfa0fb8dfee74c095548ceb537421edf4ca2286",
+    "bytes": 8341
+  }
+]
