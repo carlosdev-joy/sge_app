@@ -36,6 +36,18 @@ Saúde pública do piloto: `/orquestra/workspace/health/live` e `/orquestra/work
 
 Aplicar migrations141/142 antes de habilitar `WORKSPACE_DRAFTS_ENABLED=true`; consultar [contratos](contracts/workspace-drafts-v1.md). A conta dedicada permanece sem escrita no legado. Conceder SELECT nas fontes de configuração explicitadas em LegacyFlowReader e SELECT/INSERT/UPDATE em rascunho/lease, SELECT/INSERT em versão/evento; não conceder DELETE nem roles amplas. Ausência de tabela opcional é tolerada; falta de permissão retorna503. Backup, migrations e grants fazem parte do deploy, nunca de requests.
 
+## Índice de pipelines (EOC-F2, 2.22.0)
+
+`GET /workspace/pipeline-index` também lê o nome do titular da posse em `dbo.etl_usuario`. Antes de servir a imagem com o índice, conceder ao principal SQL dedicado **já existente** do workspace só o `SELECT` das três colunas usadas:
+
+```sql
+GRANT SELECT ON dbo.etl_usuario (matricula, primeiro_nome, ultimo_nome) TO [<principal_workspace_existente>];
+```
+
+`<principal_workspace_existente>` é marcador: não registrar o nome real, não criar login, usuário nem credencial, não conceder role ampla, a tabela inteira nem escrita. É passo operacional após o backup, como os grants acima; nunca DDL da aplicação nem request. Sem ele, o índice responde 503 `dependency_unavailable`. Detalhes e verificação em [2.22.0](release-notes/2.22.0-pipeline-ux-descoberta.md#deploy).
+
+Se o checkout do DEV rodar com `umask 077`, ajustar os artefatos públicos versionados (`ui-react/dist/`) para arquivos 644 e diretórios 755, sem mudar conteúdo, antes de validar assets e hashes servidos.
+
 ## Instalação offline
 
 O Dockerfile faz restore em build, portanto imagens-base isoladamente **não** provam build offline. Para runtime offline, gerar imagem final no ambiente de build, exportar por `docker save`, preparar SHA-256/manifesto/SBOM e transportar por canal autorizado. No alvo, conferir checksums e plataforma antes de `docker load`; usar `--no-build --pull never`. O alvo não precisa instalar SDK.

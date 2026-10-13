@@ -155,8 +155,17 @@ def materialize(definition,layout,existing):
     elif reference is not None:raise PublicationBlocked('secret_reference','Referência protegida exige tipo encrypted')
  return projected
 
+def engine_schedule_times(raw):
+ """Horários de horarios_especificos que etl_dag_factory._build_cron usa: mesmo split e int(); a entrada ilegível o motor ignora."""
+ for text in (raw or '').strip().split(','):
+  parts=text.strip().split(':')
+  try:hour,minute=int(parts[0]),int(parts[1]) if len(parts)>1 else 0
+  except ValueError:continue
+  yield text.strip(),hour,minute
+
 def validate_projection(definition,layout,existing,connection_types,email_policy=None):
  from routers import jobs
+ from services import param_vinculos
  errors=[]
  def error(node,field,code,message):errors.append({'nodeId':node,'field':field,'code':code,'message':message})
  try:projection=materialize(definition,layout,existing)
@@ -179,20 +188,31 @@ def validate_projection(definition,layout,existing,connection_types,email_policy
  if schedule_type!='on_demand' and not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?',str(pipeline.get('scheduled_time') or '')):error(None,'scheduled_time','schedule','Informe horário válido ou selecione sob demanda')
  # Os mesmos formatos e limites do cadastro anterior, sem normalização silenciosa.
  from routers import pipelines as schedules
+ previous_pipeline=next(iter(existing.get('etl_pipeline',[])),{})
+ # sync_rows grava com UPDATE parcial: chave omitida conserva a coluna publicada e null explícito a limpa.
+ # A agenda abaixo é a que o motor lerá depois da gravação; a sobreposição é local e a projeção não muda.
+ effective={**previous_pipeline,**pipeline};kind=effective.get('schedule_type') or 'daily'
+ def invalid_days(days):return bool(days) and (not isinstance(days,str) or any(day not in {'0','1','2','3','4','5','6'} for day in days.split(',')))
  try:
-  if schedule_type=='custom':
-   if not schedules._parse_horarios_especificos(pipeline.get('horarios_especificos')):error(None,'horarios_especificos','schedule','Informe pelo menos um horário de execução')
-   days=pipeline.get('dias_semana')
-   if days and (not isinstance(days,str) or any(day not in {'0','1','2','3','4','5','6'} for day in days.split(','))):error(None,'dias_semana','schedule','Selecione dias da semana válidos')
-  if schedule_type=='monthly_days_times' and not schedules._validate_dias_horarios_mes(pipeline.get('dias_horarios_mes')):error(None,'dias_horarios_mes','schedule','Adicione dias e horários do mês')
+  if kind=='custom':
+   if not schedules._parse_horarios_especificos(effective.get('horarios_especificos')):error(None,'horarios_especificos','schedule','Informe pelo menos um horário de execução')
+   if invalid_days(effective.get('dias_semana')):error(None,'dias_semana','schedule','Selecione dias da semana válidos')
+  # Fora de sob demanda e dias do mês, a factory também usa os horários legíveis, e a tela os edita como horários específicos.
+  # Agenda igual à publicada fica como está, como criticidade/SLA abaixo.
+  elif kind not in {'on_demand','monthly_days_times'} and any(effective.get(field)!=previous_pipeline.get(field) for field in ('schedule_type','horarios_especificos','dias_semana')):
+   # Formato e faixa pelo parser do cadastro, só para o diagnóstico: o retorno normalizado é descartado e o texto publica como está.
+   try:schedules._parse_horarios_especificos(effective.get('horarios_especificos'))
+   except HTTPException as exc:error(None,'horarios_especificos','schedule',str(exc.detail))
+   # dias_semana entra no cron que cai no diário; nos demais tipos, só junto de horário legível.
+   if (kind not in {'hourly','weekly','monthly','biweekly'} or next(engine_schedule_times(effective.get('horarios_especificos')),None)) and invalid_days(effective.get('dias_semana')):error(None,'dias_semana','schedule','Selecione dias da semana válidos')
+  if kind=='monthly_days_times' and not schedules._validate_dias_horarios_mes(effective.get('dias_horarios_mes')):error(None,'dias_horarios_mes','schedule','Adicione dias e horários do mês')
   for mode,field,maximum in [('weekly','schedule_dow',6),('monthly','schedule_dom',28),('biweekly','schedule_dom',13)]:
-   if schedule_type==mode:
-    number=pipeline.get(field);number=1 if number is None else number;minimum=0 if mode=='weekly' else 1
+   if kind==mode:
+    number=effective.get(field);number=1 if number is None else number;minimum=0 if mode=='weekly' else 1
     if isinstance(number,bool) or not isinstance(number,int) or not minimum<=number<=maximum:error(None,field,'schedule','Informe um dia válido para a agenda')
  except (HTTPException,ValueError,TypeError,AttributeError) as exc:
   message=str(exc.detail) if isinstance(exc,HTTPException) else 'Confira os dias e horários da agenda'
   error(None,'schedule','schedule',message)
- previous_pipeline=next(iter(existing.get('etl_pipeline',[])),{})
  for field,allowed in (('criticidade',{'Alta','Media','Baixa'}),('ambiente',{'PROD','HML','DEV'})):
   if field in pipeline and pipeline[field] not in allowed and pipeline[field]!=previous_pipeline.get(field):error(None,field,'pipeline_configuration','Selecione '+field+' válido')
  for field,minimum,maximum in (('sla_minutos',1,525600),('max_active_runs',1,10),('retries_count',0,10),('retry_delay_seconds',0,604800)):
@@ -227,13 +247,29 @@ def validate_projection(definition,layout,existing,connection_types,email_policy
    for message in issues:error(parameter.get('job_name'),'parameters','parameter_configuration',message)
    if table=='etl_pipeline_param' and parameter.get('param_destino','datastage') not in {'datastage','orquestra'}:error(None,'param_destino','parameter_configuration','Destino do parâmetro inválido')
  mssql={key for key,kind in connection_types.items() if kind in {'mssql','sqlserver'}}
+ # Linha sem nome já é recusada pela checagem do catálogo acima; não serve de referência.
+ # Destino omitido na linha projetada vale o DEFAULT 'datastage' da coluna (migration 129).
+ catalog=[{'param_destino':'datastage',**p} for p in projection['etl_pipeline_param'] if 'param_name' in p]
+ def links(job,kind,python=None):
+  # Contrato do save legado (param_vinculos.preparar) sobre o catálogo projetado; texto vazio é sem vínculo.
+  refs=job.get('param_vinculos_json')
+  try:refs=json.loads(refs) if isinstance(refs,str) and refs else refs
+  except ValueError:pass
+  if refs:
+   try:param_vinculos.normalizar(refs,kind,catalog,python)
+   except ValueError as exc:return refs,[str(exc)]
+  return refs,[]
  for node,job in zip(nodes,projection['etl_pipeline_job']):
   kind=node['type'];id=node['id'];cfg=node['configuration'];command=job.get('job_command');ssh=job.get('ssh_conn_id');issues=[]
   if not IDENT.fullmatch(id):issues.append('Identificador de etapa incompatível com Airflow')
   if ssh and connection_types.get(ssh)!='ssh':issues.append('Identificador SSH não encontrado')
   if job.get('mssql_conn_id') and job['mssql_conn_id'] not in mssql:issues.append('Identificador SQL não encontrado')
   if kind=='sql':issues+=jobs._validate_sql_node_conn(_json(job.get('sql_json')),mssql)
-  elif kind=='python':issues+=jobs._validate_python_node(_json(job.get('python_json')),ssh,_json(job.get('param_vinculos_json')));issues+=[] if ssh else ['Conexão SSH é obrigatória para Python']
+  elif kind=='python':
+   python=_json(job.get('python_json'));refs,found=links(job,'python',python if isinstance(python,dict) else None);issues+=found
+   issues+=jobs._validate_python_node(python,ssh,refs if isinstance(refs,dict) else None)
+   # python_json NULL é o modo legado 'modulo': PythonModuleOperator roda no worker, sem SSH.
+   if python is not None and not ssh:issues.append('Conexão SSH é obrigatória para Python')
   elif kind in {'datastage','shell'}:
    if not ssh:issues.append('Conexão SSH é obrigatória')
    if not isinstance(command,str) or not command.strip():issues.append('Comando da etapa obrigatório')
@@ -243,7 +279,10 @@ def validate_projection(definition,layout,existing,connection_types,email_policy
   elif kind=='http':
    if not jobs._valid_http_url(command):issues.append('URL HTTP inválida')
   elif kind=='decisao':issues+=jobs._validate_condition(_json(job.get('condition_json')),known,id,mssql)
-  elif kind=='aguarde':issues+=jobs._validate_aguarde(_json(job.get('aguarde_json')))
+  elif kind=='aguarde':
+   issues+=jobs._validate_aguarde(_json(job.get('aguarde_json')))
+   # Como no save do canvas legado, só conta entrada vinda de etapa do próprio fluxo.
+   if not any(edge.get('target')==id and edge.get('source') in known for edge in definition.get('edges',[])):issues.append(jobs._AGUARDE_SEM_ENTRADA)
   elif kind=='notificacao':issues+=jobs._validate_notify(_json(job.get('notify_json')))
   elif kind=='email':issues+=jobs._validate_email(_json(job.get('notify_json')),*(email_policy or (None,None,None,False)),no_novo=not any(r['job_name']==id for r in existing.get('etl_pipeline_job',[])))
   elif kind=='valida_arquivo':
@@ -258,6 +297,10 @@ def validate_projection(definition,layout,existing,connection_types,email_policy
      va.impacto(config,projection['etl_pipeline_job'],id,projection['etl_pipeline_param'])
     except (ValueError,TypeError,KeyError):issues.append('Configuração e destinos do Valida Arquivo inválidos; revise entradas, diretórios, políticas e dependências')
   else:issues.append('Tipo de etapa não suportado')
+  # Python já conferiu acima. Os demais seguem o save legado, que roda antes da checagem de tipo e usa
+  # o tipo atual da etapa: DataStage confere o catálogo (valor direto de mesmo nome tem prioridade na
+  # corrida, não é conflito); qualquer outro tipo recusa vínculo não vazio, inclusive o que sobrou de troca de tipo.
+  if kind!='python':issues+=links(job,kind)[1]
   for message in issues:error(id,'configuration','node_configuration',message)
  # Não alterar coerções/normalizações dos validadores: representação permanece fiel.
  return errors,projection

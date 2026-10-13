@@ -12,6 +12,15 @@ export interface WorkspaceCapabilities { schemaVersion: number; enabled: boolean
 export type WorkspaceExperience = 'desenvolvimento' | 'consulta' | 'sustentacao'
 export function object(value: unknown): JsonObject { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {} }
 export function text(value: unknown): string { return typeof value === 'string' ? value : '' }
+// Tipo de agenda que o motor executa (`_build_cron` da factory): sem tipo é diário, e
+// horários específicos legíveis prevalecem sobre diário, semanal, mensal e quinzenal.
+// Só lê: o legacyPipeline continua como gravado.
+export function effectiveScheduleType(pipeline: JsonObject): string {
+ const type = text(pipeline.schedule_type) || 'daily'
+ const integer = (part: string | undefined) => part !== undefined && /^\s*[+-]?\d+\s*$/.test(part)
+ const times = text(pipeline.horarios_especificos).split(',').map(t => t.trim().split(':')).filter(([hour, minute]) => integer(hour) && (minute === undefined || integer(minute)))
+ return times.length && ['daily', 'weekly', 'monthly', 'biweekly'].includes(type) ? 'custom' : type
+}
 export function workspacePath(name: string, tab = 'visao-geral', experience: WorkspaceExperience = 'consulta'): string { return `/pipelines/${encodeURIComponent(name)}/${canonicalWorkspaceTab(tab)}?${canonicalWorkspaceQuery(tab, new URLSearchParams({experiencia: experience}))}` }
 export function technicalSuggestion(name: string): string { return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase().slice(0, 200) }
 export function cloneFlow<T>(value: T): T { return structuredClone(value) }

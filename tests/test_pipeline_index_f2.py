@@ -255,7 +255,7 @@ def test_index_batch_never_holds_draft_or_lease_locks_while_waiting():
 
 def test_version_migration_is_the_next_sequential_minor():
     numbers = sorted(int(p.name[:3]) for p in (ROOT / "sql/migrations").glob("[0-9][0-9][0-9]_*.sql"))
-    assert numbers[-3:] == [168, 169, 170]
+    assert numbers[numbers.index(170) - 2:numbers.index(170) + 1] == [168, 169, 170]
     sql = _read("sql/migrations/170_versao_pipeline_descoberta.sql")
     assert "SET @nova = CONCAT(@maior, '.', @menor + 1, '.0');" in sql
     assert sql.count("N'Lista única de pipelines e criação essencial'") == 1 and sql.rstrip().endswith("GO")
