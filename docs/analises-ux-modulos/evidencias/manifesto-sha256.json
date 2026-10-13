@@ -81,8 +81,8 @@
   },
   {
     "path": "evidencias/registro-ui.md",
-    "sha256": "565b452dd5109351f64b4a9780c4cbbdbaaa40e5aa82c5503ba563518e421a55",
-    "bytes": 9211
+    "sha256": "f5946beb678145b1b13655e09589ecf59732033ceaace2dd1d790b70843a498c",
+    "bytes": 9711
   },
   {
     "path": "geral/glossario-e-nomenclatura.md",
@@ -106,8 +106,8 @@
   },
   {
     "path": "GUIA-DO-AGENTE.md",
-    "sha256": "7289acc2219b7526996e93450779cad6d6afcf1396690a012891a580ec01515a",
-    "bytes": 6840
+    "sha256": "5b2aa859ce629dfae560b67a1305c6345ed9190673ff3723c9089c7c2e55251e",
+    "bytes": 7140
   },
   {
     "path": "modulos/configuracao-agendas/README.md",
@@ -130,9 +130,14 @@
     "bytes": 1098
   },
   {
+    "path": "modulos/monitoramento/notificacoes-e-alertas-comparativo.md",
+    "sha256": "13ea3452084da96aa5084862fb34258a654fdb2535eb142ad745c64c8ddb0f3c",
+    "bytes": 12569
+  },
+  {
     "path": "modulos/monitoramento/README.md",
-    "sha256": "4be9d90ecb19272faf7cb1138f4a8ac037f41454074ee5e96643356e64e6a37e",
-    "bytes": 1179
+    "sha256": "9af502544b852beb94d9b6f855afcfd8b7600e6084a89e2cd3feee7cdcf18da0",
+    "bytes": 1404
   },
   {
     "path": "modulos/pipelines/matriz-comparativa.md",
@@ -161,8 +166,8 @@
   },
   {
     "path": "README.md",
-    "sha256": "30ef27a4a60b99e96ec3c2195071cb000e35a2b162eefc8e8b0c5a156290c768",
-    "bytes": 3373
+    "sha256": "10801209bf703bd539b2c1b25cee54e25201778815dbd8f9773ebd1af3d815a0",
+    "bytes": 3589
   },
   {
     "path": "referencias/control-m/jornadas-e-limites.md",

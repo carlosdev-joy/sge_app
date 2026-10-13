@@ -70,3 +70,5 @@ CTM-006–008 acrescentam os tours oficiais Build a workflow, Error handling e R
 - CTM-010: Self-Healing16/16, retry/ciclo/escalonamento/alertas/políticas guiados.
 
 Sem transferência de dados corporativos. Prova DB-012 contém apenas fixture/identificadores de demonstração. O agente não executou workflows reais Control-M.
+
+DB-013 —13/10/2026: Job notifications → Add notification inspecionado no ORQ_UX_DEMO. Eventos Start/Success/Failure/Duration warning/Streaming backlog/Maintenance start/Maintenance complete; destinos indicados Email/Teams/PagerDuty/Slack/Webhook; mute skipped/canceled. Destino vazio, Save disabled; Cancel descartou e o resumo permaneceu No notifications. Sem envio, edição de destinatários, configuração de canal ou aceite. Control-M aberto continuava tour Self-Healing, sem tenant real.

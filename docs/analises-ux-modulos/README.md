@@ -27,6 +27,8 @@ O pedido também abrange **design premium e fácil de usar em toda a ferramenta*
 
 ## Material transversal
 
+- [Detalhamento de notificações e alertas](modulos/monitoramento/notificacoes-e-alertas-comparativo.md): falha, sucesso, aviso, gestão operacional e Control-M; pesquisa complementar em13/10/2026, sem envio real.
+
 - [Inventário e cobertura](geral/inventario-e-cobertura.md), [glossário](geral/glossario-e-nomenclatura.md) e [visão geral da análise](geral/visao-geral-da-analise.md).
 - [Backlog proposto e aceites](planejamento/backlog-e-criterios-de-aceite.md) e [preservação/validação](planejamento/preservacao-funcional-e-validacao.md).
 - [Registro das observações](evidencias/registro-ui.md), [auditoria do código](evidencias/fontes-dev.md), [fontes oficiais](evidencias/fontes-documentais.md), [manifesto das fontes Orquestra](evidencias/manifesto-fontes-orquestra.md).

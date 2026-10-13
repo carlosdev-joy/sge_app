@@ -1,5 +1,7 @@
 # Monitoramento e execução
 
+Complemento de13/10/2026: [notificações, alertas e tratamento operacional](notificacoes-e-alertas-comparativo.md), com configuração nas três ferramentas, regras/destinos/Alerts do Control-M e proposta para o Orquestra.
+
 Monitorar é selecionar uma instância e explicar estado, espera, falha e possibilidade de ação. Definição publicada, corrida, etapa e tentativa precisam permanecer identificáveis.
 
 Leia a jornada Monitor em [Informatica](../../referencias/informatica/jornadas-data-integration.md), DB-011/012 em [Databricks](../../referencias/databricks/jornadas-e-execucoes.md), Monitoring/falhas/forecast/remediação em [Control-M](../../referencias/control-m/jornadas-e-limites.md), jornadas26–38 da [matriz](../pipelines/matriz-comparativa.md) e aceites F5 na [validação](../../planejamento/preservacao-funcional-e-validacao.md).

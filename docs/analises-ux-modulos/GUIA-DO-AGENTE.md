@@ -45,6 +45,8 @@ REA estava instalado, mas suas ferramentas MCP não estavam disponíveis e o end
 
 ## Resultado esperado da sua leitura
 
+Leia também [notificações e alertas](modulos/monitoramento/notificacoes-e-alertas-comparativo.md). Distinguir evento, política, entrega e tratamento operacional; não transformar lido em resolvido ou falha de envio em falha de job. Regras/canais documentados não foram testados com envio real.
+
 O escopo inclui refinamento visual global, solicitado expressamente pelo usuário: premium e fácil de usar, com unificação além de Pipeline/Malha. Após o glossário, leia [direção visual](design-global/direcao-e-percepcao-visual.md), [sistema visual](design-global/sistema-visual.md), [arquitetura/adoção global](design-global/arquitetura-e-adocao-global.md) e [pranchas](design-global/pranchas/README.md). Não limitar a entrega à funcionalidade. Distinguir proposta global de interface, preservação funcional e requisito novo de motor.
 
 Entregue uma síntese por módulo com: problema/jornada, capacidade atual com fonte, comportamento externo e confiança, proposta, contrato/capacidade do motor, riscos, dependências, preservação e critério de aceite. Marque cada item como existente, lacuna da SPEC, melhoria de clareza ou novo escopo. Depois proponha fases pequenas com ordem e decisões em aberto. A primeira entrega é leitura e reconciliação; implementação depende do processo e aprovação de especificação do repositório.
