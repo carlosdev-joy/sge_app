@@ -1,13 +1,13 @@
 # Spec: experiência profissional e operação integrada — ORQUESTRA
 
-Data: 2026-10-13 · Status: **rascunho para aprovação**.
+Data: 2026-10-13 · Status: **aprovada pelo usuário em 13/10/2026; execução EOC-F0**.
 Identificador: **EOC**. Base integrada: `develop` `92d14d596c95212d10bd30c3085edde4ce7c6b83`. Referência comparativa: branch `docs/analises-ux-modulos-malha`, commit `5a6dbf3644a2002ca967516163200e7924ea8659`. Referência documental Pipeline: `52c0c589` e seus registros posteriores no develop.
 
 ## 1. Visão
 
 Consolidar a experiência de autores, operadores e responsáveis por processos: encontrar trabalho, montar e configurar fluxos, publicar, acompanhar a instância correta, comunicar resultados e tratar ocorrências. Preservar o investimento em Pipeline, Malha, formulários especializados e motores atuais; evoluir a interface e os contratos de forma incremental, com linguagem comum, área útil ampla e contexto inequívoco.
 
-Esta SPEC integra as análises de Informatica, Databricks e Control-M, o design global proposto e as pendências reais das SPECs anteriores. Não transforma funcionalidades já implementadas em trabalho novo. Aprovação documental não certifica funcionamento externo nem entrega atual; execução deste plano começa somente após aprovação explícita.
+Esta SPEC integra as análises de Informatica, Databricks e Control-M, o design global proposto e as pendências reais das SPECs anteriores. Não transforma funcionalidades já implementadas em trabalho novo. Aprovação documental não certifica funcionamento externo nem entrega atual; execução aprovada pelo usuário em 13/10/2026: Claude desenvolve, Codex revisa/valida, integração e publicação em DEV por fase, resumo ao usuário e continuidade automática. Main/produção e envios externos mantêm gates próprios.
 
 ### Bases, fontes e confiança
 
@@ -211,7 +211,7 @@ DEV: backup verificado, migrations sem cópia obsoleta, atualização de serviç
 
 ### EOC-F3 — Aceite integrado e preservação Pipeline
 
-- **Entregável:** Jornada salvar, validar, publicar, executar e investigar; paridade dos11 tipos e8 agendas.
+- **Entregável:** Jornada salvar, validar, publicar, executar e investigar; paridade dos 11 tipos e das 8 agendas em matrizes independentes orientadas por risco, sem produto cartesiano.
 - **Critérios de aceite:** Mesma sessão/fence/revisão/versão/corrida; falha conserva trabalho; campos protegidos/desconhecidos preservados; aliases, teclado, pausa e retries verificados; limites externos declarados.
 - **Dependências e limites:** F1/F2. Fecha os aceites anteriores somente onde existir evidência.
 - **Validação:** V comum e cenários negativos específicos; revisão adversarial independente antes da PR, segurança quando pertinente e smoke DEV para entrega funcional.
@@ -316,7 +316,7 @@ DEV: backup verificado, migrations sem cópia obsoleta, atualização de serviç
 ### EOC-F16 — Malha: definição versionada e referências
 
 - **Entregável:** Contrato e incrementos de definição versionada e referências por membro, com migração opt-in.
-- **Critérios de aceite:** Modelo aprovado antes de mutação; corrida conserva versões; concorrência não mistura snapshots; restore cria draft; versão ausente não vira latest silencioso; compatibilidade read-only.
+- **Critérios de aceite:** Modelo com revisão técnica do Codex antes de DDL/mutação; corrida conserva versões; concorrência não mistura snapshots; restore cria draft; versão ausente não vira latest silencioso; compatibilidade read-only.
 - **Dependências e limites:** F15. Subdividir contrato/leitura/autoria em PRs independentes se ultrapassar o alvo.
 - **Validação:** V comum e cenários negativos específicos; revisão adversarial independente antes da PR, segurança quando pertinente e smoke DEV para entrega funcional.
 - **PR:** `feat: eoc-f16 entrega da fase` para `develop`; sem promoção automática.
@@ -427,10 +427,10 @@ Gates da respectiva fase, sem bloquear trabalho independente:
 - Aprovação desta SPEC como plano consolidado; publicação de arquivo não significa aprovação.
 - Backlog canônico: acesso autorizado para conferir status/responsáveis, sem cadastrar duplicatas.
 - Microsoft: tenant/app/bot, permissões mínimas, instalação, resolução por e-mail e destinatário de teste. Escolha técnica F11; sem Graph app-only genérico presumido.
-- Fonte confiável do resultado Warning/Sucesso/Falha e geração de ciclo de reprocesso: validar antes de emitir eventos F7.
+- Fonte confiável do resultado Warning/Sucesso/Falha e geração de ciclo de reprocesso: revisão técnica do Codex antes de emitir eventos F7.
 - Política de obrigação do nó Teams: manter legado e opt-in, sem mudança silenciosa.
 - Retenção, backoff/cooldown/teto e prioridades: definir com operação, sem copiar defaults de fornecedor.
-- Malha versionada, recurso e calendário: modelo/ações aprovados antes do DDL/motor; decompor fases quando necessário.
+- Malha versionada, recurso e calendário: modelo/ações com revisão técnica do Codex antes do DDL/motor/ativação, sem nova confirmação pessoal (fases já aprovadas pelo usuário); decompor fases quando necessário. Gates externos reais (Microsoft, destinatários, acessos) permanecem.
 - Fonte global, densidade e menu: contrato validado contra conteúdo atual, sem trocar rotas apenas por prancha.
 - Forecast/carga, representantes dos três públicos e DataStage real: donos/ambientes/dados antes dos respectivos pilotos. Sem dados, previsão fica indisponível.
 
@@ -453,3 +453,5 @@ Gates da respectiva fase, sem bloquear trabalho independente:
 Estado por requisito: não iniciado / candidato / integrado / publicado DEV / aceito com evidência / bloqueado / fora do escopo. Não resumir a porcentagem de commits. Requisito com integração externa não fecha por mock; restrições documentadas não equivalem a 100%.
 
 Por fase: release note com problema/resultado, validação contra base, serviços/migrations/deploy, SHA candidato/servido e smoke/gates. Claude real desenvolve/abre PR e Codex revisa no processo alinhado; usuário avisado por versão DEV implantada. Main/produção continuam com autorização própria.
+
+Modelos de execução: Claude Opus 5.5 é o modelo principal, com esforço `high` para código, `xhigh` seletivo para contratos e `medium` para documentação. Claude Fable 5.1 é contingência apenas se a avaliação de uma fase falhar e houver acesso real ao modelo. Nenhum benchmark comparativo é presumido.
