@@ -18,7 +18,7 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
     public async Task IndexUnionsPublishedAndDraftsByRealCollationWithStablePagesFiltersLeaseAndConcurrentPublication()
     {
         var database = "OrquestraIndexTest_" + Guid.NewGuid().ToString("N");
-        var options = new WorkspaceSqlOptions(Environment.GetEnvironmentVariable("WORKSPACE_TEST_SQL_SERVER") ?? "127.0.0.1,1433", database, Environment.GetEnvironmentVariable("WORKSPACE_TEST_SQL_USER") ?? "sa", Environment.GetEnvironmentVariable("WORKSPACE_TEST_SQL_PASSWORD")!, true);
+        var options = Options(database);
         await using var master = new SqlConnection((options with { Database = "master" }).ConnectionString()); await master.OpenAsync();
         var created = false;
         try
@@ -26,17 +26,8 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
             // Collation real do legado: sem distinção de maiúsculas, com distinção de acentos.
             await Execute(master, $"CREATE DATABASE [{database}] COLLATE SQL_Latin1_General_CP1_CI_AS"); created = true;
             await using var c = new SqlConnection(options.ConnectionString()); await c.OpenAsync();
+            await Execute(c, BaseTables);
             await Execute(c, """
-                CREATE TABLE dbo.etl_sessao(token_hash CHAR(64) PRIMARY KEY,matricula VARCHAR(20),expira_em DATETIME);
-                CREATE TABLE dbo.etl_usuario(matricula VARCHAR(20) PRIMARY KEY,perfil_nome VARCHAR(30),primeiro_nome VARCHAR(100),ultimo_nome VARCHAR(100),ativo BIT NOT NULL DEFAULT 1);
-                CREATE TABLE dbo.etl_pipeline(pipeline_name NVARCHAR(200) PRIMARY KEY,project_name NVARCHAR(50) NOT NULL DEFAULT '',domain NVARCHAR(100) NOT NULL DEFAULT '',schedule_type VARCHAR(50),active BIT,dag_criada BIT,last_execution DATETIME,updated_at DATETIME);
-                CREATE TABLE dbo.etl_pipeline_job(pipeline_name NVARCHAR(200),job_name NVARCHAR(200),job_type VARCHAR(100),job_command NVARCHAR(MAX),execution_order INT,depends_on_jobs NVARCHAR(MAX),layout_x FLOAT,layout_y FLOAT,PRIMARY KEY(pipeline_name,job_name));
-                CREATE TABLE dbo.etl_pipeline_param(pipeline_name NVARCHAR(200),param_name VARCHAR(128) COLLATE Latin1_General_BIN2,param_type VARCHAR(30),param_value NVARCHAR(MAX));
-                CREATE TABLE dbo.etl_pipeline_job_param(pipeline_name NVARCHAR(200),job_name NVARCHAR(200),param_name VARCHAR(128) COLLATE Latin1_General_BIN2,param_type VARCHAR(30),param_value NVARCHAR(MAX));
-                CREATE TABLE dbo.etl_valida_arquivo_no(pipeline_name NVARCHAR(200),task_id NVARCHAR(200),ssh_conn_id VARCHAR(100));
-                CREATE TABLE dbo.etl_valida_arquivo_config(pipeline_name NVARCHAR(200),task_id NVARCHAR(200),entrada_id UNIQUEIDENTIFIER);
-                CREATE TABLE dbo.etl_pipeline_execucao(pipeline_name NVARCHAR(200),status VARCHAR(100));
-                CREATE TABLE dbo.etl_job_lineage(pipeline_name NVARCHAR(200),job_name NVARCHAR(200));
                 INSERT dbo.etl_sessao VALUES(REPLICATE('a',64),'ALICE',DATEADD(hour,1,GETDATE())),(REPLICATE('b',64),'BOB',DATEADD(hour,1,GETDATE()));
                 INSERT dbo.etl_usuario(matricula,perfil_nome,primeiro_nome,ultimo_nome) VALUES('ALICE','dev','Alice','Souza'),('BOB','dev','Bob','Silva');
                 INSERT dbo.etl_pipeline VALUES(N'Árvore',N'BI Corporativo',N'Cobrança','on_demand',1,1,NULL,NULL),(N'beta_inativo',N'BI Corporativo',N'',NULL,0,1,NULL,NULL),
@@ -44,11 +35,9 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
                 INSERT dbo.etl_pipeline_job VALUES(N'Árvore',N'Etapa','shell','true',1,NULL,10,20),(N'PUBC',N'Etapa','shell','true',1,NULL,10,20);
                 """);
             for (var i = 0; i < 120; i++) await Execute(c, $"INSERT dbo.etl_pipeline(pipeline_name,project_name,domain,active) VALUES(N'carga_{i:D3}',N'Carga',N'Lote',1)");
-            var folder = Path.GetDirectoryName(Environment.GetEnvironmentVariable("WORKSPACE_TEST_SCHEMA_PATH"))!;
             var index = new SqlPipelineIndex(options);
             Assert.Equal("draft_schema_unavailable", (await Assert.ThrowsAsync<WorkspaceException>(() => index.ReadAsync(Query(), default))).Code);
-            foreach (var name in new[] { "141_workspace_rascunhos.sql", "144_workspace_publicacao.sql", "144_workspace_publicacao.sql", "146_workspace_comandos.sql", "159_workspace_lineage_hash.sql" })
-                foreach (var batch in Regex.Split(await File.ReadAllTextAsync(Path.Combine(folder, name)), @"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase)) if (!string.IsNullOrWhiteSpace(batch)) await Execute(c, batch);
+            await Migrate(c);
             var drafts = new SqlDraftRepository(options);
 
             // Draft novo: aparece para outro leitor sem cadastro ativo nem DAG.
@@ -122,36 +111,164 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
             var beyond = await index.ReadAsync(Query(limit: 50, offset: 5000), default); Assert.Empty(beyond.Items); Assert.Equal(all.Count, beyond.Total);
             Assert.Equal(120, (await index.ReadAsync(Query(project: "carga", domain: "LOTE", limit: 100), default)).Total);
 
-            // Publicação concorrente com leitura: nenhuma resposta duplica ou perde PUBC.
+            // Publicação, criação, posse e descarte concorrentes com quatro leitores: nenhuma resposta duplica ou perde
+            // PUBC nem mostra a versão pendente como confirmada; nenhuma escrita vira 409 por causa do índice (a vítima
+            // de deadlock é sempre a leitura, que refaz a página inteira).
             var target = await drafts.ImportAsync("PUBC", Actor('a'), default); var targetLease = await drafts.LeaseAsync(target.DraftId, new(), Actor('a'), default);
+            var retriesBefore = index.DeadlockRetries;
             using var stop = new CancellationTokenSource();
+            // Prazo finito da bancada: leitura presa derruba o teste em vez de travá-lo.
+            using var guard = new CancellationTokenSource(TimeSpan.FromMinutes(3));
             var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(async () =>
             {
                 var samples = new List<double>();
                 while (!stop.IsCancellationRequested)
                 {
-                    var clock = Stopwatch.StartNew(); var page = await index.ReadAsync(Query(search: "pubc"), default); samples.Add(clock.Elapsed.TotalMilliseconds);
-                    var row = Assert.Single(page.Items); Assert.True(row.HasDraft); Assert.True(row.HasPublished);
-                    var full = await index.ReadAsync(Query(limit: 100), default); Assert.Equal(full.Items.Count, full.Items.Select(i => i.PipelineName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+                    var clock = Stopwatch.StartNew(); var page = await index.ReadAsync(Query(search: "pubc"), guard.Token); samples.Add(clock.Elapsed.TotalMilliseconds);
+                    var row = Assert.Single(page.Items); Assert.True(row.HasDraft); Assert.True(row.HasPublished); Assert.Null(row.PublishedVersionNumber);
+                    var full = await index.ReadAsync(Query(limit: 100), guard.Token); Assert.Equal(full.Items.Count, full.Items.Select(i => i.PipelineName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
                 }
                 return samples;
             })).ToArray();
-            var operation = await drafts.PublishAsync(target.DraftId, new(Guid.NewGuid(), target.Revision, targetLease.Fence), Actor('a'), default);
-            Assert.Equal("pendente", operation.State);
-            for (var i = 0; i < 5; i++) { var other = await drafts.CreateAsync(new(new PipelineDefinition { Identity = new($"concorrente_{i}") }, new(1, new Dictionary<string, NodePosition>())), Actor('a'), default); var otherLease = await drafts.LeaseAsync(other.DraftId, new(), Actor('a'), default); await drafts.DiscardAsync(other.DraftId, new(other.Revision, otherLease.Fence), Actor('a'), default); }
-            await Task.Delay(500); stop.Cancel();
+            var operationId = Guid.NewGuid(); Publication operation;
+            try
+            {
+                operation = await drafts.PublishAsync(target.DraftId, new(operationId, target.Revision, targetLease.Fence), Actor('a'), default);
+                for (var i = 0; i < 10; i++) { var other = await drafts.CreateAsync(new(new PipelineDefinition { Identity = new($"concorrente_{i}") }, new(1, new Dictionary<string, NodePosition>())), Actor('a'), default); var otherLease = await drafts.LeaseAsync(other.DraftId, new(), Actor('a'), default); await drafts.DiscardAsync(other.DraftId, new(other.Revision, otherLease.Fence), Actor('a'), default); }
+                await Task.Delay(500);
+            }
+            finally
+            {
+                // Falha da escrita não deixa leitores órfãos: param no próximo laço e são aguardados antes do DROP.
+                stop.Cancel(); await Task.WhenAny(Task.WhenAll(readers), Task.Delay(TimeSpan.FromMinutes(3)));
+            }
             var latencies = (await Task.WhenAll(readers)).SelectMany(s => s).Order().ToArray();
+            Assert.Equal("pendente", operation.State); Assert.Equal(operationId, operation.OperationId);
+            Assert.Equal(1, await Count(c, $"SELECT COUNT(*) FROM dbo.etl_workspace_publicacao WHERE draft_id='{target.DraftId}'"));
             var pending = Assert.Single((await index.ReadAsync(Query(search: "pubc"), default)).Items);
             Assert.True(pending.Managed); Assert.True(pending.HasPublished); Assert.Null(pending.PublishedVersionNumber);
-            output.WriteLine($"Leituras concorrentes: {latencies.Length}; p50 {latencies[latencies.Length / 2]:F1} ms; p95 {latencies[(int)(latencies.Length * 0.95)]:F1} ms (bancada SQL; não é medição de produção)");
+            output.WriteLine($"Leituras concorrentes: {latencies.Length}; p50 {latencies[latencies.Length / 2]:F1} ms; p95 {latencies[(int)(latencies.Length * 0.95)]:F1} ms; máx {latencies[^1]:F1} ms; vítimas 1205 refeitas {index.DeadlockRetries - retriesBefore} (bancada SQL; não é medição de produção)");
             Assert.Empty((await index.ReadAsync(Query(search: "concorrente"), default)).Items);
             Assert.DoesNotContain("definition", JsonSerializer.Serialize(await index.ReadAsync(Query(limit: 100), default), DraftValidation.Json));
         }
         finally { SqlConnection.ClearAllPools(); if (created) await Execute(master, $"ALTER DATABASE [{database}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{database}]"); }
     }
 
+    // Correção EOC-F2 do deadlock: o índice lê em LOW num pool próprio, espera o dado confirmado e perde o deadlock
+    // para a escrita; nenhuma sessão do pool de escrita (nem o caminho real de autoria) roda em LOW.
+    [SqlFact]
+    public async Task IndexRunsAtLowPriorityInItsOwnPoolWaitsForCommittedDataAndLosesTheDeadlockToWriters()
+    {
+        var database = "OrquestraIndexTest_" + Guid.NewGuid().ToString("N");
+        var options = Options(database);
+        await using var master = new SqlConnection((options with { Database = "master" }).ConnectionString()); await master.OpenAsync();
+        var created = false;
+        try
+        {
+            await Execute(master, $"CREATE DATABASE [{database}] COLLATE SQL_Latin1_General_CP1_CI_AS"); created = true;
+            await using var c = new SqlConnection(options.ConnectionString()); await c.OpenAsync();
+            await Execute(c, BaseTables);
+            await Execute(c, "INSERT dbo.etl_sessao VALUES(REPLICATE('a',64),'ALICE',DATEADD(hour,1,GETDATE())); INSERT dbo.etl_usuario(matricula,perfil_nome,primeiro_nome,ultimo_nome) VALUES('ALICE','dev','Alice','Souza'); INSERT dbo.etl_pipeline(pipeline_name,project_name,domain,active) VALUES(N'BLOQUEIO',N'Antes',N'Dom',1),(N'OUTRO',N'Proj',N'Dom',1)");
+            await Migrate(c);
+            var index = new SqlPipelineIndex(options);
+            Assert.Equal(2, (await index.ReadAsync(Query(), default)).Total);
+
+            // 1. Escrita sem commit: o índice espera (sem NOLOCK/READPAST), em LOW, READ COMMITTED, no pool próprio, e lê o confirmado.
+            await using var writer = new SqlConnection(options.ConnectionString()); await writer.OpenAsync();
+            var writerSession = await Int(writer, "SELECT @@SPID");
+            await Execute(writer, "BEGIN TRANSACTION; UPDATE dbo.etl_pipeline SET project_name=N'Confirmado' WHERE pipeline_name=N'BLOQUEIO'");
+            var read = index.ReadAsync(Query(search: "BLOQUEIO"), default);
+            var reading = await Blocked(c, writerSession);
+            Assert.Equal(SqlPipelineIndex.ApplicationName, reading.Program); Assert.Equal(-5, reading.Priority); Assert.Equal(2, reading.Isolation);
+            Assert.False(read.IsCompleted);
+            Assert.Equal(0, await Int(writer, "SELECT deadlock_priority FROM sys.dm_exec_sessions WHERE session_id=@@SPID"));
+            await Execute(writer, "COMMIT");
+            Assert.Equal("Confirmado", Assert.Single((await read).Items).Project);
+
+            // 2. Depois do índice usar o pool dele: conexões de escrita continuam NORMAL, e o caminho real de autoria também.
+            var writers = new List<SqlConnection>();
+            try
+            {
+                for (var i = 0; i < 4; i++) { var w = new SqlConnection(options.ConnectionString()); writers.Add(w); await w.OpenAsync(); }
+                foreach (var w in writers) Assert.Equal(0, await Int(w, "SELECT deadlock_priority FROM sys.dm_exec_sessions WHERE session_id=@@SPID"));
+            }
+            finally { foreach (var w in writers) await w.DisposeAsync(); }
+            await using var blocker = new SqlConnection(options.ConnectionString()); await blocker.OpenAsync();
+            var blockerSession = await Int(blocker, "SELECT @@SPID");
+            await Execute(blocker, "BEGIN TRANSACTION; INSERT dbo.etl_pipeline(pipeline_name,project_name,domain,active) VALUES(N'Criacao_Bloqueada',N'',N'',1)");
+            var create = new SqlDraftRepository(options).CreateAsync(new(new PipelineDefinition { Identity = new("Criacao_Bloqueada") }, new(1, new Dictionary<string, NodePosition>())), Actor('a'), default);
+            var authoring = await Blocked(c, blockerSession);
+            Assert.Equal("Orquestra.Workspace", authoring.Program); Assert.Equal(0, authoring.Priority); Assert.Equal(4, authoring.Isolation);
+            await Execute(blocker, "ROLLBACK");
+            Assert.Equal("Criacao_Bloqueada", (await create).PipelineName);
+            foreach (var session in await Sessions(c)) if (session.Program != SqlPipelineIndex.ApplicationName) Assert.Equal(0, session.Priority);
+
+            // 3. Deadlock determinístico: sessão com a configuração do índice × sessão do pool de escrita. A do índice
+            // tem mais trabalho a desfazer (sem prioridade, a escrita seria a vítima); com LOW, a vítima é o índice.
+            await Execute(c, "CREATE TABLE dbo.prova_deadlock(id INT PRIMARY KEY,valor INT NOT NULL); INSERT dbo.prova_deadlock(id,valor) SELECT TOP(400) ROW_NUMBER() OVER(ORDER BY (SELECT NULL)),0 FROM sys.all_columns");
+            await using var low = new SqlConnection(SqlPipelineIndex.ConnectionString(options)); await low.OpenAsync();
+            var lowSession = await Int(low, "SELECT @@SPID");
+            await Execute(low, SqlPipelineIndex.SessionSettings + "BEGIN TRANSACTION; UPDATE dbo.prova_deadlock SET valor=valor+1 WHERE id=1 OR id>2");
+            await using var normal = new SqlConnection(options.ConnectionString()); await normal.OpenAsync();
+            var normalSession = await Int(normal, "SELECT @@SPID");
+            await Execute(normal, "BEGIN TRANSACTION; UPDATE dbo.prova_deadlock SET valor=valor+1 WHERE id=2");
+            var lowRead = Execute(low, "SELECT valor FROM dbo.prova_deadlock WHERE id=2");
+            Assert.Equal(lowSession, (await Blocked(c, normalSession)).Session);
+            var normalWrite = Execute(normal, "UPDATE dbo.prova_deadlock SET valor=valor+1 WHERE id=1");
+            Assert.Equal(1205, (await Assert.ThrowsAsync<SqlException>(() => lowRead)).Number);
+            await normalWrite; await Execute(normal, "COMMIT");
+            Assert.Equal(1, await Int(c, "SELECT valor FROM dbo.prova_deadlock WHERE id=1"));
+            Assert.Equal(1, await Int(c, "SELECT valor FROM dbo.prova_deadlock WHERE id=2"));
+            Assert.Equal(0, await Int(c, "SELECT COUNT(*) FROM dbo.prova_deadlock WHERE id>2 AND valor<>0"));
+        }
+        finally { SqlConnection.ClearAllPools(); if (created) await Execute(master, $"ALTER DATABASE [{database}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{database}]"); }
+    }
+
+    private const string BaseTables = """
+        CREATE TABLE dbo.etl_sessao(token_hash CHAR(64) PRIMARY KEY,matricula VARCHAR(20),expira_em DATETIME);
+        CREATE TABLE dbo.etl_usuario(matricula VARCHAR(20) PRIMARY KEY,perfil_nome VARCHAR(30),primeiro_nome VARCHAR(100),ultimo_nome VARCHAR(100),ativo BIT NOT NULL DEFAULT 1);
+        CREATE TABLE dbo.etl_pipeline(pipeline_name NVARCHAR(200) PRIMARY KEY,project_name NVARCHAR(50) NOT NULL DEFAULT '',domain NVARCHAR(100) NOT NULL DEFAULT '',schedule_type VARCHAR(50),active BIT,dag_criada BIT,last_execution DATETIME,updated_at DATETIME);
+        CREATE TABLE dbo.etl_pipeline_job(pipeline_name NVARCHAR(200),job_name NVARCHAR(200),job_type VARCHAR(100),job_command NVARCHAR(MAX),execution_order INT,depends_on_jobs NVARCHAR(MAX),layout_x FLOAT,layout_y FLOAT,PRIMARY KEY(pipeline_name,job_name));
+        CREATE TABLE dbo.etl_pipeline_param(pipeline_name NVARCHAR(200),param_name VARCHAR(128) COLLATE Latin1_General_BIN2,param_type VARCHAR(30),param_value NVARCHAR(MAX));
+        CREATE TABLE dbo.etl_pipeline_job_param(pipeline_name NVARCHAR(200),job_name NVARCHAR(200),param_name VARCHAR(128) COLLATE Latin1_General_BIN2,param_type VARCHAR(30),param_value NVARCHAR(MAX));
+        CREATE TABLE dbo.etl_valida_arquivo_no(pipeline_name NVARCHAR(200),task_id NVARCHAR(200),ssh_conn_id VARCHAR(100));
+        CREATE TABLE dbo.etl_valida_arquivo_config(pipeline_name NVARCHAR(200),task_id NVARCHAR(200),entrada_id UNIQUEIDENTIFIER);
+        CREATE TABLE dbo.etl_pipeline_execucao(pipeline_name NVARCHAR(200),status VARCHAR(100));
+        CREATE TABLE dbo.etl_job_lineage(pipeline_name NVARCHAR(200),job_name NVARCHAR(200));
+        """;
+
+    private static WorkspaceSqlOptions Options(string database) => new(Environment.GetEnvironmentVariable("WORKSPACE_TEST_SQL_SERVER") ?? "127.0.0.1,1433", database, Environment.GetEnvironmentVariable("WORKSPACE_TEST_SQL_USER") ?? "sa", Environment.GetEnvironmentVariable("WORKSPACE_TEST_SQL_PASSWORD")!, true);
+    private static async Task Migrate(SqlConnection c)
+    {
+        var folder = Path.GetDirectoryName(Environment.GetEnvironmentVariable("WORKSPACE_TEST_SCHEMA_PATH"))!;
+        foreach (var name in new[] { "141_workspace_rascunhos.sql", "144_workspace_publicacao.sql", "144_workspace_publicacao.sql", "146_workspace_comandos.sql", "159_workspace_lineage_hash.sql" })
+            foreach (var batch in Regex.Split(await File.ReadAllTextAsync(Path.Combine(folder, name)), @"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase)) if (!string.IsNullOrWhiteSpace(batch)) await Execute(c, batch);
+    }
+    // Pedido bloqueado pela sessão informada, visto pelo servidor (sessão, prioridade, aplicação e isolamento).
+    private static async Task<(int Session, int Priority, string Program, int Isolation)> Blocked(SqlConnection monitor, int blocker)
+    {
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            await using (var cmd = new SqlCommand("SELECT TOP(1) r.session_id,s.deadlock_priority,s.program_name,r.transaction_isolation_level FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id=r.session_id WHERE r.blocking_session_id=@blocker", monitor))
+            {
+                cmd.Parameters.AddWithValue("@blocker", blocker);
+                await using var r = await cmd.ExecuteReaderAsync();
+                if (await r.ReadAsync()) return (Convert.ToInt32(r.GetValue(0)), Convert.ToInt32(r.GetValue(1)), Convert.ToString(r.GetValue(2)) ?? "", Convert.ToInt32(r.GetValue(3)));
+            }
+            await Task.Delay(25);
+        }
+        throw new Xunit.Sdk.XunitException("Nenhum pedido ficou bloqueado pela sessão esperada");
+    }
+    private static async Task<List<(string Program, int Priority)>> Sessions(SqlConnection c)
+    {
+        await using var cmd = new SqlCommand("SELECT program_name,deadlock_priority FROM sys.dm_exec_sessions WHERE database_id=DB_ID() AND is_user_process=1", c);
+        await using var r = await cmd.ExecuteReaderAsync(); var sessions = new List<(string, int)>();
+        while (await r.ReadAsync()) sessions.Add((Convert.ToString(r.GetValue(0)) ?? "", Convert.ToInt32(r.GetValue(1))));
+        return sessions;
+    }
     private static PipelineIndexQuery Query(string? search = null, string? project = null, string? domain = null, string state = "all", int limit = 100, int offset = 0) => new(search, project, domain, state, limit, offset);
     private static WorkspacePrincipal Actor(char id) => new(id == 'a' ? "ALICE" : "BOB", "synthetic", new HashSet<string> { "tela_pipelines", "tela_jobs", "acao_editar", "acao_publicar" }) { SessionHash = new string(id, 64) };
     private static async Task<int> Count(SqlConnection c, string sql) { await using var cmd = new SqlCommand(sql, c); return (int)(await cmd.ExecuteScalarAsync())!; }
+    private static async Task<int> Int(SqlConnection c, string sql) { await using var cmd = new SqlCommand(sql, c); return Convert.ToInt32(await cmd.ExecuteScalarAsync()); }
     private static async Task Execute(SqlConnection c, string sql) { await using var cmd = new SqlCommand(sql, c) { CommandTimeout = 30 }; await cmd.ExecuteNonQueryAsync(); }
 }

@@ -151,13 +151,14 @@ public sealed class PipelineIndexTests
     private static HttpClient Authorized(IndexTestApp app) { var client = app.CreateClient(); client.DefaultRequestHeaders.Add("Authorization", "Bearer synthetic"); return client; }
 }
 
-internal sealed class IndexTestApp(string permissions, bool enabled) : WebApplicationFactory<Program>
+// index: índice real com tentativa dublê (repetição EOC-F2); sem ele, o StubIndex.
+internal sealed class IndexTestApp(string permissions, bool enabled, IPipelineIndex? index = null) : WebApplicationFactory<Program>
 {
     public StubIndex Index { get; } = new();
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(new Dictionary<string, string?> { ["Workspace:Enabled"] = enabled.ToString(), ["Workspace:DraftsEnabled"] = "true" }));
-        builder.ConfigureServices(s => { s.RemoveAll<ISessionRepository>(); s.AddSingleton<ISessionRepository>(new FakeSessions { Principal = SecurityTests.Principal(permissions.Split(',')) }); s.RemoveAll<IBasicIdentityClient>(); s.AddSingleton<IBasicIdentityClient>(new FakeBasic()); s.RemoveAll<IPipelineIndex>(); s.AddSingleton<IPipelineIndex>(Index); });
+        builder.ConfigureServices(s => { s.RemoveAll<ISessionRepository>(); s.AddSingleton<ISessionRepository>(new FakeSessions { Principal = SecurityTests.Principal(permissions.Split(',')) }); s.RemoveAll<IBasicIdentityClient>(); s.AddSingleton<IBasicIdentityClient>(new FakeBasic()); s.RemoveAll<IPipelineIndex>(); s.AddSingleton<IPipelineIndex>(index ?? Index); });
     }
 }
 

@@ -5,8 +5,9 @@ Camadas:
   reais PipelineCatalog, Pipelines (portão da coorte) e PipelineCreate;
 - contrato estrutural do índice .NET/SQL (endpoint, RBAC sem tela_jobs, SQL com
   igualdade pela collation, uma linha por pipeline, posse só válida e resumo de
-  todo leitor autorizado, leitura sem transação serializável) — os testes executáveis ficam em
-  backend-dotnet/Orquestra.Tests/PipelineIndexTests.cs (endpoint, offline) e
+  todo leitor autorizado, leitura sem transação serializável, vítima de deadlock em LOW num pool
+  próprio com repetição só da 1205) — os testes executáveis ficam em
+  backend-dotnet/Orquestra.Tests/PipelineIndexTests.cs e PipelineIndexRetryTests.cs (offline) e
   PipelineIndexSqlTests.cs (SQL real, bancada autorizada);
 - migration de versão sequencial.
 Navegador real, SQL vivo e DEV ficam para QA/root.
@@ -92,6 +93,58 @@ def test_dotnet_tests_cover_rbac_validation_cancellation_and_live_sql():
     assert "[SqlFact]" in live and "COLLATE SQL_Latin1_General_CP1_CI_AS" in live and "PublishAsync" in live
     # Posse expirada some do filtro e do total; posse no rascunho de grafia divergente conta uma vez.
     assert "SET expires_at=DATEADD(second,-1,SYSUTCDATETIME())" in live and 'Query(state: "editing", search: "ÁRVORE")' in live
+
+
+def _body(src, start, end):
+    return src[src.index(start):src.index(end, src.index(start) + 1)]
+
+
+def test_index_yields_deadlocks_to_writers_and_retries_only_the_victim():
+    # Correção EOC-F2 (deadlock real no SQL do root): o índice é a vítima preferencial, num pool próprio, e só a
+    # vítima 1205 refaz a leitura inteira sob um prazo único. Escritas, isolamento e o banco não mudam.
+    src = _read("backend-dotnet/Orquestra.Infrastructure/Drafts/SqlPipelineIndex.cs")
+    assert 'internal const string ApplicationName = "Orquestra.Workspace.Index";' in src
+    assert "new SqlConnectionStringBuilder(options.ConnectionString()) { ApplicationName = ApplicationName }.ConnectionString;" in src
+    assert 'SessionSettings = "SET NOCOUNT ON; SET DEADLOCK_PRIORITY LOW; SET TRANSACTION ISOLATION LEVEL READ COMMITTED;' in src
+    assert "new(SessionSettings + sql, c)" in src and "new SqlCommand(" not in src
+    read = _body(src, "public async Task<PipelineIndexPage> ReadAsync(", "private async Task<PipelineIndexPage> ReadOnceAsync(")
+    once = _body(src, "private async Task<PipelineIndexPage> ReadOnceAsync(", "private static PipelineIndexItem Item(")
+    # Conexão e acumuladores nascem em cada tentativa; a repetição não carrega nada da vítima.
+    assert "new SqlConnection(ConnectionString(options))" in once and "var items = new List<PipelineIndexItem>(); var total = 0;" in once
+    assert "new SqlConnection" not in read and "new List" not in read and "items" not in read
+    assert "private const int DeadlockVictim = 1205;" in src
+    assert "catch (SqlException e) when (e.Number == DeadlockVictim && n < retry.Attempts && !deadline.IsCancellationRequested) { }" in read
+    assert "deadline.CancelAfter(retry.Budget);" in read and "await wait(retry.Backoff(n), deadline.Token);" in read
+    cancelled = "catch (Exception e) when (ct.IsCancellationRequested && e is OperationCanceledException or SqlException or InvalidOperationException) { throw new OperationCanceledException(ct); }"
+    expired = "catch (Exception e) when (deadline.IsCancellationRequested && e is OperationCanceledException or SqlException or InvalidOperationException) { throw new DependencyUnavailableException(); }"
+    assert read.index(cancelled) < read.index(expired) < read.index("catch (SqlException) { throw new DependencyUnavailableException(); }")
+    assert "new(5, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(50))" in src
+    # Sem leitura suja, pulo de linha travada, snapshot ou opção global de banco.
+    dotnet = sorted((ROOT / "backend-dotnet").rglob("*.cs"))
+    production = [p for p in dotnet if "Orquestra.Tests" not in p.parts and "bin" not in p.parts and "obj" not in p.parts]
+    hints = re.compile(r"WITH\s*\(\s*(NOLOCK|READPAST|READUNCOMMITTED)|ISOLATION LEVEL (READ UNCOMMITTED|SNAPSHOT)|IsolationLevel\.(ReadUncommitted|Snapshot)|READ_COMMITTED_SNAPSHOT|ALLOW_SNAPSHOT_ISOLATION", re.I)
+    for path in production + [ROOT / "sql/migrations/170_versao_pipeline_descoberta.sql"]:
+        assert not hints.search(path.read_text(encoding="utf-8")), path
+    # Prioridade só no índice; escritas seguem NORMAL no pool de sempre, serializáveis, com 1205 → 409 e sem repetição geral.
+    assert [p.name for p in production if "DEADLOCK_PRIORITY" in p.read_text(encoding="utf-8")] == ["SqlPipelineIndex.cs"]
+    assert 'ApplicationName = "Orquestra.Workspace", PersistSecurityInfo = false' in _read("backend-dotnet/Orquestra.Infrastructure/Security/SqlSessionRepository.cs")
+    drafts = _read("backend-dotnet/Orquestra.Infrastructure/Drafts/SqlDraftRepository.cs")
+    run = _body(drafts, "private async Task<T> Run<T>(", "\n    }\n")
+    assert "IsolationLevel.Serializable" in run and "for (" not in run and "while (" not in run and "Delay" not in run
+    assert 'catch (SqlException e) when (e.Number is 2601 or 2627 or 1205) { throw Conflict("draft_conflict"' in run
+    assert '<InternalsVisibleTo Include="Orquestra.Tests" />' in _read("backend-dotnet/Orquestra.Infrastructure/Orquestra.Infrastructure.csproj")
+    # Testes: política offline completa, prova SQL determinística e o cenário concorrente real mantido.
+    retry = _read("backend-dotnet/Orquestra.Tests/PipelineIndexRetryTests.cs")
+    for name in ["IndexHasItsOwnPoolAndLowPriorityWhileWritersKeepTheirs", "DeadlockVictimRestartsTheWholeReadAndKeepsNothingFromTheFailedAttempt",
+                 "OnlyTheDeadlockVictimIsRetried", "FailuresOutsideSqlAreNotRetried", "ExhaustedDeadlockRetriesAreAnHonest503WithoutSqlText",
+                 "OneBudgetCoversEveryAttemptAndWaitAndEndsIn503", "ClientCancellationWinsInTheAttemptInTheWaitAndAfterAVictim"]:
+        assert f" {name}(" in retry, name
+    live = _read("backend-dotnet/Orquestra.Tests/PipelineIndexSqlTests.cs")
+    assert "public async Task IndexRunsAtLowPriorityInItsOwnPoolWaitsForCommittedDataAndLosesTheDeadlockToWriters(" in live
+    assert "Assert.Equal(-5, reading.Priority)" in live and "Assert.Equal(1205, (await Assert.ThrowsAsync<SqlException>(() => lowRead)).Number)" in live
+    assert "Enumerable.Range(0, 4)" in live and "guard.Token" in live and "for (var i = 0; i < 10; i++)" in live
+    assert "finally\n            {\n                // Falha da escrita não deixa leitores órfãos" in live and "stop.Cancel(); await Task.WhenAny(Task.WhenAll(readers)" in live
+    assert "Assert.Null(row.PublishedVersionNumber)" in live and "WHERE draft_id='{target.DraftId}'\"))" in live
 
 
 def test_version_migration_is_the_next_sequential_minor():

@@ -7,41 +7,86 @@ using Orquestra.Infrastructure.Security;
 namespace Orquestra.Infrastructure.Drafts;
 
 // F2: uma linha por pipeline, igualdade decidida no SQL pela collation real das colunas pipeline_name
-// (UNION + OUTER APPLY TOP(1)); nenhum agrupamento por nome em memória. Leitura sem transação serializável:
-// não bloqueia publicação/salvamento além do READ COMMITTED de uma única instrução.
-public sealed class SqlPipelineIndex(WorkspaceSqlOptions options) : IPipelineIndex
+// (UNION + OUTER APPLY TOP(1)); nenhum agrupamento por nome em memória. Leitura de instrução única em READ COMMITTED,
+// só dado confirmado (sem NOLOCK, READPAST nem snapshot): espera a escrita em andamento e ainda pode fechar ciclo com
+// ela (S no rascunho/índice do rascunho × X na posse/linha do rascunho das transações de autoria e publicação).
+// Por isso o índice roda em DEADLOCK_PRIORITY LOW, num pool próprio, e é sempre a vítima diante de uma escrita
+// (NORMAL), que então conclui sem 409 induzido pela leitura. A vítima (1205, e só ela) refaz a leitura inteira.
+public sealed class SqlPipelineIndex : IPipelineIndex
 {
+    // ApplicationName distinto = chave de pool distinta: uma sessão do índice nunca é reaproveitada por escrita.
+    internal const string ApplicationName = "Orquestra.Workspace.Index";
+    // Prefixo de toda instrução do índice. SET em lote vale para a sessão; por isso o pool próprio.
+    internal const string SessionSettings = "SET NOCOUNT ON; SET DEADLOCK_PRIORITY LOW; SET TRANSACTION ISOLATION LEVEL READ COMMITTED;\n";
+    private const int DeadlockVictim = 1205;
     private static WorkspaceException Missing() => new(503, "draft_schema_unavailable", "Rascunhos indisponíveis; aplique a migration 141_workspace_rascunhos.sql");
+    private readonly WorkspaceSqlOptions options;
+    private readonly PipelineIndexRetry retry;
+    private readonly Func<PipelineIndexQuery, CancellationToken, Task<PipelineIndexPage>> attempt;
+    private readonly Func<TimeSpan, CancellationToken, Task> wait;
+    private int deadlockRetries;
+
+    public SqlPipelineIndex(WorkspaceSqlOptions options) : this(options, PipelineIndexRetry.Default, null, null) { }
+    // Testes trocam a tentativa e a espera; a política (só 1205, prazo único, cancelamento, 503) é a mesma.
+    internal SqlPipelineIndex(WorkspaceSqlOptions options, PipelineIndexRetry retry, Func<PipelineIndexQuery, CancellationToken, Task<PipelineIndexPage>>? attempt, Func<TimeSpan, CancellationToken, Task>? wait)
+    {
+        this.options = options; this.retry = retry;
+        this.attempt = attempt ?? ReadOnceAsync;
+        this.wait = wait ?? ((delay, token) => Task.Delay(delay, token));
+    }
+
+    // Vítimas 1205 refeitas por esta instância (a bancada SQL mede a recuperação).
+    internal int DeadlockRetries => Volatile.Read(ref deadlockRetries);
+    internal static string ConnectionString(WorkspaceSqlOptions options) => new SqlConnectionStringBuilder(options.ConnectionString()) { ApplicationName = ApplicationName }.ConnectionString;
 
     public async Task<PipelineIndexPage> ReadAsync(PipelineIndexQuery query, CancellationToken ct)
     {
+        // Um prazo para todas as tentativas e esperas.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(retry.Budget);
         try
         {
-            await using var c = new SqlConnection(options.ConnectionString()); await c.OpenAsync(ct);
-            bool managed;
-            await using (var schema = Command(c, "SELECT CASE WHEN OBJECT_ID('dbo.etl_workspace_rascunho','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_lease','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_versao','U') IS NOT NULL THEN 1 ELSE 0 END,CASE WHEN OBJECT_ID('dbo.etl_workspace_pipeline','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_publicacao','U') IS NOT NULL THEN 1 ELSE 0 END"))
-            await using (var r = await schema.ExecuteReaderAsync(ct))
+            for (var n = 1; ; n++)
             {
-                await r.ReadAsync(ct);
-                if (r.GetInt32(0) != 1) throw Missing();
-                managed = r.GetInt32(1) == 1;
+                deadline.Token.ThrowIfCancellationRequested();
+                // Cada tentativa abre conexão e lista próprias: itens e total de uma vítima não sobrevivem.
+                try { return await attempt(query, deadline.Token); }
+                catch (SqlException e) when (e.Number == DeadlockVictim && n < retry.Attempts && !deadline.IsCancellationRequested) { }
+                Interlocked.Increment(ref deadlockRetries);
+                await wait(retry.Backoff(n), deadline.Token);
             }
-            var items = new List<PipelineIndexItem>(); var total = 0;
-            await using (var page = Command(c, Sql(managed, count: false), query))
-            await using (var r = await page.ExecuteReaderAsync(ct))
-                while (await r.ReadAsync(ct)) { total = r.GetInt32(r.GetOrdinal("total")); items.Add(Item(r)); }
-            if (items.Count == 0 && query.Offset > 0)
-            {
-                // Página além do fim: total informado por uma contagem própria, sem itens.
-                await using var counter = Command(c, Sql(managed, count: true), query);
-                total = (int)(await counter.ExecuteScalarAsync(ct))!;
-            }
-            return new(total, query.Limit, query.Offset, items);
         }
-        catch (Exception e) when (ct.IsCancellationRequested && e is SqlException or InvalidOperationException) { throw new OperationCanceledException(ct); }
+        // Cancelamento do cliente vence a repetição e se propaga como cancelamento.
+        catch (Exception e) when (ct.IsCancellationRequested && e is OperationCanceledException or SqlException or InvalidOperationException) { throw new OperationCanceledException(ct); }
+        // Prazo esgotado ou 1205 além do limite: 503 honesto, sem texto do SQL.
+        catch (Exception e) when (deadline.IsCancellationRequested && e is OperationCanceledException or SqlException or InvalidOperationException) { throw new DependencyUnavailableException(); }
         catch (SqlException e) when (e.Number is 208 or 207) { throw Missing(); }
         catch (SqlException) { throw new DependencyUnavailableException(); }
         catch (InvalidOperationException) { throw new DependencyUnavailableException(); }
+    }
+
+    private async Task<PipelineIndexPage> ReadOnceAsync(PipelineIndexQuery query, CancellationToken ct)
+    {
+        await using var c = new SqlConnection(ConnectionString(options)); await c.OpenAsync(ct);
+        bool managed;
+        await using (var schema = Command(c, "SELECT CASE WHEN OBJECT_ID('dbo.etl_workspace_rascunho','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_lease','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_versao','U') IS NOT NULL THEN 1 ELSE 0 END,CASE WHEN OBJECT_ID('dbo.etl_workspace_pipeline','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_publicacao','U') IS NOT NULL THEN 1 ELSE 0 END"))
+        await using (var r = await schema.ExecuteReaderAsync(ct))
+        {
+            await r.ReadAsync(ct);
+            if (r.GetInt32(0) != 1) throw Missing();
+            managed = r.GetInt32(1) == 1;
+        }
+        var items = new List<PipelineIndexItem>(); var total = 0;
+        await using (var page = Command(c, Sql(managed, count: false), query))
+        await using (var r = await page.ExecuteReaderAsync(ct))
+            while (await r.ReadAsync(ct)) { total = r.GetInt32(r.GetOrdinal("total")); items.Add(Item(r)); }
+        if (items.Count == 0 && query.Offset > 0)
+        {
+            // Página além do fim: total informado por uma contagem própria, sem itens.
+            await using var counter = Command(c, Sql(managed, count: true), query);
+            total = (int)(await counter.ExecuteScalarAsync(ct))!;
+        }
+        return new(total, query.Limit, query.Offset, items);
     }
 
     private static PipelineIndexItem Item(SqlDataReader r)
@@ -90,8 +135,6 @@ public sealed class SqlPipelineIndex(WorkspaceSqlOptions options) : IPipelineInd
             : "SELECT COUNT(*) OVER() AS total,r.pipeline_name,r.display_name,r.project,r.domain,r.responsavel,r.draft_id,r.draft_revision,r.has_published,r.published_number,r.is_active,r.managed,r.updated_at,r.holder_user,r.holder_name,r.expires_at FROM summary r";
         var page = count ? "" : "ORDER BY COALESCE(r.display_name,r.pipeline_name),r.pipeline_name,r.pipeline_name COLLATE Latin1_General_BIN2 OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY";
         return $"""
-            SET NOCOUNT ON;
-            SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
             WITH names AS (
              SELECT pipeline_name FROM dbo.etl_pipeline
              UNION
@@ -133,7 +176,8 @@ public sealed class SqlPipelineIndex(WorkspaceSqlOptions options) : IPipelineInd
             """;
     }
 
-    private static SqlCommand Command(SqlConnection c, string sql) => new(sql, c) { CommandTimeout = 10 };
+    // CommandTimeout é só limite de segurança; o prazo da leitura inteira vem do token.
+    private static SqlCommand Command(SqlConnection c, string sql) => new(SessionSettings + sql, c) { CommandTimeout = 10 };
     private static SqlCommand Command(SqlConnection c, string sql, PipelineIndexQuery query)
     {
         var cmd = Command(c, sql);
@@ -145,4 +189,13 @@ public sealed class SqlPipelineIndex(WorkspaceSqlOptions options) : IPipelineInd
         cmd.Parameters.Add("@limit", SqlDbType.Int).Value = query.Limit;
         return cmd;
     }
+}
+
+// Repetição só da vítima de deadlock do índice, com tentativas e prazo totais limitados. O monitor de deadlock do
+// SQL Server pode levar até 5 s para escolher a vítima; 10 s cobrem essa espera e a leitura refeita. A espera cresce
+// por tentativa e tem parte aleatória, para leitores derrubados juntos não voltarem juntos.
+internal sealed record PipelineIndexRetry(int Attempts, TimeSpan Budget, TimeSpan BaseDelay)
+{
+    public static readonly PipelineIndexRetry Default = new(5, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(50));
+    public TimeSpan Backoff(int attempt) => BaseDelay * (1 << Math.Clamp(attempt - 1, 0, 6)) + BaseDelay * Random.Shared.NextDouble();
 }
