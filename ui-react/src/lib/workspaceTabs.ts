@@ -66,27 +66,13 @@ export interface WorkspaceRunIdentity { runId: string | null; date: string | nul
 export function runIdentityOrigin(name: string, date: string, runId: string): string { return JSON.stringify([name, date, runId]) }
 
 // Investigação da Execução. Etapa e tentativa são o contrato compartilhado
-// entre gráfico, tabela e links (`etapa`, `tentativa`, com `run_id`); um log só
-// abre se a etapa e a tentativa pertencem à corrida exibida. Sem tentativa
-// explícita vale a corrente da etapa nessa corrida — nunca uma inventada.
-export interface InvestigationStep { job_name: string; task_id: string | null; attempt: number | null; tentativas: { attempt: number | null }[] }
-export function stageAttempts(step: InvestigationStep): number[] {
- const values = [...step.tentativas.map(t => t.attempt), step.attempt].filter((v): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0)
- return [...new Set(values)].sort((a, b) => a - b)
-}
+// entre gráfico, tabela e links (`etapa`, `tentativa`, com `run_id`). A
+// tentativa é o try_number do MOTOR (o log do Airflow); só abre se o motor a
+// comprova para a corrida e a tarefa exibidas (lib/workspaceExecution,
+// engineLogSelection). Sem tentativa vale a mais recente iniciada no motor —
+// nunca o número operacional da telemetria SQL nem um número inventado.
 export function parseAttempt(value: string | null | undefined): number | null {
  const number = Number(value); return value && Number.isInteger(number) && number > 0 ? number : null
-}
-export type InvestigationIssue = 'etapa' | 'tentativa' | 'corrida' | 'sem-tentativa' | null
-export function executionInvestigation<S extends InvestigationStep>(steps: S[] | undefined, stage: string, attempt: number | null, requestedRun: string, runIds: (string | null | undefined)[]): { step: S | null; attempt: number | null; open: boolean; issue: InvestigationIssue } {
- if (!stage || !steps) return { step: null, attempt: null, open: false, issue: null }
- const step = steps.find(row => row.task_id === stage || row.job_name === stage) ?? null
- if (!step) return { step: null, attempt: null, open: false, issue: 'etapa' }
- if (requestedRun && !runIds.includes(requestedRun)) return { step, attempt: null, open: false, issue: 'corrida' }
- const list = stageAttempts(step), chosen = attempt ?? step.attempt ?? list.at(-1) ?? null
- if (chosen === null) return { step, attempt: null, open: false, issue: 'sem-tentativa' }
- if (!list.includes(chosen)) return { step, attempt: chosen, open: false, issue: 'tentativa' }
- return { step, attempt: chosen, open: !!step.task_id, issue: null }
 }
 export function workspaceHeaderContext(tab: string, draft: { revision: number } | null, published: boolean, run: WorkspaceRunIdentity | null): { label: string; tone: 'draft' | 'published' | 'run' } {
  if (canonicalWorkspaceTab(tab) === 'execucao') {

@@ -3371,6 +3371,103 @@ async def workspace_task_log(pipeline_name: str, run_id: str, task_id: str, try_
         raise HTTPException(503, "Log desta tentativa indisponível") from None
 
 
+# Tentativas do motor: até 4 consultas simultâneas ao Airflow por processo; a
+# seguinte espera 2 s e recebe 503 (não forma fila sem fim). Teto de 8 s para as
+# duas leituras juntas e de 1 MiB por corpo.
+_ENGINE_ATTEMPTS_SLOTS = asyncio.Semaphore(4)
+_ENGINE_ATTEMPTS_DEADLINE = 8.0
+_ENGINE_ATTEMPTS_BYTES = 1024 * 1024
+_ENGINE_ATTEMPTS_WAIT = 2.0
+
+
+@router.get("/pipeline-task-attempts", tags=["execucoes"])
+async def workspace_task_attempts(pipeline_name: str, run_id: str, task_id: str, auth: dict = Depends(get_current_user)):
+    """Tentativas do MOTOR (Airflow) de uma etapa comprovada na corrida exata.
+
+    Mesmo cercado do log: permissão, entrada, corrida resolvida e task_id da
+    corrida. A tentativa operacional do SQL (ciclo do log_start) não entra: o
+    try_number vem só do Airflow, com histórico (`/tries`) quando existir.
+    """
+    import json
+    from fastapi.responses import JSONResponse
+    from routers.airflow import get_airflow_client
+    from services import tentativas_motor
+    _workspace_read_permissions(auth)
+    if (not pipeline_name or len(pipeline_name) > 200 or not run_id or len(run_id) > 300 or not task_id
+            or len(task_id) > 250 or any(ord(c) < 32 for c in pipeline_name + run_id + task_id)):
+        raise HTTPException(422, "Etapa ou corrida inválida")
+    data = await get_pipeline_execucao(pipeline_name, run_id=run_id, _auth=auth)
+    identity = data.get("identidade") or {}
+    actual = identity.get("dag_run_id") or identity.get("run_id")
+    if not identity.get("resolvido") or actual != run_id or not any(step.get("task_id") == task_id for step in data.get("etapas", [])):
+        raise HTTPException(404, "Etapa não encontrada nesta corrida")
+    dag_id = data.get("pipeline_name") or pipeline_name
+    # Codificação de cada segmento impede que run_id/task_id controlem o proxy.
+    path = "/api/v1/dags/{}/dagRuns/{}/taskInstances/{}".format(quote(dag_id, safe=""), quote(run_id, safe=""), quote(task_id, safe=""))
+
+    async def fetch(client, url):
+        # Corpo lido em blocos e contado como chega ao JSON; passou do teto, a
+        # leitura para e a resposta é fechada sem drenar o restante. Sem
+        # compressão: o decodificador expandiria cada bloco antes da contagem.
+        async with client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as response:
+            if not response.is_success:
+                return response.status_code, None
+            if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                raise ValueError("codificação não pedida")
+            parts, size = [], 0
+            async for block in response.aiter_bytes():
+                size += len(block)
+                if size > _ENGINE_ATTEMPTS_BYTES:
+                    raise ValueError("corpo excede o limite")
+                parts.append(block)
+            return response.status_code, json.loads(b"".join(parts))
+
+    async def history_rows(client):
+        # Histórico ausente (endpoint anterior ao 2.10, recusa, corpo inválido ou
+        # acima do teto) degrada para a instância corrente: a lista fica incompleta e dita.
+        try:
+            _, rows = await fetch(client, path + "/tries")
+        except ValueError:
+            return None
+        rows = rows.get("task_instances") if isinstance(rows, dict) else None
+        return rows if isinstance(rows, list) else None
+
+    async def read():
+        # Falha de uma leitura (ou o prazo) cancela a outra e espera seu
+        # encerramento antes de fechar o cliente: nenhuma leitura fica órfã.
+        async with get_airflow_client() as client:
+            tasks = [asyncio.ensure_future(fetch(client, path)), asyncio.ensure_future(history_rows(client))]
+            try:
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+                for task in tasks:
+                    if task.done() and task.exception() is not None:
+                        raise task.exception()
+                return tasks[0].result(), tasks[1].result()
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    try:
+        await asyncio.wait_for(_ENGINE_ATTEMPTS_SLOTS.acquire(), _ENGINE_ATTEMPTS_WAIT)
+    except asyncio.TimeoutError:
+        raise HTTPException(503, "Consulta de tentativas do motor ocupada; tente novamente") from None
+    try:
+        (status, current), history = await asyncio.wait_for(read(), _ENGINE_ATTEMPTS_DEADLINE)
+        if status == 404:
+            current = history = None
+        elif current is None:
+            raise ValueError("instância indisponível")
+        elif not isinstance(current, dict):
+            raise ValueError("instância inválida")
+    except Exception:
+        raise HTTPException(503, "Tentativas do motor indisponíveis") from None
+    finally:
+        _ENGINE_ATTEMPTS_SLOTS.release()
+    result = tentativas_motor.montar(current, history, dag_id=dag_id, run_id=run_id, task_id=task_id)
+    return JSONResponse({"pipeline_name": pipeline_name, **result}, headers={"Cache-Control": "no-store"})
+
+
 # Situações gravadas em etl_pipeline_execucao (067); filtro fora desta lista é 422.
 _RUN_HISTORY_STATUS = frozenset({"EXECUTANDO", "AGUARDANDO_DEPENDENCIA", "SUCESSO", "FALHA", "PULADO", "NAO_LIBEROU"})
 

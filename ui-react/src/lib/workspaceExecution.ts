@@ -213,7 +213,71 @@ export function completionLabel(counts: RunCounts): string {
 // consulta periódica não gera anúncio.
 export function selectedStageAnnouncement(stage: string, state: NodeRunState | null): { key: string; message: string } | null {
  if (!stage || !state) return null
- return { key: `${stage}\u0000${state.kind}\u0000${state.attempt ?? ''}`, message: `Etapa ${stage}: ${state.label}${state.attempt ? `, tentativa ${state.attempt}` : ''}` }
+ return { key: `${stage}\u0000${state.kind}\u0000${state.attempt ?? ''}`, message: `Etapa ${stage}: ${state.label}${state.attempt ? `, tentativa operacional ${state.attempt}` : ''}` }
+}
+
+// ── Tentativas do motor ────────────────────────────────────────────────────
+// A tentativa da telemetria SQL é o ciclo operacional do Orquestra (contado
+// pelo início da etapa, fora do retry automático). O log do Airflow é pedido
+// pelo try_number do MOTOR, lido sob demanda de GET /pipeline-task-attempts
+// para a corrida e a tarefa exatas; o número SQL nunca vira try_number.
+export interface EngineAttempt { try_number: number; state: string | null; start_date: string | null; end_date: string | null; duration: number | null; hostname: string | null; started: boolean; has_log: boolean; current: boolean }
+export interface EngineAttempts { pipeline_name: string; run_id: string; task_id: string; source: string; available: boolean; reason: string | null; try_number: number | null; attempts: EngineAttempt[]; complete: boolean; history: boolean; ignored: number }
+export function engineAttemptsQueryKey(token: string | null, name: string, runId: string, task: string) {
+ return ['workspace-engine-attempts', token, name, runId, task] as const
+}
+export function engineAttemptsPath(name: string, runId: string, task: string): string {
+ return `/pipeline-task-attempts?${new URLSearchParams({ pipeline_name: name, run_id: runId, task_id: task })}`
+}
+/** Resposta de outra etapa, corrida ou pipeline (pedido antigo) não é usada. */
+export function engineAttemptsMatch(response: Partial<EngineAttempts> | null | undefined, request: { name: string; runId: string; task: string }): response is EngineAttempts {
+ return !!response && response.pipeline_name === request.name && response.run_id === request.runId && response.task_id === request.task && Array.isArray(response.attempts)
+}
+const validTry = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 10_000
+/** Tentativas comprovadas pelo motor, da mais recente para a mais antiga; linha sem número válido ou repetida não entra. */
+export function engineAttemptList(response: EngineAttempts | undefined): EngineAttempt[] {
+ if (!response?.available) return []
+ const seen = new Set<number>(), rows: EngineAttempt[] = []
+ for (const row of response.attempts) if (validTry(row?.try_number) && !seen.has(row.try_number)) { seen.add(row.try_number); rows.push(row) }
+ return rows.sort((a, b) => b.try_number - a.try_number)
+}
+export const ENGINE_STATE_LABEL: Record<string, string> = { success: 'Concluída', failed: 'Falhou', up_for_retry: 'Falhou · nova tentativa prevista', running: 'Executando', queued: 'Na fila', scheduled: 'Agendada', up_for_reschedule: 'Aguardando reagendamento', deferred: 'Adiada · aguardando gatilho', skipped: 'Pulada', upstream_failed: 'Não executou · dependência falhou', removed: 'Removida do fluxo', restarting: 'Reiniciando', shutdown: 'Interrompida' }
+export function engineStateLabel(state: string | null | undefined): string {
+ const code = key(state)
+ return !code ? 'Sem estado no motor' : ENGINE_STATE_LABEL[code] ?? `Estado ${code}`
+}
+/** Horário do motor sempre em UTC e rotulado: o relógio da telemetria SQL é outro. */
+export function engineClock(iso: string | null | undefined): string {
+ const date = iso ? new Date(iso) : null
+ return date && !Number.isNaN(date.getTime()) ? `${date.toISOString().slice(11, 19)} UTC` : '—'
+}
+export const ENGINE_REASON: Record<string, string> = {
+ instancia_ausente: 'O motor não tem instância desta tarefa nesta corrida.',
+ instancia_divergente: 'A resposta do motor não corresponde a esta tarefa e corrida; nada dela foi usado.',
+ tarefa_mapeada: 'A tarefa é mapeada por índice no motor; esta tela não escolhe índice nem mistura tentativas de índices diferentes.',
+ contador_invalido: 'O motor devolveu um contador de tentativas inválido; nada foi presumido.',
+ sem_tentativas: 'O motor ainda não agendou nenhuma tentativa desta tarefa.',
+}
+export function engineReason(response: EngineAttempts): string {
+ return (response.reason && ENGINE_REASON[response.reason]) || 'O motor não informou tentativas desta tarefa.'
+}
+/** Lacunas: o contador do motor diz n, mas nem toda tentativa 1..n veio com registro. Nada é preenchido. */
+export function engineGapNote(response: EngineAttempts, list: EngineAttempt[]): string | null {
+ if (!response.available || response.complete || !response.try_number) return null
+ const missing = response.try_number - list.filter(row => row.try_number <= response.try_number!).length
+ if (missing <= 0) return null
+ return `O motor conta ${response.try_number} tentativas; ${missing === 1 ? 'uma não veio' : `${missing} não vieram`} com registro ${response.history ? 'no histórico' : '(histórico do motor indisponível)'}. Estado e horários delas não são presumidos.`
+}
+export type EngineLogIssue = 'sem-log' | 'sem-inicio' | 'fora' | null
+/** Log a abrir: o pedido (URL) se o motor o comprova com log; sem pedido, a
+ *  tentativa mais recente com log. Nunca um número que o motor não informou. */
+export function engineLogSelection(list: EngineAttempt[], requested: number | null): { attempt: number | null; issue: EngineLogIssue } {
+ if (requested !== null) {
+  const row = list.find(item => item.try_number === requested)
+  return !row ? { attempt: requested, issue: 'fora' } : row.has_log ? { attempt: requested, issue: null } : { attempt: requested, issue: 'sem-inicio' }
+ }
+ const latest = list.find(item => item.has_log)
+ return latest ? { attempt: latest.try_number, issue: null } : { attempt: null, issue: list.length ? 'sem-inicio' : 'sem-log' }
 }
 
 // ── Solicitação guiada ─────────────────────────────────────────────────────
