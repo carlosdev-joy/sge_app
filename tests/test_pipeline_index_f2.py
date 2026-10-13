@@ -78,7 +78,7 @@ def test_index_sql_unions_by_column_collation_one_row_and_never_returns_definiti
     assert "(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_pipeline','U') AND name='pipeline_name')" in src
     assert "pipeline_name NVARCHAR(200) COLLATE {managedNames} NOT NULL PRIMARY KEY" in src
     applies = re.findall(r"OUTER APPLY \((SELECT\s+\S+)", src)
-    assert len(applies) == 6 and set(applies) == {"SELECT TOP(1)"}, applies
+    assert len(applies) == 5 and set(applies) == {"SELECT TOP(1)"}, applies
     # Nenhuma igualdade de nome em memória (collation é do SQL).
     assert not re.search(r"GroupBy|Distinct\(|ToLower|ToUpper|StringComparer", src)
     # Posse: só válida, calculada no servidor, igual para todo leitor autorizado.
@@ -106,7 +106,7 @@ def test_dotnet_tests_cover_rbac_validation_cancellation_and_live_sql():
     assert "SET expires_at=DATEADD(second,-1,SYSUTCDATETIME())" in live and 'Query(state: "editing", search: "ÁRVORE")' in live
     # Revisão EOC-F2: posse que expira com a leitura presa em qualquer estágio (rascunho, resumo, posse) não é edição.
     expiry = _body(live, "public async Task IndexDropsLeaseThatExpiresWhileAnyStageWaitsUsingOneFinalCutoff(", "\n    }\n")
-    for marker in ['"INSERT @ativo(", "INSERT @rascunho("', '"WITH names AS ("', '"INSERT @posse("', "BlockedStatements(c, writerSession, 2, stage)",
+    for marker in ['"INSERT @ativo(", "INSERT @rascunho("', '"WITH names AS ("', '"INSERT @posse(", "UPDATE p SET p.holder_name="', "BlockedStatements(c, writerSession, 2, stage)",
                    "expires_at>SYSUTCDATETIME()\") > 0; tick++)", 'Assert.False(editing.IsCompleted, stage)', 'await Execute(writer, "COMMIT");',
                    "Assert.Empty(editingPage.Items); Assert.Equal(0, editingPage.Total);", "Assert.Null(row.EditorUser); Assert.Null(row.EditorName); Assert.Null(row.LeaseExpiresAt);",
                    'Query(state: "editing", offset: 50)']:
@@ -188,11 +188,11 @@ def test_index_batch_never_holds_draft_or_lease_locks_while_waiting():
     # Revisão da materialização: a página ainda lia o rascunho real pela operação pendente (S de versão/pipeline gerido
     # presos esperando o rascunho) e a posse era capturada antes do estágio de rascunho, sem corte final.
     src = _read("backend-dotnet/Orquestra.Infrastructure/Drafts/SqlPipelineIndex.cs")
-    sql = _body(src, "private static string Sql(bool managed, string names, string json, string managedNames)", "\n    }\n")
+    sql = _body(src, "private static string Sql(bool managed, string names, string json, string managedNames, string holders)", "\n    }\n")
     batch = sql[sql.index('return $"""'):]
     # 1) ids ativos; 2) resumo dos ativos pela chave; 3) gerido; 4) resumo filtrado; 5) posse; 6) corte; 7) página; contagem além do fim.
     order = ["DECLARE @ativo TABLE(", "DECLARE @rascunho TABLE(", "DECLARE @resumo TABLE(", "DECLARE @posse TABLE(", "DECLARE @corte DATETIME2;",
-             "INSERT @ativo(", "INSERT @rascunho(", "{managedReads}", "WITH names AS (", "INSERT @resumo(", "INSERT @posse(", "SET @corte=SYSUTCDATETIME();",
+             "INSERT @ativo(", "INSERT @rascunho(", "{managedReads}", "WITH names AS (", "INSERT @resumo(", "INSERT @posse(", "UPDATE p SET p.holder_name=", "SET @corte=SYSUTCDATETIME();",
              "SELECT COUNT(*) OVER() AS total,", "IF @@ROWCOUNT=0 AND @offset>0", "SELECT COUNT(*) FROM @resumo r {holder}"]
     positions = [batch.index(step) for step in order]
     assert positions == sorted(positions), order
@@ -223,6 +223,9 @@ def test_index_batch_never_holds_draft_or_lease_locks_while_waiting():
     assert "holder" not in resumo and "@posse" not in resumo and "(@state='editing' AND r.draft_id IS NOT NULL)" in resumo
     # Posse por último, perto da página; filtro preliminar no início da instrução e corte único depois de todas as leituras.
     assert tables(posse) == {"etl_workspace_lease", "etl_usuario"} and "WHERE x.expires_at>SYSUTCDATETIME();" in posse and "definition_json" not in posse
+    # Posse e nome do titular em instruções separadas (no APPLY, S na posse ficava preso esperando o usuário).
+    assert [tables(x) for x in posse.split(";") if "dbo." in x] == [{"etl_workspace_lease"}, {"etl_usuario"}] and "APPLY" not in posse
+    assert "holder_user NVARCHAR(100) COLLATE {holders} NOT NULL" in batch
     # @corte: declarado, definido uma vez e usado só no holder (interpolado na página e na contagem).
     assert sql.count("SYSUTCDATETIME()") == 2 and sql.count("@corte") == 3 and sql.count("SET @corte=") == 1
     # Página e contagem: só variáveis de tabela, o mesmo resumo, a mesma posse e o mesmo corte.
@@ -232,7 +235,8 @@ def test_index_batch_never_holds_draft_or_lease_locks_while_waiting():
     # Collation real do catálogo, validada como nome antes de entrar no SQL; nada da requisição vira texto SQL.
     once = _body(src, "private async Task<PipelineIndexPage> ReadOnceAsync(", "private static PipelineIndexItem Item(")
     assert "names = Collation(r.GetString(2)); json = Collation(r.GetString(3)); managedNames = managed ? Collation(r.GetString(4)) : \"\";" in once
-    assert "if (managed && r.IsDBNull(4)) throw Missing();" in once
+    assert "if (managed && r.IsDBNull(4)) throw Missing();" in once and "holders = Collation(r.GetString(5));" in once and "r.IsDBNull(5)) throw Missing();" in once
+    assert "(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_lease','U') AND name='holder_user')" in once
     assert "name.All(ch => char.IsAsciiLetterOrDigit(ch) || ch == '_') ? name : throw new DependencyUnavailableException();" in once
     assert not re.search(r"\{(query|search|pattern|project|domain|state)", batch, re.I)
     # Contagem além do fim no mesmo lote (mesmas leituras), sem segundo comando.

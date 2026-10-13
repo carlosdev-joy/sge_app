@@ -16,7 +16,7 @@ namespace Orquestra.Infrastructure.Drafts;
 // leitura. Agora o lote lê em instruções curtas: ids ativos pelo índice filtrado (sem lookup), resumo dos ativos pela
 // chave (única instrução com LOB do rascunho, e só com o rascunho), pipeline gerido, operação pendente e base dela
 // (uma tabela por instrução; a base pendente vem do rascunho pela chave, sem LOB, ativo ou não), resumo filtrado com
-// a ordem já calculada, posse válida por último e, depois de tudo, um corte UTC único. Página e contagem leem só as
+// a ordem já calculada, posse válida e nome do titular por último (uma tabela cada) e, depois de tudo, um corte UTC único. Página e contagem leem só as
 // variáveis de tabela, com o mesmo corte. Nenhuma instrução segura lock de rascunho, posse, pipeline gerido ou
 // publicação enquanto espera outra tabela.
 // Não é retrato atômico: cada instrução lê dado confirmado no momento dela (READ COMMITTED). Página e contagem saem do
@@ -89,20 +89,20 @@ public sealed class SqlPipelineIndex : IPipelineIndex
     private async Task<PipelineIndexPage> ReadOnceAsync(PipelineIndexQuery query, CancellationToken ct)
     {
         await using var c = new SqlConnection(ConnectionString(options)); await c.OpenAsync(ct);
-        bool managed; string names, json, managedNames;
-        // Esquema e collation real das colunas do rascunho e do pipeline gerido: as tabelas do lote herdam a mesma, então
-        // UNION, igualdade de nome, LIKE, filtros e ordem continuam decididos pela collation das colunas, como na instrução única.
-        await using (var schema = Command(c, "SELECT CASE WHEN OBJECT_ID('dbo.etl_workspace_rascunho','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_lease','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_versao','U') IS NOT NULL THEN 1 ELSE 0 END,CASE WHEN OBJECT_ID('dbo.etl_workspace_pipeline','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_publicacao','U') IS NOT NULL THEN 1 ELSE 0 END,(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='pipeline_name'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='definition_json'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_pipeline','U') AND name='pipeline_name')"))
+        bool managed; string names, json, managedNames, holders;
+        // Esquema e collation real das colunas do rascunho, do pipeline gerido e do titular da posse: as tabelas do lote herdam a
+        // mesma, então UNION, igualdade de nome e de matrícula, LIKE, filtros e ordem continuam decididos pela collation das colunas.
+        await using (var schema = Command(c, "SELECT CASE WHEN OBJECT_ID('dbo.etl_workspace_rascunho','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_lease','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_versao','U') IS NOT NULL THEN 1 ELSE 0 END,CASE WHEN OBJECT_ID('dbo.etl_workspace_pipeline','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_publicacao','U') IS NOT NULL THEN 1 ELSE 0 END,(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='pipeline_name'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='definition_json'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_pipeline','U') AND name='pipeline_name'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_lease','U') AND name='holder_user')"))
         await using (var r = await schema.ExecuteReaderAsync(ct))
         {
             await r.ReadAsync(ct);
-            if (r.GetInt32(0) != 1 || r.IsDBNull(2) || r.IsDBNull(3)) throw Missing();
+            if (r.GetInt32(0) != 1 || r.IsDBNull(2) || r.IsDBNull(3) || r.IsDBNull(5)) throw Missing();
             managed = r.GetInt32(1) == 1;
             if (managed && r.IsDBNull(4)) throw Missing();
-            names = Collation(r.GetString(2)); json = Collation(r.GetString(3)); managedNames = managed ? Collation(r.GetString(4)) : "";
+            names = Collation(r.GetString(2)); json = Collation(r.GetString(3)); managedNames = managed ? Collation(r.GetString(4)) : ""; holders = Collation(r.GetString(5));
         }
         var items = new List<PipelineIndexItem>(); var total = 0;
-        await using (var page = Command(c, Sql(managed, names, json, managedNames), query))
+        await using (var page = Command(c, Sql(managed, names, json, managedNames, holders), query))
         await using (var r = await page.ExecuteReaderAsync(ct))
         {
             while (await r.ReadAsync(ct)) { total = r.GetInt32(r.GetOrdinal("total")); items.Add(Item(r)); }
@@ -135,10 +135,10 @@ public sealed class SqlPipelineIndex : IPipelineIndex
     // LOB do rascunho; FORCESEEK fixa a busca pela chave primária, a única por draft_id, e impede o índice filtrado com
     // lookup), 3) gerido: pipeline, operação pendente e base_version_id do rascunho dela pela chave (sem LOB nem estado:
     // a base publicada continua valendo enquanto a publicação está pendente), 4) resumo filtrado, com a ordem da página
-    // calculada pela collation das colunas, 5) posse válida, a mais perto possível da página, 6) corte UTC único e
+    // calculada pela collation das colunas, 5) posse válida e, à parte, nome do titular, a mais perto possível da página, 6) corte UTC único e
     // 7) página e, além do fim, contagem, só sobre variáveis de tabela. Cada instrução só lê dado confirmado no momento
     // dela; nada disso é retrato atômico das fontes.
-    private static string Sql(bool managed, string names, string json, string managedNames)
+    private static string Sql(bool managed, string names, string json, string managedNames, string holders)
     {
         var managedColumns = managed
             ? """
@@ -181,7 +181,7 @@ public sealed class SqlPipelineIndex : IPipelineIndex
             -- Texto do resumo não é comparado nem ordenado depois de materializado: filtros e ordem já foram decididos na origem.
             DECLARE @resumo TABLE(ordem BIGINT NOT NULL PRIMARY KEY,pipeline_name NVARCHAR(200) NOT NULL,display_name NVARCHAR(4000) NULL,project NVARCHAR(4000) NULL,domain NVARCHAR(4000) NULL,
              responsavel NVARCHAR(100) NULL,draft_id UNIQUEIDENTIFIER NULL,draft_revision BIGINT NULL,has_published INT NOT NULL,published_number INT NULL,is_active INT NULL,managed INT NOT NULL,updated_at DATETIME2 NULL);
-            DECLARE @posse TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,holder_user NVARCHAR(100) NOT NULL,expires_at DATETIME2 NOT NULL,holder_name NVARCHAR(MAX) NULL);
+            DECLARE @posse TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,holder_user NVARCHAR(100) COLLATE {holders} NOT NULL,expires_at DATETIME2 NOT NULL,holder_name NVARCHAR(MAX) NULL);
             DECLARE @corte DATETIME2;
             INSERT @ativo(draft_id) SELECT x.draft_id FROM dbo.etl_workspace_rascunho x WHERE x.estado='ativo';
             INSERT @rascunho(draft_id,pipeline_name,revision,responsavel,atualizado_em,display,project,domain)
@@ -223,10 +223,9 @@ public sealed class SqlPipelineIndex : IPipelineIndex
              AND (@domain IS NULL OR r.domain=@domain)
              AND (@state='all' OR (@state='draft' AND r.draft_id IS NOT NULL) OR (@state='published' AND r.has_published=1)
               OR (@state='editing' AND r.draft_id IS NOT NULL) OR (@state='inactive' AND r.has_published=1 AND r.is_active=0));
-            INSERT @posse(draft_id,holder_user,expires_at,holder_name)
-            SELECT x.draft_id,x.holder_user,x.expires_at,u.holder_name FROM dbo.etl_workspace_lease x
-            OUTER APPLY (SELECT TOP(1) NULLIF(LTRIM(RTRIM(CONCAT(y.primeiro_nome,' ',y.ultimo_nome))),'') AS holder_name FROM dbo.etl_usuario y WHERE y.matricula=x.holder_user) u
-            WHERE x.expires_at>SYSUTCDATETIME();
+            -- Posse e nome do titular em instruções separadas: no APPLY, a linha da posse ficava com S enquanto o usuário era esperado.
+            INSERT @posse(draft_id,holder_user,expires_at) SELECT x.draft_id,x.holder_user,x.expires_at FROM dbo.etl_workspace_lease x WHERE x.expires_at>SYSUTCDATETIME();
+            UPDATE p SET p.holder_name=NULLIF(LTRIM(RTRIM(CONCAT(y.primeiro_nome,' ',y.ultimo_nome))),'') FROM @posse p JOIN dbo.etl_usuario y ON y.matricula=p.holder_user;
             -- Corte único depois de todas as leituras: posse que expirou enquanto alguma instrução esperava não vale.
             SET @corte=SYSUTCDATETIME();
             SELECT COUNT(*) OVER() AS total,r.pipeline_name,r.display_name,r.project,r.domain,r.responsavel,r.draft_id,r.draft_revision,r.has_published,r.published_number,r.is_active,r.managed,r.updated_at,l.holder_user,l.holder_name,l.expires_at

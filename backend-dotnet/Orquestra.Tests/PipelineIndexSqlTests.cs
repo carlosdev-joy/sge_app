@@ -259,12 +259,13 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
             await drafts.LeaseAsync(draft.DraftId, new(), Actor('b'), default);
             // Estágio bloqueado, escrita que muda e segura a linha (sem mudança o READ COMMITTED não espera) e começo das
             // instruções em que a leitura pode estar esperando. Em tabela pequena, os ids ativos podem vir pela chave
-            // clusterizada em vez do índice filtrado: ainda é o estágio de rascunho, antes da posse.
+            // clusterizada em vez do índice filtrado: ainda é o estágio de rascunho, antes da posse. O nome do titular é lido
+            // depois da posse, em instrução própria: esperar o usuário ali é esperar depois da captura e antes do corte.
             var stages = new[]
             {
                 ("rascunho", $"UPDATE dbo.etl_workspace_rascunho SET atualizado_em=DATEADD(millisecond,1,atualizado_em) WHERE draft_id='{draft.DraftId}'", new[] { "INSERT @ativo(", "INSERT @rascunho(" }),
                 ("resumo", "UPDATE dbo.etl_pipeline SET project_name=project_name+N'x' WHERE pipeline_name=N'OUTRO'", new[] { "WITH names AS (" }),
-                ("posse", "UPDATE dbo.etl_usuario SET perfil_nome=perfil_nome+'x' WHERE matricula='BOB'", new[] { "INSERT @posse(" }),
+                ("posse", "UPDATE dbo.etl_usuario SET perfil_nome=perfil_nome+'x' WHERE matricula='BOB'", new[] { "INSERT @posse(", "UPDATE p SET p.holder_name=" }),
             };
             foreach (var (stage, write, statements) in stages)
             {
