@@ -1,6 +1,7 @@
 // Bancada do contrato puro da Execução (F5 da UX do Pipeline): lib/workspaceExecution.ts
 // executado como está (sucrase). Estados de etapa/ligação/corrida, frequência de
-// consulta, frescor, anúncio, solicitação guiada e filtros do histórico.
+// consulta, frescor, anúncio, tentativas do motor (2.21.2), solicitação guiada e
+// filtros do histórico.
 'use strict'
 const fs = require('fs'), path = require('path'), assert = require('assert/strict')
 const root = path.resolve(__dirname, '../..')
@@ -124,9 +125,43 @@ out.dependencias = true
 
 // ── Anúncio ─────────────────────────────────────────────────────────────────
 const a1 = x.selectedStageAnnouncement('E', s('RUNNING')), a2 = x.selectedStageAnnouncement('E', s('RUNNING')), a3 = x.selectedStageAnnouncement('E', s('SUCCESS'))
-assert.equal(a1.key, a2.key, 'consulta igual, sem novo anúncio'); assert.notEqual(a1.key, a3.key); assert.equal(a3.message, 'Etapa E: Concluída, tentativa 1')
+assert.equal(a1.key, a2.key, 'consulta igual, sem novo anúncio'); assert.notEqual(a1.key, a3.key); assert.equal(a3.message, 'Etapa E: Concluída, tentativa operacional 1', 'o número SQL é dito operacional')
 assert.notEqual(x.selectedStageAnnouncement('F', s('RUNNING')).key, a1.key, 'outra etapa anuncia'); assert.equal(x.selectedStageAnnouncement('', s('RUNNING')), null)
 out.anuncio = true
+
+// ── Tentativas do motor ≠ tentativa operacional ────────────────────────────
+assert.deepEqual(x.engineAttemptsQueryKey('t', 'A/B %25 ç', 'manual__a/b%#', 'grupo.n4'), ['workspace-engine-attempts', 't', 'A/B %25 ç', 'manual__a/b%#', 'grupo.n4'])
+for (const [i, v] of [[1, 'u'], [2, 'B'], [3, 'r2'], [4, 'outra']]) { const k = ['t', 'A', 'r', 'task']; k[i - 1] = v; assert.notDeepEqual(x.engineAttemptsQueryKey(...k), x.engineAttemptsQueryKey('t', 'A', 'r', 'task'), `chave muda pela parte ${i}`) }
+const rotaMotor = new URL(x.engineAttemptsPath('A/B %25 ç', 'manual__a/b%#?x=1', 'grupo.n4&x'), 'http://l')
+assert.equal(rotaMotor.pathname, '/pipeline-task-attempts'); assert.deepEqual([...rotaMotor.searchParams], [['pipeline_name', 'A/B %25 ç'], ['run_id', 'manual__a/b%#?x=1'], ['task_id', 'grupo.n4&x']])
+const tmMotor = (n, state, extra = {}) => ({ try_number: n, state, start_date: '2026-10-11T19:00:00+00:00', end_date: '2026-10-11T19:00:30+00:00', duration: 30, hostname: null, started: true, has_log: true, current: false, ...extra })
+const respostaMotor = (o = {}) => ({ pipeline_name: 'P', run_id: 'r', task_id: 'ShellParalelo', source: 'airflow', available: true, reason: null, try_number: 2, attempts: [tmMotor(1, 'failed'), tmMotor(2, 'failed', { current: true })], complete: true, history: true, ignored: 0, ...o })
+const pedidoMotor = { name: 'P', runId: 'r', task: 'ShellParalelo' }
+assert(x.engineAttemptsMatch(respostaMotor(), pedidoMotor))
+for (const outra of [{ pipeline_name: 'Q' }, { run_id: 'r0' }, { task_id: 'log_start_ShellParalelo' }, { attempts: null }]) assert(!x.engineAttemptsMatch(respostaMotor(outra), pedidoMotor), JSON.stringify(outra))
+assert(!x.engineAttemptsMatch(undefined, pedidoMotor))
+// Fixture real: retries=1, falhou duas vezes. Lista 2,1; padrão do log é a 2.
+const listaMotor = x.engineAttemptList(respostaMotor())
+assert.deepEqual(listaMotor.map(r => r.try_number), [2, 1]); assert.deepEqual(x.engineLogSelection(listaMotor, null), { attempt: 2, issue: null })
+assert.deepEqual(x.engineLogSelection(listaMotor, 1), { attempt: 1, issue: null }, 'tentativa 1 do motor alcançável')
+assert.deepEqual(x.engineLogSelection(listaMotor, 3), { attempt: 3, issue: 'fora' }, 'número que o motor não informou')
+// Linhas inválidas ou repetidas não entram; indisponível não lista nada.
+assert.deepEqual(x.engineAttemptList(respostaMotor({ attempts: [tmMotor(0, 'failed'), tmMotor(1.5, 'failed'), tmMotor('2', 'failed'), tmMotor(10001, 'failed'), tmMotor(1, 'failed'), tmMotor(1, 'success')] })).map(r => [r.try_number, r.state]), [[1, 'failed']])
+assert.deepEqual(x.engineAttemptList(respostaMotor({ available: false, reason: 'tarefa_mapeada' })), []); assert.deepEqual(x.engineAttemptList(undefined), [])
+// Fila sem início: sem log; o padrão é a última iniciada; nenhuma iniciada é dito.
+const filaMotor = x.engineAttemptList(respostaMotor({ attempts: [tmMotor(1, 'failed'), tmMotor(2, 'queued', { start_date: null, end_date: null, started: false, has_log: false, current: true })] }))
+assert.deepEqual(x.engineLogSelection(filaMotor, null), { attempt: 1, issue: null }); assert.deepEqual(x.engineLogSelection(filaMotor, 2), { attempt: 2, issue: 'sem-inicio' })
+assert.deepEqual(x.engineLogSelection(filaMotor.slice(0, 1), null), { attempt: null, issue: 'sem-inicio' }); assert.deepEqual(x.engineLogSelection([], null), { attempt: null, issue: 'sem-log' })
+// Estados do motor com rótulo próprio; desconhecido fica com o código, vazio não vira sucesso.
+assert.deepEqual(['success', 'FAILED', 'up_for_retry', 'queued', 'upstream_failed', 'skipped', null, '', 'zzz'].map(x.engineStateLabel), ['Concluída', 'Falhou', 'Falhou · nova tentativa prevista', 'Na fila', 'Não executou · dependência falhou', 'Pulada', 'Sem estado no motor', 'Sem estado no motor', 'Estado zzz'])
+assert.equal(x.engineClock('2026-10-11T16:00:05-03:00'), '19:00:05 UTC'); assert.equal(x.engineClock('lixo'), '—'); assert.equal(x.engineClock(null), '—')
+// Lacuna: contador 3, só a 3 veio; nada é preenchido.
+const parcialMotor = respostaMotor({ try_number: 3, complete: false, history: false, attempts: [tmMotor(3, 'failed', { current: true })] })
+assert.equal(x.engineGapNote(parcialMotor, x.engineAttemptList(parcialMotor)), 'O motor conta 3 tentativas; 2 não vieram com registro (histórico do motor indisponível). Estado e horários delas não são presumidos.')
+assert.equal(x.engineGapNote(respostaMotor(), listaMotor), null)
+assert.equal(x.engineReason(respostaMotor({ available: false, reason: 'instancia_ausente', attempts: [] })), 'O motor não tem instância desta tarefa nesta corrida.')
+assert.equal(x.engineReason(respostaMotor({ available: false, reason: 'nova_razao', attempts: [] })), 'O motor não informou tentativas desta tarefa.')
+out.motor = { fixture: [2, 1], padrao: 2, fora: 'recusada', fila: 'sem log', lacuna: 'dita', utc: true }
 
 // ── Solicitação guiada ──────────────────────────────────────────────────────
 const RUN = 'workspace__0f8fad5b-d9cb-469f-a165-70867728950e'

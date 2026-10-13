@@ -26,6 +26,10 @@
 //     desenho, versão nem estados; reprocessar mira o task_id real; confirmação
 //     de reprocesso/execução aberta para um alvo some ao mudar etapa, corrida ou
 //     sessão e, se o envio acontecer na corrida, nada é postado.
+//     Correção 2.21.2: Tentativas e Logs seguem as tentativas do MOTOR (lidas sob
+//     demanda por sessão/pipeline/corrida/tarefa); o número SQL fica como
+//     tentativa operacional, sem log. Retry real (SQL 1, motor 2), fila sem
+//     início, lacuna, resposta antiga e motor fora do ar.
 //  8. Modal real dentro de área oculta (contexto injetado): fica montado, sem
 //     role de diálogo e com display none.
 //  9. Guarda de navegação real (lib/navigationGuard) contra um History simulado
@@ -359,6 +363,18 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  let execucao = CORRIDA
  rq.__dados['workspace-execution'] = chave => typeof execucao === 'function' ? execucao(chave) : execucao
  rq.__dados['workspace-log'] = chave => `<script>alert("x")</script> tentativa ${chave[5]}`
+ // Tentativas do MOTOR por (sessão, pipeline, corrida, tarefa). n4 reproduz o
+ // defeito: SQL attempt 1 de 1 (ciclo do log_start) e Airflow try_number 2
+ // (retry automático). n1: tentativa 2 na fila, sem início.
+ const tentMotor = (n, state, extra = {}) => ({ try_number: n, state, start_date: `2026-10-10T13:0${n}:00+00:00`, end_date: state === 'running' ? null : `2026-10-10T13:0${n}:30+00:00`, duration: state === 'running' ? null : 30, hostname: 'worker-1', started: true, has_log: true, current: false, ...extra })
+ const MOTOR = {
+  n0: { try_number: 3, attempts: [tentMotor(3, 'success', { current: true }), tentMotor(2, 'failed'), tentMotor(1, 'failed')] },
+  n1: { try_number: 2, attempts: [tentMotor(2, 'queued', { current: true, start_date: null, end_date: null, duration: null, hostname: null, started: false, has_log: false }), tentMotor(1, 'failed')] },
+  n3: { try_number: 0, attempts: [], reason: 'sem_tentativas' },
+  n4: { try_number: 2, attempts: [tentMotor(2, 'failed', { current: true }), tentMotor(1, 'failed')] },
+ }
+ let motor = chave => ({ pipeline_name: chave[2], run_id: chave[3], task_id: chave[4], source: 'airflow', available: true, reason: null, complete: true, history: true, ignored: 0, ...(MOTOR[chave[4]] ?? { try_number: 1, attempts: [tentMotor(1, 'success', { current: true })] }) })
+ rq.__dados['workspace-engine-attempts'] = chave => motor(chave)
  const op = { investigacoes: [], abertas: [] }
  const auth = require(path.join(tmp, 'store/auth.js')).useAuthStore
  auth.setState({ token: 'sessao-a' })
@@ -400,10 +416,10 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  canvas.__props.onSelect('n0'); ex.sincronizar()
  assert.deepEqual(op.investigacoes.at(-1), ['n0', null]); assert.equal(canvas.__props.selected, 'n0')
  assert.deepEqual(ex.achar(n => n.tag === 'button' && n.props['aria-controls'] && n.props['aria-pressed'] !== undefined && /^(Resumo|Tentativas|Logs|Parâmetros)/.test(textoDe(n))).map(textoDe), ['Resumo', 'Tentativas 3', 'Logs', 'Parâmetros'])
- assert.equal(anuncio(), 'Etapa n0: Concluída, tentativa 3')
+ assert.equal(anuncio(), 'Etapa n0: Concluída, tentativa operacional 3')
  // Nova consulta com outra etapa mudando não gera anúncio da selecionada.
  execucao = { ...CORRIDA, etapas: CORRIDA.etapas.map(row => row.job_name === 'n1' ? passo('n1', 'SUCCESS') : row) }; op.setView('tabela'); ex.sincronizar(); op.setView('grafo'); ex.sincronizar()
- assert.equal(anuncio(), 'Etapa n0: Concluída, tentativa 3'); execucao = CORRIDA
+ assert.equal(anuncio(), 'Etapa n0: Concluída, tentativa operacional 3'); execucao = CORRIDA
  // Tentativas → log da tentativa histórica, texto escapado.
  ex.clicar(aba('Tentativas')); assert.equal(ex.achar(n => n.tag === 'li' && /Tentativa \d/.test(textoDe(n))).length, 3)
  ex.clicar(ex.botoes('Ver log')[2]); assert.deepEqual(op.investigacoes.at(-1), ['n0', 1])
@@ -417,7 +433,7 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  op.setAtivo(true); ex.sincronizar(); assert.deepEqual([rq.__opcoes['workspace-execution'].enabled, rq.__opcoes['workspace-log'].enabled], [true, true], 'voltar revalida')
  assert.equal(rq.__opcoes['workspace-execution'].staleTime, 5_000, 'leitura com mais de 5 s é refeita ao voltar (o padrão global de 30 s não segura)')
  // Tentativa que não pertence à corrida: nenhum log, motivo explícito.
- op.setAttempt(7); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagens().some(t => /tentativa 7 da etapa n0 não pertence a esta corrida/.test(t)), mensagens())
+ op.setAttempt(7); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagens().some(t => /tentativa 7 não consta no motor para a etapa n0 nesta corrida/.test(t)), mensagens())
  // Corrida pedida diferente da resposta: sem estados nem log de outra corrida.
  op.setAttempt(null); op.setRunId('manual__r2'); ex.sincronizar()
  assert.match(ex.texto, /não corresponde à corrida pedida \( ?manual__r2 ?\)/); assert.match(ex.texto, /Corrida manual__r2/); assert.equal(estadosRun(), null); assert.equal(logDe().length, 0)
@@ -440,7 +456,59 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  execucao = CORRIDA; op.setRunId('manual__r1'); op.tick(); ex.sincronizar(); assert.equal(logDe().length, 1, 'resposta certa volta a valer')
  assert.equal(rq.__opcoes['workspace-execution'].refetchInterval({ state: { data: { ...CORRIDA, pipeline_name: 'OUTRO_PIPELINE' } } }), 30_000)
  // Etapa sem tentativa: nada inventado.
- op.setStage('n3'); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagens().some(t => /n3 ainda não tem tentativas/.test(t)))
+ op.setStage('n3'); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagens().some(t => /O motor ainda não agendou nenhuma tentativa desta tarefa/.test(t)), mensagens())
+ // ── Tentativas do motor ≠ tentativa operacional (correção 2.21.2) ──
+ const motorOp = () => rq.__opcoes['workspace-engine-attempts']
+ const pedidoLog = () => rq.__opcoes['workspace-log'].queryKey
+ op.setStage('n4'); op.setAttempt(null); ex.sincronizar()
+ assert.deepEqual(motorOp().queryKey, ['workspace-engine-attempts', 'sessao-a', NOME, 'manual__r1', 'n4'], 'chave: sessão, pipeline, corrida resolvida e tarefa')
+ assert.equal(motorOp().enabled, true, 'Logs aberta: consulta o motor'); assert.equal(motorOp().retry, false); assert.equal(motorOp().refetchOnWindowFocus, false)
+ // Defeito real: SQL diz 1 de 1, o motor fez 2. O log padrão é o da tentativa 2 do motor.
+ assert.equal(logDe().length, 1); assert.match(textoDe(logDe()[0]), /n4 · tentativa 2 · Airflow/); assert.equal(pedidoLog()[5], 2, 'try_number do motor, não o número SQL')
+ assert.deepEqual(ex.achar(n => n.props['aria-label'] === 'Tentativa do log')[0].filhos.map(textoDe), ['Tentativa 2', 'Tentativa 1'])
+ ex.clicar(ex.botoes('Tentativa 1').find(b => textoDe(b) === 'Tentativa 1')); assert.deepEqual(op.investigacoes.at(-1), ['n4', 1]); ex.sincronizar()
+ assert.match(textoDe(logDe()[0]), /n4 · tentativa 1 · Airflow/); assert.equal(pedidoLog()[5], 1, 'tentativa 1 do motor alcançável')
+ ex.clicar(aba('Tentativas')); ex.sincronizar()
+ const secaoMotor = rotulo => textoDe(ex.achar(n => n.tag === 'section' && n.props['aria-label'] === rotulo)[0])
+ assert.match(secaoMotor('Tentativas do motor'), /Tentativa 2 · atual Falhou .*13:02:00 UTC → 13:02:30 UTC.*Tentativa 1 Falhou/)
+ assert.match(secaoMotor('Tentativas do motor'), /Origem: motor Airflow/)
+ assert.match(secaoMotor('Tentativas operacionais'), /registro do Orquestra.*Retries automáticos do motor não entram.*Tentativa operacional 1 · atual FAILED/)
+ assert.equal(ex.achar(n => n.tag === 'section' && n.props['aria-label'] === 'Tentativas operacionais')[0].filhos.flatMap(descendentes).filter(n => n.tag === 'button').length, 0, 'tentativa operacional não abre log com número SQL')
+ assert.match(textoDe(aba('Tentativas')), /^Tentativas 2$/, 'contagem do motor na aba')
+ ex.clicar(aba('Resumo')); ex.sincronizar(); assert.match(textoDe(ex.achar(n => n.props['aria-label'] === 'Investigação da etapa')[0]), /Tentativa operacional 1 de 1/, 'número SQL continua visível, rotulado'); ex.clicar(aba('Tentativas')); ex.sincronizar()
+ // O pedido vai à rota do motor com os três segmentos da identidade, por query (sem caminho livre).
+ const antesMotor = api.__calls.length
+ try { await motorOp().queryFn({ signal: undefined }) } catch { /* o dublê da API pode recusar; só o pedido importa */ }
+ const pedidoMotor = new URL(api.__calls[antesMotor].p, 'http://l')
+ assert.equal(pedidoMotor.pathname, '/pipeline-task-attempts'); assert.deepEqual([...pedidoMotor.searchParams], [['pipeline_name', NOME], ['run_id', 'manual__r1'], ['task_id', 'n4']])
+ // Fila sem início: nada de log nem horário inventado; padrão é a última iniciada.
+ op.setStage('n1'); op.setAttempt(null); ex.sincronizar()
+ assert.match(secaoMotor('Tentativas do motor'), /Tentativa 2 · atual Na fila Sem início registrado no motor Sem log: a tentativa não iniciou no motor\./)
+ ex.clicar(aba('Logs')); ex.sincronizar(); assert.match(textoDe(logDe()[0]), /n1 · tentativa 1 · Airflow/, 'última tentativa iniciada')
+ op.setAttempt(2); ex.sincronizar(); assert.equal(logDe().length, 0); assert(mensagens().some(t => /tentativa 2 da etapa n1 não iniciou no motor; não há log/.test(t)), mensagens())
+ // Resposta antiga (outra tarefa ou outra corrida) não ocupa a tela.
+ for (const errada of [{ task_id: 'n0' }, { run_id: 'manual__r0' }, { pipeline_name: 'OUTRO' }]) {
+  motor = chave => ({ pipeline_name: chave[2], run_id: chave[3], task_id: chave[4], available: true, reason: null, complete: true, history: true, ignored: 0, try_number: 9, attempts: [tentMotor(9, 'success', { current: true })], ...errada })
+  op.setAttempt(null); op.tick(); ex.sincronizar(); assert.equal(logDe().length, 0, JSON.stringify(errada)); assert(mensagens().some(t => /resposta do motor não corresponde/.test(t)), JSON.stringify(errada)); assert.doesNotMatch(ex.texto, /tentativa 9/)
+ }
+ motor = chave => ({ pipeline_name: chave[2], run_id: chave[3], task_id: chave[4], source: 'airflow', available: true, reason: null, complete: true, history: true, ignored: 0, ...(MOTOR[chave[4]] ?? { try_number: 1, attempts: [tentMotor(1, 'success', { current: true })] }) })
+ // Lacuna do histórico: dita, sem estado presumido.
+ const lacuna = motor
+ motor = chave => ({ ...lacuna(chave), complete: false, history: false, attempts: lacuna(chave).attempts.slice(0, 1) })
+ op.setStage('n4'); op.tick(); ex.clicar(aba('Tentativas')); ex.sincronizar()
+ assert.match(secaoMotor('Tentativas do motor'), /O motor conta 2 tentativas; uma não veio com registro \(histórico do motor indisponível\)\. Estado e horários delas não são presumidos\./)
+ assert.doesNotMatch(secaoMotor('Tentativas do motor'), /Tentativa 1 /, 'tentativa sem registro não é listada'); motor = lacuna
+ // Motor indisponível: erro honesto, sem log e sem lista.
+ rq.__estados['workspace-engine-attempts'] = { data: undefined, isError: true, error: new Error('Tentativas do motor indisponíveis') }
+ ex.clicar(aba('Logs')); ex.sincronizar(); assert.equal(logDe().length, 0); assert(ex.porPapel('alert').some(n => /Tentativas do motor indisponíveis/.test(textoDe(n))))
+ delete rq.__estados['workspace-engine-attempts']
+ // Sob demanda: Resumo e aba oculta não consultam o motor.
+ ex.clicar(aba('Resumo')); ex.sincronizar(); assert.equal(motorOp().enabled, false, 'Resumo não consulta o motor')
+ ex.clicar(aba('Logs')); op.setAtivo(false); ex.sincronizar(); assert.deepEqual([motorOp().enabled, motorOp().refetchInterval], [false, false], 'aba oculta: nenhuma leitura do motor')
+ op.setAtivo(true); ex.sincronizar(); assert.equal(motorOp().enabled, true)
+ assert.equal(motorOp().refetchInterval, 30_000, 'corrida ativa: acompanha na cadência vigente')
+ op.setStage('n3'); op.setAttempt(null); ex.sincronizar()
+ resultado.motor = { padrao: 2, alcancavel: 1, operacionalSemLog: true, filaSemLog: true, respostaAntiga: 'descartada', lacuna: 'dita', indisponivel: 'erro honesto', sobDemanda: true }
  // Tabela: alternativa com a mesma seleção; o gráfico continua montado e oculto.
  op.setView('tabela'); ex.sincronizar(); assert(!tabelaOculta()); assert.equal(canvases().length, 1); assert(ocultoPor(ex, n => n.props['data-canvas'] !== undefined).length)
  assert.equal(ex.achar(n => n.tag === 'tr' && n.props['aria-current'] === 'true').map(textoDe)[0].startsWith('n3'), true)

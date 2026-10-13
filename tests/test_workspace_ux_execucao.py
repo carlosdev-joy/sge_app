@@ -49,6 +49,8 @@ def test_pure_execution_contract():
     assert out["ligacoes"] == ["observed", "skipped", "unknown"]
     assert out["consulta"] == {"semMedicao": 30000, "comMedicaoAtiva": 5000, "oculta": False}
     assert out["canvasA11y"] == {"enter": True, "reduzido": 0}
+    # Correção 2.21.2: tentativas do motor (fixture retries=1 falhou duas vezes).
+    assert out["motor"] == {"fixture": [2, 1], "padrao": 2, "fora": "recusada", "fila": "sem log", "lacuna": "dita", "utc": True}
 
 
 def test_shared_canvas_enter_selects_through_parent_and_fit_view_respects_reduced_motion():
@@ -68,6 +70,19 @@ def test_operations_screen_single_viewer_inspector_and_states():
     out = _harness("tests/js/workspace_ux_contexto_harness.cjs")
     assert out["execucao"] == {"graficos": 1, "estados": 6, "anuncioSelecionada": True, "logTexto": True, "outraCorrida": False, "ocultaSemPolling": True, "indisponivelSemAnimacao": True}
     assert out["fonteExecucao"] is True
+
+
+
+def test_engine_attempts_govern_logs_and_sql_attempt_stays_operational():
+    # O log abre pelo try_number do MOTOR (padrão: o mais recente iniciado); a
+    # tentativa SQL continua visível como operacional e não abre log. Resposta
+    # antiga, lacuna, fila sem início e motor fora do ar são ditos; a consulta
+    # é sob demanda (Tentativas/Logs, aba exibida e navegador visível).
+    out = _harness("tests/js/workspace_ux_contexto_harness.cjs")
+    assert out["motor"] == {"padrao": 2, "alcancavel": 1, "operacionalSemLog": True, "filaSemLog": True, "respostaAntiga": "descartada", "lacuna": "dita", "indisponivel": "erro honesto", "sobDemanda": True}
+    inspector = (ROOT / "ui-react/src/components/workspace/WorkspaceRunInspector.tsx").read_text(encoding="utf-8")
+    assert "engineAttemptsPath(p.name, p.runId!, engineTask!), { signal }" in inspector, "pedido cancelável pela chave"
+    assert "stageAttempts" not in inspector, "o número SQL não decide mais o log"
 
 
 def test_identity_fence_frozen_intents_and_hidden_reads():
