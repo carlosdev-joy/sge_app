@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useWorkspaceCapabilities } from '../components/workspace/useWorkspaceCapabilities'
 import { workspacePath } from '../lib/workspace'
 import { useState, useMemo, useCallback } from 'react'
@@ -17,12 +17,25 @@ import type { Pipeline } from '../types/pipeline'
 import { pipelineToDagId, exportModeloCsv } from '../components/pipelines/pipelineUtils'
 import { PipelineFormModal } from '../components/pipelines/PipelineFormModal'
 import { PipelineRow } from '../components/pipelines/PipelineRow'
+import { PipelineCatalog } from '../components/pipelines/PipelineCatalog'
 import {
   ViewModal, AuditModal, LineageModal, InactivateModal,
   GenDagModal, ExecModal,
 } from '../components/pipelines/PipelineModals'
 
+// F2: a coorte da navegação contextual entra pela lista única (índice .NET);
+// fora dela, sem capacidade ou com ?legado=1, a lista anterior segue intacta.
 export default function Pipelines() {
+  const workspace = useWorkspaceCapabilities()
+  const [search] = useSearchParams()
+  if (workspace.isPending && workspace.fetchStatus !== 'idle') return <PageSpinner />
+  const actions = workspace.data?.enabled ? workspace.data.actions : null
+  const cohort = !!actions?.contextualNavigation && !!actions.consultDefinition
+  if (actions && cohort && search.get('legado') !== '1') return <PipelineCatalog actions={actions} />
+  return <LegacyPipelines cohort={cohort} />
+}
+
+function LegacyPipelines({ cohort }: { cohort: boolean }) {
   const navigate=useNavigate()
   const workspace=useWorkspaceCapabilities()
   const user    = useAuthStore(s => s.user)
@@ -129,6 +142,12 @@ export default function Pipelines() {
 
   return (
     <div className="flex flex-col gap-4">
+
+      {cohort && (
+        <Link to="/pipelines" className="self-start text-sm text-blue-700 dark:text-blue-400 hover:underline underline-offset-2">
+          Voltar à lista única de pipelines
+        </Link>
+      )}
 
       <InfoBanner icon="≡" storageKey="pipelines">
         <strong>Pipelines:</strong> são os fluxos de ETL orquestrados no Airflow. Cada pipeline agrupa um conjunto

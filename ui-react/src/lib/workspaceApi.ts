@@ -1,4 +1,5 @@
 import { apiFetch, apiFetchBruto } from './api'
+import { pipelineIndexPath, type PipelineIndexFilters, type PipelineIndexPage } from './pipelineIndex'
 import type { WorkspaceCapabilities, WorkspaceContext, WorkspaceDefinition, WorkspaceDraft, WorkspaceLayout, WorkspaceLease, WorkspacePublication, WorkspaceValidation, WorkspaceVersion } from './workspace'
 export const workspaceApi = {
  validate: (id: string) => apiFetch<WorkspaceValidation>(`/workspace/drafts/${id}/validate`, { method: 'POST' }),
@@ -7,6 +8,7 @@ export const workspaceApi = {
  retry: (draft: WorkspaceDraft, fence: number, operationId: string) => apiFetch<WorkspacePublication>(`/workspace/publications/${operationId}/retry`, { method: 'POST', body: JSON.stringify({ expectedRevision: draft.revision, fence, operationId }) }),
  versions: (name: string, signal?: AbortSignal) => apiFetch<WorkspaceVersion[]>(`/workspace/pipeline-versions?${new URLSearchParams({ name })}`, { signal }),
  restore: (name: string, versionId: string) => apiFetch<WorkspaceDraft>(`/workspace/pipeline-restores?${new URLSearchParams({ name })}`, { method: 'POST', body: JSON.stringify({ versionId }) }),
+ pipelineIndex: (filters: PipelineIndexFilters, signal?: AbortSignal) => apiFetch<PipelineIndexPage>(pipelineIndexPath(filters), { signal }),
  capabilities: (signal?: AbortSignal) => apiFetch<WorkspaceCapabilities>('/workspace/capabilities', { signal }),
  context: (name: string, signal?: AbortSignal) => apiFetch<WorkspaceContext>(`/workspace/pipeline-context?${new URLSearchParams({ name })}`, { signal }),
  draft: (id: string, signal?: AbortSignal) => apiFetch<WorkspaceDraft>(`/workspace/drafts/${encodeURIComponent(id)}`, { signal }),
