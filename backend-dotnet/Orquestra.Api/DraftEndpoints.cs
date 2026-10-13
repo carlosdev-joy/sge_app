@@ -17,7 +17,8 @@ internal static class DraftEndpoints
             if (!actor.Permissions.Contains("tela_pipelines")) throw new WorkspaceException(403, "permission_denied", "Permissão de consulta necessária");
             if (context.Request.Path.StartsWithSegments("/workspace/executions") && !actor.Permissions.Contains("tela_logs")) throw new WorkspaceException(403, "permission_denied", "Permissão de consulta dos logs necessária");
             var mutation = context.Request.Method != "GET";
-            var pipelineContext = context.Request.Method == "GET" && (context.Request.Path.StartsWithSegments("/workspace/pipelines") || context.Request.Path.StartsWithSegments("/workspace/pipeline-context"));
+            // Resumo sem tela_jobs: contexto e índice (este com editor de posse válida, nunca definição, layout, fence ou sessão).
+            var pipelineContext = context.Request.Method == "GET" && (context.Request.Path.StartsWithSegments("/workspace/pipelines") || context.Request.Path.StartsWithSegments("/workspace/pipeline-context") || context.Request.Path.StartsWithSegments("/workspace/pipeline-index"));
             if (!pipelineContext && !actor.Permissions.Contains("tela_jobs")) throw new WorkspaceException(403, "permission_denied", "Permissão de consulta das etapas necessária");
             if (mutation)
             {
@@ -29,6 +30,8 @@ internal static class DraftEndpoints
             return await next(invocation);
         });
         group.MapGet("/pipeline-context", async (string name, HttpContext c, IDraftRepository repository, IConfiguration configuration, CancellationToken ct) => Results.Json((await repository.ContextAsync(name, Actor(c), Actor(c).Permissions.Contains("tela_jobs"), ct)) with { EnvironmentLabel = configuration["Workspace:EnvironmentLabel"] ?? "Workspace" }));
+        group.MapGet("/pipeline-index", async (string? search, string? project, string? domain, string? state, string? limit, string? offset, IPipelineIndex index, CancellationToken ct) =>
+            Results.Json(await index.ReadAsync(PipelineIndexRules.Parse(search, project, domain, state, limit, offset), ct)));
         group.MapPost("/pipeline-drafts", async (string name, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.ImportAsync(name, Actor(c), ct), statusCode: 201));
         group.MapGet("/executions", async (string name, string? date, string? runId, HttpContext c, PublishedExecutionClient client, CancellationToken ct) => Results.Json(await client.ReadAsync(name, date, c.Request.Headers.Authorization[0]!, ct, runId)));
         group.MapGet("/pipelines/{name}", async (string name, HttpContext c, IDraftRepository repository, CancellationToken ct) => Results.Json(await repository.ContextAsync(name, Actor(c), Actor(c).Permissions.Contains("tela_jobs"), ct)));

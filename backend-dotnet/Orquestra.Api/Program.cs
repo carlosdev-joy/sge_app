@@ -20,6 +20,7 @@ builder.Services.AddSingleton(new WorkspaceSqlOptions(
 builder.Services.AddScoped<ISessionRepository, SqlSessionRepository>();
 builder.Services.AddScoped<IDraftRepository, SqlDraftRepository>();
 builder.Services.AddScoped<IPublicationRepository, SqlDraftRepository>();
+builder.Services.AddScoped<IPipelineIndex, SqlPipelineIndex>();
 builder.Services.AddSingleton(new WorkspaceLeaseOptions(builder.Configuration.GetValue<int?>("Workspace:LeaseSeconds") ?? 120));
 builder.Services.AddScoped<SessionAuthenticator>();
 builder.Services.AddScoped<PublishedExecutionClient>();

@@ -34,7 +34,7 @@ export function expirarSessao(): void {
 
 /** Erro que `apiFetch`/`apiFetchBruto` lançam: `status` e `detail` crus para o
  *  chamador introspectar (ex.: 422 estruturado, 409 com `existente`). */
-export type ErroApi = Error & { status?: number; detail?: unknown }
+export type ErroApi = Error & { status?: number; detail?: unknown; code?: unknown }
 
 /** Chamada CRUA à API: injeta o `Authorization`, trata o 401 (limpa o token e
  *  manda ao login) e dá ao erro o mesmo shape do `apiFetch` — mas NÃO injeta
@@ -63,6 +63,8 @@ export async function apiFetchBruto(path: string, opts?: RequestInit): Promise<R
     const err = new Error(msg) as ErroApi
     err.status = res.status
     err.detail = detail
+    // `code` estável do contrato (ex.: workspace .NET); ausente nas rotas que não o enviam.
+    if (body?.code !== undefined) err.code = body.code
     throw err
   }
   return res

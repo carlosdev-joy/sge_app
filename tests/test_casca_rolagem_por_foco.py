@@ -59,6 +59,10 @@ _SR_ONLY_CONHECIDOS = {
     # anúncio da etapa selecionada (aria-live) da Execução — dentro do <aside relative>
     # do inspector operacional (resumo da corrida e investigação da etapa)
     "components/workspace/WorkspaceRunInspector.tsx": 1,
+    # lista única de pipelines (F2): rótulos "Situação" e "Projeto e domínio" que só
+    # somem visualmente no desktop (lg:sr-only), dentro do <li relative> da linha, e o
+    # nome do menu "Mais ações de …" dentro da raiz `relative` do DropdownMenu
+    "components/pipelines/PipelineCatalog.tsx": 3,
 }
 
 
