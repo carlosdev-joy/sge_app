@@ -37,21 +37,22 @@ public sealed class PipelineIndexRetryTests
     }
 
     [Fact]
-    public async Task DeadlockVictimRestartsTheWholeReadAndKeepsNothingFromTheFailedAttempt()
+    public async Task DeadlockVictimRepeatsTheWholeAttemptAndReturnsOnlyTheLastResult()
     {
-        var calls = new List<(PipelineIndexQuery Query, CancellationToken Token)>(); var waits = new List<TimeSpan>(); var partial = new List<string>();
+        // O dublê substitui a tentativa inteira (ReadOnceAsync): prova que a política repete a tentativa do zero e devolve
+        // só o resultado da última. Não prova o descarte de linhas já lidas do SqlDataReader: isso vem da lista e do total
+        // locais de ReadOnceAsync numa conexão nova (guarda estática no pytest) e da integração com SQL real.
+        var calls = new List<(PipelineIndexQuery Query, CancellationToken Token)>(); var waits = new List<TimeSpan>();
         var final = new PipelineIndexPage(2, 50, 100, [Item("PUBC"), Item("PUBD")]);
         var index = new SqlPipelineIndex(Options, Fast, async (query, token) =>
         {
             calls.Add((query, token)); await Task.Yield();
-            // 1ª tentativa: lê parte da página e cai como vítima no meio; 2ª: vítima antes da primeira linha.
-            if (calls.Count == 1) { partial.Add("PARCIAL"); throw SqlErrors.Create(1205); }
-            if (calls.Count == 2) throw SqlErrors.Create(1205);
+            if (calls.Count <= 2) throw SqlErrors.Create(1205);
             return final;
         }, (delay, _) => { waits.Add(delay); return Task.CompletedTask; });
         var page = await index.ReadAsync(Query, default);
         Assert.Same(final, page); Assert.Equal(2, page.Total); Assert.Equal(new[] { "PUBC", "PUBD" }, page.Items.Select(i => i.PipelineName));
-        // Toda tentativa refaz a mesma página do início, sob o mesmo prazo ainda vivo; nada da vítima é reaproveitado.
+        // Toda tentativa refaz a mesma consulta, sob o mesmo prazo ainda vivo.
         Assert.Equal(3, calls.Count); Assert.All(calls, call => Assert.Equal(Query, call.Query));
         Assert.All(calls, call => { Assert.True(call.Token.CanBeCanceled); Assert.False(call.Token.IsCancellationRequested); Assert.Equal(calls[0].Token, call.Token); });
         Assert.Equal(2, waits.Count); Assert.InRange(waits[0], Fast.BaseDelay, 2 * Fast.BaseDelay); Assert.True(waits[1] >= 2 * Fast.BaseDelay && waits[1] > waits[0]);

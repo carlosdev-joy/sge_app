@@ -135,15 +135,28 @@ def test_index_yields_deadlocks_to_writers_and_retries_only_the_victim():
     assert '<InternalsVisibleTo Include="Orquestra.Tests" />' in _read("backend-dotnet/Orquestra.Infrastructure/Orquestra.Infrastructure.csproj")
     # Testes: política offline completa, prova SQL determinística e o cenário concorrente real mantido.
     retry = _read("backend-dotnet/Orquestra.Tests/PipelineIndexRetryTests.cs")
-    for name in ["IndexHasItsOwnPoolAndLowPriorityWhileWritersKeepTheirs", "DeadlockVictimRestartsTheWholeReadAndKeepsNothingFromTheFailedAttempt",
+    for name in ["IndexHasItsOwnPoolAndLowPriorityWhileWritersKeepTheirs", "DeadlockVictimRepeatsTheWholeAttemptAndReturnsOnlyTheLastResult",
                  "OnlyTheDeadlockVictimIsRetried", "FailuresOutsideSqlAreNotRetried", "ExhaustedDeadlockRetriesAreAnHonest503WithoutSqlText",
                  "OneBudgetCoversEveryAttemptAndWaitAndEndsIn503", "ClientCancellationWinsInTheAttemptInTheWaitAndAfterAVictim"]:
         assert f" {name}(" in retry, name
     live = _read("backend-dotnet/Orquestra.Tests/PipelineIndexSqlTests.cs")
     assert "public async Task IndexRunsAtLowPriorityInItsOwnPoolWaitsForCommittedDataAndLosesTheDeadlockToWriters(" in live
     assert "Assert.Equal(-5, reading.Priority)" in live and "Assert.Equal(1205, (await Assert.ThrowsAsync<SqlException>(() => lowRead)).Number)" in live
-    assert "Enumerable.Range(0, 4)" in live and "guard.Token" in live and "for (var i = 0; i < 10; i++)" in live
-    assert "finally\n            {\n                // Falha da escrita não deixa leitores órfãos" in live and "stop.Cancel(); await Task.WhenAny(Task.WhenAll(readers)" in live
+    assert "Enumerable.Range(0, 4)" in live and "for (var i = 0; i < 10; i++)" in live
+    # Limpeza: nenhum pedido do teste segue rodando no DROP; prazo local finito, sem corrida contra um relógio.
+    assert "WhenAny" not in live and "Task.Delay(TimeSpan.FromMinutes" not in live
+    assert live.count("finally { await Drop(running, failure, master, created ? database : null); }") == 2
+    assert live.count("catch (Exception e) { failure = e; throw; }") == 2
+    assert "running.Restart(TimeSpan.FromMinutes(3));" in live and live.count("index.ReadAsync(Query(search: \"pubc\"), running.Token)") == 1
+    for started in ["var read = running.Track(index.ReadAsync(", "var create = running.Track(new SqlDraftRepository(options).CreateAsync(",
+                    "var lowRead = running.Track(Execute(low,", "var normalWrite = running.Track(Execute(normal,"]:
+        assert started in live and "running.Token)" in live.split(started, 1)[1].split("\n", 1)[0], started
+    for held in ["writer", "blocker", "low", "normal"]:
+        assert f"var {held} = await running.Open(" in live, held
+    stop = _body(live, "public async Task<List<Exception>> StopAsync()", "public void Dispose()")
+    assert stop.index("abort.Cancel();") < stop.index("await Task.WhenAll(tasks)") < stop.index("IF @@TRANCOUNT > 0 ROLLBACK") < stop.index("DisposeAsync")
+    drop = _body(live, "private static async Task Drop(", "\n    }\n")
+    assert drop.index("await running.StopAsync()") < drop.index("DROP DATABASE") and "failure is null ? errors : [failure, .. errors]" in drop
     assert "Assert.Null(row.PublishedVersionNumber)" in live and "WHERE draft_id='{target.DraftId}'\"))" in live
 
 
