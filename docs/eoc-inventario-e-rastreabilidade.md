@@ -165,3 +165,13 @@ O usuário aprovou todas as fases em 13/10/2026. Modelos, Warning e contratos pa
 - Status desconhecido preservado: backlog não consultado, nenhuma linha promovida sem evidência.
 - Aceite documental técnico da F0 após a revisão do Codex, com **G-BACKLOG aberto**: a conciliação viva com `dbo.etl_backlog` não foi concluída e fica pendente de acesso autorizado; isso não impede F1/F2.
 - Estado: documentação revisada; integração pendente. Sem migration, versão Admin, publicação ou smoke DEV, por ser fase documental.
+
+## 10. Atualização de 13/10/2026 (após F1/F2)
+
+As linhas da seção 3 ficam como registro da F0. Estado atual das fases seguintes:
+
+| Fase | Estado | Fonte |
+|---|---|---|
+| F1 | publicado DEV (2.21.2, `develop` `f05bd4e9`, PR #505); leitura nativa de tentativas 1/2 PASS | `/root/orquestra-eoc-evidencias/f1/native-read.json` |
+| F2 | publicado DEV (2.22.0, `develop` `56484d77`, PR #506, migration 170); SQL 9/9 e smoke §7 b PASS | [release notes 2.22.0](release-notes/2.22.0-pipeline-ux-descoberta.md#publicação-dev-13102026) |
+| F3 | em andamento, aceite não fechado: F3a documental; candidato 2.22.1 (migration 171, sem commit) com correção de API (A1–A5) e de UI (R1/R2, `dist/` reconstruída), L2/L3 e A1–A5/R1/R2 revisados, suíte completa do root sem falha nova, navegador readonly sintético 4/4 PASS. Pendentes: L1/L4 nativos, QA antes da PR e gates externos | [EOC-F3](eoc-f3-aceite-integrado.md), [release notes 2.22.1](release-notes/2.22.1-workspace-paridade-tipos.md) |

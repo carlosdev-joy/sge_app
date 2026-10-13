@@ -4,7 +4,7 @@ import { apiFetch } from '../../lib/api'
 import { Input, Select, Textarea } from '../ui/Input'
 import { Button } from '../ui/Button'
 import { SCHEDULE_TYPES, SCHEDULE_LABELS, DOW_LABELS, MAX_MONTH_DAYS, hourlyTimes, parseMonthDaysTimes, parseCustomTimes } from '../pipelines/pipelineUtils'
-import { text } from '../../lib/workspace'
+import { effectiveScheduleType, text } from '../../lib/workspace'
 
 export function WorkspaceCatalogFields({project,domain,editable,onChange}:{project:string;domain:string;editable:boolean;onChange:(field:string,value:string)=>void}) {
  const id=useId()
@@ -16,7 +16,7 @@ export function WorkspaceCatalogFields({project,domain,editable,onChange}:{proje
 export function WorkspaceScheduleFields({value,editable,onChange}:{value:Record<string,unknown>;editable:boolean;onChange:(next:Record<string,unknown>)=>void}) {
  const [hourly,setHourly]=useState(false)
  const [window,setWindow]=useState({intervalH:2,startH:8,endH:18,minute:0})
- const kind=hourly&&value.schedule_type==='custom'?'hourly_n':text(value.schedule_type)||'on_demand'
+ const kind=hourly&&value.schedule_type==='custom'?'hourly_n':effectiveScheduleType(value)
  const entries=parseMonthDaysTimes(text(value.dias_horarios_mes))
  const calendars=useQuery<{calendarios:{calendario_nome:string}[]}>({queryKey:['agenda-calendarios'],queryFn:()=>apiFetch('/agenda/calendarios'),staleTime:300000,enabled:editable})
  const patch=(next:Record<string,unknown>)=>onChange({...value,...next})

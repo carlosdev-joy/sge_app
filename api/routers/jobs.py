@@ -876,6 +876,9 @@ def _config_email_do_admin(cur) -> tuple[list[str], list[str], list[int] | None,
 # pernas. Ela NÃO esconde a falha: o t_end de cada perna continua ligado ao
 # fechamento do pipeline, então o DagRun segue vermelho.
 _AGUARDE_POLITICAS = ("todas_sucesso", "todas_terminarem")
+# Mesma recusa nos saves legados e na publicação do workspace.
+_AGUARDE_SEM_ENTRADA = ("o Aguarde precisa de ao menos uma etapa ligada a ele "
+                        "(sem entrada, ele não tem o que esperar)")
 
 
 def _validate_aguarde(cfg) -> list[str]:
@@ -2258,9 +2261,7 @@ async def register_pipeline_jobs(body: dict = Body(default={}), _auth: dict = De
                                 if isinstance(_dep_ag, list)
                                 else [d.strip() for d in str(_dep_ag or "").split(",") if d.strip()])
                 if not _dep_ag_list:
-                    aguarde_errs.append(
-                        "o Aguarde precisa de ao menos uma etapa ligada a ele "
-                        "(sem entrada, ele não tem o que esperar)")
+                    aguarde_errs.append(_AGUARDE_SEM_ENTRADA)
                 if aguarde_errs:
                     erros.extend(f"Item {idx} ({j_name}): {e}" for e in aguarde_errs); continue
                 aguarde_json_str = json.dumps(_normalize_aguarde(raw_aguarde), ensure_ascii=False)
@@ -3142,9 +3143,7 @@ async def save_pipeline_fluxo(
                 raw_aguarde = node.get("aguarde")
                 aguarde_errs = _validate_aguarde(raw_aguarde)
                 if not dep_list:
-                    aguarde_errs.append(
-                        "o Aguarde precisa de ao menos uma etapa ligada a ele "
-                        "(sem entrada, ele não tem o que esperar)")
+                    aguarde_errs.append(_AGUARDE_SEM_ENTRADA)
                 if aguarde_errs:
                     errors.extend(f"{j_name}: {e}" for e in aguarde_errs); continue
                 aguarde_json_str = json.dumps(_normalize_aguarde(raw_aguarde), ensure_ascii=False)

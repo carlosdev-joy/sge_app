@@ -266,3 +266,7 @@ Base `develop` `f05bd4e9` (PR #505, EOC-F1); branch `feat/ux-pipeline-descoberta
 | Esquema ausente | Lista | 503 `draft_schema_unavailable` nomeando a 141; *Usar lista clássica* | — | E; B; NR | Candidato |
 
 Nenhuma linha anterior perdeu destino: a lista anterior continua acessível, com as mesmas ações, para a coorte e para quem está fora dela.
+
+F2 fechada (EOC-F2): PR #506 integrada em `develop` `56484d77` e publicada no DEV como 2.22.0 (migration 170). `[SqlFact]` do root 9/9 PASS, smoke nativo §7 b PASS com fixture própria e saúde 19/19 PASS. As linhas acima passam de "Candidato" a publicadas no DEV, sem certificar piloto, DataStage ou produção. O deploy exige o grant de colunas em `etl_usuario` registrado nas [release notes](release-notes/2.22.0-pipeline-ux-descoberta.md#publicação-dev-13102026). O aceite integrado dos 11 tipos e 8 agendas segue em [EOC-F3](eoc-f3-aceite-integrado.md).
+
+EOC-F3 (candidato 2.22.1, sem commit nem publicação): projeção positiva 11/11 tipos com A1–A5 corrigidos; igualdade legado × workspace em cron e constantes nos 8 modos e no `hourly_n` em 6 janelas; leitura da agenda de linha existente alinhada ao motor (R1 NULL → Diário, R2 horários → Horários específicos), sem reescrever o rascunho. Provas offline e navegador readonly sintético; L1/L4 nativos pendentes. Detalhes em [EOC-F3 §10–11](eoc-f3-aceite-integrado.md#11-eoc-f3c--l3-e-corretivo-r1r2-mesmo-candidato-2221) e nas [release notes 2.22.1](release-notes/2.22.1-workspace-paridade-tipos.md).
