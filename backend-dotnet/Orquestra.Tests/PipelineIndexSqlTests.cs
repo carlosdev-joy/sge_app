@@ -148,11 +148,16 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
             Assert.Equal("pendente", operation.State); Assert.Equal(operationId, operation.OperationId);
             Assert.Equal(1, await Count(c, $"SELECT COUNT(*) FROM dbo.etl_workspace_publicacao WHERE draft_id='{target.DraftId}'"));
             var pending = Assert.Single((await index.ReadAsync(Query(search: "pubc"), default)).Items);
-            Assert.True(pending.Managed); Assert.True(pending.HasPublished); Assert.Null(pending.PublishedVersionNumber);
+            Assert.True(pending.Managed); Assert.True(pending.HasPublished); Assert.Null(pending.PublishedVersionNumber); Assert.Equal("Proj", pending.Project);
             var stops = index.Stops;
             output.WriteLine($"Leituras concorrentes: busca {Percentiles(samples.SelectMany(s => s.Search))}; lista completa {Percentiles(samples.SelectMany(s => s.Full))}; escritas {Percentiles(writes)}; vítimas 1205 refeitas {index.DeadlockRetries - retriesBefore}; 503 por tentativas {stops.Exhausted - stopsBefore.Exhausted}, por prazo {stops.Expired - stopsBefore.Expired}; espera entre tentativas {(stops.Backoff - stopsBefore.Backoff).TotalMilliseconds:F0} ms; maior nº de tentativas de uma leitura bem-sucedida {stops.LongestSuccess} (bancada SQL; não é medição de produção)");
             Assert.Empty((await index.ReadAsync(Query(search: "concorrente"), default)).Items);
             Assert.DoesNotContain("definition", JsonSerializer.Serialize(await index.ReadAsync(Query(limit: 100), default), DraftValidation.Json));
+            // Base publicada da operação pendente vem do rascunho dela pela chave, ativo ou não: com o rascunho fora dos
+            // ativos, a linha continua publicada pela base importada, sem rascunho nem número de versão confirmada.
+            await Execute(c, $"UPDATE dbo.etl_workspace_rascunho SET estado='publicado' WHERE draft_id='{target.DraftId}'");
+            var closed = Assert.Single((await index.ReadAsync(Query(search: "pubc"), default)).Items);
+            Assert.True(closed.Managed); Assert.True(closed.HasPublished); Assert.False(closed.HasDraft); Assert.Null(closed.PublishedVersionNumber); Assert.Equal("Proj", closed.Project);
         }
         catch (Exception e) { failure = e; throw; }
         finally { await Drop(running, failure, master, created ? database : null); }
@@ -231,6 +236,67 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
         finally { await Drop(running, failure, master, created ? database : null); }
     }
 
+    // Revisão EOC-F2: posse válida no início da leitura que expira enquanto uma instrução do lote espera uma escrita não
+    // pode voltar como edição. Cada estágio (rascunho, resumo, posse) fica bloqueado por uma escrita aberta até a posse
+    // expirar no relógio do servidor; depois do commit, o filtro editing exclui e a lista mostra o rascunho sem titular.
+    [SqlFact]
+    public async Task IndexDropsLeaseThatExpiresWhileAnyStageWaitsUsingOneFinalCutoff()
+    {
+        var database = "OrquestraIndexTest_" + Guid.NewGuid().ToString("N");
+        var options = Options(database);
+        await using var master = new SqlConnection((options with { Database = "master" }).ConnectionString()); await master.OpenAsync();
+        var created = false; Exception? failure = null;
+        using var running = new Running(TimeSpan.FromMinutes(2));
+        try
+        {
+            await Execute(master, $"CREATE DATABASE [{database}] COLLATE SQL_Latin1_General_CP1_CI_AS"); created = true;
+            await using var c = new SqlConnection(options.ConnectionString()); await c.OpenAsync();
+            await Execute(c, BaseTables);
+            await Execute(c, "INSERT dbo.etl_sessao VALUES(REPLICATE('a',64),'ALICE',DATEADD(hour,1,GETDATE())),(REPLICATE('b',64),'BOB',DATEADD(hour,1,GETDATE())); INSERT dbo.etl_usuario(matricula,perfil_nome,primeiro_nome,ultimo_nome) VALUES('ALICE','dev','Alice','Souza'),('BOB','dev','Bob','Silva'); INSERT dbo.etl_pipeline(pipeline_name,project_name,domain,active) VALUES(N'OUTRO',N'Proj',N'Dom',1)");
+            await Migrate(c);
+            var drafts = new SqlDraftRepository(options); var index = new SqlPipelineIndex(options);
+            var draft = await drafts.CreateAsync(new(new PipelineDefinition { Identity = new("Expira") }, new(1, new Dictionary<string, NodePosition>())), Actor('a'), default);
+            await drafts.LeaseAsync(draft.DraftId, new(), Actor('b'), default);
+            // Estágio bloqueado, escrita que muda e segura a linha (sem mudança o READ COMMITTED não espera) e começo das
+            // instruções em que a leitura pode estar esperando. Em tabela pequena, os ids ativos podem vir pela chave
+            // clusterizada em vez do índice filtrado: ainda é o estágio de rascunho, antes da posse.
+            var stages = new[]
+            {
+                ("rascunho", $"UPDATE dbo.etl_workspace_rascunho SET atualizado_em=DATEADD(millisecond,1,atualizado_em) WHERE draft_id='{draft.DraftId}'", new[] { "INSERT @ativo(", "INSERT @rascunho(" }),
+                ("resumo", "UPDATE dbo.etl_pipeline SET project_name=project_name+N'x' WHERE pipeline_name=N'OUTRO'", new[] { "WITH names AS (" }),
+                ("posse", "UPDATE dbo.etl_usuario SET perfil_nome=perfil_nome+'x' WHERE matricula='BOB'", new[] { "INSERT @posse(" }),
+            };
+            foreach (var (stage, write, statements) in stages)
+            {
+                // Posse curta, válida agora: o editing a vê antes do bloqueio.
+                await Execute(c, $"UPDATE dbo.etl_workspace_lease SET expires_at=DATEADD(millisecond,3000,SYSUTCDATETIME()) WHERE draft_id='{draft.DraftId}'");
+                Assert.Equal("BOB", Assert.Single((await index.ReadAsync(Query(state: "editing"), default)).Items).EditorUser);
+                var writer = await running.Open(options.ConnectionString());
+                var writerSession = await Int(writer, "SELECT @@SPID");
+                await Execute(writer, "BEGIN TRANSACTION; " + write);
+                var editing = running.Track(index.ReadAsync(Query(state: "editing"), running.Token));
+                var all = running.Track(index.ReadAsync(Query(search: "expira"), running.Token));
+                // As duas leituras começaram com a posse válida e esperam na instrução do estágio.
+                foreach (var waiting in await BlockedStatements(c, writerSession, 2, stage)) Assert.True(statements.Any(waiting.StartsWith), $"{stage}: {waiting[..Math.Min(waiting.Length, 80)]}");
+                Assert.Equal(1, await Int(c, $"SELECT COUNT(*) FROM dbo.etl_workspace_lease WHERE draft_id='{draft.DraftId}' AND expires_at>SYSUTCDATETIME()"));
+                // Expira no relógio do servidor com a leitura ainda presa.
+                for (var tick = 0; await Int(c, $"SELECT COUNT(*) FROM dbo.etl_workspace_lease WHERE draft_id='{draft.DraftId}' AND expires_at>SYSUTCDATETIME()") > 0; tick++) { Assert.True(tick < 400, stage); await Task.Delay(25); }
+                Assert.False(editing.IsCompleted, stage); Assert.False(all.IsCompleted, stage);
+                await Execute(writer, "COMMIT");
+                var editingPage = await editing;
+                Assert.Empty(editingPage.Items); Assert.Equal(0, editingPage.Total);
+                var row = Assert.Single((await all).Items);
+                Assert.True(row.HasDraft, stage); Assert.Null(row.EditorUser); Assert.Null(row.EditorName); Assert.Null(row.LeaseExpiresAt);
+            }
+            // Página além do fim conta com o mesmo corte: posse expirada também não entra na contagem.
+            var beyond = await index.ReadAsync(Query(state: "editing", offset: 50), default); Assert.Empty(beyond.Items); Assert.Equal(0, beyond.Total);
+            await Execute(c, $"UPDATE dbo.etl_workspace_lease SET expires_at=DATEADD(minute,5,SYSUTCDATETIME()) WHERE draft_id='{draft.DraftId}'");
+            Assert.Equal(1, (await index.ReadAsync(Query(state: "editing", offset: 50), default)).Total);
+        }
+        catch (Exception e) { failure = e; throw; }
+        finally { await Drop(running, failure, master, created ? database : null); }
+    }
+
     // O que o teste deixou rodando (pedidos bloqueados, leitores em paralelo) e as conexões que seguram transação.
     // Todo pedido acompanhado leva Token (prazo local finito) e CommandTimeout, então a espera do fim sempre termina.
     private sealed class Running(TimeSpan limit) : IDisposable
@@ -303,6 +369,32 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
             await Task.Delay(25);
         }
         throw new Xunit.Sdk.XunitException("Nenhum pedido ficou bloqueado pela sessão esperada");
+    }
+    // Instrução corrente de cada leitura do índice esperando lock atrás da sessão informada (direto ou na fila de outra
+    // leitura do índice que espera a mesma escrita), quando houver `count` delas.
+    private static async Task<List<string>> BlockedStatements(SqlConnection monitor, int blocker, int count, string stage)
+    {
+        var seen = new List<string>();
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            var waiting = new List<(int Session, int Blocker, string Text)>(); seen.Clear();
+            await using (var cmd = new SqlCommand("SELECT r.blocking_session_id,r.session_id,r.wait_type,s.program_name,SUBSTRING(t.text,r.statement_start_offset/2+1,(CASE r.statement_end_offset WHEN -1 THEN DATALENGTH(t.text) ELSE r.statement_end_offset END-r.statement_start_offset)/2+1) FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id=r.session_id CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.database_id=DB_ID() AND r.session_id<>@@SPID", monitor))
+            {
+                await using var r = await cmd.ExecuteReaderAsync();
+                while (await r.ReadAsync())
+                {
+                    var text = r.IsDBNull(4) ? "" : r.GetString(4).TrimStart();
+                    var wait = Convert.ToString(r.GetValue(2)) ?? "";
+                    if (Convert.ToString(r.GetValue(3)) == SqlPipelineIndex.ApplicationName && wait.StartsWith("LCK_M_", StringComparison.Ordinal)) waiting.Add((Convert.ToInt32(r.GetValue(1)), Convert.ToInt32(r.GetValue(0)), text));
+                    seen.Add($"{r.GetValue(1)}<-{r.GetValue(0)} {wait} {r.GetValue(3)}: {text[..Math.Min(text.Length, 80)]}");
+                }
+            }
+            var sessions = waiting.Select(w => w.Session).ToHashSet();
+            if (waiting.Count >= count && waiting.Any(w => w.Blocker == blocker) && waiting.All(w => w.Blocker == blocker || sessions.Contains(w.Blocker))) return waiting.Select(w => w.Text).ToList();
+            await Task.Delay(25);
+        }
+        // Diagnóstico sem dado de negócio: só sessões, esperas e o começo da instrução corrente de cada pedido.
+        throw new Xunit.Sdk.XunitException($"As leituras não ficaram bloqueadas pela sessão {blocker} no estágio {stage}: {string.Join(" | ", seen)}");
     }
     private static async Task<List<(string Program, int Priority)>> Sessions(SqlConnection c)
     {

@@ -13,10 +13,14 @@ namespace Orquestra.Infrastructure.Drafts;
 // instrução, e o lookup do índice filtrado segura S na chave dele. Na instrução única, a leitura segurava esses S
 // enquanto esperava a posse ou a linha que a escrita já tinha (descarte: X na posse, depois X no rascunho e no índice
 // filtrado): ciclo a cada descarte, e cada ciclo custa até o intervalo do monitor de deadlock (5 s) à escrita e à
-// leitura. Agora o lote lê em instruções curtas: posse válida (com o nome do usuário), ids ativos pelo índice
-// filtrado (sem lookup), resumo dos ativos pela chave (única instrução com LOB do rascunho, e só com o rascunho) e,
-// por fim, a página, que não toca posse nem LOB do rascunho. Nenhuma instrução segura lock de rascunho ou posse
-// enquanto espera outra tabela.
+// leitura. Agora o lote lê em instruções curtas: ids ativos pelo índice filtrado (sem lookup), resumo dos ativos pela
+// chave (única instrução com LOB do rascunho, e só com o rascunho), pipeline gerido, operação pendente e base dela
+// (uma tabela por instrução; a base pendente vem do rascunho pela chave, sem LOB, ativo ou não), resumo filtrado com
+// a ordem já calculada, posse válida por último e, depois de tudo, um corte UTC único. Página e contagem leem só as
+// variáveis de tabela, com o mesmo corte. Nenhuma instrução segura lock de rascunho, posse, pipeline gerido ou
+// publicação enquanto espera outra tabela.
+// Não é retrato atômico: cada instrução lê dado confirmado no momento dela (READ COMMITTED). Página e contagem saem do
+// mesmo resumo e do mesmo corte; posse liberada ou transferida depois da captura não é vista.
 // DEADLOCK_PRIORITY LOW no pool próprio e a repetição só da 1205 continuam como rede de segurança (outras sessões).
 public sealed class SqlPipelineIndex : IPipelineIndex
 {
@@ -85,23 +89,24 @@ public sealed class SqlPipelineIndex : IPipelineIndex
     private async Task<PipelineIndexPage> ReadOnceAsync(PipelineIndexQuery query, CancellationToken ct)
     {
         await using var c = new SqlConnection(ConnectionString(options)); await c.OpenAsync(ct);
-        bool managed; string names, json;
-        // Esquema e collation real das colunas do rascunho: as tabelas do lote herdam a mesma, então UNION, igualdade de
-        // nome, LIKE, filtros e ordem continuam decididos pela collation das colunas, como na instrução única.
-        await using (var schema = Command(c, "SELECT CASE WHEN OBJECT_ID('dbo.etl_workspace_rascunho','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_lease','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_versao','U') IS NOT NULL THEN 1 ELSE 0 END,CASE WHEN OBJECT_ID('dbo.etl_workspace_pipeline','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_publicacao','U') IS NOT NULL THEN 1 ELSE 0 END,(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='pipeline_name'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='definition_json')"))
+        bool managed; string names, json, managedNames;
+        // Esquema e collation real das colunas do rascunho e do pipeline gerido: as tabelas do lote herdam a mesma, então
+        // UNION, igualdade de nome, LIKE, filtros e ordem continuam decididos pela collation das colunas, como na instrução única.
+        await using (var schema = Command(c, "SELECT CASE WHEN OBJECT_ID('dbo.etl_workspace_rascunho','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_lease','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_versao','U') IS NOT NULL THEN 1 ELSE 0 END,CASE WHEN OBJECT_ID('dbo.etl_workspace_pipeline','U') IS NOT NULL AND OBJECT_ID('dbo.etl_workspace_publicacao','U') IS NOT NULL THEN 1 ELSE 0 END,(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='pipeline_name'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='definition_json'),(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_pipeline','U') AND name='pipeline_name')"))
         await using (var r = await schema.ExecuteReaderAsync(ct))
         {
             await r.ReadAsync(ct);
             if (r.GetInt32(0) != 1 || r.IsDBNull(2) || r.IsDBNull(3)) throw Missing();
             managed = r.GetInt32(1) == 1;
-            names = Collation(r.GetString(2)); json = Collation(r.GetString(3));
+            if (managed && r.IsDBNull(4)) throw Missing();
+            names = Collation(r.GetString(2)); json = Collation(r.GetString(3)); managedNames = managed ? Collation(r.GetString(4)) : "";
         }
         var items = new List<PipelineIndexItem>(); var total = 0;
-        await using (var page = Command(c, Sql(managed, names, json), query))
+        await using (var page = Command(c, Sql(managed, names, json, managedNames), query))
         await using (var r = await page.ExecuteReaderAsync(ct))
         {
             while (await r.ReadAsync(ct)) { total = r.GetInt32(r.GetOrdinal("total")); items.Add(Item(r)); }
-            // Página além do fim: o mesmo lote devolve a contagem, sobre as mesmas leituras de posse e rascunho.
+            // Página além do fim: o mesmo lote devolve a contagem, sobre o mesmo resumo, a mesma posse e o mesmo corte.
             if (items.Count == 0 && query.Offset > 0 && await r.NextResultAsync(ct) && await r.ReadAsync(ct)) total = r.GetInt32(0);
         }
         return new(total, query.Limit, query.Offset, items);
@@ -126,11 +131,14 @@ public sealed class SqlPipelineIndex : IPipelineIndex
 
     // Publicado = cadastro legado não gerido, ou versão confirmada/base importada do pipeline gerido (mesma regra do pipeline-context).
     // Projeção em reconciliação NÃO é publicação. Resumo publicado prevalece; o rascunho preenche o que a publicação não informa.
-    // Lote em instruções curtas (ver o topo): 1) posse válida, 2) ids ativos pelo índice filtrado, 3) resumo dos ativos
-    // pela chave (único LOB do rascunho; FORCESEEK fixa a busca pela chave primária, a única por draft_id, e impede o
-    // índice filtrado com lookup), 4) página e, além do fim, contagem. Cada instrução só lê dado confirmado; a página
-    // junta leituras confirmadas feitas instantes antes, como a instrução única já fazia linha a linha.
-    private static string Sql(bool managed, string names, string json)
+    // Lote em instruções curtas (ver o topo): 1) ids ativos pelo índice filtrado, 2) resumo dos ativos pela chave (único
+    // LOB do rascunho; FORCESEEK fixa a busca pela chave primária, a única por draft_id, e impede o índice filtrado com
+    // lookup), 3) gerido: pipeline, operação pendente e base_version_id do rascunho dela pela chave (sem LOB nem estado:
+    // a base publicada continua valendo enquanto a publicação está pendente), 4) resumo filtrado, com a ordem da página
+    // calculada pela collation das colunas, 5) posse válida, a mais perto possível da página, 6) corte UTC único e
+    // 7) página e, além do fim, contagem, só sobre variáveis de tabela. Cada instrução só lê dado confirmado no momento
+    // dela; nada disso é retrato atômico das fontes.
+    private static string Sql(bool managed, string names, string json, string managedNames)
     {
         var managedColumns = managed
             ? """
@@ -150,29 +158,51 @@ public sealed class SqlPipelineIndex : IPipelineIndex
               """;
         var managedApply = managed
             ? """
-              OUTER APPLY (SELECT TOP(1) x.pipeline_name,x.version_id,x.pending_operation_id FROM dbo.etl_workspace_pipeline x WHERE x.pipeline_name=n.pipeline_name) m
-              OUTER APPLY (SELECT TOP(1) pr.base_version_id FROM dbo.etl_workspace_publicacao o JOIN dbo.etl_workspace_rascunho pr ON pr.draft_id=o.draft_id WHERE o.operation_id=m.pending_operation_id) pend
-              OUTER APPLY (SELECT TOP(1) x.version_id,x.numero,x.criada_em,x.definition_json FROM dbo.etl_workspace_versao x WHERE x.version_id=COALESCE(m.version_id,pend.base_version_id)) v
+              OUTER APPLY (SELECT TOP(1) x.pipeline_name,x.version_id,x.base_version_id FROM @gerido x WHERE x.pipeline_name=n.pipeline_name) m
+              OUTER APPLY (SELECT TOP(1) x.version_id,x.numero,x.criada_em,x.definition_json FROM dbo.etl_workspace_versao x WHERE x.version_id=COALESCE(m.version_id,m.base_version_id)) v
               """
             : "";
-        // Página e contagem leem o mesmo resumo; a contagem só roda quando a página veio vazia além do fim.
-        string Summary(string select, string page) => $"""
+        // Gerido em três instruções de uma tabela cada; só a operação pendente de pipeline sem versão confirmada importa,
+        // porque a versão lida é COALESCE(version_id, base pendente).
+        var managedReads = managed
+            ? $"""
+              DECLARE @gerido TABLE(pipeline_name NVARCHAR(200) COLLATE {managedNames} NOT NULL PRIMARY KEY,version_id UNIQUEIDENTIFIER NULL,pending_operation_id UNIQUEIDENTIFIER NULL,pending_draft_id UNIQUEIDENTIFIER NULL,base_version_id UNIQUEIDENTIFIER NULL);
+              INSERT @gerido(pipeline_name,version_id,pending_operation_id) SELECT x.pipeline_name,x.version_id,x.pending_operation_id FROM dbo.etl_workspace_pipeline x;
+              UPDATE g SET g.pending_draft_id=o.draft_id FROM @gerido g JOIN dbo.etl_workspace_publicacao o WITH(FORCESEEK) ON o.operation_id=g.pending_operation_id WHERE g.version_id IS NULL;
+              UPDATE g SET g.base_version_id=x.base_version_id FROM @gerido g JOIN dbo.etl_workspace_rascunho x WITH(FORCESEEK) ON x.draft_id=g.pending_draft_id;
+              """
+            : "";
+        // Página e contagem leem o mesmo resumo materializado, a mesma posse e o mesmo corte.
+        var holder = "OUTER APPLY (SELECT TOP(1) x.holder_user,x.expires_at,x.holder_name FROM @posse x WHERE x.draft_id=r.draft_id AND x.expires_at>@corte) l";
+        return $"""
+            DECLARE @ativo TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY);
+            DECLARE @rascunho TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,pipeline_name NVARCHAR(200) COLLATE {names} NOT NULL,revision BIGINT NOT NULL,responsavel NVARCHAR(100) NOT NULL,atualizado_em DATETIME2 NOT NULL,
+             display NVARCHAR(4000) COLLATE {json} NULL,project NVARCHAR(4000) COLLATE {json} NULL,domain NVARCHAR(4000) COLLATE {json} NULL,INDEX IX_nome(pipeline_name));
+            -- Texto do resumo não é comparado nem ordenado depois de materializado: filtros e ordem já foram decididos na origem.
+            DECLARE @resumo TABLE(ordem BIGINT NOT NULL PRIMARY KEY,pipeline_name NVARCHAR(200) NOT NULL,display_name NVARCHAR(4000) NULL,project NVARCHAR(4000) NULL,domain NVARCHAR(4000) NULL,
+             responsavel NVARCHAR(100) NULL,draft_id UNIQUEIDENTIFIER NULL,draft_revision BIGINT NULL,has_published INT NOT NULL,published_number INT NULL,is_active INT NULL,managed INT NOT NULL,updated_at DATETIME2 NULL);
+            DECLARE @posse TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,holder_user NVARCHAR(100) NOT NULL,expires_at DATETIME2 NOT NULL,holder_name NVARCHAR(MAX) NULL);
+            DECLARE @corte DATETIME2;
+            INSERT @ativo(draft_id) SELECT x.draft_id FROM dbo.etl_workspace_rascunho x WHERE x.estado='ativo';
+            INSERT @rascunho(draft_id,pipeline_name,revision,responsavel,atualizado_em,display,project,domain)
+            SELECT x.draft_id,x.pipeline_name,x.revision,x.responsavel,x.atualizado_em,JSON_VALUE(x.definition_json,'$.identity.displayName'),
+             JSON_VALUE(x.definition_json,'$.metadata.legacyPipeline.project_name'),JSON_VALUE(x.definition_json,'$.metadata.legacyPipeline.domain')
+            FROM @ativo a JOIN dbo.etl_workspace_rascunho x WITH(FORCESEEK) ON x.draft_id=a.draft_id WHERE x.estado='ativo';
+            {managedReads}
             WITH names AS (
              SELECT pipeline_name FROM dbo.etl_pipeline
              UNION
              SELECT pipeline_name FROM @rascunho
             ), base AS (
              SELECT
+              {managedColumns}
               d.draft_id,d.revision AS draft_revision,d.responsavel,d.atualizado_em AS draft_updated,
               d.display AS draft_display,d.project AS draft_project,d.domain AS draft_domain,
-              p.pipeline_name AS legacy_name,n.pipeline_name AS key_name,d.pipeline_name AS draft_name,
-              {managedColumns}
-              l.holder_user,l.expires_at,l.holder_name
+              p.pipeline_name AS legacy_name,n.pipeline_name AS key_name,d.pipeline_name AS draft_name
              FROM names n
              OUTER APPLY (SELECT TOP(1) x.pipeline_name,x.project_name,x.domain,x.active FROM dbo.etl_pipeline x WHERE x.pipeline_name=n.pipeline_name) p
              OUTER APPLY (SELECT TOP(1) x.draft_id,x.pipeline_name,x.revision,x.responsavel,x.atualizado_em,x.display,x.project,x.domain FROM @rascunho x WHERE x.pipeline_name=n.pipeline_name ORDER BY x.atualizado_em DESC,x.draft_id) d
              {managedApply}
-             OUTER APPLY (SELECT TOP(1) x.holder_user,x.expires_at,x.holder_name FROM @posse x WHERE x.draft_id=d.draft_id) l
             ), summary AS (
              SELECT
               COALESCE(b.managed_name,b.legacy_name,b.draft_name,b.key_name) AS pipeline_name,
@@ -181,38 +211,30 @@ public sealed class SqlPipelineIndex : IPipelineIndex
               COALESCE(NULLIF(b.pub_domain,N''),NULLIF(b.draft_domain,N'')) AS domain,
               b.responsavel,b.draft_id,b.draft_revision,b.has_published,b.published_number,b.managed,
               CASE WHEN b.has_published=1 THEN b.pub_active END AS is_active,
-              CASE WHEN b.draft_id IS NOT NULL THEN b.draft_updated ELSE b.version_created END AS updated_at,
-              b.holder_user,b.holder_name,b.expires_at
+              CASE WHEN b.draft_id IS NOT NULL THEN b.draft_updated ELSE b.version_created END AS updated_at
              FROM base b
             )
-            {select}
+            INSERT @resumo(ordem,pipeline_name,display_name,project,domain,responsavel,draft_id,draft_revision,has_published,published_number,is_active,managed,updated_at)
+            SELECT ROW_NUMBER() OVER(ORDER BY COALESCE(r.display_name,r.pipeline_name),r.pipeline_name,r.pipeline_name COLLATE Latin1_General_BIN2),
+             r.pipeline_name,r.display_name,r.project,r.domain,r.responsavel,r.draft_id,r.draft_revision,r.has_published,r.published_number,r.is_active,r.managed,r.updated_at
+            FROM summary r
             WHERE (@pattern IS NULL OR r.pipeline_name LIKE @pattern OR r.display_name LIKE @pattern)
              AND (@project IS NULL OR r.project=@project)
              AND (@domain IS NULL OR r.domain=@domain)
              AND (@state='all' OR (@state='draft' AND r.draft_id IS NOT NULL) OR (@state='published' AND r.has_published=1)
-              OR (@state='editing' AND r.holder_user IS NOT NULL) OR (@state='inactive' AND r.has_published=1 AND r.is_active=0))
-            {page};
-            """;
-        return $"""
-            DECLARE @posse TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,holder_user NVARCHAR(100) NOT NULL,expires_at DATETIME2 NOT NULL,holder_name NVARCHAR(MAX) NULL);
-            DECLARE @ativo TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY);
-            DECLARE @rascunho TABLE(draft_id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,pipeline_name NVARCHAR(200) COLLATE {names} NOT NULL,revision BIGINT NOT NULL,responsavel NVARCHAR(100) NOT NULL,atualizado_em DATETIME2 NOT NULL,
-             display NVARCHAR(4000) COLLATE {json} NULL,project NVARCHAR(4000) COLLATE {json} NULL,domain NVARCHAR(4000) COLLATE {json} NULL,INDEX IX_nome(pipeline_name));
+              OR (@state='editing' AND r.draft_id IS NOT NULL) OR (@state='inactive' AND r.has_published=1 AND r.is_active=0));
             INSERT @posse(draft_id,holder_user,expires_at,holder_name)
             SELECT x.draft_id,x.holder_user,x.expires_at,u.holder_name FROM dbo.etl_workspace_lease x
             OUTER APPLY (SELECT TOP(1) NULLIF(LTRIM(RTRIM(CONCAT(y.primeiro_nome,' ',y.ultimo_nome))),'') AS holder_name FROM dbo.etl_usuario y WHERE y.matricula=x.holder_user) u
             WHERE x.expires_at>SYSUTCDATETIME();
-            INSERT @ativo(draft_id) SELECT x.draft_id FROM dbo.etl_workspace_rascunho x WHERE x.estado='ativo';
-            INSERT @rascunho(draft_id,pipeline_name,revision,responsavel,atualizado_em,display,project,domain)
-            SELECT x.draft_id,x.pipeline_name,x.revision,x.responsavel,x.atualizado_em,JSON_VALUE(x.definition_json,'$.identity.displayName'),
-             JSON_VALUE(x.definition_json,'$.metadata.legacyPipeline.project_name'),JSON_VALUE(x.definition_json,'$.metadata.legacyPipeline.domain')
-            FROM @ativo a JOIN dbo.etl_workspace_rascunho x WITH(FORCESEEK) ON x.draft_id=a.draft_id WHERE x.estado='ativo';
-            {Summary("SELECT COUNT(*) OVER() AS total,r.pipeline_name,r.display_name,r.project,r.domain,r.responsavel,r.draft_id,r.draft_revision,r.has_published,r.published_number,r.is_active,r.managed,r.updated_at,r.holder_user,r.holder_name,r.expires_at FROM summary r",
-                "ORDER BY COALESCE(r.display_name,r.pipeline_name),r.pipeline_name,r.pipeline_name COLLATE Latin1_General_BIN2 OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY")}
+            -- Corte único depois de todas as leituras: posse que expirou enquanto alguma instrução esperava não vale.
+            SET @corte=SYSUTCDATETIME();
+            SELECT COUNT(*) OVER() AS total,r.pipeline_name,r.display_name,r.project,r.domain,r.responsavel,r.draft_id,r.draft_revision,r.has_published,r.published_number,r.is_active,r.managed,r.updated_at,l.holder_user,l.holder_name,l.expires_at
+            FROM @resumo r {holder}
+            WHERE @state<>'editing' OR l.holder_user IS NOT NULL
+            ORDER BY r.ordem OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
             IF @@ROWCOUNT=0 AND @offset>0
-            BEGIN
-            {Summary("SELECT COUNT(*) FROM summary r", "")}
-            END;
+             SELECT COUNT(*) FROM @resumo r {holder} WHERE @state<>'editing' OR l.holder_user IS NOT NULL;
             """;
     }
 
