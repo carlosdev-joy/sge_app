@@ -5,8 +5,9 @@ Camadas:
   reais PipelineCatalog, Pipelines (portão da coorte) e PipelineCreate;
 - contrato estrutural do índice .NET/SQL (endpoint, RBAC sem tela_jobs, SQL com
   igualdade pela collation, uma linha por pipeline, posse só válida e resumo de
-  todo leitor autorizado, leitura sem transação serializável, vítima de deadlock em LOW num pool
-  próprio com repetição só da 1205) — os testes executáveis ficam em
+  todo leitor autorizado, leitura sem transação serializável, lote em instruções curtas que não seguram
+  lock de rascunho ou posse enquanto esperam, vítima de deadlock em LOW num pool próprio com repetição
+  só da 1205) — os testes executáveis ficam em
   backend-dotnet/Orquestra.Tests/PipelineIndexTests.cs e PipelineIndexRetryTests.cs (offline) e
   PipelineIndexSqlTests.cs (SQL real, bancada autorizada);
 - migration de versão sequencial.
@@ -67,13 +68,18 @@ def test_endpoint_is_in_the_guarded_group_and_allows_summary_without_stages():
 def test_index_sql_unions_by_column_collation_one_row_and_never_returns_definition():
     src = _read("backend-dotnet/Orquestra.Infrastructure/Drafts/SqlPipelineIndex.cs")
     assert "Serializable" not in src and "SET TRANSACTION ISOLATION LEVEL READ COMMITTED" in src
-    assert re.search(r"SELECT pipeline_name FROM dbo\.etl_pipeline\s+UNION\s+SELECT pipeline_name FROM dbo\.etl_workspace_rascunho WHERE estado='ativo'", src)
+    # Nomes: cadastro legado UNION rascunhos ativos (lidos pelo índice filtrado, estado='ativo'), na collation real da coluna.
+    assert re.search(r"SELECT pipeline_name FROM dbo\.etl_pipeline\s+UNION\s+SELECT pipeline_name FROM @rascunho", src)
+    assert "INSERT @ativo(draft_id) SELECT x.draft_id FROM dbo.etl_workspace_rascunho x WHERE x.estado='ativo';" in src
+    assert "pipeline_name NVARCHAR(200) COLLATE {names} NOT NULL" in src and src.count("NVARCHAR(4000) COLLATE {json} NULL") == 3
+    assert "(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='pipeline_name')" in src
+    assert "(SELECT collation_name FROM sys.columns WHERE object_id=OBJECT_ID('dbo.etl_workspace_rascunho','U') AND name='definition_json')" in src
     applies = re.findall(r"OUTER APPLY \((SELECT\s+\S+)", src)
     assert len(applies) == 7 and set(applies) == {"SELECT TOP(1)"}, applies
     # Nenhuma igualdade de nome em memória (collation é do SQL).
     assert not re.search(r"GroupBy|Distinct\(|ToLower|ToUpper|StringComparer", src)
     # Posse: só válida, calculada no servidor, igual para todo leitor autorizado.
-    assert "WHERE x.draft_id=d.draft_id AND x.expires_at>SYSUTCDATETIME()" in src and "@stages" not in src and "stages" not in src
+    assert "WHERE x.expires_at>SYSUTCDATETIME();" in src and "FROM @posse x WHERE x.draft_id=d.draft_id" in src and "@stages" not in src and "stages" not in src
     final = re.search(r'"SELECT COUNT\(\*\) OVER\(\) AS total,(.+?) FROM summary r"', src).group(1)
     assert "definition" not in final and "layout" not in src and "fence" not in src and "holder_session_hash" not in src
     assert "COLLATE Latin1_General_BIN2 OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY" in src
@@ -114,10 +120,11 @@ def test_index_yields_deadlocks_to_writers_and_retries_only_the_victim():
     assert "new SqlConnection" not in read and "new List" not in read and "items" not in read
     assert "private const int DeadlockVictim = 1205;" in src
     assert "catch (SqlException e) when (e.Number == DeadlockVictim && n < retry.Attempts && !deadline.IsCancellationRequested) { }" in read
-    assert "deadline.CancelAfter(retry.Budget);" in read and "await wait(retry.Backoff(n), deadline.Token);" in read
+    assert "deadline.CancelAfter(retry.Budget);" in read and "var delay = retry.Backoff(n);" in read and "await wait(delay, deadline.Token);" in read
     cancelled = "catch (Exception e) when (ct.IsCancellationRequested && e is OperationCanceledException or SqlException or InvalidOperationException) { throw new OperationCanceledException(ct); }"
-    expired = "catch (Exception e) when (deadline.IsCancellationRequested && e is OperationCanceledException or SqlException or InvalidOperationException) { throw new DependencyUnavailableException(); }"
-    assert read.index(cancelled) < read.index(expired) < read.index("catch (SqlException) { throw new DependencyUnavailableException(); }")
+    expired = "catch (Exception e) when (deadline.IsCancellationRequested && e is OperationCanceledException or SqlException or InvalidOperationException) { Interlocked.Increment(ref expired); throw new DependencyUnavailableException(); }"
+    exhausted = "catch (SqlException e) when (e.Number == DeadlockVictim) { Interlocked.Increment(ref exhausted); throw new DependencyUnavailableException(); }"
+    assert read.index(cancelled) < read.index(expired) < read.index(exhausted) < read.index("catch (SqlException) { throw new DependencyUnavailableException(); }")
     assert "new(5, TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(50))" in src
     # Sem leitura suja, pulo de linha travada, snapshot ou opção global de banco.
     dotnet = sorted((ROOT / "backend-dotnet").rglob("*.cs"))
@@ -158,6 +165,54 @@ def test_index_yields_deadlocks_to_writers_and_retries_only_the_victim():
     drop = _body(live, "private static async Task Drop(", "\n    }\n")
     assert drop.index("await running.StopAsync()") < drop.index("DROP DATABASE") and "failure is null ? errors : [failure, .. errors]" in drop
     assert "Assert.Null(row.PublishedVersionNumber)" in live and "WHERE draft_id='{target.DraftId}'\"))" in live
+
+
+def test_index_batch_never_holds_draft_or_lease_locks_while_waiting():
+    # Correção EOC-F2 (contenção no SQL nativo): na instrução única, o LOB do rascunho (S até o fim da instrução) e o
+    # lookup do índice filtrado (S na chave) ficavam presos enquanto a leitura esperava a posse/linha da escrita: ciclo a
+    # cada descarte, pago com o intervalo do monitor de deadlock. O lote separa as leituras em instruções curtas.
+    src = _read("backend-dotnet/Orquestra.Infrastructure/Drafts/SqlPipelineIndex.cs")
+    sql = _body(src, "private static string Sql(bool managed, string names, string json)", "\n    }\n")
+    summary = _body(sql, 'string Summary(string select, string page) => $"""', '""";')
+    batch = sql[sql.index('return $"""'):]
+    # 1) posse válida (+ nome do usuário); 2) ids ativos pelo índice filtrado; 3) resumo dos ativos pela chave; 4) página; contagem além do fim.
+    order = ["DECLARE @posse TABLE(", "DECLARE @ativo TABLE(", "DECLARE @rascunho TABLE(", "INSERT @posse(", "INSERT @ativo(", "INSERT @rascunho(",
+             "{Summary(\"SELECT COUNT(*) OVER() AS total,", "IF @@ROWCOUNT=0 AND @offset>0", "{Summary(\"SELECT COUNT(*) FROM summary r\", \"\")}"]
+    positions = [batch.index(step) for step in order]
+    assert positions == sorted(positions), order
+    posse = _body(batch, "INSERT @posse(", "INSERT @ativo(")
+    ativo = _body(batch, "INSERT @ativo(", "INSERT @rascunho(")
+    rascunho = _body(batch, "INSERT @rascunho(", "{Summary(")
+    tables = lambda text: set(re.findall(r"dbo\.(\w+)", text))  # noqa: E731
+    assert tables(posse) == {"etl_workspace_lease", "etl_usuario"} and "WHERE x.expires_at>SYSUTCDATETIME();" in posse and "definition_json" not in posse
+    # Ids pelo índice filtrado (draft_id é a chave do índice): nenhuma coluna fora dele, logo nenhum lookup.
+    assert tables(ativo) == {"etl_workspace_rascunho"} and "SELECT x.draft_id FROM dbo.etl_workspace_rascunho x WHERE x.estado='ativo';" in ativo
+    # Único LOB do rascunho: só aqui, pela chave primária, sem outra tabela na mesma instrução.
+    assert tables(rascunho) == {"etl_workspace_rascunho"} and "FROM @ativo a JOIN dbo.etl_workspace_rascunho x WITH(FORCESEEK) ON x.draft_id=a.draft_id WHERE x.estado='ativo';" in rascunho
+    assert src.count("JSON_VALUE(x.definition_json,") == 3 and rascunho.count("JSON_VALUE(x.definition_json,") == 3
+    # A página não lê posse nem o rascunho: compõe as leituras confirmadas acima (o pend só lê base_version_id pela chave).
+    assert "etl_workspace_lease" not in summary and "etl_workspace_rascunho" not in summary and "definition_json" not in summary
+    assert "FROM @rascunho x WHERE x.pipeline_name=n.pipeline_name ORDER BY x.atualizado_em DESC,x.draft_id) d" in summary
+    assert "FROM @posse x WHERE x.draft_id=d.draft_id) l" in summary
+    managed_apply = _body(sql, "var managedApply = managed", ': "";')
+    assert re.findall(r"dbo\.etl_workspace_rascunho \w+", managed_apply) == ["dbo.etl_workspace_rascunho pr"] and "SELECT TOP(1) pr.base_version_id FROM" in managed_apply
+    # Collation real do catálogo, validada como nome antes de entrar no SQL; nada da requisição vira texto SQL.
+    once = _body(src, "private async Task<PipelineIndexPage> ReadOnceAsync(", "private static PipelineIndexItem Item(")
+    assert "names = Collation(r.GetString(2)); json = Collation(r.GetString(3));" in once
+    assert "name.All(ch => char.IsAsciiLetterOrDigit(ch) || ch == '_') ? name : throw new DependencyUnavailableException();" in once
+    assert not re.search(r"\{(query|search|pattern|project|domain|state)", batch, re.I)
+    # Contagem além do fim no mesmo lote (mesmas leituras), sem segundo comando.
+    assert once.count("Command(c,") == 2 and "await r.NextResultAsync(ct)" in once
+    # Diagnóstico interno de parada (sem DTO): 1205 esgotada × prazo, maior nº de tentativas, espera cumprida.
+    assert "internal readonly record struct PipelineIndexStops(int Exhausted, int Expired, int LongestSuccess, TimeSpan Backoff);" in src
+    assert "PipelineIndexStops" not in _read("backend-dotnet/Orquestra.Application/Drafts/PipelineIndexContracts.cs")
+    retry = _read("backend-dotnet/Orquestra.Tests/PipelineIndexRetryTests.cs")
+    assert "Assert.Equal(new PipelineIndexStops(0, 0, 3, waits[0] + waits[1]), index.Stops);" in retry and "Assert.Equal(new PipelineIndexStops(0, 1, 0, TimeSpan.Zero), waiting.Stops);" in retry
+    assert "Assert.Equal(1, index.Stops.Exhausted); Assert.Equal(0, index.Stops.Expired);" in retry and retry.count("Assert.Equal(default, index.Stops);") == 2
+    # Bancada: busca e lista completa medidas à parte, escritas cronometradas, paradas e vítimas informadas.
+    live = _read("backend-dotnet/Orquestra.Tests/PipelineIndexSqlTests.cs")
+    assert "busca {Percentiles(samples.SelectMany(s => s.Search))}; lista completa {Percentiles(samples.SelectMany(s => s.Full))}; escritas {Percentiles(writes)}" in live
+    assert "var operation = await Write(() => drafts.PublishAsync(" in live and "await Write(() => drafts.CreateAsync(" in live and "await Write(() => drafts.LeaseAsync(" in live and "await drafts.DiscardAsync(" in live
 
 
 def test_version_migration_is_the_next_sequential_minor():

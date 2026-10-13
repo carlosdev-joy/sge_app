@@ -117,34 +117,40 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
             // PUBC nem mostra a versão pendente como confirmada; nenhuma escrita vira 409 por causa do índice (a vítima
             // de deadlock é sempre a leitura, que refaz a página inteira).
             var target = await drafts.ImportAsync("PUBC", Actor('a'), default); var targetLease = await drafts.LeaseAsync(target.DraftId, new(), Actor('a'), default);
-            var retriesBefore = index.DeadlockRetries;
+            var retriesBefore = index.DeadlockRetries; var stopsBefore = index.Stops;
             using var stop = new CancellationTokenSource();
             // Prazo finito da bancada, contado a partir dos leitores: leitura presa derruba o teste em vez de travá-lo.
             // Se a escrita falhar, o finally cancela este token e aguarda os leitores antes do DROP.
             running.Restart(TimeSpan.FromMinutes(3));
+            // Busca e lista completa medidas separadamente: a falha do root foi na lista completa.
             var readers = Enumerable.Range(0, 4).Select(_ => running.Track(Task.Run(async () =>
             {
-                var samples = new List<double>();
+                var searchMs = new List<double>(); var fullMs = new List<double>();
                 while (!stop.IsCancellationRequested)
                 {
-                    var clock = Stopwatch.StartNew(); var page = await index.ReadAsync(Query(search: "pubc"), running.Token); samples.Add(clock.Elapsed.TotalMilliseconds);
+                    var clock = Stopwatch.StartNew(); var page = await index.ReadAsync(Query(search: "pubc"), running.Token); searchMs.Add(clock.Elapsed.TotalMilliseconds);
                     var row = Assert.Single(page.Items); Assert.True(row.HasDraft); Assert.True(row.HasPublished); Assert.Null(row.PublishedVersionNumber);
-                    var full = await index.ReadAsync(Query(limit: 100), running.Token); Assert.Equal(full.Items.Count, full.Items.Select(i => i.PipelineName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+                    clock.Restart(); var full = await index.ReadAsync(Query(limit: 100), running.Token); fullMs.Add(clock.Elapsed.TotalMilliseconds);
+                    Assert.Equal(full.Items.Count, full.Items.Select(i => i.PipelineName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
                 }
-                return samples;
+                return (Search: searchMs, Full: fullMs);
             }))).ToArray();
+            // Cada escrita (publicação, criação, posse, descarte) é cronometrada: a escrita não pode esperar o monitor de deadlock.
+            var writes = new List<double>();
+            async Task<T> Write<T>(Func<Task<T>> write) { var clock = Stopwatch.StartNew(); try { return await write(); } finally { writes.Add(clock.Elapsed.TotalMilliseconds); } }
             var operationId = Guid.NewGuid();
-            var operation = await drafts.PublishAsync(target.DraftId, new(operationId, target.Revision, targetLease.Fence), Actor('a'), default);
-            for (var i = 0; i < 10; i++) { var other = await drafts.CreateAsync(new(new PipelineDefinition { Identity = new($"concorrente_{i}") }, new(1, new Dictionary<string, NodePosition>())), Actor('a'), default); var otherLease = await drafts.LeaseAsync(other.DraftId, new(), Actor('a'), default); await drafts.DiscardAsync(other.DraftId, new(other.Revision, otherLease.Fence), Actor('a'), default); }
+            var operation = await Write(() => drafts.PublishAsync(target.DraftId, new(operationId, target.Revision, targetLease.Fence), Actor('a'), default));
+            for (var i = 0; i < 10; i++) { var other = await Write(() => drafts.CreateAsync(new(new PipelineDefinition { Identity = new($"concorrente_{i}") }, new(1, new Dictionary<string, NodePosition>())), Actor('a'), default)); var otherLease = await Write(() => drafts.LeaseAsync(other.DraftId, new(), Actor('a'), default)); await Write(async () => { await drafts.DiscardAsync(other.DraftId, new(other.Revision, otherLease.Fence), Actor('a'), default); return true; }); }
             await Task.Delay(500);
             // Leitores terminam a volta corrente; a falha de qualquer um (asserção, SQL ou prazo) derruba o teste aqui.
             stop.Cancel();
-            var latencies = (await Task.WhenAll(readers)).SelectMany(s => s).Order().ToArray();
+            var samples = await Task.WhenAll(readers);
             Assert.Equal("pendente", operation.State); Assert.Equal(operationId, operation.OperationId);
             Assert.Equal(1, await Count(c, $"SELECT COUNT(*) FROM dbo.etl_workspace_publicacao WHERE draft_id='{target.DraftId}'"));
             var pending = Assert.Single((await index.ReadAsync(Query(search: "pubc"), default)).Items);
             Assert.True(pending.Managed); Assert.True(pending.HasPublished); Assert.Null(pending.PublishedVersionNumber);
-            output.WriteLine($"Leituras concorrentes: {latencies.Length}; p50 {latencies[latencies.Length / 2]:F1} ms; p95 {latencies[(int)(latencies.Length * 0.95)]:F1} ms; máx {latencies[^1]:F1} ms; vítimas 1205 refeitas {index.DeadlockRetries - retriesBefore} (bancada SQL; não é medição de produção)");
+            var stops = index.Stops;
+            output.WriteLine($"Leituras concorrentes: busca {Percentiles(samples.SelectMany(s => s.Search))}; lista completa {Percentiles(samples.SelectMany(s => s.Full))}; escritas {Percentiles(writes)}; vítimas 1205 refeitas {index.DeadlockRetries - retriesBefore}; 503 por tentativas {stops.Exhausted - stopsBefore.Exhausted}, por prazo {stops.Expired - stopsBefore.Expired}; espera entre tentativas {(stops.Backoff - stopsBefore.Backoff).TotalMilliseconds:F0} ms; maior nº de tentativas de uma leitura bem-sucedida {stops.LongestSuccess} (bancada SQL; não é medição de produção)");
             Assert.Empty((await index.ReadAsync(Query(search: "concorrente"), default)).Items);
             Assert.DoesNotContain("definition", JsonSerializer.Serialize(await index.ReadAsync(Query(limit: 100), default), DraftValidation.Json));
         }
@@ -304,6 +310,11 @@ public sealed class PipelineIndexSqlTests(ITestOutputHelper output)
         await using var r = await cmd.ExecuteReaderAsync(); var sessions = new List<(string, int)>();
         while (await r.ReadAsync()) sessions.Add((Convert.ToString(r.GetValue(0)) ?? "", Convert.ToInt32(r.GetValue(1))));
         return sessions;
+    }
+    private static string Percentiles(IEnumerable<double> samples)
+    {
+        var ms = samples.Order().ToArray();
+        return ms.Length == 0 ? "n 0" : $"n {ms.Length}, p50 {ms[ms.Length / 2]:F1} ms, p95 {ms[(int)(ms.Length * 0.95)]:F1} ms, máx {ms[^1]:F1} ms";
     }
     private static PipelineIndexQuery Query(string? search = null, string? project = null, string? domain = null, string state = "all", int limit = 100, int offset = 0) => new(search, project, domain, state, limit, offset);
     private static WorkspacePrincipal Actor(char id) => new(id == 'a' ? "ALICE" : "BOB", "synthetic", new HashSet<string> { "tela_pipelines", "tela_jobs", "acao_editar", "acao_publicar" }) { SessionHash = new string(id, 64) };

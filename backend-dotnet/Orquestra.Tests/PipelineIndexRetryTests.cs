@@ -57,6 +57,8 @@ public sealed class PipelineIndexRetryTests
         Assert.All(calls, call => { Assert.True(call.Token.CanBeCanceled); Assert.False(call.Token.IsCancellationRequested); Assert.Equal(calls[0].Token, call.Token); });
         Assert.Equal(2, waits.Count); Assert.InRange(waits[0], Fast.BaseDelay, 2 * Fast.BaseDelay); Assert.True(waits[1] >= 2 * Fast.BaseDelay && waits[1] > waits[0]);
         Assert.Equal(2, index.DeadlockRetries);
+        // Diagnóstico: nenhuma parada em 503, a leitura usou 3 tentativas e a espera somada é a das duas pausas.
+        Assert.Equal(new PipelineIndexStops(0, 0, 3, waits[0] + waits[1]), index.Stops);
     }
 
     [Theory]
@@ -73,6 +75,8 @@ public sealed class PipelineIndexRetryTests
         if (number == 208) Assert.Equal("draft_schema_unavailable", Assert.IsType<WorkspaceException>(error).Code);
         else Assert.IsType<DependencyUnavailableException>(error);
         Assert.Equal(1, calls); Assert.Equal(0, waits); Assert.Equal(0, index.DeadlockRetries);
+        // Outros erros não contam como 1205 esgotada nem como prazo.
+        Assert.Equal(default, index.Stops);
     }
 
     [Fact]
@@ -96,6 +100,8 @@ public sealed class PipelineIndexRetryTests
         var index = new SqlPipelineIndex(Options, Fast, (_, _) => { calls++; throw SqlErrors.Create(1205, victim); }, (_, _) => { waits++; return Task.CompletedTask; });
         await Assert.ThrowsAsync<DependencyUnavailableException>(() => index.ReadAsync(Query, default));
         Assert.Equal(Fast.Attempts, calls); Assert.Equal(Fast.Attempts - 1, waits); Assert.Equal(Fast.Attempts - 1, index.DeadlockRetries);
+        // Diagnóstico: parou por tentativas (não por prazo) e nenhuma leitura deu certo.
+        Assert.Equal(1, index.Stops.Exhausted); Assert.Equal(0, index.Stops.Expired); Assert.Equal(0, index.Stops.LongestSuccess); Assert.True(index.Stops.Backoff > TimeSpan.Zero);
         // Pela API: 503 genérico, sem texto, número nem processo do SQL.
         using var app = new IndexTestApp("tela_pipelines", true, index); using var client = app.CreateClient();
         client.DefaultRequestHeaders.Add("Authorization", "Bearer synthetic");
@@ -104,7 +110,7 @@ public sealed class PipelineIndexRetryTests
         var body = await response.Content.ReadAsStringAsync();
         Assert.Equal("dependency_unavailable", JsonDocument.Parse(body).RootElement.GetProperty("code").GetString());
         foreach (var leaked in new[] { "deadlock", "1205", "Process ID", "victim", "Transaction" }) Assert.DoesNotContain(leaked, body, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(2 * Fast.Attempts, calls);
+        Assert.Equal(2 * Fast.Attempts, calls); Assert.Equal(2, index.Stops.Exhausted); Assert.Equal(0, index.Stops.Expired);
     }
 
     [Fact]
@@ -116,14 +122,18 @@ public sealed class PipelineIndexRetryTests
         var clock = Stopwatch.StartNew();
         await Assert.ThrowsAsync<DependencyUnavailableException>(() => waiting.ReadAsync(Query, default));
         Assert.Equal(1, calls); Assert.InRange(clock.Elapsed, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(10));
+        // Diagnóstico: parada por prazo, não por tentativas; a espera cortada pelo prazo não conta como cumprida.
+        Assert.Equal(new PipelineIndexStops(0, 1, 0, TimeSpan.Zero), waiting.Stops);
         // Tentativa presa (lock ou rede): o mesmo prazo a cancela; o cliente não cancelou, então é 503, não cancelamento.
         var stuck = new SqlPipelineIndex(Options, new(5, TimeSpan.FromMilliseconds(300), TimeSpan.FromMilliseconds(1)), async (_, token) => { await Task.Delay(Timeout.Infinite, token); return null!; }, null);
         clock.Restart();
         await Assert.ThrowsAsync<DependencyUnavailableException>(() => stuck.ReadAsync(Query, default));
         Assert.InRange(clock.Elapsed, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(10));
+        Assert.Equal(new PipelineIndexStops(0, 1, 0, TimeSpan.Zero), stuck.Stops);
         // Driver que traduz o cancelamento do prazo em SqlException também termina em 503.
         var aborted = new SqlPipelineIndex(Options, new(5, TimeSpan.FromMilliseconds(300), TimeSpan.FromMilliseconds(1)), async (_, token) => { try { await Task.Delay(Timeout.Infinite, token); } catch (OperationCanceledException) { throw SqlErrors.Create(0, "Operation cancelled by user."); } return null!; }, null);
         await Assert.ThrowsAsync<DependencyUnavailableException>(() => aborted.ReadAsync(Query, default));
+        Assert.Equal(new PipelineIndexStops(0, 1, 0, TimeSpan.Zero), aborted.Stops);
     }
 
     [Fact]
@@ -154,6 +164,8 @@ public sealed class PipelineIndexRetryTests
             var index = new SqlPipelineIndex(Options, Fast, (_, _) => { calls++; cancel.Cancel(); throw SqlErrors.Create(1205); }, (_, _) => { waits++; return Task.CompletedTask; });
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => index.ReadAsync(Query, cancel.Token));
             Assert.Equal(1, calls); Assert.Equal(0, waits); Assert.Equal(0, index.DeadlockRetries);
+            // Cancelamento do cliente não é parada em 503.
+            Assert.Equal(default, index.Stops);
         }
         // Já cancelado: nenhuma tentativa.
         using (var cancel = new CancellationTokenSource())
