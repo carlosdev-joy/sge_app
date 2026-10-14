@@ -9,7 +9,7 @@ export const CONFIGURATION_GROUPS: readonly (readonly [ConfigurationGroup, strin
  ['agenda', 'Agenda e dependências', 'Agendamento, calendário, ODATE e pipelines predecessores. Ligações entre etapas ficam na Montagem.'],
  ['parametros', 'Parâmetros', 'Defaults compartilhados pelas etapas e referências protegidas.'],
  ['politicas', 'Políticas de execução', 'Ativação, SLA, concorrência, retries, pool e conclusão sem movimento.'],
- ['notificacoes', 'Notificações', 'Mensagens de início, conclusão e falha e destinatários de e-mail do fluxo.'],
+ ['notificacoes', 'Notificações', 'Eventos Sucesso, Warning e Falha; destinatários e canais planejados, com prévia sem envio.'],
  ['documentacao', 'Documentação', 'Runbook consultado pela sustentação.'],
 ]
 export function configurationGroup(value: string | null | undefined): ConfigurationGroup {

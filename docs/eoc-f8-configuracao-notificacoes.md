@@ -1,0 +1,21 @@
+# EOC-F8 — Configuração de notificações
+
+Configuração → Notificações usa o mesmo draft, histórico local e publicação do workspace. Eventos Sucesso/Warning/Falha, lista de e-mails corporativos, switches independentes E-mail/Teams pessoal e canal adicional do cadastro existente. Uma pessoa com três destinos produz três entregas hipotéticas; canal conta uma vez por evento. Evento desmarcado produz zero.
+
+O formulário da política altera somente `alertPolicy`. Ausência mantém modo legado, com seleção explícita de política desabilitada no rascunho; metadados e nós legados permanecem intactos. Schema/campos/referências desconhecidos tornam a política somente consulta, sem descartar o original. Novos pipelines não selecionam canais ou eventos. Publicações posteriores não alteram a política vinculada às corridas anteriores.
+
+O grupo expansível **Comunicações atuais e destinatários dos componentes** preserva os três controles antigos e os destinatários usados pelos nós de e-mail. Essa lista é independente dos destinatários da política principal; ambas salvam no mesmo draft. Consulta desabilita os controles de gravação; o seletor de evento do resumo local continua disponível sem mudar o pipeline.
+
+Esta entrega também corrige um defeito introduzido na F7: `initialWorkspace` usava `notify_on_*`, campos inexistentes no SQL. Os defaults agora usam `envia_msg_inicio/fim/erro=false`. O DEV tem essas três colunas físicas em maiúsculas; o adaptador normaliza somente os aliases conhecidos na projeção e escreve os nomes reais do schema. O snapshot original não é alterado, aliases conflitantes são rejeitados e campos desconhecidos continuam bloqueando publicação. Drafts anteriores com campos incorretos não são apagados ou migrados automaticamente.
+
+Prévia envia override da política local com `expectedRevision`, `fence` e evento ao endpoint F7, com Bearer da sessão. Não exige salvar primeiro e não modifica o servidor. Resultado é cercado por identidade da definição/contexto/evento e visibilidade; falha ou timeout de 20 segundos preserva campos. Erros 422 estruturados são traduzidos, com indicação acessível de destinatários/canal. 409 orienta conferir revisão/posse sem fabricar sessão.
+
+Consulta sem write pode ler resumo e disponibilidade. Prévia no servidor exige capabilities de edição e posse real do draft. `GET /workspace-adapter/alerts/capabilities` exige autenticação, flag workspace e consulta de pipelines/jobs, sem admin ou lease. Canal usa `/msg/grupos`, somente referência `groupId`, sem copiar webhook. Nenhum caminho novo chama SMTP/Graph/webhook ou pipeline.
+
+Integrações incompletas mostram indisponibilidade e causa do contrato F7. Planejamento e simulação não certificam identidade/tenant/transporte. Gate externo persistido no Backlog pela migration178; poll permanece30s. Auth, API do motor, .NET, DAGs e tarefas customizadas não são alterados.
+
+Deploy DEV: backup verificado, migration178 (versão2.26.0 e gate externo), dist e restart apenas API para nova consulta protegida. Sem dependência/env novos. Validação e evidências finais em `/root/orquestra-eoc-evidencias/f8`; aceites externos permanecem separados. Sem main/produção.
+
+Provas candidatas: 76 testes dirigidos; browser 1440/390 claro/escuro, edição e consulta, 422 preservando dados, prévias 3/0, navegação e salvamento das duas listas; nenhum diálogo Chrome. Catálogo de canais sintético e identidade admin com experiência Consulta, sem certificar um piloto humano ou resolução externa. Defaults TS reais validados contra SQL, defeito anterior reproduzido e corrigido; INSERT/UPDATE das três flags comprovados em transação revertida. Montagem/Execução frias: 286688/304986 bytes gzip, abaixo de 300KiB. Leituras do motor e medidas de seleção da F6 não repetidas por não terem mudado; o p95 anterior de API544.8ms e o gate antes do polling5s continuam pendentes.
+
+Validação final contra develop8f7b606a: 7983PASS/exatas8FAIL pré-existentes/51SKIP (8042 testes,177.65s); nenhuma falha ou skip novo. ESLint176 ocorrências iguais ao baseline, nenhuma assinatura nova. `tsc -b` e build finalPASS (6.22s), fontes sem NUL/diffcheckPASS. Revisão ampla inicial e confirmação dirigida das correções registradas na evidência; não foi alegado scanner de segurança indisponível.

@@ -1864,3 +1864,11 @@ está faltando.
 **Apliquei a proposta do Maestro e a etapa falhou no disparo ("o job NÃO declara…").** O Maestro não fala com o DataStage: sem lineage ISX ele usa os nomes que você informou ou nomes convencionais e avisa para conferir no Designer. Extraia o lineage (§3.9) para ele usar os nomes declarados, ou corrija a grafia na etapa.
 
 **O Maestro pediu a senha de um parâmetro Encrypted?** Não deveria — ele é instruído a nunca pedir nem repetir segredos e propõe a linha sem valor. Nunca digite a senha no chat: digite no campo Encrypted do editor, que é cifrado.
+
+### Notificações principais do pipeline
+
+Em **Configuração → Notificações**, selecione **Sucesso**, **Warning** e/ou **Falha**. Informe um e-mail corporativo por linha e marque **E-mail** e/ou **Teams pessoal**. Opcionalmente escolha um **Canal Teams adicional** do cadastro. Uma pessoa com os três destinos representa três entregas; o canal recebe uma mensagem por evento, independentemente do número de pessoas.
+
+**Simular sem enviar** valida o planejamento sem transmitir mensagens. Salvar o rascunho também não envia. Confira **Disponibilidade real**: integrações em preparação continuam indisponíveis até serem configuradas e validadas. Um resultado de simulação não confirma entrega nem existência do destinatário no Teams.
+
+Expanda **Comunicações atuais e destinatários dos componentes** para acessar as opções antigas e a lista utilizada pelos componentes de e-mail. Essa lista continua separada da política principal. Os nós de E-mail e Teams são tarefas independentes e podem gerar relatórios próprios; a nova política não substitui essas tarefas. Um pipeline anterior conserva sua configuração até a escolha explícita de uma política no rascunho. Em consulta, o resumo pode ser explorado sem editar a definição.
