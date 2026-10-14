@@ -1889,3 +1889,11 @@ O reenvio auditado desta fase é somente uma bancada dry-run, sem botão públic
 ou mensagens reais. A integração com o dispatcher e o cutover dos emissores
 legados seguem pendentes; não mudam os nós de comunicação customizada.
 Contrato e limites em [EOC-F10](eoc-f10-adapters.md).
+
+### Teams pessoal corporativo — EOC-F11
+
+A infraestrutura resolve o usuário pelo e-mail da política e exige app pessoal
+instalado e conversa vinculada. Configuração e referência são administradas por
+API restrita e cifradas; lookup não envia mensagem. Readiness administrativo
+não ativa envio automático. Integração e formulário Admin ainda seguem atéF13;
+homologação Microsoft/destino real continua externa. Consulte [contrato F11](eoc-f11-teams-pessoal.md).

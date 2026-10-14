@@ -32,7 +32,7 @@ class Target:
         return hashlib.sha256((self.channel + ':' + self.value).encode()).hexdigest()
 
 
-def resolve(cur, intent_id):
+def resolve(cur, intent_id, *, personal_config=None, personal_gateway=None):
     """Destino exclusivamente do snapshot original; nunca active publication/default.
 
     Retorna também o evento confirmado armazenado, sem aceitar corpo do chamador.
@@ -63,6 +63,15 @@ def resolve(cur, intent_id):
         value = found[0] if found else None
         if not valid_webhook(value):
             raise ValueError('invalid_destination')
+    elif channel == 'teamsPersonal':
+        # Import local evita ciclo; readiness padrão permanece fechada.
+        from services.teams_personal import Configuration, resolve as resolve_personal
+        index = int(reference.rsplit(':', 1)[1])
+        recipient = capture['policy']['recipients'][index]
+        personal, error = resolve_personal(personal_config or Configuration(), personal_gateway, recipient)
+        if error:
+            raise ValueError(error)
+        return personal, {'event': event, 'pipeline': pipeline, 'run': run}
     else:
         raise ValueError('channel_unavailable')
     return Target(channel, value), {'event': event, 'pipeline': pipeline, 'run': run}

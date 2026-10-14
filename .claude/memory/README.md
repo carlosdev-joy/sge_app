@@ -140,3 +140,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [EOC-F9 fila de alertas](orquestra-eoc-f9-fila-alertas.md) — F9A publicada; dispatcher F9B candidato validado com correção material de shutdown, gates externos preservados.
 
 - [EOC-F10 adapters internos](orquestra-eoc-f10-adapters.md) — Email/canal Teams e replay auditado dry-run; verificar entrega e gates internos/externos no handoff.
+
+- [EOC-F11 Teams pessoal](orquestra-eoc-f11-teams-pessoal.md) — provider/auth/admin cifrado; verificar publicação e gates no handoff.

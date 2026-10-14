@@ -130,7 +130,7 @@ export const ABAS_ADMIN: AbaAdmin[] = [
     descricao: 'Canais e modelos de card do nó de notificação, e o webhook padrão com o teste de envio.',
     palavrasChave: ['teams', 'webhook', 'card', 'canal', 'notificação', 'mensagem', 'testar webhook', 'falha assumida', 'falha resolvida'],
     // Prefixo cobre as três: teams_webhook_url, _ack e _resolved (card "Webhook padrão", F3).
-    chavesConfig: ['teams_webhook_url'],
+    chavesConfig: ['teams_webhook_url', 'teams_personal_'],
     componente: carregar(() => import('../components/admin/abas/NotificacoesTab'), 'NotificacoesTab'),
   },
   {
