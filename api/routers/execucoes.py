@@ -7,7 +7,7 @@ import os
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
@@ -358,6 +358,7 @@ def list_execucoes(
     filter_date_from: Optional[str] = None,
     filter_date_to: Optional[str] = None,
     detail_mode: bool = False,
+    exact_identity: bool = False,
 ):
     """Consulta paginada de execuções. Substitui etl_job_execution_query."""
     limit  = min(MAX_LIMIT, max(1, limit))
@@ -377,8 +378,8 @@ def list_execucoes(
         where_parts.append("project = ?")
         params.append(fp)
     if fpl:
-        where_parts.append("pipeline LIKE ?")
-        params.append(f"%{fpl}%")
+        where_parts.append("pipeline = ?" if exact_identity else "pipeline LIKE ?")
+        params.append(fpl if exact_identity else f"%{fpl}%")
     if fei:
         where_parts.append("execution_id = ?")
         params.append(fei)
@@ -2575,101 +2576,99 @@ async def reconciliar_execucao(body: dict = Body(default={}), _auth: dict = Depe
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/execucoes/ack", tags=["execucoes"])
-async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Acknowledge de falha — operador assume o incidente e notifica o Teams.
-
-    Body: execution_id, pipeline, user (matrícula), display_name (nome completo),
-          note (opcional), remove (bool, desfaz)
-    """
-    exec_id      = (body.get("execution_id") or "").strip()
-    pipeline     = (body.get("pipeline")     or "").strip()
-    user         = (body.get("user")         or "").strip()
-    display_name = (body.get("display_name") or "").strip() or None
-    note         = (body.get("note")         or "").strip() or None
-    # Rótulo amigável para a notificação (nome do job na malha; pipeline nos demais).
-    # NÃO afeta a chave de persistência — só o texto exibido no Teams.
-    label        = (body.get("label")        or "").strip() or None
-    remove       = bool(body.get("remove", False))
-
-    if not exec_id or not pipeline:
-        raise HTTPException(status_code=422, detail="execution_id e pipeline são obrigatórios")
-    if not remove and not user:
-        raise HTTPException(status_code=422, detail="user é obrigatório")
-
+def _treat_failure(body, auth, action):
+    from services import failure_treatment as treatment
+    conn = None
+    cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        if remove:
-            if _ensure_resolve_columns(conn, cur):
-                cur.execute(
-                    "SELECT resolved_at FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
-                    (exec_id, pipeline))
-                row = cur.fetchone()
-                if row and row[0] is not None:
-                    cur.close(); conn.close()
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Falha já resolvida — desfaça a resolução antes de remover a assunção")
-            cur.execute(
-                "DELETE FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
-                (exec_id, pipeline))
-            conn.commit(); cur.close(); conn.close()
-            return {"ok": True, "action": "removed"}
-
-        # Idempotente: só insere se ainda não existe
-        cur.execute("""
-            IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)
-                INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note)
-                VALUES (?, ?, ?, ?, ?)
-        """, (exec_id, pipeline, exec_id, pipeline, user, display_name, note))
+        result = treatment.mutate(cur, body, auth, action)
         conn.commit()
+        return result
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
+    except Exception:
+        if conn: conn.rollback()
+        raise HTTPException(503, 'Tratamento indisponível; tente novamente')
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
 
-        cur.execute(
-            "SELECT ack_by, display_name, ack_at FROM dbo.etl_failure_ack "
-            "WHERE execution_id=? AND pipeline=?",
-            (exec_id, pipeline))
-        row = cur.fetchone()
-        cur.close(); conn.close()
 
-        ack_by_db      = row[0] if row else user
-        display_name_db = row[1] if row else display_name
-        ack_at_db      = _fmt_dt(row[2]) if row else None
+@router.post("/execucoes/ack", tags=["execucoes"])
+async def ack_failure(body: dict = Body(default={}), _auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    result = _treat_failure(body, _auth, 'ack')
+    await _notify_treatment(result, body, 'ack')
+    return result
 
-        # Notificar Teams — _teams_ack_card faz I/O de rede síncrono; roda em
-        # thread separada para não bloquear o event loop de outras requisições.
-        try:
-            await asyncio.to_thread(
-                _teams_ack_card,
-                pipeline=label or pipeline, exec_id=exec_id,
-                ack_by=ack_by_db, display_name=display_name_db or ack_by_db,
-                ack_at=ack_at_db, note=note,
-                webhook_var="TEAMS_WEBHOOK_URL_CVP",
-            )
-        except Exception as e:
-            log.warning("[ACK] Teams ignorado: %s", e)
 
-        try:
-            await asyncio.to_thread(add_notificacao, ack_by_db,
-                                    f"Falha assumida — {label or pipeline}",
-                                    note, "info", "/logs")
-        except Exception:
-            pass
+async def _notify_treatment(result, body, action, items=None):
+    """Compatibilidade: primeiro efeito legado após commit; sem retry em repetição.
 
-        return {"ok": True, "action": "acked",
-                "ack_by": ack_by_db,
-                "display_name": display_name_db or ack_by_db,
-                "ack_at": ack_at_db}
+    Helpers legados são best-effort e não certificam recebimento. Transporte
+    principal continua OFF; falha de comunicação não desfaz o tratamento.
+    """
+    if not result.get('changed') or result.get('action') not in ('ack', 'resolve'):
+        return
+    pipeline = result['pipeline'] if items is None else ''
+    eid = result['execution_id'] if items is None else '—'
+    user = result['ack_by'] if action == 'ack' else result['resolved_by']
+    name = result.get('display_name' if action == 'ack' else 'resolved_display_name') or user
+    note = result.get('note' if action == 'ack' else 'resolution_note')
+    try:
+        if action == 'ack':
+            await asyncio.to_thread(_teams_ack_card, pipeline=pipeline, exec_id=eid,
+                                    ack_by=user, display_name=name, ack_at=result.get('ack_at'),
+                                    note=note, webhook_var='TEAMS_WEBHOOK_URL_CVP', itens=items)
+        else:
+            await asyncio.to_thread(_teams_resolved_card, pipeline=pipeline, exec_id=eid,
+                                    resolved_by=user, display_name=name, resolved_at=result.get('resolved_at'),
+                                    resolution_note=note, snow_ticket=result.get('snow_ticket'),
+                                    webhook_var='TEAMS_WEBHOOK_URL_CVP', itens=items)
+    except Exception:
+        # Não logar URL/token/corpo do provedor.
+        log.warning('Comunicação legada de tratamento indisponível')
+    try:
+        title = ('Falha assumida' if action == 'ack' else 'Falha resolvida')
+        if items is not None:
+            title = f'{len(items)} falha(s) ' + ('assumida(s)' if action == 'ack' else 'resolvida(s)')
+        else:
+            title += ' — ' + pipeline
+        await asyncio.to_thread(add_notificacao, user, title, note,
+                                'info' if action == 'ack' else 'success', result.get('execution_link') or '/logs')
+    except Exception:
+        pass
+
+
+@router.post("/execucoes/falhas-priority", tags=["execucoes"])
+def set_failure_priority(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
+    return _treat_failure(body, auth, 'priority')
+
+
+@router.get("/execucoes/falhas-history", tags=["execucoes"])
+def failure_history(execution_id: str, pipeline: str, auth: dict = Depends(get_current_user)):
+    from services import failure_treatment as treatment
+    eid, pl = treatment.identity(dict(execution_id=execution_id, pipeline=pipeline))
+    conn = None
+    cur = None
+    try:
+        conn = get_db_conn(); cur = conn.cursor()
+        return {'data': treatment.history(cur, eid, pl), 'execution_link': treatment.exact_link(eid, pl)}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(503, 'Histórico indisponível; tente novamente')
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
 
 
 _resolve_cols_ready = False
 
 
 def _ensure_resolve_columns(conn, cur) -> bool:
-    """Garante colunas de resolução na etl_failure_ack. Retorna True se existem.
+    """Consulta colunas de resolução na etl_failure_ack sem DDL. Retorna True se existem.
 
     Cacheia o estado "True" em memória do processo: colunas adicionadas por
     migration nunca são removidas, então uma vez confirmadas não há motivo
@@ -2679,31 +2678,10 @@ def _ensure_resolve_columns(conn, cur) -> bool:
     global _resolve_cols_ready
     if _resolve_cols_ready:
         return True
-    _RESOLVE_COLS = [
-        ("resolved_by",            "NVARCHAR(64)"),
-        ("resolved_display_name",  "NVARCHAR(128)"),
-        ("resolved_at",            "DATETIME"),
-        ("resolution_note",        "NVARCHAR(500)"),
-        ("snow_ticket",            "NVARCHAR(64)"),
-    ]
-    for col, ddl in _RESOLVE_COLS:
-        try:
-            cur.execute(
-                "IF NOT EXISTS ("
-                "  SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS"
-                "  WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME=?"
-                ") EXEC('ALTER TABLE dbo.etl_failure_ack ADD " + col + " " + ddl + " NULL')",
-                (col,))
-            conn.commit()
-        except Exception:
-            try: conn.rollback()
-            except Exception: pass
-    # Verifica se resolved_at existe (proxy para todas)
     try:
-        cur.execute(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME='resolved_at'")
-        ready = bool(cur.fetchone())
+        cur.execute("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME='etl_failure_ack' AND COLUMN_NAME IN ('resolved_by','resolved_display_name','resolved_at','resolution_note','snow_ticket')")
+        row = cur.fetchone()
+        ready = bool(row and row[0] == 5)
     except Exception:
         ready = False
     if ready:
@@ -2799,223 +2777,61 @@ def get_falhas_summary(days: int = Query(7, ge=1, le=90)):
 
 @router.post("/execucoes/resolve", tags=["execucoes"])
 async def resolve_failure(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Marca uma falha como resolvida (ou desfaz com remove=true) e notifica o Teams.
+    result = _treat_failure(body, auth, 'resolve')
+    await _notify_treatment(result, body, 'resolve')
+    return result
 
-    Body: execution_id, pipeline, resolution_note (opcional), snow_ticket (opcional), remove (bool)
-    """
-    exec_id         = (body.get("execution_id")    or "").strip()
-    pipeline        = (body.get("pipeline")         or "").strip()
-    resolution_note = (body.get("resolution_note") or "").strip() or None
-    snow_ticket     = (body.get("snow_ticket")     or "").strip() or None
-    remove          = bool(body.get("remove", False))
-    matricula       = (body.get("user")            or "").strip() or auth.get("matricula", "")
-    display_name    = (body.get("display_name")    or "").strip() or None
-    # Rótulo amigável para a notificação (nome do job na malha; pipeline nos demais).
-    label           = (body.get("label")           or "").strip() or None
 
-    if not exec_id or not pipeline:
-        raise HTTPException(status_code=422, detail="execution_id e pipeline são obrigatórios")
-
+def _treat_bulk(body, auth, action):
+    from services import failure_treatment as treatment
+    items = body.get('items')
+    if not isinstance(items, list) or not 1 <= len(items) <= 200 or any(not isinstance(x, dict) for x in items):
+        raise HTTPException(422, 'items: informe entre 1 e 200 ocorrências')
+    pairs = [treatment.identity(x) for x in items]
+    if len(set(pairs)) != len(pairs):
+        raise HTTPException(422, 'items: ocorrências duplicadas')
+    # Ordem estável de aquisição de locks; lote atômico, conflito devolve409.
+    conn = None
+    cur = None
     try:
         conn = get_db_conn(); cur = conn.cursor()
-        _ensure_resolve_columns(conn, cur)
-
-        if remove:
-            cur.execute(
-                "UPDATE dbo.etl_failure_ack "
-                "SET resolved_by=NULL, resolved_display_name=NULL, resolved_at=NULL, "
-                "    resolution_note=NULL, snow_ticket=NULL "
-                "WHERE execution_id=? AND pipeline=?",
-                (exec_id, pipeline))
-            conn.commit(); cur.close(); conn.close()
-            return {"ok": True, "action": "unresolved"}
-
-        # Garante ack existe antes de resolver (cria auto-ack se necessário)
-        cur.execute(
-            "IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)"
-            "  INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name)"
-            "  VALUES (?, ?, ?, ?)",
-            (exec_id, pipeline, exec_id, pipeline, matricula, display_name))
-
-        cur.execute(
-            "UPDATE dbo.etl_failure_ack "
-            "SET resolved_by=?, resolved_display_name=?, resolved_at=GETDATE(), "
-            "    resolution_note=?, snow_ticket=? "
-            "WHERE execution_id=? AND pipeline=?",
-            (matricula, display_name, resolution_note, snow_ticket, exec_id, pipeline))
+        results = [treatment.mutate(cur, {**body, **{k: item[k] for k in ('execution_id', 'pipeline', 'expectedVersion') if k in item}, 'remove': False}, auth, action)
+                   for item in sorted(items, key=treatment.identity)]
         conn.commit()
-
-        cur.execute(
-            "SELECT resolved_by, resolved_display_name, resolved_at, resolution_note, snow_ticket "
-            "FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?",
-            (exec_id, pipeline))
-        row = cur.fetchone()
-        cur.close(); conn.close()
-
-        resolved_by_db           = row[0] if row else matricula
-        resolved_display_name_db = row[1] if row else display_name
-        resolved_at_db           = _fmt_dt(row[2]) if row else None
-        resolution_note_db       = row[3] if row else resolution_note
-        snow_ticket_db           = row[4] if row else snow_ticket
-
-        # Notificar Teams — _teams_resolved_card faz I/O de rede síncrono; roda
-        # em thread separada para não bloquear o event loop de outras requisições.
-        try:
-            await asyncio.to_thread(
-                _teams_resolved_card,
-                pipeline=label or pipeline, exec_id=exec_id,
-                resolved_by=resolved_by_db, display_name=resolved_display_name_db or resolved_by_db,
-                resolved_at=resolved_at_db, resolution_note=resolution_note_db,
-                snow_ticket=snow_ticket_db,
-                webhook_var="TEAMS_WEBHOOK_URL_CVP",
-            )
-        except Exception as e:
-            log.warning("[RESOLVE] Teams ignorado: %s", e)
-
-        try:
-            await asyncio.to_thread(add_notificacao, resolved_by_db,
-                                    f"Falha resolvida — {label or pipeline}",
-                                    resolution_note_db, "success", "/logs")
-        except Exception:
-            pass
-
-        return {
-            "ok": True, "action": "resolved",
-            "resolved_by":           resolved_by_db,
-            "resolved_display_name": resolved_display_name_db,
-            "resolved_at":           resolved_at_db,
-            "resolution_note":       resolution_note_db,
-            "snow_ticket":           snow_ticket_db,
-        }
+        changed = sum(x['changed'] for x in results)
+        return dict(ok=True, results=results, **({'acked': changed, 'skipped': len(results)-changed} if action == 'ack' else {'resolved': changed}))
     except HTTPException:
+        if conn: conn.rollback()
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        if conn: conn.rollback()
+        raise HTTPException(503, 'Tratamento em massa indisponível; tente novamente')
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
 
 
 @router.post("/execucoes/resolve-bulk", tags=["execucoes"])
 async def resolve_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Resolve VÁRIAS falhas de uma vez com a MESMA nota/ticket (auto-ack em cada).
+    result = _treat_bulk(body, auth, 'resolve')
+    await _notify_bulk(result, body, 'resolve')
+    return result
 
-    Útil p/ fechar erros históricos em lote (ex.: falhas importadas de antes do
-    Orquestra). Body: items: [{execution_id, pipeline}], resolution_note?,
-    snow_ticket?, user? (matrícula), display_name?.
-    """
-    items = body.get("items") or []
-    if not isinstance(items, list) or not items:
-        raise HTTPException(status_code=422, detail="items (lista não vazia) é obrigatório")
-    resolution_note = (body.get("resolution_note") or "").strip() or None
-    snow_ticket     = (body.get("snow_ticket")     or "").strip() or None
-    matricula       = (body.get("user")            or "").strip() or auth.get("matricula", "")
-    display_name    = (body.get("display_name")    or "").strip() or None
 
-    done = 0
-    alvos: list[str] = []  # rótulos (job da malha / pipeline) das falhas resolvidas
-    try:
-        conn = get_db_conn(); cur = conn.cursor()
-        _ensure_resolve_columns(conn, cur)
-        for it in items:
-            eid = (it.get("execution_id") or "").strip()
-            pl  = (it.get("pipeline")     or "").strip()
-            if not eid or not pl:
-                continue
-            cur.execute(
-                "IF NOT EXISTS (SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?)"
-                "  INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name)"
-                "  VALUES (?, ?, ?, ?)",
-                (eid, pl, eid, pl, matricula, display_name))
-            cur.execute(
-                "UPDATE dbo.etl_failure_ack "
-                "SET resolved_by=?, resolved_display_name=?, resolved_at=GETDATE(), "
-                "    resolution_note=?, snow_ticket=? "
-                "WHERE execution_id=? AND pipeline=?",
-                (matricula, display_name, resolution_note, snow_ticket, eid, pl))
-            alvos.append((it.get("label") or pl).strip())
-            done += 1
-        conn.commit(); cur.close(); conn.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    # UM card-resumo no Teams (evita spam de N cards ao fechar histórico em lote),
-    # listando cada pipeline/job resolvido para facilitar a identificação.
-    if done:
-        try:
-            await asyncio.to_thread(
-                _teams_resolved_card,
-                pipeline="", exec_id="—",
-                resolved_by=matricula, display_name=display_name or matricula,
-                resolved_at=None, resolution_note=resolution_note, snow_ticket=snow_ticket,
-                webhook_var="TEAMS_WEBHOOK_URL_CVP", itens=alvos,
-            )
-        except Exception as e:
-            log.warning("[RESOLVE-BULK] Teams ignorado: %s", e)
-        try:
-            await asyncio.to_thread(add_notificacao, matricula,
-                                    f"{done} falha(s) resolvidas em massa", None,
-                                    "success", "/logs")
-        except Exception:
-            pass
-
-    return {"ok": True, "resolved": done}
+async def _notify_bulk(result, body, action):
+    results = result.pop('results')
+    changed = [r for r in results if r['changed']]
+    if changed:
+        # Rótulos derivados do alvo validado, sem texto de ator vindo do cliente.
+        labels = [r['pipeline'] for r in changed]
+        await _notify_treatment(changed[0], body, action, labels)
 
 
 @router.post("/execucoes/ack-bulk", tags=["execucoes"])
 async def ack_failures_bulk(body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR))):
-    """Assume VÁRIAS falhas de uma vez (idempotente: NÃO rouba assunção existente).
-
-    Body: items: [{execution_id, pipeline}], note?, user? (matrícula), display_name?.
-    Devolve quantas foram assumidas (acked) e quantas já tinham dono (skipped).
-    """
-    items = body.get("items") or []
-    if not isinstance(items, list) or not items:
-        raise HTTPException(status_code=422, detail="items (lista não vazia) é obrigatório")
-    note         = (body.get("note")         or "").strip() or None
-    matricula    = (body.get("user")         or "").strip() or auth.get("matricula", "")
-    display_name = (body.get("display_name") or "").strip() or None
-    if not matricula:
-        raise HTTPException(status_code=422, detail="user (matrícula) é obrigatório")
-
-    acked = skipped = 0
-    alvos: list[str] = []  # rótulos (job da malha / pipeline) das falhas assumidas agora
-    try:
-        conn = get_db_conn(); cur = conn.cursor()
-        for it in items:
-            eid = (it.get("execution_id") or "").strip()
-            pl  = (it.get("pipeline")     or "").strip()
-            if not eid or not pl:
-                continue
-            cur.execute("SELECT 1 FROM dbo.etl_failure_ack WHERE execution_id=? AND pipeline=?", (eid, pl))
-            if cur.fetchone():
-                skipped += 1
-                continue
-            cur.execute(
-                "INSERT INTO dbo.etl_failure_ack (execution_id, pipeline, ack_by, display_name, note) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (eid, pl, matricula, display_name, note))
-            alvos.append((it.get("label") or pl).strip())
-            acked += 1
-        conn.commit(); cur.close(); conn.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if acked:
-        try:
-            await asyncio.to_thread(
-                _teams_ack_card,
-                pipeline="", exec_id="—",
-                ack_by=matricula, display_name=display_name or matricula,
-                ack_at=None, note=note, webhook_var="TEAMS_WEBHOOK_URL_CVP", itens=alvos,
-            )
-        except Exception as e:
-            log.warning("[ACK-BULK] Teams ignorado: %s", e)
-        try:
-            await asyncio.to_thread(add_notificacao, matricula,
-                                    f"{acked} falha(s) assumidas em massa", None,
-                                    "info", "/logs")
-        except Exception:
-            pass
-
-    return {"ok": True, "acked": acked, "skipped": skipped}
+    result = _treat_bulk(body, auth, 'ack')
+    await _notify_bulk(result, body, 'ack')
+    return result
 
 
 @router.get("/execucoes/falhas", tags=["execucoes"])
@@ -3062,6 +2878,10 @@ def list_falhas(
         total_row = cur.fetchone()
         total = int(total_row[0] or 0) if total_row else 0
 
+        cur.execute("SELECT COL_LENGTH('dbo.etl_failure_ack','priority'), COL_LENGTH('dbo.etl_failure_ack','treatment_version')")
+        priority_row = cur.fetchone()
+        priority_sel = 'ack.priority' if priority_row and priority_row[0] is not None else "CAST(NULL AS VARCHAR(10))"
+        version_sel = 'ack.treatment_version' if priority_row and priority_row[1] is not None else "CAST(NULL AS BINARY(8))"
         resolve_sel = ", ack.resolved_by, ack.resolved_display_name, ack.resolved_at, " \
                       "ack.resolution_note, ack.snow_ticket" \
                       if has_resolved else ""
@@ -3072,7 +2892,7 @@ def list_falhas(
                    a.total_jobs, a.jobs_falha, a.jobs_warning,
                    ack.ack_by, ack.display_name, ack.ack_at, ack.note
                    {resolve_sel}
-                   , a.origem, a.job_name
+                   , a.origem, a.job_name, {priority_sel}, {version_sel}
             FROM agg a
             LEFT JOIN dbo.etl_failure_ack ack
                    ON ack.execution_id = a.execution_id AND ack.pipeline = a.pipeline
@@ -3104,6 +2924,12 @@ def list_falhas(
                 "snow_ticket":           r[17] if has_resolved else None,
                 "origem":   r[ox],
                 "job_name": r[ox + 1],
+                "priority": r[ox + 2] or 'normal',
+                "version": bytes(r[ox + 3]).hex() if r[ox + 3] is not None else None,
+                "processing_status": 'FAILED',
+                "communication_status": 'independente',
+                "occurrence": {'execution_id': r[0], 'pipeline': r[2], 'generation': None, 'source': 'etl_job_execution'},
+                "execution_link": '/logs?' + urlencode({'execution_id': r[0], 'pipeline': r[2], 'exact': '1'}),
             }
             data.append(item)
 
@@ -3349,7 +3175,7 @@ async def workspace_pipeline_run(pipeline_name: str, body: dict = Body(default={
 @router.get("/pipeline-task-log", tags=["execucoes"])
 async def workspace_task_log(pipeline_name: str, run_id: str, task_id: str, try_number: int = 1, auth: dict = Depends(get_current_user)):
     """Log contextual de uma etapa comprovada na corrida; sem caminho livre."""
-    from urllib.parse import quote
+    from urllib.parse import quote, urlencode
     from fastapi.responses import PlainTextResponse
     from routers.airflow import get_airflow_client
     _workspace_read_permissions(auth)
