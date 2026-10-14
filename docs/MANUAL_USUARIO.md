@@ -1880,3 +1880,12 @@ A preparação da fila persistente não habilita mensagens automáticas. Configu
 ### Fila de alertas — dispatcher técnico EOC-F9B
 
 A fila agora controla tentativas e recupera trabalho após reinício. Nesta entrega os cenários são exclusivamente simulados, sem enviar mensagens externas. Resultado incerto (`Unknown`) não é reenviado automaticamente; aceitação simulada (`Accepted`) não significa recebimento. A entrega de mensagens não altera nem repete a execução do pipeline. A certificação da fonte de resultados e a habilitação dos canais continuam pendentes. [Limites técnicos](eoc-f9-persistencia-dispatcher.md).
+
+### Adapters internos de alertas — EOC-F10
+
+A infraestrutura resolve E-mail e canal Teams a partir da política da versão
+original da corrida. A aceitação pelo transporte não comprova recebimento.
+O reenvio auditado desta fase é somente uma bancada dry-run, sem botão público
+ou mensagens reais. A integração com o dispatcher e o cutover dos emissores
+legados seguem pendentes; não mudam os nós de comunicação customizada.
+Contrato e limites em [EOC-F10](eoc-f10-adapters.md).
