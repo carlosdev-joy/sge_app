@@ -28,7 +28,7 @@ export function AppShellV2() {
       <HeaderV2 onMenuClick={() => setMobileOpen(true)} />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />
-        <main className="flex-1 overflow-y-auto">
+        <main className="min-w-0 flex-1 overflow-y-auto" id="conteudo-principal" tabIndex={-1}>
           <div className={SHELL_FRAME_CLASS[shellFrame(pathname)]}>
             <Outlet />
           </div>

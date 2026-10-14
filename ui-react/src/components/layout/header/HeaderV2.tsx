@@ -20,7 +20,7 @@ export function HeaderV2({ onMenuClick }: { onMenuClick?: () => void } = {}) {
           <button
             type="button"
             onClick={onMenuClick}
-            className="md:hidden shrink-0 flex items-center justify-center w-10 h-10 text-white/80 hover:text-white rounded hover:bg-white/10 transition-colors"
+            className="md:hidden shrink-0 flex items-center justify-center w-11 h-11 text-white/80 hover:text-white rounded hover:bg-white/10 transition-colors"
             aria-label="Abrir menu"
           >
             <Menu size={20} />

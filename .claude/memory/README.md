@@ -128,3 +128,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [UX profissional do Pipeline](orquestra-ux-pipeline-profissional.md) — spec, cinco destinos; 2.18.0–2.20.0 no DEV (F3 inicial, F4.1, F4.2); F5 candidata 2.21.0 pronta para PR, com cercas de identidade e lote de teclado/movimento reduzido no canvas (prova nativa pendente); gotchas de bancada/QueryClient/sr-only.
 
 - [EOC-F4 sistema visual comum](orquestra-eoc-f4-sistema-visual.md) — contrato/componentes/densidade; candidato2.23.0, conferir prova pós-deploy.
+
+- [EOC-F5 shell e piloto Pipeline](orquestra-eoc-f5-shell-pipeline.md) — Desenho/Lista e navegação acessível; candidato2.24.0, conferir pós-deploy.

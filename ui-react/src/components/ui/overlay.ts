@@ -35,7 +35,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), in
 // fechar. O sentinela de focusin cobre o que o trap de Tab por
 // primeiro/último não pega (ex.: radio group sr-only tem UM tab-stop no
 // primeiro rádio — o Tab sai dali sem nunca passar pelo "último focável").
-export function useOverlay(open: boolean, onClose: () => void, panelRef: React.RefObject<HTMLDivElement | null>) {
+export function useOverlay(open: boolean, onClose: () => void, panelRef: React.RefObject<HTMLElement | null>) {
   const idRef = useRef<symbol | null>(null)
   if (idRef.current === null) idRef.current = Symbol('overlay')
   // onClose via ref: o listener não é re-subscrito quando o pai recria a
@@ -80,7 +80,7 @@ export function useOverlay(open: boolean, onClose: () => void, panelRef: React.R
 }
 
 // Tab preso dentro do overlay (ciclo primeiro↔último focável).
-export function trapTabKey(e: React.KeyboardEvent, root: HTMLDivElement | null) {
+export function trapTabKey(e: React.KeyboardEvent, root: HTMLElement | null) {
   if (e.key !== 'Tab' || !root) return
   const focusables = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE))
   if (focusables.length === 0) { e.preventDefault(); return }

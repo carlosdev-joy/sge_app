@@ -19,7 +19,7 @@ export function shellFrame(pathname: string): ShellFrame {
 
 export const SHELL_FRAME_CLASS: Record<ShellFrame, string> = {
  bleed: 'min-h-full',
- wide: 'min-w-0 px-3 sm:px-4 py-6',
+ wide: 'min-w-0 px-3 sm:px-4 py-4',
  framed: 'p-6 max-w-[1600px] mx-auto',
 }
 
