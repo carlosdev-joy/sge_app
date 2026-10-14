@@ -1872,3 +1872,7 @@ Em **Configuração → Notificações**, selecione **Sucesso**, **Warning** e/o
 **Simular sem enviar** valida o planejamento sem transmitir mensagens. Salvar o rascunho também não envia. Confira **Disponibilidade real**: integrações em preparação continuam indisponíveis até serem configuradas e validadas. Um resultado de simulação não confirma entrega nem existência do destinatário no Teams.
 
 Expanda **Comunicações atuais e destinatários dos componentes** para acessar as opções antigas e a lista utilizada pelos componentes de e-mail. Essa lista continua separada da política principal. Os nós de E-mail e Teams são tarefas independentes e podem gerar relatórios próprios; a nova política não substitui essas tarefas. Um pipeline anterior conserva sua configuração até a escolha explícita de uma política no rascunho. Em consulta, o resumo pode ser explorado sem editar a definição.
+
+### Fila de alertas — fundação técnica EOC-F9A
+
+A preparação da fila persistente não habilita mensagens automáticas. Configuração e prévia continuam no mesmo rascunho do pipeline, sem envio. Resultado agregado, ciclos de reprocessamento e integrações precisam ser certificados antes da ativação; o dispatcher faz parte da etapa F9B. As comunicações existentes das tarefas permanecem com seu comportamento atual.

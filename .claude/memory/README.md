@@ -136,3 +136,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [EOC-F7: contrato de alertas](orquestra-eoc-f7-alertas-contrato.md) — política/snapshot, prévia sem envio e gate do adapter de resultado no Backlog177.
 
 - [EOC-F8: configuração de notificações](orquestra-eoc-f8-configuracao-notificacoes.md) — política e legado no mesmo draft; defaults corrigidos, candidato2.26.0; conferir evidência final DEV.
+
+- [EOC-F9 fila de alertas](orquestra-eoc-f9-fila-alertas.md) — fundação dry-run F9A parcial; dispatcher F9B pendente.
