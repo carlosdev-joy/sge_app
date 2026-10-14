@@ -11,6 +11,7 @@ import { toast } from '../../ui/Toast'
 import { queryClient } from '../../../lib/queryClient'
 import { adminPost } from '../comum'
 import { ConfirmModal } from '../ComumUI'
+import { TeamsPessoal } from '../TeamsPessoal'
 import { Edit2, Trash2, Plus, Save, Bell, MessageSquare, Webhook, X } from 'lucide-react'
 
 // ── Notificações Teams — Grupos (canais) + Modelos de card ───────────────────
@@ -509,6 +510,7 @@ export function NotificacoesTab() {
 
       {/* Seção 3 — Webhook padrão (veio de Configurações na F3; ver WebhookPadraoCard) */}
       <WebhookPadraoCard />
+      <TeamsPessoal />
 
       {grupoForm.open && <GrupoFormModal grupo={grupoForm.grupo} onClose={() => setGrupoForm({ open: false, grupo: null })} />}
       {tplForm.open && <TemplateFormModal template={tplForm.template} grupos={grupos} onClose={() => setTplForm({ open: false, template: null })} />}

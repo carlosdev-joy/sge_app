@@ -176,6 +176,10 @@ class FakeCur:
         s = " ".join(str(sql).split())
         self._rows = []
 
+        if s.startswith("SELECT OBJECT_ID('dbo.etl_alert_cycle'"):
+            # Fixture legada anterior à coorte EOC; não presume matrícula.
+            self._rows = [(None,)]
+            return
         if s.startswith("SELECT OBJECT_ID('dbo.etl_pipeline_execucao'"):
             self._rows = [(1 if db.com_067 else None,)]
             return
@@ -1194,4 +1198,6 @@ def _banco_legado_sem_snapshot_130(monkeypatch, request):
         'test_rerun_sem_match_mantem_fallback_legado',
     }:
         from unittest.mock import MagicMock
-        monkeypatch.setattr('routers.execucoes.get_db_conn', lambda: MagicMock())
+        connection = MagicMock()
+        connection.cursor.return_value.fetchone.return_value = (None,)
+        monkeypatch.setattr('routers.execucoes.get_db_conn', lambda: connection)

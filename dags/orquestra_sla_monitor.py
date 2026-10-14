@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pendulum
 import requests
+from utils.sla_intent import enqueue, drain
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
@@ -27,12 +28,12 @@ RISK_THRESHOLD    = 0.8  # 80% do SLA → alerta de risco
 default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
 
 
-def _teams_post_card(title, facts, status="WARNING", subtitle=None):
+def _teams_post_card(title, facts, status="WARNING", subtitle=None, fence=None):
     try:
         webhook_url = Variable.get(TEAMS_WEBHOOK_VAR)
     except Exception:
         print(f"[TEAMS] Variable '{TEAMS_WEBHOOK_VAR}' nao encontrada.")
-        return
+        return "Failed"
     icon  = {"WARNING": "⏰", "FAILED": "🚨"}.get(status, "⏰")
     color = {"WARNING": "Warning", "FAILED": "Attention"}.get(status, "Warning")
     body = [
@@ -56,10 +57,12 @@ def _teams_post_card(title, facts, status="WARNING", subtitle=None):
         }],
     }
     try:
+        if fence is None or not fence():
+            return "Unknown"
         resp = requests.post(webhook_url, json=payload, timeout=15)
-        print(f"[TEAMS] status={resp.status_code}")
-    except Exception as e:
-        print(f"[TEAMS] Falha: {e}")
+        return "Accepted" if 200 <= resp.status_code < 300 else "Failed"
+    except Exception:
+        return "Unknown"
 
 
 def _fact(title, value):
@@ -125,19 +128,6 @@ def monitorar_sla(**context):
         GROUP BY e.execution_id, e.pipeline, e.project,
                  p.sla_minutos, p.criticidade, p.runbook_md
     """)
-    if not rows:
-        print("[SLA] Nenhuma execução RUNNING com SLA configurado.")
-        return {"checked": 0, "alerts": 0}
-
-    # Dedup: insere apenas se ainda não alertou esse tipo para essa execução
-    insert_sql = """
-        INSERT INTO dbo.etl_sla_alert (execution_id, pipeline, alert_type, sla_minutos, elapsed_min)
-        SELECT %s, %s, %s, %s, %s
-        WHERE NOT EXISTS (
-            SELECT 1 FROM dbo.etl_sla_alert
-            WHERE execution_id = %s AND pipeline = %s AND alert_type = %s
-        )
-    """
 
     p90_map = _p90_duracao_minutos(hook)
 
@@ -156,20 +146,6 @@ def monitorar_sla(**context):
             continue
 
         alert_type = "BREACH" if breached else ("RISK" if at_risk else "PREDICT")
-        before = hook.get_first(
-            "SELECT COUNT(*) FROM dbo.etl_sla_alert "
-            "WHERE execution_id=%s AND pipeline=%s AND alert_type=%s",
-            parameters=(exec_id, pipeline, alert_type),
-        )
-        if before and before[0] > 0:
-            continue  # já alertado
-
-        hook.run(insert_sql, parameters=(
-            exec_id, pipeline, alert_type, sla_min, elapsed,
-            exec_id, pipeline, alert_type,
-        ))
-        alerts += 1
-
         facts = [
             _fact("Pipeline",     pipeline),
             _fact("Projeto",      project),
@@ -198,9 +174,11 @@ def monitorar_sla(**context):
         if runbook:
             facts.append(_fact("Runbook", (runbook[:300] + "…") if len(runbook) > 300 else runbook))
 
-        _teams_post_card(title=title, subtitle=subtitle, facts=facts, status=status)
+        enqueue(hook, exec_id, pipeline, alert_type, sla_min, elapsed,
+                dict(title=title, subtitle=subtitle, facts=facts, status=status))
         print(f"[SLA] {alert_type}: {pipeline} exec={exec_id} elapsed={elapsed}min sla={sla_min}min")
 
+    alerts = drain(hook, _teams_post_card)
     print(f"[SLA] Execuções verificadas: {len(rows)} | Alertas enviados: {alerts}")
     return {"checked": len(rows), "alerts": alerts}
 

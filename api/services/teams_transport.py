@@ -2,17 +2,34 @@
 import http.client
 import json
 import ssl
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import quote, urlencode, urlsplit
 
 from services.teams_personal import PersonalTarget, ProviderError, _uuid
 
 _MAX_BODY = 1024 * 1024
+_request_fence = ContextVar('teams_request_fence', default=None)
+
+
+@contextmanager
+def fenced_requests(before_send):
+    """Fence RAM por execução; revalidada após TLS, inclusive após OAuth."""
+    token = _request_fence.set(before_send)
+    try:
+        yield
+    finally:
+        _request_fence.reset(token)
 
 
 def _https(host, method, path, body=None, headers=None):
     conn = http.client.HTTPSConnection(host, timeout=10, context=ssl.create_default_context())
     conn.set_debuglevel(0)
     try:
+        fence = _request_fence.get()
+        if fence is not None:
+            conn.connect()
+            fence()
         conn.request(method, path, body=body, headers=headers or {})
         response = conn.getresponse()
         # Rejeição explícita preservada sem ler corpo remoto nem Location.

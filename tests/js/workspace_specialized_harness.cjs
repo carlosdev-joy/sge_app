@@ -12,6 +12,27 @@ const changed=s.patchSpecializedNode(file,{entradas:[{entrada_id:'two',arquivo:'
 for(const [type,key] of [['sql','sql_json'],['email','notify_json'],['notificacao','notify_json'],['aguarde','aguarde_json']]){const n={id:'n',type,configuration:{legacyJob:{[key]:'{"future":1,"anexo":{"extra":2}}',extra:'job'}}};const next=s.patchSpecializedNode(n,{message:'new'});assert.equal(s.specializedConfiguration(next).future,1);assert.equal(next.configuration.legacyJob.extra,'job')}
 console.log('Draft specialized forms and atomic decision graph PASS');
 
+// Teams: editar mensagem não promove legado para opt-in nem apaga política salva.
+const teams={id:'teams',type:'notificacao',configuration:{legacyJob:{notify_json:JSON.stringify({grupo_id:1,template_id:2,mensagem:'antes',future:true})}}};
+const legacyTeams=s.specializedConfiguration(s.patchSpecializedNode(teams,{mensagem:'depois'}));
+assert(!('on_error' in legacyTeams));assert.equal(legacyTeams.future,true);
+const requiredTeams=s.patchSpecializedNode(teams,{on_error:'falhar'});
+const editedTeams=s.specializedConfiguration(s.patchSpecializedNode(requiredTeams,{mensagem:'nova'}));
+assert.equal(editedTeams.on_error,'falhar');assert.equal(editedTeams.template_id,2);
+assert.equal(s.specializedConfiguration(s.patchSpecializedNode(requiredTeams,{on_error:'continuar'})).on_error,'continuar');
+assert(!('on_error' in s.specializedConfiguration(teams)));
+
+const notifyModule={exports:{}};
+new Function('module','exports',transform(fs.readFileSync(root+'/ui-react/src/components/etapas/fluxoTypes.ts','utf8'),{transforms:['typescript','imports']}).code)(notifyModule,notifyModule.exports);
+const notify=notifyModule.exports;
+assert(!('on_error' in notify.toNotifyConfig({grupo_id:1,template_id:null,mensagem:'legado'})));
+assert(!('on_error' in notify.defaultNotify()));
+for(const on_error of ['falhar','continuar']) {
+  const original={grupo_id:1,template_id:2,mensagem:'mensagem',on_error};
+  assert.deepEqual(notify.toNotifyConfig(original),original);
+  assert.deepEqual(original,{grupo_id:1,template_id:2,mensagem:'mensagem',on_error});
+}
+
 const email={id:'mail',type:'email',configuration:{legacyJob:{notify_json:JSON.stringify({anexo:{raiz:'/old',nome:'x',future:{keep:1}}})}}};assert.deepEqual(s.specializedConfiguration(s.patchSpecializedNode(email,{anexo:{raiz:'/new',nome:'y'}})).anexo,{raiz:'/new',nome:'y',future:{keep:1}});assert.throws(()=>s.patchSpecializedNode(email,{anexo:null}),/adicionais/);
 for(const type of ['sql','decisao']){const n={id:'new',type,configuration:{legacyJob:{}}};assert.equal(s.specializedConfiguration(s.patchSpecializedNode(n,{valor:'1'})).on_error,'falhar');assert.equal(s.specializedConfiguration(s.patchSpecializedNode({...n,configuration:{legacyJob:{[type==='sql'?'sql_json':'condition_json']:'{"on_error":"nulo"}'}}},{valor:'1'})).on_error,'nulo')}
 for(const raw of ['{invalid','[]','null','17']){const bad={id:'bad',type:'sql',configuration:{legacyJob:{sql_json:raw}}};assert(s.specializedConfigurationIssue(bad));assert.throws(()=>s.patchSpecializedNode(bad,{sql:'SELECT 1'}));assert.equal(bad.configuration.legacyJob.sql_json,raw)}

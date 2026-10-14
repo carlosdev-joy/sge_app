@@ -32,7 +32,8 @@ class Target:
         return hashlib.sha256((self.channel + ':' + self.value).encode()).hexdigest()
 
 
-def resolve(cur, intent_id, *, personal_config=None, personal_gateway=None):
+def resolve(cur, intent_id, *, personal_config=None, personal_gateway=None,
+            personal_operational=False):
     """Destino exclusivamente do snapshot original; nunca active publication/default.
 
     Retorna também o evento confirmado armazenado, sem aceitar corpo do chamador.
@@ -66,6 +67,15 @@ def resolve(cur, intent_id, *, personal_config=None, personal_gateway=None):
     elif channel == 'teamsPersonal':
         # Import local evita ciclo; readiness padrão permanece fechada.
         from services.teams_personal import Configuration, resolve as resolve_personal
+        if personal_operational:
+            from services import teams_config
+            value = teams_config.load(cur)
+            if teams_config.public_status(value)['readiness'] != 'ready':
+                raise ValueError('personal_unavailable')
+            personal_config = Configuration(value['tenant_id'], value['app_id'],
+                                            value['admin_approved'], value['permissions_verified'],
+                                            value['gateway_verified'])
+            personal_gateway = teams_config.directory(value)
         index = int(reference.rsplit(':', 1)[1])
         recipient = capture['policy']['recipients'][index]
         personal, error = resolve_personal(personal_config or Configuration(), personal_gateway, recipient)
@@ -92,7 +102,8 @@ def valid_webhook(value):
         return False
 
 
-def deliver(cur, intent_id, *, dry_run=True, authorized_test_fingerprint=None):
+def deliver(cur, intent_id, *, dry_run=True, authorized_test_fingerprint=None,
+            before_send=None, authorized_test_fingerprints=None):
     """Harness interno: opt-in real exige fingerprint exata de destino de teste.
 
     A autorização é fornecida pelo operador em RAM, nunca por configuração/API.
@@ -100,14 +111,30 @@ def deliver(cur, intent_id, *, dry_run=True, authorized_test_fingerprint=None):
     O chamador futuro deve persistir claim/resultado e validar exclusão do legado.
     """
     try:
-        target, context = resolve(cur, intent_id)
+        target, context = resolve(cur, intent_id, personal_operational=dry_run is False)
         if dry_run is not False:
             return Result('DryRun')
+        if authorized_test_fingerprints is not None and target.fingerprint in authorized_test_fingerprints:
+            authorized_test_fingerprint = target.fingerprint
         if not isinstance(authorized_test_fingerprint, str) or authorized_test_fingerprint != target.fingerprint:
             return Result('Failed', 'test_destination_not_authorized')
         title = 'Orquestra — ' + context['event']
         # Conteúdo mínimo de evento; sem templates SQL/anexos dos nós customizados.
         text = 'Pipeline: ' + context['pipeline'] + '\nCorrida: ' + context['run']
+        if target.channel == 'teamsPersonal':
+            from services import teams_binding, teams_config
+            from services.teams_personal import deliver_target
+            # Referência aprovada exata; conversa Graph nunca vira webhook/canal.
+            value = teams_config.load(cur)
+            if teams_config.public_status(value)['readiness'] != 'ready':
+                return Result('Failed', 'invalid_destination')
+            provider = teams_binding.provider(cur, value, target)
+            if provider is None:
+                return Result('Failed', 'invalid_destination')
+            from services.teams_transport import fenced_requests
+            with fenced_requests(before_send):
+                return deliver_target(target, provider, title + '\n' + text, dry_run=False,
+                                      authorized_test_fingerprint=authorized_test_fingerprint)
         if target.channel == 'email':
             cfg = email_config.load_config(cur)
             addresses, errors = email_mime.validar_destinatarios([target.value], cfg['dominios'])
@@ -118,7 +145,8 @@ def deliver(cur, intent_id, *, dry_run=True, authorized_test_fingerprint=None):
             import html
             message = email_mime.montar_mensagem(cfg['remetente'], addresses, title,
                                                   '<pre>' + html.escape(text) + '</pre>')
-            response = ssh_datastage.run_sendmail(message, cfg['remetente'], timeout=15)
+            kwargs = {'before_send': before_send} if before_send is not None else {}
+            response = ssh_datastage.run_sendmail(message, cfg['remetente'], timeout=15, **kwargs)
             code = response.get('exit_code')
             if type(code) is not int or code < 0:
                 return Result('Unknown', 'transport_uncertain')
@@ -135,6 +163,10 @@ def deliver(cur, intent_id, *, dry_run=True, authorized_test_fingerprint=None):
         with closing(HTTPSConnection(url.hostname, url.port or 443, timeout=15,
                                      context=ssl.create_default_context())) as client:
             client.set_debuglevel(0)
+            # Connect pode consumir a lease: revalidar após TLS e antes do POST.
+            if before_send is not None:
+                client.connect()
+                before_send()
             client.request('POST', path, body=json.dumps(card, ensure_ascii=False).encode('utf-8'),
                            headers={'Content-Type': 'application/json; charset=utf-8'})
             status = client.getresponse().status

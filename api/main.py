@@ -136,10 +136,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.alert_dispatcher import reconcile_loop as alert_reconcile_loop
+from services.alert_producer import reconcile_loop as alert_producer_loop
 from services.dag_reconcile import reconcile_loop
 from services.workspace_publication import reconcile_loop as workspace_reconcile_loop
 from routers import workspace_publication
 from routers import teams_personal
+from routers import sla_recovery
 from services.monitor_capture import capture_loop as monitor_capture_loop
 
 from routers import (
@@ -178,8 +180,9 @@ async def lifespan(app: FastAPI):
     # Observabilidade de tabelas: captura snapshots periódicos (frescor/volume).
     monitor_task = asyncio.create_task(monitor_capture_loop())
     alert_task = asyncio.create_task(alert_reconcile_loop())
+    alert_producer_task = asyncio.create_task(alert_producer_loop())
     yield
-    for _t in (reconcile_task, monitor_task, workspace_task, alert_task):
+    for _t in (reconcile_task, monitor_task, workspace_task, alert_task, alert_producer_task):
         _t.cancel()
         try:
             await _t
@@ -205,6 +208,7 @@ app.add_middleware(
 
 # Registra todos os routers
 app.include_router(teams_personal.router)
+app.include_router(sla_recovery.router)
 for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,

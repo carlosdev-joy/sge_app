@@ -73,7 +73,7 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
           <div className="flex flex-col gap-1">
             <Select
               label="Grupo (canal) *"
-              hint={`Canal do Teams cadastrado em ${rotuloAdmin('comunicacao', 'teams')}.\nGrupo sem webhook (ou desativado): o card não é enviado e o log da etapa diz o motivo.`}
+              hint={`Canal do Teams cadastrado em ${rotuloAdmin('comunicacao', 'teams')}.\nGrupo sem webhook (ou desativado): o card não é enviado. A política de erro abaixo determina o resultado da etapa.`}
               value={cfg.grupo_id != null ? String(cfg.grupo_id) : ''}
               onChange={onGrupoChange}
               className="text-xs"
@@ -118,6 +118,16 @@ export function PainelNotificacao({ node, grupos, onRename, onPatchNotify, onDel
                 <p className="text-[10px] text-dim/70">Nenhum modelo neste canal — use a mensagem abaixo.</p>
               )}
           </div>
+
+          <Select
+            label="Se o envio do Teams falhar"
+            value={cfg.on_error ?? 'continuar'}
+            onChange={e => patch({ on_error: e.target.value as 'continuar' | 'falhar' })}
+            ajuda="Continuar mantém o comportamento legado. Falhar reprova esta etapa se o destino estiver indisponível ou o envio falhar. A alteração vale após salvar e publicar."
+          >
+            <option value="continuar">Continuar a execução</option>
+            <option value="falhar">Falhar a etapa</option>
+          </Select>
 
           {/* Aviso quando falta o canal (grupo_id obrigatório no save). */}
           {cfg.grupo_id == null && (

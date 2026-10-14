@@ -265,7 +265,10 @@ async def test_rerun_snapshot_resolve_id_historico_e_recusa_override(monkeypatch
     from unittest.mock import AsyncMock
     from fastapi import HTTPException
     from routers import execucoes as e
-    monkeypatch.setattr(e,'get_db_conn',lambda:MagicMock())
+    connection = MagicMock()
+    connection.cursor.return_value.fetchone.return_value = (None,)
+    connection.cursor.return_value.execute.return_value.fetchone.return_value = (None,)
+    monkeypatch.setattr(e,'get_db_conn',lambda:connection)
     monkeypatch.setattr(e.ps,'ativo',lambda *a:True)
     resolve=AsyncMock(return_value=('P',{'run_id':'R'},None))
     monkeypatch.setattr(e,'_resolve_alvo_rerun',resolve)
