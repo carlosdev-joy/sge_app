@@ -1876,3 +1876,7 @@ Expanda **Comunicações atuais e destinatários dos componentes** para acessar 
 ### Fila de alertas — fundação técnica EOC-F9A
 
 A preparação da fila persistente não habilita mensagens automáticas. Configuração e prévia continuam no mesmo rascunho do pipeline, sem envio. Resultado agregado, ciclos de reprocessamento e integrações precisam ser certificados antes da ativação; o dispatcher faz parte da etapa F9B. As comunicações existentes das tarefas permanecem com seu comportamento atual.
+
+### Fila de alertas — dispatcher técnico EOC-F9B
+
+A fila agora controla tentativas e recupera trabalho após reinício. Nesta entrega os cenários são exclusivamente simulados, sem enviar mensagens externas. Resultado incerto (`Unknown`) não é reenviado automaticamente; aceitação simulada (`Accepted`) não significa recebimento. A entrega de mensagens não altera nem repete a execução do pipeline. A certificação da fonte de resultados e a habilitação dos canais continuam pendentes. [Limites técnicos](eoc-f9-persistencia-dispatcher.md).
