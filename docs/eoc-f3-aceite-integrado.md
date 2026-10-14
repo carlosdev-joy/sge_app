@@ -1,5 +1,20 @@
 # EOC-F3 — Aceite integrado e preservação do Pipeline
 
+## Fechamento confirmado — DEV 2.22.3
+
+**EOC-F3 encerrada em DEV**, após PR507 (paridade), PR508 (publicação esperada e confirmação de execução) e PR509 (diagnóstico contextual).
+
+- **L1:** percurso nativo próprio SQL/Shell com mesma sessão/fence/revisão, salvamento, recusa409 na segunda sessão, formulário conservado após503 injetado, diagnóstico do campo desconhecido com etapa/campo e retenção, publicação confirmada por versão/hash, solicitação pelo diálogoUI e corrida vinculada à versão publicada. Falha controlada na primeira tentativa e sucesso na segunda, logs reais1/2, aliaslogs e seleção por teclado confirmados.
+- **L2/L3:** onze tipos e oito agendas em matrizes independentes aprovadas; sem produto cartesiano.
+- **L4:** pausa/liberação no percursoL1; segunda corrida própria confirmou cancelamento no modal, DagRunfailed e pausaCANCELADA. Cancelar não certifica interrupção de trabalho remoto.
+- **Limpeza:** fixtures publicadas inativas/pausadas, corridas terminais, nenhum comando próprio ativo, marcadores removidos; pausas canceladas não foram liberadas. Rascunhos de ensaio sem execução foram descartados.
+
+Evidência nativa única: `codex-native-f3.json`, em `/root/orquestra-eoc-evidencias/f3/`, inclui identidades encadeadas e cleanup. Artefatos de implantação: `codex-172-health.json`, `codex-173-health.json`; pacote.NET offlinepinado do commit0b36d528. Revisão final adversarial Codex aprovada. Suíte final7913PASS/exatas8falhaspreexistentes/51SKIP; zero regressão. Focados do diagnóstico60PASS; proteção de referências/segredos comprovada offline, sem envio de valores.
+
+DataStage/Caixa, canais/provedores reais e pilotos não são declarados aprovados. Permanecem nos gates externos e fases próprias previstas na SPEC.
+
+As seções seguintes preservam o histórico das rodadas anteriores: referências a candidatos não publicados e pendências daquela rodada não representam o estado final acima.
+
 Data: 2026-10-13 · Subfase **EOC-F3a** (documental: roteiro, matrizes e próximo lote), atualizada pela **EOC-F3b** (L2 e correções A1–A5, candidato 2.22.1, seção 10) e pela **EOC-F3c** (L3, corretivo R1/R2 da leitura da agenda, D1, corretivo M1/M2 do QA final pós-D1 e gate final pós-M1/M2, seção 11) · SPEC: [experiência e operação consolidada](spec-experiencia-operacao-consolidada.md) §EOC-F3 · Inventário: [EOC-F0](eoc-inventario-e-rastreabilidade.md) · Paridade: [matriz Pipeline](matriz-paridade-pipeline.md).
 
 ## 1. Base, escopo e regra de evidência
@@ -9,8 +24,8 @@ Data: 2026-10-13 · Subfase **EOC-F3a** (documental: roteiro, matrizes e próxim
 | Base | `develop` `56484d774902a502f31e064ce9dbfefafe28a0ac` (merge da PR #506, EOC-F2), publicada no DEV como 2.22.0, migration 170 |
 | Branch | `feat/eoc-f3-aceite-integrado` |
 | F3a (esta seção até a 9) | Só documentação: nenhum código de aplicação, migration, teste novo, suíte, smoke, publicação ou envio. |
-| Candidato atual (seções 10 e 11) | **Há correção de aplicação**: API (`validate_projection`, A1–A5), UI (leitura da agenda, R1/R2) com `dist/` reconstruída, testes novos e migration 171. Commit único e PR para `develop` depois do gate estático final pós-M1/M2 (seção 11); sem merge, publicação, migration aplicada ou deploy. |
-| Fase | Nenhuma subfase fecha a EOC-F3; L1, L4 e os limites externos continuam abertos (seção 9). |
+| Candidato histórico (seções 10 e 11) | **Há correção de aplicação**: API (`validate_projection`, A1–A5), UI (leitura da agenda, R1/R2) com `dist/` reconstruída, testes novos e migration 171. Commit único e PR para `develop` depois do gate estático final pós-M1/M2 (seção 11); sem merge, publicação, migration aplicada ou deploy. |
+| Fase | F3 encerrada emDEV2.22.3, L1/L4 nativos confirmados; limites externos declarados no fechamento. |
 
 Na F3a **nenhum teste foi executado** (as rodadas da F3b e da F3c estão nas seções 10 e 11). Todo "PASS" abaixo cita a rodada original e o SHA dela. Testes que existem no repositório na base, mas sem rodada registrada que os ligue a esta jornada, aparecem como **existente**, não como aprovado.
 
