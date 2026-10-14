@@ -34,7 +34,7 @@ export function ChangelogModal({ onClose }: { onClose: () => void }) {
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
         onKeyDown={e => trapTabKey(e, panelRef.current)}
-        className="relative bg-panel border border-edge rounded-2xl shadow-2xl w-full max-w-xl flex flex-col max-h-[80vh] focus:outline-none">
+        className="ui-overlay-panel relative bg-panel border border-edge rounded-2xl shadow-2xl w-full max-w-xl flex flex-col max-h-[80vh] focus:outline-none">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-edge shrink-0">
           <div className="min-w-0">
@@ -42,7 +42,7 @@ export function ChangelogModal({ onClose }: { onClose: () => void }) {
             <p className="text-xs font-semibold text-ink mt-1">{ORQUESTRA_NAME}</p>
             <p className="text-[11px] text-dim mt-0.5">{ORQUESTRA_SUBTITLE}</p>
           </div>
-          <button type="button" aria-label="Fechar histórico de versões" onClick={onClose} className="shrink-0 w-10 h-10 flex items-center justify-center text-dim hover:text-ink rounded hover:bg-edge/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-current">
+          <button type="button" aria-label="Fechar histórico de versões" onClick={onClose} className="ui-button ui-button-small ui-icon-button shrink-0 w-10 h-10 flex items-center justify-center text-dim hover:text-ink rounded hover:bg-edge/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-current">
             <X size={16} />
           </button>
         </div>

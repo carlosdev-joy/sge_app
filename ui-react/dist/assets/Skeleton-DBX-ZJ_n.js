@@ -1,0 +1,1 @@
+import"./chunk-QTnfLwEv.js";import{r as e,t}from"./jsx-runtime-DQnQMehK.js";e();var n=t();function r({className:e=``,...t}){return(0,n.jsx)(`div`,{...t,className:`motion-safe:animate-pulse rounded-md bg-ink/10 ${e}`})}export{r as t};

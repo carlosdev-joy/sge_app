@@ -282,7 +282,7 @@ const ARQ_GRANDE = { name: 'grande.txt', size: TETO_KB * 1024 + 1 }
   const ocupado = montarForm({ enviando: true }).tela
   ocupado.disparar(seletor(ocupado), 'onChange', { target: { files: [ARQ_LOCAL] } }); digitar(ocupado, campoPasta(ocupado), '/dados/bi')
   saida.formEnviando = { enviar: !!porAcao(ocupado, 'enviar')[0].props.disabled, escolher: !!porAcao(ocupado, 'escolher')[0].props.disabled,
-                         loading: !!porAcao(ocupado, 'enviar')[0].props.loading || textoDe(porAcao(ocupado, 'enviar')[0]).includes('⟳') }
+                         loading: !!porAcao(ocupado, 'enviar')[0].props.loading || porAcao(ocupado, 'enviar')[0].props['aria-busy'] === true }
   const semPerm = montarForm({ podeGravar: false }).tela
   saida.formSemPermissao = { aviso: porAttr(semPerm, 'data-aviso').map(n => n.props['data-aviso']),
                              enviar: !!porAcao(semPerm, 'enviar')[0].props.disabled, escolher: !!porAcao(semPerm, 'escolher')[0].props.disabled,

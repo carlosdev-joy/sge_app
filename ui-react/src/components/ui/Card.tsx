@@ -11,8 +11,8 @@ export function Card({ title, children, className = '', action }: CardProps) {
   return (
     <div className={`bg-panel border border-edge rounded-lg ${className}`}>
       {title && (
-        <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
-          <h3 className="text-sm font-semibold text-ink">{title}</h3>
+        <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3 border-b border-edge">
+          <h3 className="ui-section-title min-w-0 text-ink">{title}</h3>
           {action}
         </div>
       )}

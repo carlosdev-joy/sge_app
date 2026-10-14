@@ -40,12 +40,12 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
         aria-label={title}
         tabIndex={-1}
         onKeyDown={(e) => trapTabKey(e, panelRef.current)}
-        className={`relative w-full ${SIZES[size]} bg-panel border border-edge rounded-xl shadow-2xl flex flex-col max-h-[90vh] focus:outline-none`}
+        className={`relative w-full ${SIZES[size]} ui-overlay-panel bg-panel border border-edge rounded-xl shadow-2xl flex flex-col max-h-[90vh] focus:outline-none`}
       >
         {title && (
-          <div className="flex items-center justify-between px-5 py-4 border-b border-edge">
-            <h2 className="text-base font-semibold text-ink">{title}</h2>
-            <button type="button" onClick={onClose} aria-label="Fechar" className="text-dim hover:text-white transition-colors">
+          <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-edge">
+            <h2 className="ui-section-title min-w-0 text-ink">{title}</h2>
+            <button type="button" onClick={onClose} aria-label="Fechar" className="ui-button ui-button-small ui-icon-button shrink-0 rounded text-dim hover:text-ink transition-colors">
               <X size={18} />
             </button>
           </div>

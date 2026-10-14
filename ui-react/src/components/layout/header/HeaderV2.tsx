@@ -13,7 +13,7 @@ export function HeaderV2({ onMenuClick }: { onMenuClick?: () => void } = {}) {
 
   return (
     <header
-      className="shrink-0 text-white bg-[rgb(var(--brand-navy))]"
+      className="orq-header shrink-0 text-white bg-[rgb(var(--brand-navy))]"
     >
       <div className="flex items-center gap-1.5 px-2 sm:gap-3 sm:px-4 h-[52px]">
         {onMenuClick && (

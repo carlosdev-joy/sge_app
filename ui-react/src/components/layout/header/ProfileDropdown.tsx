@@ -3,6 +3,7 @@ import { useAuthStore } from '../../../store/auth'
 import { useAppVersion } from '../../../lib/version'
 import { LogOut, Shield, Mail, Hash, Building2, ChevronDown } from 'lucide-react'
 import { ChangelogModal } from './ChangelogModal'
+import { applyDensity, getDensity, type Density } from '../../../lib/density'
 
 function initials(primeiro?: string | null, ultimo?: string | null, matricula?: string): string {
   if (primeiro && ultimo) return (primeiro[0] + ultimo[0]).toUpperCase()
@@ -25,6 +26,7 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
   const appVersion = useAppVersion()
   const [open, setOpen]           = useState(false)
   const [showChangelog, setShowChangelog] = useState(false)
+  const [density, setDensity] = useState(getDensity)
   const ref = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelId = useId()
@@ -110,6 +112,19 @@ export function ProfileDropdown({ onLogout }: { onLogout: () => void }) {
             </div>
 
             {/* Footer: versão clicável + sair */}
+            <fieldset className="px-4 py-3 border-t border-white/10">
+              <legend className="text-xs text-white/80 px-1">Densidade da interface</legend>
+              <div className="flex flex-wrap gap-2">
+                {(['comfortable', 'compact'] as Density[]).map(value => (
+                  <label key={value} className="relative flex items-center gap-2 min-h-11 text-sm text-white cursor-pointer">
+                    <input type="radio" name="orq-density" value={value} checked={density === value}
+                      onChange={() => { applyDensity(value); setDensity(value) }} className="accent-white" />
+                    {value === 'compact' ? 'Compacta' : 'Confortável'}
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-white/80">Altera o espaçamento dos controles neste navegador.</p>
+            </fieldset>
             <div className="px-4 py-2.5 border-t border-white/10 flex items-center justify-between">
               <button
                 type="button"

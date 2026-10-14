@@ -23,8 +23,12 @@ html.dark {
 html, body {
   background-color: rgb(var(--canvas));
   color: rgb(var(--ink));
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
 }
+:root { color-scheme: light; --surface-focus: var(--control-focus); }
+html.dark { color-scheme: dark; }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: rgb(var(--panel)); }
@@ -67,6 +71,94 @@ html.dark {
   --control-focus: 141 186 255;
   --action: 141 186 255;
   --action-strong: 119 173 255;
+}
+
+/* Base operacional EOC-F4. Preferências alteram apenas apresentação. */
+:root {
+  --success-ink: 21 128 61;
+  --success-surface: 240 253 244;
+  --warning-ink: 146 64 14;
+  --warning-surface: 255 251 235;
+  --error-ink: 185 28 28;
+  --error-surface: 254 242 242;
+  --info-ink: 29 78 216;
+  --info-surface: 239 246 255;
+  --control-height: 2.5rem;
+  --control-small-height: 2rem;
+  --row-height: 2.75rem;
+  --cell-padding: .75rem;
+  --field-gap: 1rem;
+  --radius-control: .375rem;
+  --radius-panel: .5rem;
+  --radius-dialog: .75rem;
+  --motion-control: 150ms;
+}
+html.dark {
+  --success-ink: 134 239 172;
+  --success-surface: 20 48 35;
+  --warning-ink: 252 211 77;
+  --warning-surface: 49 39 24;
+  --error-ink: 252 165 165;
+  --error-surface: 54 28 35;
+  --info-ink: 147 197 253;
+  --info-surface: 25 42 65;
+}
+html[data-density='compact'] {
+  --control-height: 2rem;
+  --row-height: 2.25rem;
+  --cell-padding: .5rem;
+  --field-gap: .75rem;
+}
+/* Toque conserva 44px inclusive em preferência compacta. */
+@media (pointer: coarse) {
+  :root { --control-height: 2.75rem; --control-small-height: 2.75rem; --row-height: 2.75rem; }
+  :root[data-density='compact'] { --control-height: 2.75rem; --row-height: 2.75rem; }
+}
+
+::selection { background: rgb(var(--action) / .2); }
+.orq-header { --control-focus: 255 255 255; }
+.ui-overlay-panel { --control-focus: var(--surface-focus); }
+input, textarea { caret-color: rgb(var(--action)); }
+:root :is(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid rgb(var(--control-focus));
+  outline-offset: 2px;
+}
+/* As classes utilitárias dos consumidores continuam podendo especializar a base. */
+@layer components {
+  .ui-button, .ui-control, .ui-tab, .ui-choice {
+    min-height: var(--control-height);
+    overflow-wrap: anywhere;
+    font-size: .875rem;
+    line-height: 1.25rem;
+    transition-duration: var(--motion-control);
+  }
+  .ui-button { justify-content: center; max-width: 100%; }
+  .ui-icon-button { min-width: var(--control-small-height); }
+  .ui-button-small, .ui-tab-small { min-height: var(--control-small-height); }
+  .ui-button-large { min-height: 2.75rem; }
+  .ui-control {
+    width: 100%; min-width: 0;
+    border: 1px solid rgb(var(--control-border));
+    border-radius: var(--radius-control);
+    background: rgb(var(--panel)); color: rgb(var(--ink));
+    padding: calc((var(--control-height) - 1.25rem - 2px) / 2) .75rem;
+  }
+  .ui-control::placeholder { color: rgb(var(--dim)); opacity: 1; }
+  .ui-control:hover:not(:disabled):not([readonly]) { border-color: rgb(var(--action)); }
+  .ui-control[aria-invalid='true'] { border-color: rgb(var(--error-ink)); }
+  .ui-control:disabled { cursor: not-allowed; background: rgb(var(--canvas)); }
+  .ui-control[readonly] { background: rgb(var(--canvas)); }
+  .ui-table th, .ui-table td { height: var(--row-height); padding-block: var(--cell-padding); }
+  .ui-table-dense { --row-height: 2.25rem; --cell-padding: .5rem; }
+  .ui-table td { overflow-wrap: anywhere; }
+  .ui-field-group { display: flex; flex-direction: column; gap: var(--field-gap); }
+  .ui-title { font-size: 1.5rem; line-height: 2rem; font-weight: 600; overflow-wrap: anywhere; }
+  .ui-section-title { font-size: 1rem; line-height: 1.5rem; font-weight: 600; overflow-wrap: anywhere; }
+  .ui-help { font-size: .75rem; line-height: 1.125rem; color: rgb(var(--dim)); overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-button, .ui-control, .ui-tab, .ui-choice { transition: none; }
+  .ui-spinner, .ui-sheet { animation: none; }
 }
 /* Header: orbital branco preserva a forma original sobre azul institucional. */
 .orq-logo-header > img:first-child { filter: brightness(0) invert(1); }
