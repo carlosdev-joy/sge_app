@@ -1,7 +1,7 @@
 import { confirmAction } from '../lib/dialogs'
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { normalizeBusca } from '../lib/busca'
 import { useAuthStore } from '../store/auth'
@@ -188,21 +188,21 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
     () => (esperada ? resumoEsperada(esperada, tempo) : null),
     [esperada, tempo])
   return (
-    <div className="bg-panel border border-edge rounded-lg px-4 py-3 flex flex-col gap-2 hover:shadow-md hover:border-[#1A5FA8]/40 transition-all">
+    <div className="bg-panel border border-edge rounded-lg p-4 flex flex-col gap-3 hover:border-action/50 transition-colors">
       <div className="flex items-center gap-2 flex-wrap">
         <span className={`w-2 h-2 rounded-full shrink-0 ${ativa ? 'bg-green-400' : 'bg-slate-400'}`} />
-        <span className="font-mono text-sm font-semibold text-ink flex-1 min-w-0 truncate">{malha.malha_name}</span>
+        <span className="text-base font-semibold text-ink flex-1 min-w-0 break-words" title={malha.malha_name}>{malha.malha_name}</span>
         {malha.criticidade && <CritBadge crit={malha.criticidade} />}
         {ativa ? (
-          <span className="text-[10px] text-green-600 dark:text-green-400 font-medium">● Ativa</span>
+          <span className="text-[10px] text-green-600 dark:text-green-400 font-medium">● Definição ativa</span>
         ) : (
-          <span className="text-[10px] text-dim">○ Inativa</span>
+          <span className="text-[10px] text-dim">○ Definição inativa</span>
         )}
       </div>
       {malha.descricao && (
-        <p className="text-[11px] text-dim line-clamp-2">{malha.descricao}</p>
+        <p className="text-sm text-dim line-clamp-2">{malha.descricao}</p>
       )}
-      <div className="flex flex-col gap-0.5 text-[11px] text-dim">
+      <div className="flex flex-col gap-1 text-xs text-dim">
         <span title="Pipelines membros e o total de etapas (jobs) somando todos eles — a complexidade da malha">
           ⚙ {malha.qtd_pipelines} pipeline{malha.qtd_pipelines !== 1 ? 's' : ''} ({malha.qtd_ativos} ativo{malha.qtd_ativos !== 1 ? 's' : ''})
           {typeof malha.qtd_etapas === 'number' && (
@@ -381,7 +381,7 @@ function MalhaCard({ malha, tempo, semDadosDeCorrida, onAcompanhar, onAbrir,
           <Play size={12} /> Acompanhar
         </Button>
         <Button variant="secondary" size="sm" onClick={onAbrir} title="Abrir o diagrama de montagem — desenhar uma aresta cadastra a dependência real">
-          <Network size={12} /> Diagrama
+          <Network size={12} /> Definição
         </Button>
         <Button variant="secondary" size="sm" onClick={onMembros} title="Ver e editar os pipelines desta malha">
           <Users size={12} /> Membros
@@ -898,7 +898,7 @@ function MalhasView({ onAbrir, onAcompanhar }: {
 
       {/* Toolbar */}
       <div className="flex flex-wrap gap-2 items-center">
-        <div className="relative">
+        <div className="relative w-full sm:w-auto">
           <Search size={14} className="absolute left-2.5 top-2.5 text-dim pointer-events-none" />
           <input
             type="search"
@@ -906,7 +906,7 @@ function MalhasView({ onAbrir, onAcompanhar }: {
             onChange={e => setBusca(e.target.value)}
             placeholder="Buscar por nome ou descrição…"
             aria-label="Buscar malha por nome ou descrição"
-            className="w-72 bg-panel border border-edge text-ink rounded-md pl-8 pr-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-72 bg-panel border border-control-border text-ink rounded-md pl-8 pr-3 py-2 text-sm placeholder-dim focus:outline-none focus:ring-2 focus:ring-action"
           />
         </div>
         <Select
@@ -1108,7 +1108,7 @@ function MalhasView({ onAbrir, onAcompanhar }: {
           </Button>
         </div>
       ) : (
-        <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {filtradas.map(m => (
             <MalhaCard
               key={m.malha_name}
@@ -1149,6 +1149,14 @@ function MalhasView({ onAbrir, onAcompanhar }: {
 export default function Malha() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
+  const location = useLocation()
+  const navigationType = useNavigationType()
+  // POP reaplica a lente do histórico. REPLACE apenas registra a seleção
+  // feita no editor e preserva sua instância e o estado do canvas.
+  const [navigation, setNavigation] = useState({ locationKey: location.key, editorKey: location.key })
+  if (navigation.locationKey !== location.key) {
+    setNavigation({ locationKey: location.key, editorKey: navigationType === 'REPLACE' ? navigation.editorKey : location.key })
+  }
   const malhaAberta = (searchParams.get('malha') ?? '').trim()
   // (F3) Lente e data com que o diagrama abre — é o que torna a visão de
   // Execução LINKÁVEL e permite ao drill-down das etapas voltar exatamente
@@ -1165,6 +1173,13 @@ export default function Malha() {
   const corridaParam = Number((searchParams.get('corrida') ?? '').trim())
   const corridaInicial = Number.isInteger(corridaParam) && corridaParam > 0
     ? corridaParam : null
+  const registrarContexto = useCallback((modo: 'montagem' | 'execucao', data: string | null, corrida: number | null) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('modo', modo)
+    if (data) next.set('data', data); else next.delete('data')
+    if (corrida) next.set('corrida', String(corrida)); else next.delete('corrida')
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
   const [membrosAberto, setMembrosAberto] = useState(false)
   const [ajudaAberta, setAjudaAberta] = useState(false)
   const user = useAuthStore(s => s.user)
@@ -1175,9 +1190,9 @@ export default function Malha() {
     return (
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="flex items-center gap-2 text-lg font-semibold text-ink">
+          <h1 className="flex items-center gap-2 text-lg font-semibold text-ink min-w-0 flex-wrap">
             <Boxes size={20} className="text-[#1A5FA8]" /> Malha
-            <span className="font-mono text-base text-dim">· {malhaAberta}</span>
+            <span className="text-base text-dim break-words">· {malhaAberta}</span>
           </h1>
           <div className="ml-auto flex items-center gap-2">
             {!isViewer && (
@@ -1199,18 +1214,22 @@ export default function Malha() {
         </div>
         <div className="h-[calc(100vh-11rem)]">
           <MalhaEditor
+            key={`${malhaAberta}:${navigation.editorKey}`}
             malha={malhaAberta}
             readOnly={isViewer}
             modoInicial={modoInicial}
             dataInicial={dataInicial}
             corridaInicial={corridaInicial}
+            onContextoChange={registrarContexto}
             // (F3) Descer até o canvas de Etapas do pipeline, na MESMA data —
             // e levando de onde se veio (`de=malha:…`), que é o que dá a volta
             // óbvia lá do outro lado. Ver a decisão registrada em pages/Fluxos.
-            onAbrirEtapas={(pipeline, data) => navigate(
+            onAbrirEtapas={(pipeline, data, corrida, runId) => navigate(
               `/fluxos?pipeline=${encodeURIComponent(pipeline)}`
               + `&modo=execucao&data=${encodeURIComponent(data)}`
-              + `&de=malha:${encodeURIComponent(malhaAberta)}`)}
+              + `&de=malha:${encodeURIComponent(malhaAberta)}`
+              + `&run_id=${encodeURIComponent(runId)}`
+              + (corrida ? `&corrida=${corrida}` : ''))}
           />
         </div>
         {membrosAberto && (
@@ -1225,9 +1244,9 @@ export default function Malha() {
 
       <div className="flex flex-wrap items-start gap-2">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold text-ink">Malha de Pipelines</h1>
+          <h1 className="text-2xl font-semibold text-ink">Malhas</h1>
           <p className="text-sm text-dim mt-0.5">
-            Agrupe pipelines em malhas — a lente de montagem da orquestração
+            Defina dependências entre pipelines ou acompanhe uma corrida e sua data de processamento.
           </p>
         </div>
         {/* A explicação inteira mora no modal, não na página: espaço de tela é

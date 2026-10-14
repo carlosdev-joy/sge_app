@@ -32,6 +32,8 @@ import {
 
 export interface ExecucaoPipeline {
   pipeline_name: string
+  // Identidade da linha selecionada na lente; ausente em APIs anteriores.
+  run_id?: string | null
   status: string
   inicio: string | null
   fim: string | null

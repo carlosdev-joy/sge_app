@@ -223,7 +223,7 @@ def test_status_vem_da_data_pedida_sem_vazar_outra_data(client, auth_editor):
     assert body["data_referencia"] == "2026-08-01"
     # Contrato LITERAL da execução: status CRU da tabela + campos completos.
     assert body["execucoes"] == [{
-        "pipeline_name": "PIPE_A", "status": "SUCESSO",
+        "pipeline_name": "PIPE_A", "run_id": "run_1", "status": "SUCESSO",
         "inicio": "2026-08-01 06:00:00", "fim": "2026-08-01 06:20:00",
         "disparado_por": "agenda", "motivo": None,
     }]
@@ -248,6 +248,7 @@ def test_mais_recente_da_data_vence(client, auth_editor):
         r = client.get("/malhas/M1/execucao?data_referencia=2026-08-01")
     assert [e["status"] for e in r.json()["execucoes"]] == ["SUCESSO"]
     assert r.json()["execucoes"][0]["inicio"] == "2026-08-01 12:00:00"
+    assert r.json()["execucoes"][0]["run_id"] == "run_12h"
 
 
 def test_empate_de_inicio_desempata_por_execution_id(client, auth_editor):

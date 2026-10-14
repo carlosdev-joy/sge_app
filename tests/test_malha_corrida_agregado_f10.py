@@ -304,6 +304,32 @@ def _sem_cache_de_modo():
 
 # ═══════════════════════════ cenários de malha ══════════════════════════════
 
+def test_lente_antiga_expoe_run_exato_sem_herdar_membro_de_outra_corrida(client, auth):
+    """F14: o drill-down recebe a identidade da lente, nunca a última do dia."""
+    db = FakeDb(pipelines=_pipes())
+    with _patch(db), _patch_agora():
+        _monta_malha(client, "M1", ["A", "B"])
+        antiga = db.abrir_corrida("M1", odate=ODATE, status="CONCLUIDA",
+                                 aberta_em=AGORA_BANCO - timedelta(hours=4),
+                                 membros=["A", "B"])
+        atual = db.abrir_corrida("M1", odate=ODATE,
+                                aberta_em=AGORA_BANCO - timedelta(hours=1),
+                                membros=["A", "B"])
+        db.execucao("A", "FALHA", inicio=AGORA_BANCO - timedelta(hours=3),
+                    corrida=antiga["id"])
+        run_antigo = db.execucoes[-1]["execution_id"]
+        db.execucao("A", "SUCESSO", inicio=AGORA_BANCO - timedelta(minutes=30),
+                    corrida=atual["id"])
+        run_atual = db.execucoes[-1]["execution_id"]
+        db.execucao("B", "SUCESSO", inicio=AGORA_BANCO - timedelta(minutes=20),
+                    corrida=atual["id"])
+        passado = client.get(f"/malhas/M1/execucao?corrida={antiga['id']}").json()
+        presente = client.get(f"/malhas/M1/execucao?corrida={atual['id']}").json()
+    assert [(e["pipeline_name"], e["run_id"]) for e in passado["execucoes"]] == [("A", run_antigo)]
+    assert next(e["run_id"] for e in presente["execucoes"] if e["pipeline_name"] == "A") == run_atual
+    assert run_antigo != run_atual
+
+
 def _malha_de_40(client, db, *, esperando: int, com_dependencia=True):
     """Malha de 40 membros com `esperando` deles em AGUARDANDO_DEPENDENCIA.
 

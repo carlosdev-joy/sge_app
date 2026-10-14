@@ -4322,6 +4322,8 @@ def get_malha_execucao(malha_name: str, data_referencia: str | None = None,
             vencedora = deps_svc.mais_recente_da_data(linhas_membro[oficial])
             item = {
                 "pipeline_name": oficial,
+                # A 067 guarda o dag_run_id, sem inferência pelo ODATE.
+                "run_id": vencedora["execution_id"] or None,
                 "status": vencedora["status"],
                 "inicio": _fmt_dt(vencedora["inicio"]),
                 "fim": _fmt_dt(vencedora["fim"]),
