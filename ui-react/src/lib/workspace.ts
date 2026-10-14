@@ -71,7 +71,7 @@ export function connectWorkspace(definition: WorkspaceDefinition, source: string
  return { ...definition, edges: [...definition.edges, { source, target }] }
 }
 export function initialWorkspace(name: string, displayName: string, project: string, domain: string, description: string): { definition: WorkspaceDefinition; layout: WorkspaceLayout } {
- return { definition: { schemaVersion: 1, identity: { pipelineName: name, displayName }, metadata: { legacyPipeline: { pipeline_name: name, project_name: project || null, domain: domain || null, descricao: description || null, schedule_type: 'on_demand', active: 1 } }, nodes: [], edges: [] }, layout: { schemaVersion: 1, nodes: {} } }
+ return { definition: { schemaVersion: 1, identity: { pipelineName: name, displayName }, metadata: { legacyPipeline: { pipeline_name: name, project_name: project || null, domain: domain || null, descricao: description || null, schedule_type: 'on_demand', active: 1, notify_on_start: false, notify_on_success: false, notify_on_failure: false } }, alertPolicy: { schemaVersion: 1, events: [], recipients: [], email: false, teamsPersonal: false, teamsChannel: null, attemptMode: 'terminal' }, nodes: [], edges: [] }, layout: { schemaVersion: 1, nodes: {} } }
 }
 
 export interface WorkspaceDiagnostic { nodeId: string | null; field: string; code: string; message: string }
