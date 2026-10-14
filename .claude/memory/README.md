@@ -137,4 +137,4 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 
 - [EOC-F8: configuração de notificações](orquestra-eoc-f8-configuracao-notificacoes.md) — política e legado no mesmo draft; defaults corrigidos, candidato2.26.0; conferir evidência final DEV.
 
-- [EOC-F9 fila de alertas](orquestra-eoc-f9-fila-alertas.md) — fundação dry-run F9A parcial; dispatcher F9B pendente.
+- [EOC-F9 fila de alertas](orquestra-eoc-f9-fila-alertas.md) — F9A publicada; dispatcher F9B candidato validado com correção material de shutdown, gates externos preservados.

@@ -135,6 +135,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from services.alert_dispatcher import reconcile_loop as alert_reconcile_loop
 from services.dag_reconcile import reconcile_loop
 from services.workspace_publication import reconcile_loop as workspace_reconcile_loop
 from routers import workspace_publication
@@ -175,8 +176,9 @@ async def lifespan(app: FastAPI):
     workspace_task = asyncio.create_task(workspace_reconcile_loop())
     # Observabilidade de tabelas: captura snapshots periódicos (frescor/volume).
     monitor_task = asyncio.create_task(monitor_capture_loop())
+    alert_task = asyncio.create_task(alert_reconcile_loop())
     yield
-    for _t in (reconcile_task, monitor_task, workspace_task):
+    for _t in (reconcile_task, monitor_task, workspace_task, alert_task):
         _t.cancel()
         try:
             await _t
