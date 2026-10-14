@@ -87,7 +87,7 @@ export function PipelineCatalog({ actions }: { actions: Actions }) {
  return <div className="flex flex-col gap-4">
   <header className="flex flex-wrap items-end justify-between gap-3">
    <div className="min-w-0">
-    <h1 className="text-2xl font-semibold text-ink">Pipelines</h1>
+    <h1 className="ui-title text-ink">Pipelines</h1>
     <p className="text-sm text-dim mt-1">Publicados e em desenvolvimento numa única lista. Entre pelo nome ou continue a montagem de onde parou.</p>
    </div>
    <div className="flex flex-wrap items-center gap-3">
@@ -98,13 +98,13 @@ export function PipelineCatalog({ actions }: { actions: Actions }) {
 
   <section aria-label="Busca e filtros" className="bg-panel border border-edge rounded-lg p-3 space-y-3">
    <div className="flex flex-wrap items-end gap-3">
-    <div className="relative flex-1 min-w-[240px]">
+    <div className="relative flex-1 min-w-0 basis-60">
      <Input label="Buscar" type="search" value={searchText} onChange={e => setSearchText(e.target.value)} placeholder="Nome ou identificador técnico" maxLength={200} className="w-full pl-8" autoComplete="off" />
-     <Search size={14} aria-hidden className="absolute left-2.5 bottom-2.5 text-dim pointer-events-none" />
+     <Search size={14} aria-hidden className="absolute left-2.5 bottom-3 text-dim pointer-events-none" />
     </div>
     <div role="group" aria-label="Situação" className="flex flex-wrap gap-1">
      {STATE_OPTIONS.map(o => <button key={o.value} type="button" aria-pressed={filters.state === o.value} onClick={() => commit(withFilter(filters, { state: o.value }))}
-      className={`px-3 py-1.5 rounded-md text-sm border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${filters.state === o.value ? 'bg-blue-50 text-blue-800 border-blue-300 font-medium dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700' : 'bg-panel text-dim border-edge hover:text-ink hover:bg-canvas'}`}>{o.label}</button>)}
+      className={`ui-button px-3 py-1.5 rounded-md text-sm border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${filters.state === o.value ? 'bg-blue-50 text-blue-800 border-blue-300 font-medium dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700' : 'bg-panel text-dim border-edge hover:text-ink hover:bg-canvas'}`}>{o.label}</button>)}
     </div>
     <Button variant="secondary" aria-expanded={moreOpen} aria-controls={moreId} onClick={() => setMoreOpen(open => !open)}>
      <SlidersHorizontal size={14} aria-hidden />Filtros{extraFilters ? ` (${extraFilters})` : ''}
