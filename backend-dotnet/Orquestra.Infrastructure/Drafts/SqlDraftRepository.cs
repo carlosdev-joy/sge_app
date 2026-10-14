@@ -42,7 +42,22 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
         JsonElement? published = null;
         var summary = new Dictionary<string, object?> { ["responsible"] = draft?.Responsible, ["draftRevision"] = draft?.Revision };
         string canonical = draft?.PipelineName ?? name;
-        if (stages)
+        // Gerido (linha em etl_workspace_pipeline): desenho e par saem da mesma linha; o legado não é lido.
+        if (await ManagedPublication(c, t, name, ct) is { } managed)
+        {
+            canonical = managed.Name;
+            if (managed.Definition is { } definition)
+            {
+                if (stages) published = managed.Pair is { } pair
+                    ? JsonSerializer.SerializeToElement(new { definition, layout = managed.Layout, readOnlyReasons = Array.Empty<string>(), versionId = pair.VersionId, contentHash = pair.ContentHash }, DraftValidation.Json)
+                    : JsonSerializer.SerializeToElement(new { definition, layout = managed.Layout, readOnlyReasons = Array.Empty<string>() }, DraftValidation.Json);
+                if (definition.Metadata.TryGetProperty("legacyPipeline", out var metadata)) foreach (var field in new[] { "project_name", "domain", "descricao" }) if (metadata.TryGetProperty(field, out var value)) summary[field] = value.Clone();
+            }
+            // Nenhuma configuração de nós é devolvida sem tela_jobs.
+            if (!stages) draft = null;
+        }
+        // Legado (sem linha gerida): desenho do LegacyFlowReader, nunca com par.
+        else if (stages)
         {
             try { var source = await LegacyFlowReader.ReadAsync(c, t, name, ct); canonical = source.Definition.Identity.PipelineName; published = JsonSerializer.SerializeToElement(new { source.Definition, source.Layout, readOnlyReasons = source.Reasons }, DraftValidation.Json); if (source.Definition.Metadata.TryGetProperty("legacyPipeline", out var row)) foreach (var field in new[] { "project_name", "domain", "descricao" }) if (row.TryGetProperty(field, out var value)) summary[field] = value.Clone(); }
             catch (WorkspaceException e) when (e.StatusCode == 404 && draft is not null) { }
@@ -60,27 +75,39 @@ public sealed partial class SqlDraftRepository(WorkspaceSqlOptions options, Work
             // Nenhuma configuração de nós é devolvida sem tela_jobs.
             draft = null;
         }
-        // A projeção ativa durante reconciliação ainda NÃO é uma publicação.
-        // Pipeline gerido lê a última versão confirmada (ou base importada inicial).
-        await using(var schema=Command(c,t,"SELECT OBJECT_ID('dbo.etl_workspace_pipeline','U')"))
-        if(await schema.ExecuteScalarAsync(ct) is not null and not DBNull)
-        {
-            await using var managed=Command(c,t,"SELECT p.pipeline_name,v.definition_json,v.layout_json FROM dbo.etl_workspace_pipeline p LEFT JOIN dbo.etl_workspace_publicacao o ON o.operation_id=p.pending_operation_id LEFT JOIN dbo.etl_workspace_rascunho d ON d.draft_id=o.draft_id LEFT JOIN dbo.etl_workspace_versao v ON v.version_id=COALESCE(p.version_id,d.base_version_id) WHERE p.pipeline_name=@name",("@name",name));
-            await using var row=await managed.ExecuteReaderAsync(ct);
-            if(await row.ReadAsync(ct))
-            {
-                canonical=row.GetString(0);published=null;
-                foreach(var field in new[]{"project_name","domain","descricao"})summary.Remove(field);
-                if(!row.IsDBNull(1))
-                {
-                    var confirmed=JsonSerializer.Deserialize<PipelineDefinition>(row.GetString(1),DraftValidation.Json)!;
-                    if(stages)published=JsonSerializer.SerializeToElement(new{definition=confirmed,layout=JsonSerializer.Deserialize<FlowLayout>(row.GetString(2),DraftValidation.Json),readOnlyReasons=Array.Empty<string>()},DraftValidation.Json);
-                    if(confirmed.Metadata.TryGetProperty("legacyPipeline",out var metadata))foreach(var field in new[]{"project_name","domain","descricao"})if(metadata.TryGetProperty(field,out var value))summary[field]=value.Clone();
-                }
-            }
-        }
         return new(canonical, available, published, draft, Summary: JsonSerializer.SerializeToElement(summary, DraftValidation.Json));
     }, ct);
+    private sealed record ManagedRead(string Name, PipelineDefinition? Definition, FlowLayout? Layout, (string VersionId, string ContentHash)? Pair);
+    // Uma única leitura da linha gerida. A projeção ativa durante reconciliação ainda NÃO é uma
+    // publicação: o desenho é a última versão confirmada (ou a base importada inicial) e o par
+    // (versão, conteúdo) só existe com ponteiro presente, nenhuma operação pendente, hash ativo
+    // presente e a versão lida igual à do ponteiro — as condições da reserva (migration 172).
+    // active_hash é o hash da projeção nas tabelas SQL; content_hash é o do desenho da versão:
+    // domínios distintos, nunca comparados entre si. Só a confirmação grava ponteiro e
+    // active_hash juntos. Sem a tabela não há pipeline gerido; colunas ausentes são 503,
+    // nunca leitura legada de um pipeline gerido.
+    private static async Task<ManagedRead?> ManagedPublication(SqlConnection c, SqlTransaction t, string name, CancellationToken ct)
+    {
+        await using (var schema = Command(c, t, "SELECT OBJECT_ID('dbo.etl_workspace_pipeline','U')"))
+            if (await schema.ExecuteScalarAsync(ct) is null or DBNull) return null;
+        try
+        {
+            await using var cmd = Command(c, t, "SELECT p.pipeline_name,v.definition_json,v.layout_json,p.version_id,p.pending_operation_id,p.active_hash,v.version_id,v.content_hash FROM dbo.etl_workspace_pipeline p LEFT JOIN dbo.etl_workspace_publicacao o ON o.operation_id=p.pending_operation_id LEFT JOIN dbo.etl_workspace_rascunho d ON d.draft_id=o.draft_id LEFT JOIN dbo.etl_workspace_versao v ON v.version_id=COALESCE(p.version_id,d.base_version_id) WHERE p.pipeline_name=@name", ("@name", name));
+            await using var row = await cmd.ExecuteReaderAsync(ct);
+            if (!await row.ReadAsync(ct)) return null;
+            var definition = row.IsDBNull(1) ? null : JsonSerializer.Deserialize<PipelineDefinition>(row.GetString(1), DraftValidation.Json)!;
+            var layout = definition is null ? null : JsonSerializer.Deserialize<FlowLayout>(row.GetString(2), DraftValidation.Json);
+            (string, string)? pair = null;
+            if (definition is not null && !row.IsDBNull(3) && row.IsDBNull(4) && !row.IsDBNull(5) && !row.IsDBNull(6) && !row.IsDBNull(7) && row.GetGuid(3) == row.GetGuid(6))
+            {
+                var content = row.GetString(7).ToLowerInvariant();
+                if (Hex64(row.GetString(5)) && Hex64(content)) pair = (row.GetGuid(6).ToString("D"), content);
+            }
+            return new(row.GetString(0), definition, layout, pair);
+        }
+        catch (SqlException e) when (e.Number is 208 or 207) { throw new WorkspaceException(503, "publication_schema_unavailable", "Publicação confirmada indisponível; aplique as migrations de publicação do workspace"); }
+        static bool Hex64(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
+    }
     public Task<Draft> GetAsync(Guid id, WorkspacePrincipal actor, CancellationToken ct) => Run(async (c, t) =>
     {
         var draft = await Load(c, t, id, false, ct);

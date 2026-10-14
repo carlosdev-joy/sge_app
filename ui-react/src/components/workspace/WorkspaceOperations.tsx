@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, History, Info, PanelRightClose, PanelRightOpen, Play, RefreshCw } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
 import { arrangeWorkspace } from '../../lib/workspaceLayout'
-import { EMPTY_HISTORY_FILTERS, EXECUTION_POLL, EXECUTION_REVALIDATE_MS, FRESHNESS_LABEL, activePhase, clockLabel, completionLabel, drawingSource, drawingSourceLabel, executionFreshness, executionPollInterval, executionQueryKey, executionRequestPath, operationScope, responseMatchesRequest, runCounts, runOverlay, runPhase, runStateFor, stageChain, stepsOutsideDrawing, type ChainDirection, type NodeRunKind, type RequestedRun, type RunHistoryFilters } from '../../lib/workspaceExecution'
+import { EMPTY_HISTORY_FILTERS, EXECUTION_POLL, EXECUTION_REVALIDATE_MS, FRESHNESS_LABEL, activePhase, clockLabel, completionLabel, drawingSource, drawingSourceLabel, executionFreshness, executionPollInterval, executionQueryKey, executionRequestPath, operationScope, responseMatchesRequest, runCounts, runOverlay, runPhase, runStateFor, stageChain, stepsOutsideDrawing, type ChainDirection, type NodeRunKind, type PublishedPair, type RequestedRun, type RunHistoryFilters } from '../../lib/workspaceExecution'
 import { type ExecutionView, type WorkspaceRunIdentity, runIdentityOrigin } from '../../lib/workspaceTabs'
 import { definitionLabel, nodeLabel, type WorkspaceCapabilities, type WorkspaceDefinition, type WorkspaceLayout } from '../../lib/workspace'
 import { usePageVisible } from '../../lib/usePageVisible'
@@ -42,7 +42,10 @@ function shiftDay(iso: string, delta: number): string {
 // `draftRevision`: só informa que existe rascunho; nada dele entra no gráfico ou na execução.
 // `pipelineName`: grafia oficial devolvida pelo contexto; a resposta da execução
 // precisa nomear este pipeline (pela grafia pedida ou pela oficial) para ser usada.
-export function WorkspaceOperations({name,pipelineName,date,runId,stage,attempt,definition,layout,draftRevision=null,caps,view,active=true,onView,onDate,onRun,onOpenRun,onInvestigate,onIdentity,actionsHost}:{name:string;pipelineName?:string;date:string;runId:string;stage:string;attempt:number|null;definition:WorkspaceDefinition;layout:WorkspaceLayout;draftRevision?:number|null;caps:WorkspaceCapabilities;view:ExecutionView;active?:boolean;onView:(view:ExecutionView)=>void;onDate:(date:string|null)=>void;onRun:(id:string|null)=>void;onOpenRun?:(id:string,date:string|null)=>void;onInvestigate:(stage:string|null,attempt:number|null)=>void;onIdentity?:(origin:string,identity:WorkspaceRunIdentity|null)=>void;actionsHost?:HTMLElement|null}) {
+// `publication`: par da publicação CONFIRMADA lido do contexto junto com o desenho
+// publicado (nulo pendente ou fora do workspace). O pedido de execução o fixa ao
+// abrir; o snapshot da corrida exibida (`workspaceVersion`) nunca ocupa esse papel.
+export function WorkspaceOperations({name,pipelineName,date,runId,stage,attempt,definition,layout,draftRevision=null,publication=null,caps,view,active=true,onView,onDate,onRun,onOpenRun,onInvestigate,onIdentity,actionsHost}:{name:string;pipelineName?:string;date:string;runId:string;stage:string;attempt:number|null;definition:WorkspaceDefinition;layout:WorkspaceLayout;draftRevision?:number|null;publication?:PublishedPair|null;caps:WorkspaceCapabilities;view:ExecutionView;active?:boolean;onView:(view:ExecutionView)=>void;onDate:(date:string|null)=>void;onRun:(id:string|null)=>void;onOpenRun?:(id:string,date:string|null)=>void;onInvestigate:(stage:string|null,attempt:number|null)=>void;onIdentity?:(origin:string,identity:WorkspaceRunIdentity|null)=>void;actionsHost?:HTMLElement|null}) {
  const token=useAuthStore(s=>s.token);const visible=usePageVisible();const panelId=useId()
  // Pedido de execução aberto: guarda o contexto em que nasceu (sessão,
  // pipeline, data, corrida, permissão). Mudou o contexto ou a aba saiu de
@@ -158,6 +161,6 @@ export function WorkspaceOperations({name,pipelineName,date,runId,stage,attempt,
    </div>
   </div>
   <Sheet open={historyOpen} onClose={()=>setHistoryOpen(false)} title="Histórico de corridas" widthClass="max-w-4xl"><Suspense fallback={<PageSpinner/>}><WorkspaceRunHistory name={name} enabled={active&&visible} filters={historyFilters} onFilters={setHistoryFilters} currentRunId={resolved||null} onOpen={item=>{setHistoryOpen(false);if(!item.runId)return;if(onOpenRun)onOpenRun(item.runId,item.date);else onRun(item.runId)}}/></Suspense></Sheet>
-  {requesting!==null&&<Suspense fallback={null}><WorkspaceRunRequest name={name} open context={active?runScope:''} onClose={()=>setRequesting(null)} onRequested={requestedRun}/></Suspense>}
+  {requesting!==null&&<Suspense fallback={null}><WorkspaceRunRequest name={name} open context={active?runScope:''} publication={publication} onClose={()=>setRequesting(null)} onRequested={requestedRun}/></Suspense>}
  </div>
 }

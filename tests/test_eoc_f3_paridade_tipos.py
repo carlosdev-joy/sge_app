@@ -482,7 +482,10 @@ def test_migration_171_e_a_proxima_e_so_incrementa_o_patch():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     numbers = sorted(int(p.name[:3]) for p in (root / 'sql/migrations').glob('[0-9][0-9][0-9]_*.sql'))
-    assert numbers[-2:] == [170, 171]
+    # 171 vem logo depois da 170; as posteriores (172+) seguem sem lacuna nem número repetido.
+    start = numbers.index(170)
+    assert numbers[start:start + 2] == [170, 171]
+    assert numbers[start:] == list(range(170, numbers[-1] + 1))
     [migration] = (root / 'sql/migrations').glob('171_*.sql')
     sql = migration.read_text(encoding='utf-8')
     assert sql.count("N'Publicação de Python, DataStage e Aguarde com as regras do cadastro'") == 1

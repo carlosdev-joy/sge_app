@@ -285,9 +285,33 @@ export function engineLogSelection(list: EngineAttempt[], requested: number | nu
 // opcional e informada em UTC. JSON avançado só sob demanda, preservando as
 // chaves já presentes; o identificador do pedido é estável enquanto o pedido
 // estiver aberto (repetir não cria outra corrida).
+// O pedido leva também o par (versão, conteúdo) da publicação CONFIRMADA lida no
+// contexto quando o diálogo abriu; nunca o snapshot da corrida exibida, que diz o
+// que uma corrida executou. O adaptador confere o par sob bloqueio antes de
+// reservar (mudou ou ficou pendente: 409, nada reservado nem enviado). O par vai
+// em campos próprios, fora de `conf`, e não chega ao Airflow.
 export interface RunRequestForm { odate: string; logicalDate: string; extraConf: Record<string, unknown> }
-export type RunRequestResult = { ok: true; body: { conf: Record<string, unknown>; dag_run_id: string; logical_date?: string } } | { ok: false; field: 'odate' | 'logicalDate' | 'conf' | 'runId'; message: string }
+export interface PublishedPair { versionId: string; contentHash: string }
+export type RunRequestResult = { ok: true; body: { conf: Record<string, unknown>; dag_run_id: string; logical_date?: string; expected_version_id?: string; expected_content_hash?: string } } | { ok: false; field: 'odate' | 'logicalDate' | 'conf' | 'runId' | 'publication'; message: string }
 export const RUN_CONF_LIMIT = 65_536
+export const RUN_PUBLICATION_FIELDS = ['expected_version_id', 'expected_content_hash'] as const
+const PUBLISHED_VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const PUBLISHED_HASH = /^[0-9a-f]{64}$/i
+/** Par da publicação confirmada informado pelo contexto; incompleto ou malformado não vale. */
+export function confirmedPublication(published: { versionId?: unknown; contentHash?: unknown } | null | undefined): PublishedPair | null {
+ const versionId = published?.versionId, contentHash = published?.contentHash
+ return typeof versionId === 'string' && typeof contentHash === 'string' && PUBLISHED_VERSION.test(versionId) && PUBLISHED_HASH.test(contentHash) ? { versionId, contentHash } : null
+}
+/** A mesma publicação (hexadecimal sem distinção de caixa); nenhuma confirmada só equivale a nenhuma. */
+export function samePublication(a: PublishedPair | null, b: PublishedPair | null): boolean {
+ if (!a || !b) return !a && !b
+ return a.versionId.toLowerCase() === b.versionId.toLowerCase() && a.contentHash.toLowerCase() === b.contentHash.toLowerCase()
+}
+export const PUBLICATION_CHANGED_MESSAGE = 'A publicação confirmada exibida mudou desde que a solicitação foi aberta. Nada foi enviado; feche e abra a solicitação para executar a publicação atual.'
+function reservedConfIssue(conf: Record<string, unknown>): string | null {
+ const key = Object.keys(conf).find(name => (RUN_PUBLICATION_FIELDS as readonly string[]).includes(name))
+ return key ? `${key} é reservado à conferência da publicação e não entra nos parâmetros da execução.` : null
+}
 export function validOperationalDate(value: string): boolean {
  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
  if (!match) return false
@@ -300,8 +324,9 @@ export function logicalDateIso(value: string): string | null {
  if (!match || !validOperationalDate(match[1]) || Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4] ?? 0) > 59) return null
  return `${match[1]}T${match[2]}:${match[3]}:${match[4] ?? '00'}Z`
 }
-export function buildRunRequest(form: RunRequestForm, runId: string): RunRequestResult {
+export function buildRunRequest(form: RunRequestForm, runId: string, publication: PublishedPair | null = null): RunRequestResult {
  if (!/^workspace__[0-9a-f-]{36}$/.test(runId)) return { ok: false, field: 'runId', message: 'Identificador da solicitação inválido. Feche e abra a solicitação novamente.' }
+ if (publication && !confirmedPublication(publication)) return { ok: false, field: 'publication', message: 'A publicação exibida não tem identificação válida. Feche e abra a solicitação novamente.' }
  const odate = form.odate.trim()
  if (odate && !validOperationalDate(odate)) return { ok: false, field: 'odate', message: 'Informe uma data de referência válida (AAAA-MM-DD) ou deixe em branco.' }
  const logical = form.logicalDate.trim()
@@ -309,7 +334,9 @@ export function buildRunRequest(form: RunRequestForm, runId: string): RunRequest
  if (logical && !iso) return { ok: false, field: 'logicalDate', message: 'Informe data e hora válidas para a data lógica ou deixe em branco.' }
  const conf: Record<string, unknown> = { ...form.extraConf }
  if (odate) conf.data_referencia = odate; else delete conf.data_referencia
- const body = { conf, dag_run_id: runId, ...(iso ? { logical_date: iso } : {}) }
+ const reserved = reservedConfIssue(conf)
+ if (reserved) return { ok: false, field: 'conf', message: reserved }
+ const body = { conf, dag_run_id: runId, ...(iso ? { logical_date: iso } : {}), ...(publication ? { expected_version_id: publication.versionId, expected_content_hash: publication.contentHash } : {}) }
  if (new TextEncoder().encode(JSON.stringify(body)).length > RUN_CONF_LIMIT) return { ok: false, field: 'conf', message: 'Os parâmetros desta execução excedem 64 KiB.' }
  return { ok: true, body }
 }
@@ -320,6 +347,8 @@ export function parseAdvancedConf(value: string): { ok: true; odate: string; ext
  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, message: 'Os parâmetros da execução devem ser um objeto JSON.' }
  const { data_referencia: odate, ...extraConf } = parsed as Record<string, unknown>
  if (odate !== undefined && (typeof odate !== 'string' || !validOperationalDate(odate))) return { ok: false, message: 'data_referencia deve ser uma data AAAA-MM-DD.' }
+ const reserved = reservedConfIssue(extraConf)
+ if (reserved) return { ok: false, message: reserved }
  return { ok: true, odate: odate ?? '', extraConf }
 }
 export function advancedConfText(form: Pick<RunRequestForm, 'odate' | 'extraConf'>): string {

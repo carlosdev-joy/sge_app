@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Braces, Play } from 'lucide-react'
 import { apiFetch, type ErroApi } from '../../lib/api'
-import { STALE_INTENT_MESSAGE, advancedConfText, buildRunRequest, parseAdvancedConf, type RunRequestForm } from '../../lib/workspaceExecution'
+import { PUBLICATION_CHANGED_MESSAGE, STALE_INTENT_MESSAGE, advancedConfText, buildRunRequest, parseAdvancedConf, samePublication, type PublishedPair, type RunRequestForm } from '../../lib/workspaceExecution'
 import { useAuthStore } from '../../store/auth'
 import { Button } from '../ui/Button'
 import { Input, Textarea } from '../ui/Input'
@@ -19,33 +19,41 @@ type Requested = { name: string; runId: string; state: string | null }
 // permissão; vazio com a aba fora de cena). O diálogo guarda o contexto em que
 // abriu e confere antes do POST e antes de aplicar a resposta: desmontado ou
 // noutro contexto, a resposta não seleciona nada.
-export function WorkspaceRunRequest({ name, open, context, onClose, onRequested }: { name: string; open: boolean; context: string; onClose: () => void; onRequested: (run: Requested) => void }) {
+// `publication` é o par (versão, conteúdo) da publicação confirmada exibida,
+// nunca o snapshot da corrida selecionada. O diálogo fixa o par ao abrir e o
+// repete, com o mesmo identificador, em novas tentativas; o adaptador o confere
+// sob bloqueio antes de reservar. Se a tela passar a exibir outra publicação
+// (ou nenhuma confirmada), o diálogo avisa e nada é enviado.
+export function WorkspaceRunRequest({ name, open, context, publication, onClose, onRequested }: { name: string; open: boolean; context: string; publication: PublishedPair | null; onClose: () => void; onRequested: (run: Requested) => void }) {
  const busy = useRef(false)
  const close = () => { if (!busy.current) onClose() }
- return <Modal open={open} onClose={close} title="Executar a configuração publicada" size="lg">{open && <RunRequestForm name={name} context={context} onClose={close} onBusy={value => { busy.current = value }} onRequested={onRequested} />}</Modal>
+ return <Modal open={open} onClose={close} title="Executar a configuração publicada" size="lg">{open && <RunRequestForm name={name} context={context} publication={publication} onClose={close} onBusy={value => { busy.current = value }} onRequested={onRequested} />}</Modal>
 }
-function RunRequestForm({ name, context, onClose, onBusy, onRequested }: { name: string; context: string; onClose: () => void; onBusy: (busy: boolean) => void; onRequested: (run: Requested) => void }) {
+function RunRequestForm({ name, context, publication, onClose, onBusy, onRequested }: { name: string; context: string; publication: PublishedPair | null; onClose: () => void; onBusy: (busy: boolean) => void; onRequested: (run: Requested) => void }) {
  const id = useId()
  const [runId] = useState(() => `workspace__${crypto.randomUUID()}`)
+ const [expected] = useState(publication)
  const [form, setForm] = useState<RunRequestForm>({ odate: '', logicalDate: '', extraConf: {} })
  const [advanced, setAdvanced] = useState<string | null>(null)
  const [error, setError] = useState<FieldError>(null)
  const [session] = useState(() => useAuthStore.getState().token)
  const [opened] = useState(context)
- const alive = useRef(true), current = useRef(context)
- useLayoutEffect(() => { current.current = context })
+ const alive = useRef(true), current = useRef(context), shown = useRef(publication)
+ useLayoutEffect(() => { current.current = context; shown.current = publication })
  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
  const valid = () => alive.current && !!opened && current.current === opened && useAuthStore.getState().token === session
+ const changed = !samePublication(expected, publication)
  const run = useMutation({
   onMutate: () => onBusy(true),
   onSettled: () => onBusy(false),
   mutationFn: async () => {
    // Sessão, permissão ou contexto mudaram com o diálogo aberto: nada é enviado.
    if (!valid()) throw Object.assign(new Error(STALE_INTENT_MESSAGE), { field: 'request', stale: true })
+   if (!samePublication(expected, shown.current)) throw Object.assign(new Error(PUBLICATION_CHANGED_MESSAGE), { field: 'request', stale: true })
    let current = form
    if (advanced !== null) { const parsed = parseAdvancedConf(advanced); if (!parsed.ok) throw Object.assign(new Error(parsed.message), { field: 'conf' }); current = { ...form, odate: parsed.odate, extraConf: parsed.extraConf } }
-   const built = buildRunRequest(current, runId)
-   if (!built.ok) throw Object.assign(new Error(built.message), { field: built.field })
+   const built = buildRunRequest(current, runId, expected)
+   if (!built.ok) throw Object.assign(new Error(built.message), { field: built.field === 'publication' ? 'request' : built.field })
    return apiFetch<{ runId: string; state: string | null }>(`/workspace/runs?${new URLSearchParams({ name })}`, { method: 'POST', body: JSON.stringify(built.body) })
   },
   onSuccess: next => {
@@ -72,10 +80,10 @@ function RunRequestForm({ name, context, onClose, onBusy, onRequested }: { name:
  }
  const extraKeys = Object.keys(form.extraConf)
  return <form className="space-y-4" onSubmit={event => { event.preventDefault(); setError(null); run.mutate() }}>
-  <p className="text-sm text-dim">Cria uma corrida no Airflow com a configuração publicada. O rascunho não é executado; publicar e executar são ações separadas. Uma DAG pausada continua aguardando ativação.</p>
+  <p className="text-sm text-dim">Cria uma corrida no Airflow com a configuração publicada exibida ao abrir esta solicitação; se ela mudar antes do envio, nada é enviado. O rascunho não é executado; publicar e executar são ações separadas. Uma DAG pausada continua aguardando ativação.</p>
   <dl className="grid gap-3 rounded-md border border-edge bg-canvas p-3 text-sm sm:grid-cols-2">
    <div><dt className="text-xs text-dim">Pipeline</dt><dd className="font-mono text-xs text-ink break-all mt-0.5">{name}</dd></div>
-   <div><dt className="text-xs text-dim">Definição</dt><dd className="text-ink mt-0.5">Configuração publicada</dd></div>
+   <div><dt className="text-xs text-dim">Definição</dt><dd className="text-ink mt-0.5">Configuração publicada</dd>{expected && <dd className="font-mono text-xs text-dim break-all mt-0.5" title={`Versão ${expected.versionId} · conteúdo ${expected.contentHash}`}>versão {expected.versionId.slice(0, 8)} · conteúdo {expected.contentHash.slice(0, 12)}</dd>}</div>
    <div className="sm:col-span-2"><dt className="text-xs text-dim">Identificador da solicitação</dt><dd className="font-mono text-xs text-ink break-all mt-0.5">{runId}</dd><dd className="text-xs text-dim mt-1">Repetir o envio usa o mesmo identificador e não cria outra corrida.</dd></div>
   </dl>
   {advanced === null ? <div className="grid gap-3 sm:grid-cols-2">
@@ -84,10 +92,11 @@ function RunRequestForm({ name, context, onClose, onBusy, onRequested }: { name:
    {extraKeys.length > 0 && <p className="sm:col-span-2 text-xs text-dim">Também serão enviados os parâmetros avançados: {extraKeys.join(', ')}.</p>}
   </div> : <div className="space-y-1"><Textarea label="Parâmetros desta execução (JSON)" rows={8} value={advanced} aria-invalid={error?.field === 'conf' || undefined} aria-describedby={describe('conf')} onChange={e => setAdvanced(e.target.value)} className="font-mono text-xs" />{fieldError('conf')}<p className="text-xs text-dim">Chaves existentes são preservadas. data_referencia volta ao campo guiado.</p></div>}
   {fieldError('runId')}
+  {changed && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">A tela passou a exibir outra publicação (ou nenhuma confirmada) depois que esta solicitação foi aberta. Para executar a publicação atual, feche e abra a solicitação novamente.</p>}
   {error?.field === 'request' && <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">{error.message}</p>}
   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-edge pt-4">
    <Button type="button" variant="ghost" size="sm" disabled={run.isPending} aria-pressed={advanced !== null} onClick={toggleAdvanced}><Braces size={14} />{advanced === null ? 'Editar parâmetros em JSON' : 'Voltar ao formulário'}</Button>
-   <div className="flex gap-2"><Button type="button" variant="secondary" disabled={run.isPending} onClick={onClose}>Cancelar</Button><Button type="submit" loading={run.isPending}><Play size={14} />{error?.field === 'request' ? 'Tentar novamente' : 'Confirmar execução'}</Button></div>
+   <div className="flex gap-2"><Button type="button" variant="secondary" disabled={run.isPending} onClick={onClose}>Cancelar</Button><Button type="submit" loading={run.isPending} disabled={changed}><Play size={14} />{error?.field === 'request' ? 'Tentar novamente' : 'Confirmar execução'}</Button></div>
   </div>
  </form>
 }

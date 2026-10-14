@@ -3309,12 +3309,12 @@ def _workspace_read_permissions(auth):
 async def workspace_pipeline_run(pipeline_name: str, body: dict = Body(default={}), auth: dict = Depends(require_perm(PERM_EXECUTAR)), authorization: str | None = Header(default=None)):
     """Alias fixo por query; mantém o disparo legado e não publica configuração."""
     import json
-    from routers.airflow import trigger_dag_run
-    from services.workspace_operations import reserve_run, acknowledge_run
+    from routers.airflow import _exigir_admin_para_dag, get_airflow_client, trigger_dag_run
+    from services.workspace_operations import PUBLICATION_FIELDS, acknowledge_run, airflow_run_body, confirm_run, expected_publication, reserve_run
     if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Sessão Bearer necessária para operar")
     _workspace_read_permissions(auth)
-    if set(body) - {"conf", "logical_date", "dag_run_id"} or not isinstance(body.get("conf", {}), dict):
+    if set(body) - {"conf", "logical_date", "dag_run_id", *PUBLICATION_FIELDS} or not isinstance(body.get("conf", {}), dict):
         raise HTTPException(422, "Configuração de execução inválida")
     if len(json.dumps(body).encode()) > 65536:
         raise HTTPException(422, "Configuração de execução excede o limite")
@@ -3323,11 +3323,23 @@ async def workspace_pipeline_run(pipeline_name: str, body: dict = Body(default={
             raise HTTPException(422, "Identidade ou data de execução inválida")
     if "dag_run_id" not in body:
         raise HTTPException(422, "Informe uma identidade de comando para evitar disparos duplicados")
-    token, existing = reserve_run(pipeline_name, body["dag_run_id"], body, str(auth.get("matricula") or "?"))
+    # Publicação confirmada exibida ao abrir o pedido: a procedure a confere sob
+    # bloqueio antes de reservar (inclusive no replay); não segue ao Airflow.
+    expected = expected_publication(body)
+    token, existing = reserve_run(pipeline_name, body["dag_run_id"], body, str(auth.get("matricula") or "?"), expected=expected)
     if existing:
-        return {"dag_run_id": body["dag_run_id"], "state": "reserved"}
+        # Replay do mesmo pedido: nunca um novo POST. Sucesso só com a corrida exata
+        # confirmada no Airflow, sob os gates do disparo; sem confirmação, a reserva
+        # fica para a reconciliação.
+        if not _DAG_ID_RE.match(pipeline_name):
+            raise HTTPException(400, "dag_id inválido")
+        _exigir_admin_para_dag(pipeline_name, auth)
+        async with get_airflow_client() as client:
+            state = await confirm_run(client, pipeline_name, body["dag_run_id"])
+        acknowledge_run(pipeline_name, body["dag_run_id"], token)
+        return {"dag_run_id": body["dag_run_id"], "state": state}
     try:
-        result = await trigger_dag_run(pipeline_name, body, user=auth)
+        result = await trigger_dag_run(pipeline_name, airflow_run_body(body), user=auth)
         acknowledge_run(pipeline_name, body["dag_run_id"], token)
         return result
     except HTTPException as error:
