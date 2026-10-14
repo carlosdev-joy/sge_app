@@ -134,3 +134,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [EOC-F6: aceite técnico do Pipeline](orquestra-eoc-f6-aceite-tecnico.md) — métricas, três perfis DEV e preparo do piloto; pendências reais no Backlog/migration176.
 
 - [EOC-F7: contrato de alertas](orquestra-eoc-f7-alertas-contrato.md) — política/snapshot, prévia sem envio e gate do adapter de resultado no Backlog177.
+
+- [EOC-F8: configuração de notificações](orquestra-eoc-f8-configuracao-notificacoes.md) — política e legado no mesmo draft; defaults corrigidos, candidato2.26.0; conferir evidência final DEV.

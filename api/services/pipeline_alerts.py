@@ -149,10 +149,10 @@ def capabilities():
     # Não usar contagem UI ou falha de transporte como autoridade de resultado.
     return {
         'result': {'available': False, 'source': 'etl_pipeline_execucao/factory',
-                   'cause': 'Fonte legada sem Warning agregado e sem geração operacional confiável para reprocesso.'},
-        'email': {'available': False, 'source': 'email_operator', 'cause': 'Transporte de tarefa existente; dispatcher de alertas previsto na F9/F10.'},
-        'teamsPersonal': {'available': False, 'source': None, 'cause': 'Identidade corporativa, consentimento e provider ainda não certificados (F11).'},
-        'teamsChannel': {'available': False, 'source': 'etl_msg_grupo', 'cause': 'Adapter de canal existente; cutover e dispatcher previstos na F9/F10.'},
+                   'cause': 'A plataforma ainda não confirma warnings agregados nem todos os ciclos de reprocessamento do pipeline.'},
+        'email': {'available': False, 'source': 'email_operator', 'cause': 'O envio automático de alertas do pipeline está em preparação; as comunicações das etapas continuam independentes.'},
+        'teamsPersonal': {'available': False, 'source': None, 'cause': 'A integração corporativa para mensagens pessoais ainda precisa ser configurada e validada.'},
+        'teamsChannel': {'available': False, 'source': 'etl_msg_grupo', 'cause': 'Os canais atuais continuam disponíveis para as etapas; o envio automático por política está em preparação.'},
     }
 
 

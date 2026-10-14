@@ -1,7 +1,7 @@
 from __future__ import annotations
 from uuid import UUID
 from fastapi import APIRouter,Body,Depends,Header,HTTPException
-from deps import require_perm,PERM_EDITAR
+from deps import require_perm,PERM_EDITAR,get_current_user
 from services.workspace_publication import ENABLED,validate_draft
 router=APIRouter()
 
@@ -120,3 +120,12 @@ def workspace_alerts_preview(draft_id:UUID,body:dict=Body(default={}),actor:dict
  if 'policy' not in body and 'alertPolicy' not in definition:
   return {'schemaVersion':1,'simulation':True,'dispatch':False,'mode':'legacy','count':None,'deliveries':None,'capabilities':capabilities(),'detail':'Política legada preservada; migração exige seleção explícita no rascunho.'}
  return preview(value,body.get('event'))
+
+
+@router.get('/workspace-adapter/alerts/capabilities')
+def workspace_alerts_capabilities(actor:dict=Depends(get_current_user)):
+ """Consulta protegida sem posse de edição, resolução ou transporte externo."""
+ if not ENABLED():raise HTTPException(503,'Workspace desabilitado')
+ if not {'tela_pipelines','tela_jobs'}.issubset(actor.get('permissoes',[])):raise HTTPException(403,'Permissão de consulta necessária')
+ from services.pipeline_alerts import capabilities
+ return capabilities()

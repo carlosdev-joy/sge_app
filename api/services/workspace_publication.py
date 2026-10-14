@@ -23,6 +23,7 @@ log=logging.getLogger("orquestra.workspace.publication")
 TABLES={"etl_pipeline":("pipeline_name",),"etl_pipeline_job":("pipeline_name","job_name"),"etl_pipeline_param":("pipeline_name","param_name"),"etl_pipeline_job_param":("pipeline_name","job_name","param_name"),"etl_valida_arquivo_no":("pipeline_name","task_id"),"etl_valida_arquivo_config":("pipeline_name","task_id","entrada_id"),"etl_pipeline_dependencia":("pipeline_name","depende_de"),"etl_pipeline_owner":("pipeline_name",),"etl_job_lineage":("pipeline_name",)}
 RUNTIME=frozenset({"dag_criada","last_execution","updated_at","created_at","atualizado_em","criado_em","dag_config_pendente_em"})
 LINEAGE_RUNTIME=RUNTIME|{'extracted_at'}
+NOTIFICATION_FLAGS=frozenset({'envia_msg_inicio','envia_msg_fim','envia_msg_erro'})
 IDENT=re.compile(r"^[A-Za-z0-9_.-]+$")
 FOLDER=re.compile(r"^[\w .-]+$")
 ENABLED=lambda:os.getenv("WORKSPACE_PUBLICATIONS_ENABLED","false").lower()=="true"
@@ -36,9 +37,16 @@ def rows(cur,table,name):
  cur.execute('SELECT * FROM dbo.['+table+'] WHERE pipeline_name=?',(name,));keys=[d[0] for d in cur.description];return [dict(zip(keys,r)) for r in cur.fetchall()]
 def active_hash(cur,name):
  return cur.execute("EXEC dbo.sp_workspace_active_hash @name=?",(name,)).fetchone()[0]
-def columns(cur,table):
+def physical_columns(cur,table):
  assert table in TABLES
  return {r[0] for r in cur.execute("SELECT name FROM sys.columns WHERE object_id=OBJECT_ID(?) AND is_identity=0 AND is_computed=0",('dbo.'+table,)).fetchall()}
+def columns(cur,table):
+ # Só as três flags históricas possuem aliases conhecidos; nenhum campo desconhecido é aceito.
+ return {key.lower() if table=='etl_pipeline' and key.lower() in NOTIFICATION_FLAGS else key for key in physical_columns(cur,table)}
+def sql_notification_fields(cur,table,record):
+ if table!='etl_pipeline':return record
+ names={key.lower():key for key in physical_columns(cur,table) if key.lower() in NOTIFICATION_FLAGS}
+ return {names.get(key,key):value for key,value in record.items()}
 def ignored_columns(cur,table):
  assert table in TABLES
  return (LINEAGE_RUNTIME if table=='etl_job_lineage' else RUNTIME) | {r[0] for r in cur.execute("SELECT name FROM sys.columns WHERE object_id=OBJECT_ID(?) AND (is_identity=1 OR is_computed=1)",('dbo.'+table,)).fetchall()}
@@ -96,6 +104,11 @@ def load_workspace_secrets(cur,definition,existing,legacy_version=None,draft_id=
 def materialize(definition,layout,existing):
  """Projeção completa; produção prepara cifras imutáveis antes desta função."""
  name=definition['identity']['pipelineName'];metadata=definition.get('metadata') or {};pipeline=dict(metadata.get('legacyPipeline') or {});pipeline['pipeline_name']=name
+ for key in tuple(pipeline):
+  lower=key.lower()
+  if lower in NOTIFICATION_FLAGS and key!=lower:
+   if lower in pipeline and pipeline[lower]!=pipeline[key]:raise PublicationBlocked('ambiguous_notification_flag','Configuração contém valores conflitantes de notificação',field=lower)
+   pipeline[lower]=pipeline.pop(key)
  if 'alertPolicy' in definition:
   from services.pipeline_alerts import policy
   try:policy(definition['alertPolicy'])
@@ -367,7 +380,7 @@ def sync_rows(cur,table,name,desired):
   if tuple(str(old.get(k) or '') if k=='param_name' else str(old.get(k) or '').rstrip().casefold() for k in keys) not in desired_keys:
    cur.execute('DELETE FROM dbo.['+table+'] WHERE '+' AND '.join('['+k+']=?' for k in keys),tuple(old[k] for k in keys))
  for record in desired:
-  record={k:v for k,v in record.items() if k in allowed and k not in RUNTIME};values={k:(json.dumps(v,ensure_ascii=False) if isinstance(v,(dict,list)) else v) for k,v in record.items()};key=tuple(values[k] for k in keys)
+  record={k:v for k,v in record.items() if k in allowed and k not in RUNTIME};record=sql_notification_fields(cur,table,record);values={k:(json.dumps(v,ensure_ascii=False) if isinstance(v,(dict,list)) else v) for k,v in record.items()};key=tuple(values[k] for k in keys)
   found=cur.execute('SELECT 1 FROM dbo.['+table+'] WHERE '+' AND '.join('['+k+']=?' for k in keys),key).fetchone()
   if found:
    fields=[k for k in values if k not in keys]

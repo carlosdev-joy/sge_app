@@ -213,6 +213,7 @@ assert.equal(tabs.configurationGroup('xx'), 'identificacao'); assert.equal(tabs.
 // ── 4/5. Sessão real do editor entre abas ──────────────────────────────────
 const TIPOS = ['datastage', 'sql', 'python', 'shell', 'storedproc', 'http', 'decisao', 'aguarde', 'notificacao', 'email', 'valida_arquivo']
 const definition = {
+ alertPolicy: {schemaVersion:1,events:[],recipients:[],email:false,teamsPersonal:false,teamsChannel:null,attemptMode:'terminal'},
  schemaVersion: 1, identity: { pipelineName: NOME, displayName: 'Cobrança diária', extraIdentity: { keep: true } },
  metadata: { legacyPipeline: { pipeline_name: NOME, project_name: 'PROJ_LEGADO', domain: 'FIN', descricao: 'Base', schedule_type: 'daily', scheduled_time: '06:00:00', active: 1, sla_minutos: 60, ambiente: 'DEV', depends_on: 'PRED_A', campo_desconhecido: { a: [1, null] } }, legacyTables: { etl_pipeline_param: [{ param_name: 'cifrado', param_type: 'Encrypted', secretReference: { id: 9 }, param_value: '***' }], tabela_desconhecida: [{ x: null }] }, outro: { z: 1 } },
  nodes: TIPOS.map((type, i) => ({ id: `n${i}`, type, extension: { keep: i }, configuration: { legacyJob: { job_name: `n${i}`, job_type: type, job_command: `cmd ${i}`, execution_order: i + 1, especial: [null, { f: i }] }, unknownConfig: { nested: [i] }, etl_pipeline_job_param: [{ param_name: 'protegido', secretReference: { id: i }, param_value: '***' }] } })),
@@ -284,7 +285,7 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
   identificacao: ['Projeto', 'Domínio', 'Descrição do pipeline', 'Tags', 'Criticidade', 'Ambiente de destino'],
   agenda: ['Tipo de agendamento', 'Horário da agenda', 'Somente dias úteis', 'Calendário de feriados', 'Data de início DAG (opcional)', 'Hora de virada do dia (ODATE)', 'Não iniciar antes', 'Avisar se dependências não liberarem até'],
   politicas: ['SLA (minutos)', 'Pipeline ativo após publicar', 'Runs simultâneas', 'Retries', 'Delay retry (s)', 'Fila de execução (pool)', 'Liberar pipelines dependentes mesmo sem movimento', 'Notificar conclusão sem movimento'],
-  notificacoes: ['Notificar início', 'Notificar conclusão', 'Notificar falha', 'Destinatários de e-mail do fluxo'],
+  notificacoes: ['Notificar início', 'Notificar conclusão', 'Notificar falha', 'Destinatários de e-mail do fluxo', 'Sucesso', 'Warning', 'Falha', 'E-mails corporativos', 'E-mail', 'Teams pessoal', 'Canal Teams adicional', 'Evento para simular'],
   documentacao: ['Runbook (Markdown)'],
  }
  const porSecao = Object.fromEntries(secoes(tela).map(s => [String(s.props['aria-labelledby'] || 'parametros').replace('workspace-config-', ''), descendentes(s)]))
@@ -343,7 +344,8 @@ const publicacoes = tela => tela.achar(n => n.tag === 'section' && n.props['aria
  controle.tab('configuracao'); leitura.sincronizar()
  const editaveis = (n, travado = false) => typeof n === 'string' ? [] : [...(['input', 'select', 'textarea'].includes(n.tag) && !travado && !n.props.disabled && !n.props.readOnly ? [n] : []), ...n.filhos.flatMap(f => editaveis(f, travado || (n.tag === 'fieldset' && !!n.props.disabled)))]
  const camposLeitura = secoes(leitura).flatMap(s => editaveis(s))
- assert.deepEqual(camposLeitura.map(c => c.props.id || c.props.type), [], 'nenhum campo do pipeline editável em leitura')
+ const eventoConsulta = controlePor(secoes(leitura).flatMap(descendentes), 'Evento para simular')
+ assert.deepEqual(camposLeitura, [eventoConsulta], 'somente o evento do resumo local permite seleção em leitura; nenhum campo do pipeline é editável')
  assert(secoes(leitura).flatMap(descendentes).filter(n => ['input', 'select', 'textarea'].includes(n.tag)).length >= 25)
  assert.equal(leitura.botoes('Escolher predecessores').length, 0); assert.equal(leitura.botoes('Salvar rascunho').length, 0); assert.equal(leitura.botoes('Iniciar edição').length, 0)
  assert.equal(api.__calls.length, 0, 'leitura não chama a API de escrita')

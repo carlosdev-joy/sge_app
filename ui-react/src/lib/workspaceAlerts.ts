@@ -1,0 +1,12 @@
+export const ALERT_EVENTS = [['success','Sucesso'],['warning','Warning'],['failure','Falha']] as const
+export type AlertEvent = typeof ALERT_EVENTS[number][0]
+export interface AlertPolicy {schemaVersion:1;events:AlertEvent[];recipients:string[];email:boolean;teamsPersonal:boolean;teamsChannel:{groupId:number}|null;attemptMode:'terminal'}
+export function emptyAlertPolicy():AlertPolicy{return {schemaVersion:1,events:[],recipients:[],email:false,teamsPersonal:false,teamsChannel:null,attemptMode:'terminal'}}
+// Não descartar campos desconhecidos nem referências de uma versão futura.
+export function editableAlertPolicy(raw:unknown):raw is AlertPolicy{
+ if(!raw||typeof raw!=='object'||Array.isArray(raw))return false
+ const p=raw as Record<string,unknown>,c=p.teamsChannel as Record<string,unknown>|null
+ return Object.keys(p).sort().join()===Object.keys(emptyAlertPolicy()).sort().join()&&p.schemaVersion===1&&p.attemptMode==='terminal'&&typeof p.email==='boolean'&&typeof p.teamsPersonal==='boolean'&&Array.isArray(p.events)&&p.events.every(e=>ALERT_EVENTS.some(([id])=>id===e))&&new Set(p.events).size===p.events.length&&Array.isArray(p.recipients)&&p.recipients.every(e=>typeof e==='string')&&(c===null||typeof c==='object'&&!Array.isArray(c)&&Object.keys(c).join()==='groupId'&&Number.isInteger(c.groupId)&&Number(c.groupId)>0&&Number(c.groupId)<=2147483647)
+}
+export function alertCounts(p:AlertPolicy,event:AlertEvent){const n=p.events.includes(event)?new Set(p.recipients.map(x=>x.toLowerCase())).size:0;return {email:p.email?n:0,teamsPersonal:p.teamsPersonal?n:0,teamsChannel:p.events.includes(event)&&p.teamsChannel?1:0}}
+export function alertError(error:unknown){const e=error as {status?:number;detail?:unknown},d=e?.detail&&typeof e.detail==='object'?e.detail as Record<string,unknown>:{};const field=typeof d.field==='string'?d.field:'';return {field,message:e?.status===422?({recipients:'Informe até 100 e-mails válidos, um por linha. Canais pessoais exigem um destinatário.',events:'Confira os eventos selecionados.',teamsChannel:'Selecione um canal cadastrado válido.'} as Record<string,string>)[field]??'Confira a política de notificações; a configuração não é compatível com esta prévia.':e?.status===409?'A revisão ou a posse mudou. Confira a sessão antes de tentar novamente; os campos foram mantidos.':'Não foi possível simular. Confira a conexão e a sessão e tente novamente; os campos foram mantidos.'}}
