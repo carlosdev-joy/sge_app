@@ -30,7 +30,7 @@
 //     ESPIÃO: é ele que recebe o efeito do clique;
 //   • `lib/api` — fronteira de rede (levanta se alguém consultar no render);
 //   • `components/dashboard/SupervisaoCard` e
-//     `components/execucao/ExecucaoDetailModal` — outras fases, com bancada
+//     `components/execucao/ExecucaoDetailModal` e `LazyLogDialog` — outras fases, com bancada
 //     própria; aqui só ocupariam a árvore.
 // Tudo o mais é o código de produção, byte a byte: `Dashboard.tsx`,
 // `corridasDaLista.ts`, `CorridaBadge`, `statusExecucao`, `tempoCorrida`,
@@ -53,7 +53,7 @@ const ENTRADA = 'pages/Dashboard.tsx'
 
 const STUB_REL = new Set([
   'lib/api', 'components/dashboard/SupervisaoCard',
-  'components/execucao/ExecucaoDetailModal',
+  'components/execucao/ExecucaoDetailModal', 'components/execucao/LazyLogDialog',
 ])
 
 // ── transpilação recursiva (idêntica à da bancada da lista) ─────────────────
@@ -206,6 +206,8 @@ export function useContext() { return undefined }
 export function createContext(v) { return { Provider: () => null, _valor: v } }
 export function memo(c) { return c }
 export function forwardRef(c) { return (props) => c(props, { current: null }) }
+export function lazy() { return () => null }
+export function Suspense(props) { return props.children ?? null }
 export const Fragment = 'fragmento'
 export default {
   useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useId,

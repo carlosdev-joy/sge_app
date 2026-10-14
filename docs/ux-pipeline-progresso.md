@@ -1,6 +1,21 @@
 # UX profissional do Pipeline — progresso das fases
 
-Atualizado em 11/10/2026. Fonte dos critérios: [spec](spec-ux-pipeline-profissional.md), [contrato visual](design/pipeline-experiencia.md) e [matriz de preservação](matriz-paridade-pipeline.md).
+Atualizado em 14/10/2026. Fonte dos critérios: [spec](spec-ux-pipeline-profissional.md), [contrato visual](design/pipeline-experiencia.md) e [matriz de preservação](matriz-paridade-pipeline.md).
+
+## Estado atual reconciliado (EOC)
+
+| Entrega | Estado confirmado em DEV | Registro |
+|---|---|---|
+| EOC-F1 — tentativas | 2.21.2, PR #505, develop f05bd4e9 | [Release](release-notes/2.21.2-tentativas-motor.md) |
+| EOC-F2 — descoberta | 2.22.0, PR #506, develop56484d77 | [Release](release-notes/2.22.0-pipeline-ux-descoberta.md) |
+| EOC-F3 — aceite integrado | 2.22.3; PRs #507–510, developa322eb7c. Fixture própria SQL/Shell: salvar, validar/publicar, executar, retry/logs, pausa/liberação e negativas reais | [Encerramento](eoc-f3-aceite-integrado.md) |
+| EOC-F4 — sistema visual | 2.23.0, PR #511, develop120cced5 | [Release](release-notes/2.23.0-sistema-visual-comum.md) |
+| EOC-F5 — shell/Pipeline | 2.24.0, PR #512, develop98a77293 | [Release](release-notes/2.24.0-shell-pipeline.md) |
+| EOC-F6 — jornada/rollout | Candidato técnico2.24.1; perfis DEV, medições e roteiro preparados. Piloto humano e Caixa/DataStage pendentes, sem declaração de100% | [Critérios/evidências](eoc-f6-aceite-pipeline.md) |
+
+O histórico abaixo conserva o estado de cada registro na ocasião. Expressões antigas como “candidato” ou “pendente DEV” não prevalecem sobre a tabela atual. O aceite humano de UX-F6 continua aberto.
+
+## Histórico original
 
 | Fase | Estado | Registro |
 |---|---|---|

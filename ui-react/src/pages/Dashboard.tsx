@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo, useCallback, useEffect } from 'react'
+import { Fragment, lazy, useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
@@ -13,10 +13,12 @@ import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock,
   Activity, Layers, BarChart2, ChevronRight, FileText, ListChecks,
 } from 'lucide-react'
-import {
-  LogDetailModal, AirflowLogModal, DsLogModal,
-  type ExecRow, type AirflowLogState,
-} from '../components/execucao/ExecucaoDetailModal'
+import { LazyLogDialog } from '../components/execucao/LazyLogDialog'
+import type { ExecRow, AirflowLogState } from '../components/execucao/ExecucaoDetailModal'
+// Os detalhes só entram na carga quando o operador abre o log.
+const LogDetailModal = lazy(() => import('../components/execucao/ExecucaoDetailModal').then(module => ({ default: module.LogDetailModal })))
+const AirflowLogModal = lazy(() => import('../components/execucao/ExecucaoDetailModal').then(module => ({ default: module.AirflowLogModal })))
+const DsLogModal = lazy(() => import('../components/execucao/ExecucaoDetailModal').then(module => ({ default: module.DsLogModal })))
 // F11 (§9.8/Decisão 70) — a corrida da malha chega ao Dashboard, que é a tela
 // em que o plantonista de fato cai. Mesmo payload da lista, mesma chave de
 // cache, mesma cadência: ZERO consulta nova.
@@ -1284,15 +1286,15 @@ export default function Dashboard() {
 
       {/* Modais de detalhe de execução (reuso da tela de Logs) */}
       {detail && (
-        <LogDetailModal
+        <LazyLogDialog title={`Execução: ${detail.pipeline}`} onClose={() => setDetail(null)}><LogDetailModal
           row={detail}
           onClose={() => setDetail(null)}
           onAirflowLog={s => { setDetail(null); setAirflowLog(s) }}
           onDsLog={(eid, jn, pn) => { setDetail(null); setDsLog({ executionId: eid, jobName: jn, pipelineName: pn }) }}
-        />
+        /></LazyLogDialog>
       )}
-      {airflowLog && <AirflowLogModal state={airflowLog} onClose={() => setAirflowLog(null)} />}
-      {dsLog && <DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} pipelineName={dsLog.pipelineName} onClose={() => setDsLog(null)} />}
+      {airflowLog && <LazyLogDialog title="Log Airflow" onClose={() => setAirflowLog(null)}><AirflowLogModal state={airflowLog} onClose={() => setAirflowLog(null)} /></LazyLogDialog>}
+      {dsLog && <LazyLogDialog title="Log DataStage" onClose={() => setDsLog(null)}><DsLogModal executionId={dsLog.executionId} jobName={dsLog.jobName} pipelineName={dsLog.pipelineName} onClose={() => setDsLog(null)} /></LazyLogDialog>}
     </div>
   )
 }
