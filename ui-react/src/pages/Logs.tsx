@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { apiFetch } from '../lib/api'
 import { useAuthStore } from '../store/auth'
 import { Badge } from '../components/ui/Badge'
@@ -56,6 +56,9 @@ interface FalhaRow {
   resolved_at?: string
   resolution_note?: string
   snow_ticket?: string
+  priority?: string
+  version?: string | null
+  execution_link?: string
 }
 
 // ── Main Execuções Tab ─────────────────────────────────────────────────────
@@ -67,6 +70,7 @@ interface Filters {
   data_ini: string
   exec_id: string
   hours_back: string
+  exact?: boolean
 }
 
 function ExecucoesTab() {
@@ -76,23 +80,36 @@ function ExecucoesTab() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   // Filtros iniciais vindos da URL (ex: drill-down do Dashboard)
-  const [filters, setFilters] = useState<Filters>(() => ({
+  const [localFilters, setLocalFilters] = useState<Filters>(() => ({
     projeto: searchParams.get('project') ?? '',
     pipeline: searchParams.get('pipeline') ?? '',
     status: searchParams.get('status') ?? '',
     data_ini: searchParams.get('date') ?? '',
     exec_id: searchParams.get('execution_id') ?? '',
     hours_back: '',
+    exact: searchParams.get('exact') === '1',
   }))
-  const [page, setPage] = useState(0)
+  const exactContext = searchParams.get('exact') === '1' && !!searchParams.get('execution_id') && !!searchParams.get('pipeline')
+  const filters: Filters = exactContext ? {
+    projeto: searchParams.get('project') ?? '', pipeline: searchParams.get('pipeline')!,
+    status: searchParams.get('status') ?? '', data_ini: searchParams.get('date') ?? '',
+    exec_id: searchParams.get('execution_id')!, hours_back: '', exact: true,
+  } : localFilters
+  const [localPage, setPage] = useState(0)
+  const page = exactContext ? 0 : localPage
+  const setFilters = (next: Filters | ((current: Filters) => Filters)) => {
+    setLocalFilters(typeof next === 'function' ? next(filters) : next)
+    setPage(0)
+    if (exactContext) setSearchParams({}, { replace: true })
+  }
 
-  // Limpa os query params da URL após aplicá-los, para não persistirem em navegações
+  // Contexto exato deriva da URL, portanto permanece copiável/recarregável e
+  // sincroniza outra identidade sem efeito de setState ou fallback recente.
   useEffect(() => {
-    if ([...searchParams.keys()].length > 0) {
+    if (!exactContext && [...searchParams.keys()].length > 0) {
       setSearchParams({}, { replace: true })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [exactContext, searchParams, setSearchParams])
   const [detail, setDetail] = useState<ExecRow | null>(null)
   const [airflowLog, setAirflowLog] = useState<AirflowLogState | null>(null)
   const [dsLog, setDsLog] = useState<{ executionId: string; jobName: string; pipelineName: string } | null>(null)
@@ -103,6 +120,7 @@ function ExecucoesTab() {
     if (f.pipeline) q.set('filter_pipeline', f.pipeline)
     if (f.status) q.set('filter_status', f.status)
     if (f.exec_id) q.set('filter_execution_id', f.exec_id)
+    if (f.exact) q.set('exact_identity', 'true')
     if (f.hours_back) q.set('filter_hours_back', f.hours_back)
     else if (f.data_ini) q.set('filter_date_from', f.data_ini)
     return q.toString()
@@ -143,6 +161,7 @@ function ExecucoesTab() {
   }
 
   function clearFilters() {
+    setSearchParams({}, { replace: true })
     setFilters({ projeto: '', pipeline: '', status: '', data_ini: '', exec_id: '', hours_back: '' })
     setPage(0)
   }
@@ -163,7 +182,7 @@ function ExecucoesTab() {
           </Select>
 
           <Input label="Pipeline" value={filters.pipeline}
-            onChange={e => setFilters(f => ({ ...f, pipeline: e.target.value }))}
+            onChange={e => { setSearchParams({}, { replace: true }); setFilters(f => ({ ...f, pipeline: e.target.value, exact: false })) }}
             onKeyDown={e => e.key === 'Enter' && (setPage(0), refetch())}
             placeholder="nome do pipeline" className="w-52" />
 
@@ -179,7 +198,7 @@ function ExecucoesTab() {
             className="w-44" />
 
           <Input label="Execution ID" value={filters.exec_id}
-            onChange={e => setFilters(f => ({ ...f, exec_id: e.target.value }))}
+            onChange={e => { setSearchParams({}, { replace: true }); setFilters(f => ({ ...f, exec_id: e.target.value, exact: false })) }}
             onKeyDown={e => e.key === 'Enter' && (setPage(0), refetch())}
             placeholder="20260614..." className="w-48" />
 
@@ -320,7 +339,6 @@ function ResolveModal({
   row, onClose, readOnly = false,
 }: { row: FalhaRow; onClose: () => void; readOnly?: boolean }) {
   const qc = useQueryClient()
-  const user = useAuthStore(s => s.user)
   const [note, setNote] = useState(row.resolution_note ?? '')
   const [ticket, setTicket] = useState(row.snow_ticket ?? '')
 
@@ -330,9 +348,8 @@ function ResolveModal({
       body: JSON.stringify({
         execution_id: row.execution_id,
         pipeline: row.pipeline,
+        expectedVersion: row.version ?? null,
         label: row.pipeline,
-        user: user?.matricula,
-        display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
         resolution_note: note || null,
         snow_ticket: ticket || null,
         remove,
@@ -531,7 +548,7 @@ function BulkResolveModal({ rows, loading, onConfirm, onClose }: {
         </div>
         <div className="max-h-32 overflow-auto border border-edge rounded-lg divide-y divide-edge/30">
           {rows.slice(0, 50).map(r => (
-            <div key={`${r.execution_id}-${r.pipeline}`} className="px-3 py-1.5 text-[11px] flex items-center gap-2">
+            <div key={JSON.stringify([r.execution_id, r.pipeline])} className="px-3 py-1.5 text-[11px] flex items-center gap-2">
               <span className="font-mono text-ink truncate flex-1">{r.pipeline}</span>
               <span className="text-dim shrink-0">{fmtDt(r.inicio)}</span>
             </div>
@@ -557,10 +574,32 @@ function BulkResolveModal({ rows, loading, onConfirm, onClose }: {
 
 // ── Gestão de Falhas Tab ───────────────────────────────────────────────────
 
+function FailureHistory({ row, onClose }: { row: FalhaRow; onClose: () => void }) {
+  const { data, isLoading, error } = useQuery<{ data: { id: number; action: string; actor: string; display_name: string; created_at: string; note?: string; priority?: string }[] }>({
+    queryKey: ['falhas-history', row.execution_id, row.pipeline],
+    queryFn: () => apiFetch(`/execucoes/falhas-history?${new URLSearchParams({ execution_id: row.execution_id, pipeline: row.pipeline })}`),
+  })
+  const labels: Record<string, string> = { ack: 'Assumida', resolve: 'Resolvida', release: 'Assunção removida', reopen: 'Reaberta', priority: 'Prioridade alterada', legacy_snapshot: 'Registro legado (geração não informada)' }
+  return <Modal open title="Histórico do tratamento" onClose={onClose} size="md">
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-ink break-all">{row.pipeline} · {row.execution_id}</p>
+      <p className="text-sm text-dim">Até 200 ações recentes de tratamento. Esta trilha não confirma comunicação, entrega ou sucesso do processamento.</p>
+      {isLoading && <PageSpinner />}
+      {error && <p role="alert" className="text-sm text-ink">Não foi possível carregar o histórico. Feche e tente novamente.</p>}
+      {!isLoading && !error && !data?.data.length && <p className="text-sm text-dim">Nenhuma ação registrada. Uma ocorrência legada pode não ter histórico anterior.</p>}
+      <ol className="flex flex-col gap-3">{data?.data.map(item => <li key={item.id} className="border-b border-edge pb-3 text-sm text-ink">
+        <p>{labels[item.action] ?? item.action} · {item.display_name || item.actor}</p>
+        <p className="text-xs text-dim">{fmtDt(item.created_at)}{item.priority ? ` · ${item.priority}` : ''}</p>
+        {item.note && <p className="mt-1 whitespace-pre-wrap break-words">{item.note}</p>}
+      </li>)}</ol>
+    </div>
+  </Modal>
+}
+
 export function GestaoFalhasTab() {
   const qc = useQueryClient()
   const user = useAuthStore(s => s.user)
-  const isViewer = user?.perfil === 'consulta'
+  const isViewer = !user?.permissoes?.includes('acao_executar')
 
   const [days, setDays] = useState(7)
   const [statusAck, setStatusAck] = useState('')
@@ -571,9 +610,10 @@ export function GestaoFalhasTab() {
   const [resolveRow, setResolveRow] = useState<{ row: FalhaRow; readOnly: boolean } | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkOpen, setBulkOpen] = useState(false)
+  const [historyRow, setHistoryRow] = useState<FalhaRow | null>(null)
   const FLIMIT = 50
 
-  const rowKey = (r: FalhaRow) => `${r.execution_id}|${r.pipeline}`
+  const rowKey = (r: FalhaRow) => JSON.stringify([r.execution_id, r.pipeline])
   // Rótulo amigável p/ notificação no Teams: o nome do pipeline.
   const falhaLabel = (r: FalhaRow) => r.pipeline
 
@@ -590,9 +630,17 @@ export function GestaoFalhasTab() {
   if (filterProject) qs.set('filter_project', filterProject)
   if (mine && user?.matricula) qs.set('ack_by', user.matricula)
 
-  const { data, isLoading, refetch } = useQuery<{ total: number; data: FalhaRow[] }>({
+  const { data, isLoading, error, refetch } = useQuery<{ total: number; data: FalhaRow[] }>({
     queryKey: ['falhas', days, statusAck, mine, filterPipeline, filterProject, page],
     queryFn: () => apiFetch(`/execucoes/falhas?${qs}`),
+  })
+
+  const priorityMut = useMutation({
+    mutationFn: ({ row, priority }: { row: FalhaRow; priority: string }) => apiFetch('/execucoes/falhas-priority', {
+      method: 'POST', body: JSON.stringify({ execution_id: row.execution_id, pipeline: row.pipeline, priority, expectedVersion: row.version ?? null }),
+    }),
+    onSuccess: () => { toast.success('Prioridade atualizada'); qc.invalidateQueries({ queryKey: ['falhas'] }) },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const ackMut = useMutation({
@@ -601,9 +649,8 @@ export function GestaoFalhasTab() {
       body: JSON.stringify({
         execution_id: r.execution_id,
         pipeline: r.pipeline,
+        expectedVersion: r.version ?? null,
         label: falhaLabel(r),
-        user: user?.matricula,
-        display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
       }),
     }),
     onSuccess: (data) => {
@@ -630,8 +677,6 @@ export function GestaoFalhasTab() {
           items: payload.items,
           resolution_note: payload.resolution_note || null,
           snow_ticket: payload.snow_ticket || null,
-          user: user?.matricula,
-          display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
         }),
       }),
     onSuccess: (res) => {
@@ -649,8 +694,6 @@ export function GestaoFalhasTab() {
         method: 'POST',
         body: JSON.stringify({
           items,
-          user: user?.matricula,
-          display_name: `${user?.primeiro_nome ?? ''} ${user?.ultimo_nome ?? ''}`.trim(),
         }),
       }),
     onSuccess: (res) => {
@@ -681,6 +724,8 @@ export function GestaoFalhasTab() {
 
   return (
     <div className="flex flex-col gap-4">
+      <p className="text-sm text-dim">O tratamento registra quem investiga e resolve a ocorrência. O processamento permanece FAILED; comunicação e confirmação de entrega têm registros independentes. Abrir esta tela não assume uma falha.</p>
+      {error && <div role="alert" className="text-sm text-ink border border-edge rounded-lg p-3">Não foi possível consultar as falhas. <Button variant="secondary" size="sm" onClick={() => refetch()}>Tentar novamente</Button></div>}
       {/* KPI Cards */}
       <FalhasKpiCards days={days} onFilter={f => { setStatusAck(f); setPage(0) }} />
 
@@ -743,7 +788,7 @@ export function GestaoFalhasTab() {
                 <Button variant="secondary" size="sm"
                   loading={bulkAckMut.isPending}
                   disabled={selectedUnacked.length === 0}
-                  onClick={() => bulkAckMut.mutate(selectedUnacked.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline, label: falhaLabel(r) })))}
+                  onClick={() => bulkAckMut.mutate(selectedUnacked.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline, label: falhaLabel(r), expectedVersion: r.version ?? null })))}
                   className="border-orange-700/50 text-orange-400 hover:text-orange-300"
                   title={selectedUnacked.length === 0 ? 'Todas as selecionadas já têm dono' : 'Assumir as selecionadas sem dono'}>
                   <ShieldAlert size={13} /> Assumir {selectedUnacked.length} em massa
@@ -772,7 +817,8 @@ export function GestaoFalhasTab() {
                   <th className="px-3 py-2 text-left">Pipeline</th>
                   <th className="px-3 py-2 text-left">Projeto</th>
                   <th className="px-3 py-2 text-left">Início</th>
-                  <th className="px-3 py-2 text-left">Situação</th>
+                  <th className="px-3 py-2 text-left">Tratamento</th>
+                  <th className="px-3 py-2 text-left">Prioridade</th>
                   <th className="px-3 py-2 text-left">Assumida por</th>
                   <th className="px-3 py-2 text-left">Assumida em</th>
                   <th className="px-3 py-2 text-left">Resolvida por</th>
@@ -782,7 +828,7 @@ export function GestaoFalhasTab() {
                 </tr></thead>
                 <tbody>
                   {rows.map(r => (
-                    <tr key={`${r.execution_id}-${r.pipeline}`}
+                    <tr key={JSON.stringify([r.execution_id, r.pipeline])}
                       className={`border-b border-edge/40 hover:bg-edge/20 transition-colors ${r.resolved_at ? 'opacity-70' : ''} ${selected.has(rowKey(r)) ? 'bg-green-50 dark:bg-green-900/10' : ''}`}>
                       {!isViewer && (
                         <td className="px-3 py-2">
@@ -799,6 +845,14 @@ export function GestaoFalhasTab() {
                       <td className="px-3 py-2 text-dim">{r.project}</td>
                       <td className="px-3 py-2 text-dim whitespace-nowrap">{fmtDt(r.inicio)}</td>
                       <td className="px-3 py-2">{statusAckLabel(r)}</td>
+                      <td className="px-3 py-2">
+                        {!isViewer && r.ack_by === user?.matricula && !r.resolved_at ? (
+                          <Select className="min-w-28" aria-label={`Prioridade de ${r.pipeline} / ${r.execution_id}`} value={r.priority ?? 'normal'} disabled={priorityMut.isPending}
+                            onChange={e => priorityMut.mutate({ row: r, priority: e.target.value })}>
+                            <option value="baixa">Baixa</option><option value="normal">Normal</option><option value="alta">Alta</option><option value="critica">Crítica</option>
+                          </Select>
+                        ) : <span className="text-ink">{({ baixa: 'Baixa', normal: 'Normal', alta: 'Alta', critica: 'Crítica' } as Record<string, string>)[r.priority ?? 'normal'] ?? 'Não informada'}</span>}
+                      </td>
                       <td className="px-3 py-2 text-dim">
                         {r.ack_by ? (r.display_name ?? r.ack_by) : <span className="text-red-400/60">—</span>}
                       </td>
@@ -819,7 +873,7 @@ export function GestaoFalhasTab() {
                           : <span className="text-dim/40">—</span>}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <div className="flex justify-end gap-1">
+                        <div className="flex min-w-max items-center justify-end gap-1 whitespace-nowrap">
                           {!r.ack_by && !isViewer && (
                             <Button variant="secondary" size="sm" title="Assumir investigação"
                               loading={ackMut.isPending}
@@ -847,6 +901,8 @@ export function GestaoFalhasTab() {
                               <CheckCircle2 size={12} />
                             </Button>
                           )}
+                          <Button variant="ghost" size="sm" title="Histórico do tratamento" onClick={() => setHistoryRow(r)}><FileText size={12} /> Histórico</Button>
+                          {r.execution_link && <Link className="text-sm text-ink underline underline-offset-2 focus-visible:outline focus-visible:outline-2" to={r.execution_link}>Execução</Link>}
                           <Button variant="ghost" size="sm" title="Copiar Execution ID"
                             onClick={() => copyText(r.execution_id)}>
                             <Copy size={12} />
@@ -868,6 +924,7 @@ export function GestaoFalhasTab() {
         </div>
       )}
 
+      {historyRow && <FailureHistory row={historyRow} onClose={() => setHistoryRow(null)} />}
       {resolveRow && (
         <ResolveModal row={resolveRow.row} readOnly={resolveRow.readOnly} onClose={() => setResolveRow(null)} />
       )}
@@ -876,7 +933,7 @@ export function GestaoFalhasTab() {
           rows={selectedRows}
           loading={bulkMut.isPending}
           onConfirm={(note, ticket) => bulkMut.mutate({
-            items: selectedRows.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline, label: falhaLabel(r) })),
+            items: selectedRows.map(r => ({ execution_id: r.execution_id, pipeline: r.pipeline, label: falhaLabel(r), expectedVersion: r.version ?? null })),
             resolution_note: note, snow_ticket: ticket,
           })}
           onClose={() => setBulkOpen(false)}
