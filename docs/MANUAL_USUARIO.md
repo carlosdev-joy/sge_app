@@ -9,6 +9,10 @@
 
 Para configurar o catálogo do pipeline, referências nos nós, Valida Arquivo e conclusão sem movimento, consulte o [guia de parâmetros e Valida Arquivo](manual-parametros-valida-arquivo.md). Administração e operação: [roteiro de aplicação assistida na Caixa](release-notes/parametros-valida-arquivo-caixa.md). A certificação DataStage real permanece pendente na Caixa; documentação preparada não indica funcionalidade já implantada.
 
+## Alertas do pipeline
+
+A F7 prepara a política e a prévia sem envio. O formulário da F8 permitirá selecionar Sucesso, Warning e Falha, pessoas e canais. Novos pipelines começam sem comunicação externa habilitada; configurações e nós de relatórios existentes são preservados. [Contrato e limites](eoc-f7-contrato-alertas.md).
+
 ## Perfis de acesso
 
 Para o piloto de Pipeline em DEV, os perfis `eoc_dev_sem_admin`, `eoc_consulta` e `eoc_sustentacao` separam autoria, leitura e operação. O administrador os associa aos usuários em Admin → Acesso → Usuários. Matriz e jornadas: [guia EOC-F6](eoc-f6-aceite-pipeline.md). Escolher uma experiência na tela não concede permissões.

@@ -96,6 +96,10 @@ def load_workspace_secrets(cur,definition,existing,legacy_version=None,draft_id=
 def materialize(definition,layout,existing):
  """Projeção completa; produção prepara cifras imutáveis antes desta função."""
  name=definition['identity']['pipelineName'];metadata=definition.get('metadata') or {};pipeline=dict(metadata.get('legacyPipeline') or {});pipeline['pipeline_name']=name
+ if 'alertPolicy' in definition:
+  from services.pipeline_alerts import policy
+  try:policy(definition['alertPolicy'])
+  except HTTPException as error:raise PublicationBlocked('alert_policy_invalid','Política de alertas inválida ou não suportada',field='alertPolicy') from error
  if 'schedule' in definition:raise PublicationBlocked('unsupported_schedule','Use a agenda na configuração do pipeline; o campo schedule separado não é projetável')
  if 'parameters' in definition:raise PublicationBlocked('unsupported_parameters','Parâmetros separados não são projetáveis; use o catálogo do pipeline')
  policy_fields=('liberar_dependentes_sem_movimento','notificar_sem_movimento')

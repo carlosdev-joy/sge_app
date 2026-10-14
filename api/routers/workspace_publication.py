@@ -105,3 +105,18 @@ async def workspace_lineage_isx(draft_id:UUID,body:dict=Body(default={}),actor:d
   raise HTTPException(503,'Extrator ISX indisponível; confira a configuração DataStage e tente novamente') from None
  guarded_draft(draft_id,body,actor,authorization)
  return {'rows':source_rows(result.get('stages') or [],'isx_auto'),'source':'DataStage ISX'}
+
+
+@router.post('/workspace-adapter/alerts/{draft_id}/preview')
+def workspace_alerts_preview(draft_id:UUID,body:dict=Body(default={}),actor:dict=Depends(require_perm(PERM_EDITAR)),authorization:str|None=Header(default=None)):
+ """Simulação autorizada; não resolve destinatários nem chama transporte."""
+ if not ENABLED():raise HTTPException(503,'Workspace desabilitado')
+ from services.workspace_advisory import guarded_draft
+ from services.pipeline_alerts import preview,capabilities
+ definition=guarded_draft(draft_id,body,actor,authorization)
+ if set(body)-{'expectedRevision','fence','policy','event'}:
+  raise HTTPException(422,{'code':'alert_preview_invalid','field':'body','detail':'Campos de prévia inválidos.'})
+ value=body.get('policy',definition.get('alertPolicy'))
+ if 'policy' not in body and 'alertPolicy' not in definition:
+  return {'schemaVersion':1,'simulation':True,'dispatch':False,'mode':'legacy','count':None,'deliveries':None,'capabilities':capabilities(),'detail':'Política legada preservada; migração exige seleção explícita no rascunho.'}
+ return preview(value,body.get('event'))
