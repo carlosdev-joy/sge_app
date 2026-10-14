@@ -144,3 +144,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [EOC-F11 Teams pessoal](orquestra-eoc-f11-teams-pessoal.md) — provider/auth/admin cifrado; verificar publicação e gates no handoff.
 
 - [EOC-F12 tratamento de falhas](orquestra-eoc-f12-tratamento.md) — prioridade, versão e histórico no adapter existente; primeira comunicação changed-only.
+
+- [EOC-F15 canvas/localizador](eoc-f15-malha-canvas.md) — localizador da visão, propriedades, seleção no polling e composição mobile; entrega/gates em handoff.
