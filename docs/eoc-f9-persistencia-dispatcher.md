@@ -1,0 +1,14 @@
+# EOC-F9 — Persistência e dispatcher
+
+Decomposição antes da implementação, conforme tarefa-F9 (limite de 500 linhas úteis por candidato):
+
+- **F9A — Fundação persistente dry-run:** schema de evento/intenção/tentativa, unique guards, gravação atômica e referências de destino ligadas ao snapshot. PR/DEV independente; nenhum dispatcher ou emissor público. Aceite: SQL real, rollback, concorrência e reabertura da conexão preservam exatamente o fan-out. F9 permanece aberta.
+- **F9B — Dispatcher e recuperação:** depende de F9A publicada; claim com lease/fence, tentativa durável, backoff finito/Retry-After, Unknown sem retry cego, reconciliação no lifespan desabilitada por default. Mocks 200/429/500/timeout, crash/restart e concorrência reais. PR/DEV independente. Não repete jobs.
+
+Gate separado da entrega técnica: o factory não certifica Warning agregado nem geração de Clear. Não produzir eventos de clientes a partir de envelope recebido, publicação ativa ou geração inventada. Até um adapter confiável ser validado, nenhuma rota pública de ingestão é criada, capabilities de resultado e canais continuam false. F9A oferece apenas harness interno para pipeline/run com prefixo próprio `__eoc_f9_`, explicitamente dry-run. Não certifica autoridade por validar formato.
+
+Modelo revisto antes do DDL: notificações e email_logs existentes representam inbox/envios legados, sem identidade de evento, atomicidade do fan-out ou lease. Preservá-los. Três objetos relacionais atendem o contrato, sem segunda fonte de políticas: evento com identidade/hash e origem mínima; intenção com referência à versão original e índice normalizado de destinatário (ou groupId), nunca endereço/webhook; tentativa com sequência e resultado saneado. Sem corpo/template sensível ou credenciais. Nenhuma retenção automática apaga pendências. Snapshot original continua em workspace_versao, não é duplicado.
+
+Ordem de locks: application lock transacional exclusivo por event_key, leitura UPDLOCK sem range, depois intenções na ordem determinística; commit único. O ensaio SQL detectou deadlock com HOLDLOCK em índices distintos na chave ausente; o application lock serializa a mesma identidade sem bloquear ranges de outros eventos. Replay não acrescenta destinos novos. Hashes BIN2 e unique(event, policyRevision, channel, destination_ref); DATETIME2 UTC, NVARCHAR com limites UTF-16 herdados do contrato F7. Falta de schema: 503 nomeando migration179. Versão da entrega em migration180. Rollback do código mantém dados; não remover tabelas.
+
+Segurança: sem endpoint novo nem transporte/import de providers. Chamadores não autenticados não alcançam harness via HTTP. Queries parametrizadas, erros fixos sem dados do banco; destinos só referências ao snapshot protegido pelas permissões existentes. A fila não vira endpoint de consulta pública. Resolução, retenção dos terminais e reenvio auditado serão definidos nas fases dependentes; não adicionar envio automático ao legado.
