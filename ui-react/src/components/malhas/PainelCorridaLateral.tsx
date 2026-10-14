@@ -188,7 +188,7 @@ export function PainelCorridaLateral({
   ]
 
   return (
-    <div className="flex w-72 shrink-0 flex-col border-r border-edge bg-panel">
+    <div className="flex max-h-52 w-full shrink-0 flex-col border-b border-edge bg-panel md:max-h-none md:w-72 md:border-b-0 md:border-r">
       <Tabs
         tabs={abas}
         active={aba}

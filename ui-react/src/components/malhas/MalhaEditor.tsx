@@ -98,6 +98,7 @@ import {
 // por corrida (Decisões 42, 62, 63, 65 e 66).
 import { CabecalhoCorrida, type NoSegurado } from './CabecalhoCorrida'
 import { PainelCorridaLateral, type AbaCorrida } from './PainelCorridaLateral'
+import { LocalizadorMalha } from './LocalizadorMalha'
 import { SeletorCorrida } from './SeletorCorrida'
 // F7: o texto de duração da corrida (o mesmo módulo puro da faixa) — o crédito
 // de retenção chega em MINUTOS do servidor e vira "6h" no toast.
@@ -1169,6 +1170,7 @@ function MalhaEditorInner({
   useEffect(() => {
     if (!grafo) return
     const atuais = new Map(nodesRef.current.map(n => [n.id, n.position]))
+    const selecaoAtual = new Set(nodesRef.current.filter(n => n.selected).map(n => n.id))
     // Estado de cada COMPONENTE na data — calculado uma vez e reusado pelo card
     // e pela linha (duas leituras da mesma verdade, nunca dois cálculos).
     const camadaExecNos = emExecucao && !!execData
@@ -1254,7 +1256,7 @@ function MalhaEditorInner({
           } satisfies MalhaComponenteNodeData,
         }
       }),
-    ])
+    ].map(no => ({ ...no, selected: selecaoAtual.has(no.id) })))
     // A LINHA conta o caminho da corrida: verde onde já passou, azul animada na
     // frente que está avançando, vermelha onde parou. Fora da Execução (ou sem
     // dado na data) as arestas ficam exatamente como na Montagem.
@@ -2339,8 +2341,23 @@ function MalhaEditorInner({
     || gestoEf.agendamentos.length > 0           // F13
     || gestoEf.republicar.length > 0)
 
+  const painelRealce = realce.cadeia && realceRotulo ? (
+    <PainelRealce
+      foco={realceRotulo}
+      sentido={realce.sentido}
+      onSentido={realce.mudarSentido}
+      isolar={realce.isolar}
+      onIsolar={realce.alternarIsolar}
+      onLimpar={realce.limpar}
+      textoTras={realceTextos.tras}
+      textoFrente={realceTextos.frente}
+      acesos={realce.cadeia.nos.size}
+      total={nodes.length}
+    />
+  ) : null
+
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-edge bg-canvas">
+    <div className="flex h-full w-full flex-col overflow-y-auto rounded-xl border border-edge bg-canvas">
       {/* Barra superior (F9): Montagem | Execução + seletor de data de referência. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-edge bg-panel px-3 py-2">
         <div className="flex gap-1">
@@ -2699,7 +2716,12 @@ function MalhaEditorInner({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
+      <LocalizadorMalha key={malha} nodes={nodes} onLocalizar={id => {
+        setNodes(atuais => atuais.map(no => ({ ...no, selected: no.id === id })))
+        setEdges(atuais => atuais.map(aresta => ({ ...aresta, selected: false })))
+        focarPipeline(id)
+      }} />
+      <div className="flex min-h-0 flex-1 flex-col md:min-h-[30rem] md:flex-row">
         {/* ── F10: o painel lateral da CORRIDA (§9.5) ──────────────────────
             Até aqui ele era "EVENTOS DA GUARDIÃ" — e ciclo saudável não gera
             evento, então ele ficava VAZIO justamente durante a corrida.
@@ -2745,7 +2767,7 @@ function MalhaEditorInner({
         {/* Paleta lateral: ADICIONAR membro (a remoção continua no modal
             Membros da F7 — sem duplicar o caminho) + componentes (F12). */}
         {!readOnly && !emExecucao && (
-          <div className="flex w-60 shrink-0 flex-col gap-2 overflow-y-auto border-r border-edge bg-panel p-3">
+          <div className="flex max-h-44 w-full shrink-0 flex-col gap-2 overflow-y-auto border-b border-edge bg-panel p-3 md:max-h-none md:w-60 md:border-b-0 md:border-r">
             <span className="text-xs font-semibold uppercase tracking-wider text-dim">
               Adicionar pipeline
             </span>
@@ -2823,7 +2845,12 @@ function MalhaEditorInner({
           </div>
         )}
 
-        <div className="relative min-h-0 min-w-0 flex-1">
+        {painelRealce && (
+          <div className="border-b border-edge bg-canvas p-3 md:hidden">
+            {painelRealce}
+          </div>
+        )}
+        <div className="relative min-h-96 min-w-0 flex-1 md:min-h-0">
           {nodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 text-dim">
               <span className="text-3xl">⬡</span>
@@ -2887,20 +2914,9 @@ function MalhaEditorInner({
             <MiniMap pannable zoomable nodeColor={miniMapColor} className="!bg-panel" />
 
             {/* (F1) Painel do realce — nos dois modos; some sem foco. */}
-            {realce.cadeia && realceRotulo && (
-              <Panel position="top-left">
-                <PainelRealce
-                  foco={realceRotulo}
-                  sentido={realce.sentido}
-                  onSentido={realce.mudarSentido}
-                  isolar={realce.isolar}
-                  onIsolar={realce.alternarIsolar}
-                  onLimpar={realce.limpar}
-                  textoTras={realceTextos.tras}
-                  textoFrente={realceTextos.frente}
-                  acesos={realce.cadeia.nos.size}
-                  total={nodes.length}
-                />
+            {painelRealce && (
+              <Panel position="top-left" className="!hidden md:!block md:!top-24">
+                {painelRealce}
               </Panel>
             )}
 
