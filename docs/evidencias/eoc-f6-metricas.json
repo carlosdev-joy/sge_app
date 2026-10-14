@@ -1,0 +1,377 @@
+{
+  "at": "2026-10-14T10:36:19.800709+00:00",
+  "sourceBase": "98a772934dcd742b34d96f5a022478db3cbbf33d",
+  "sourceIndexSha256": "297fc0469f02e290b44d3978e158414f70ad59e6035cf8515f6fa953148f7cdf",
+  "scope": "Build produção; API/usuário/grafo sintéticos; browser1440 Chromium sem throttling; 25seleções até2frames por tamanho; cache vazio; não equivale a INP/piloto humano",
+  "budgets": {
+    "coldGzipBytes": 307200,
+    "selectionP95Ms": 200
+  },
+  "performance": [
+    {
+      "nodes": 50,
+      "coldGzipBytes": 283380,
+      "readyMs": 1883.5842460393906,
+      "selectionP95Ms": 129.33217000681907,
+      "lcpMs": 2280,
+      "cls": 0.0015316543089313273,
+      "javascriptErrors": []
+    },
+    {
+      "nodes": 100,
+      "coldGzipBytes": 283380,
+      "readyMs": 751.9591460004449,
+      "selectionP95Ms": 125.24193001445383,
+      "lcpMs": 1040,
+      "cls": 0.0015316543089313273,
+      "javascriptErrors": []
+    },
+    {
+      "nodes": 300,
+      "coldGzipBytes": 283380,
+      "readyMs": 1271.3321739574894,
+      "selectionP95Ms": 163.70286198798567,
+      "lcpMs": 1564,
+      "cls": 0.0015316543089313273,
+      "javascriptErrors": []
+    }
+  ],
+  "coldRoutes": [
+    {
+      "tab": "montagem",
+      "readyMs": 1097.387223970145,
+      "coldGzipBytes": 283380,
+      "nodes": 3,
+      "javascriptErrors": []
+    },
+    {
+      "tab": "execucao",
+      "readyMs": 1511.768952012062,
+      "coldGzipBytes": 301676,
+      "nodes": 3,
+      "javascriptErrors": []
+    }
+  ],
+  "baselineColdRoutes": [
+    {
+      "tab": "montagem",
+      "readyMs": 640.3091590618715,
+      "coldGzipBytes": 289226,
+      "nodes": 3,
+      "javascriptErrors": []
+    },
+    {
+      "tab": "execucao",
+      "readyMs": 1229.3052069144323,
+      "coldGzipBytes": 307314,
+      "nodes": 3,
+      "javascriptErrors": []
+    }
+  ],
+  "baselineSelection": [
+    {
+      "nodes": 50,
+      "selectionP95Ms": 82.20448100473732
+    },
+    {
+      "nodes": 100,
+      "selectionP95Ms": 98.52793894242495
+    },
+    {
+      "nodes": 300,
+      "selectionP95Ms": 148.90049898531288
+    }
+  ],
+  "apiP95Ms": {
+    "sequential": {
+      "capabilities": 15.033810981549323,
+      "context": 18.815121962688863,
+      "index": 34.48305302299559,
+      "execution": 544.7982019977644
+    },
+    "concurrent4": {
+      "capabilities": 99.20164803043008,
+      "context": 93.1410799967125,
+      "index": 156.30669496022165,
+      "execution": 378.69695702102035
+    }
+  },
+  "apiMethod": "30 leituras por endpoint/modo; índice search; API inalterada; medições reutilizadas, não repetir como novas",
+  "pollingSeconds": 30,
+  "logsCases": [
+    {
+      "mode": "normal",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "normal",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "cancel-button",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "cancel-button",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "cancel-escape",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "cancel-escape",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "chunk-error",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": true
+    },
+    {
+      "mode": "chunk-error",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": true
+    },
+    {
+      "mode": "rbac-dev",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "rbac-dev",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "rbac-consulta",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "rbac-consulta",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "rbac-sustentacao",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "rbac-sustentacao",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "rbac-sem-permissoes",
+      "theme": "light",
+      "width": 1440,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    },
+    {
+      "mode": "rbac-sem-permissoes",
+      "theme": "dark",
+      "width": 390,
+      "localModal": true,
+      "shellPreserved": true,
+      "noWrites": true,
+      "expectedChunkError": false
+    }
+  ],
+  "profiles": [
+    {
+      "profile": "eoc_dev_sem_admin",
+      "permissions": [
+        "tela_dashboard",
+        "tela_pipelines",
+        "tela_jobs",
+        "tela_logs",
+        "acao_editar",
+        "acao_publicar"
+      ],
+      "realLogin": true,
+      "noExtraPermissions": true,
+      "capabilities": {
+        "consultDefinition": true,
+        "consultStages": true,
+        "consultLogs": true,
+        "editDraft": true,
+        "publish": true,
+        "execute": false,
+        "cancel": false,
+        "reprocess": false,
+        "administer": false,
+        "consultVersions": true,
+        "contextualNavigation": false,
+        "pauseStages": false
+      },
+      "admin403": true,
+      "unauthorizedActions403": true,
+      "readMontagemAndExecucao": true,
+      "humanPilot": false,
+      "createAndSaveWithoutAdmin": true
+    },
+    {
+      "profile": "eoc_consulta",
+      "permissions": [
+        "tela_dashboard",
+        "tela_pipelines",
+        "tela_jobs",
+        "tela_logs"
+      ],
+      "realLogin": true,
+      "noExtraPermissions": true,
+      "capabilities": {
+        "consultDefinition": true,
+        "consultStages": true,
+        "consultLogs": true,
+        "editDraft": false,
+        "publish": false,
+        "execute": false,
+        "cancel": false,
+        "reprocess": false,
+        "administer": false,
+        "consultVersions": true,
+        "contextualNavigation": false,
+        "pauseStages": false
+      },
+      "admin403": true,
+      "unauthorizedActions403": true,
+      "readMontagemAndExecucao": true,
+      "humanPilot": false
+    },
+    {
+      "profile": "eoc_sustentacao",
+      "permissions": [
+        "tela_dashboard",
+        "tela_pipelines",
+        "tela_jobs",
+        "tela_logs",
+        "acao_executar"
+      ],
+      "realLogin": true,
+      "noExtraPermissions": true,
+      "capabilities": {
+        "consultDefinition": true,
+        "consultStages": true,
+        "consultLogs": true,
+        "editDraft": false,
+        "publish": false,
+        "execute": true,
+        "cancel": false,
+        "reprocess": true,
+        "administer": false,
+        "consultVersions": true,
+        "contextualNavigation": false,
+        "pauseStages": true
+      },
+      "admin403": true,
+      "unauthorizedActions403": true,
+      "readMontagemAndExecucao": true,
+      "humanPilot": false
+    }
+  ],
+  "profilesRetained": [
+    "eoc_dev_sem_admin",
+    "eoc_consulta",
+    "eoc_sustentacao"
+  ],
+  "cleanup": [
+    {
+      "profile": "eoc_dev_sem_admin",
+      "accountRemoved": true,
+      "sessionsRemoved": true
+    },
+    {
+      "profile": "eoc_consulta",
+      "accountRemoved": true,
+      "sessionsRemoved": true
+    },
+    {
+      "profile": "eoc_sustentacao",
+      "accountRemoved": true,
+      "sessionsRemoved": true
+    }
+  ],
+  "dbCleanup": {
+    "passed": true,
+    "temporaryUsers": 0,
+    "temporarySessions": 0
+  },
+  "humanPilot": "pending",
+  "caixaDatastage": "pending",
+  "dotnetCohortTests": {
+    "passed": 29,
+    "failed": 0,
+    "image": "orquestra-eoc-f3-replay-test:20261014t0150",
+    "sourceUnchangedSince": "0b36d528"
+  },
+  "noRunsCreated": true,
+  "noBusinessMessages": true
+}

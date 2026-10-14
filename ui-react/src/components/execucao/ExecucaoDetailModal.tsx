@@ -436,6 +436,7 @@ export function LogDetailModal({
 }) {
   const qc = useQueryClient()
   const user = useAuthStore(s => s.user)
+  const canOperate = user?.permissoes?.includes('acao_executar') ?? false
   const airflowUiUrl = useAirflowUrl()
 
   const { data: detailData, isLoading: detailLoading } = useQuery<{ data: JobDetailRow[] }>({
@@ -622,7 +623,7 @@ export function LogDetailModal({
                           onClick={() => onDsLog(row.execution_id, j.job_name, row.pipeline)}>
                           ⬡
                         </Button>
-                        {j.status === 'FAILED' && user?.perfil !== 'consulta' && (
+                        {j.status === 'FAILED' && canOperate && (
                           <Button variant="ghost" size="sm" title="Reexecutar a partir daqui"
                             loading={rerunMut.isPending}
                             onClick={() => rerunMut.mutate({ pipeline_name: row.pipeline, execution_id: row.execution_id, task_id: j.task_id })}>
@@ -643,7 +644,7 @@ export function LogDetailModal({
           <a href={`${airflowUiUrl}/dags/${dagId}/grid`} target="_blank" rel="noreferrer">
             <Button variant="secondary" size="sm"><ExternalLink size={13} /> Ver no Airflow</Button>
           </a>
-          {hasFail && !row.ack_by && user?.perfil !== 'consulta' && (
+          {hasFail && !row.ack_by && canOperate && (
             <AckButton executionId={row.execution_id} pipeline={row.pipeline} onDone={() => { qc.invalidateQueries({ queryKey: ['execucoes'] }); onClose() }} />
           )}
         </div>

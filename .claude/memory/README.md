@@ -130,3 +130,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [EOC-F4 sistema visual comum](orquestra-eoc-f4-sistema-visual.md) — contrato/componentes/densidade; candidato2.23.0, conferir prova pós-deploy.
 
 - [EOC-F5 shell e piloto Pipeline](orquestra-eoc-f5-shell-pipeline.md) — Desenho/Lista e navegação acessível; candidato2.24.0, conferir pós-deploy.
+
+- [EOC-F6: aceite técnico do Pipeline](orquestra-eoc-f6-aceite-tecnico.md) — métricas, três perfis DEV e preparo do piloto; pendências reais no Backlog/migration176.

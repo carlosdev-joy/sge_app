@@ -11,6 +11,8 @@ Para configurar o catálogo do pipeline, referências nos nós, Valida Arquivo e
 
 ## Perfis de acesso
 
+Para o piloto de Pipeline em DEV, os perfis `eoc_dev_sem_admin`, `eoc_consulta` e `eoc_sustentacao` separam autoria, leitura e operação. O administrador os associa aos usuários em Admin → Acesso → Usuários. Matriz e jornadas: [guia EOC-F6](eoc-f6-aceite-pipeline.md). Escolher uma experiência na tela não concede permissões.
+
 | Perfil | Quem é | O que pode fazer |
 |---|---|---|
 | **Consulta** | Analistas, gestores, auditoria | Visualizar Dashboard, Logs, Malha, Governança (lineage, catálogo e **Job DataStage**) e Monitor DataStage |
