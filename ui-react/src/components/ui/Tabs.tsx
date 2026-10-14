@@ -46,14 +46,16 @@ const BADGE_TOM: Record<BadgeTomTab, string> = {
 
 export function Tabs({ tabs, active, onChange, size = 'md' }: TabsProps) {
   return (
-    <div className="flex border-b border-edge overflow-x-auto">
+    <div className="flex min-w-0 border-b border-edge overflow-x-auto">
       {tabs.map((t) => (
         <button
           key={t.id}
+          type="button"
+          aria-current={active === t.id ? 'page' : undefined}
           onClick={() => onChange(t.id)}
-          className={`inline-flex items-center gap-1.5 px-4 ${size === 'sm' ? 'py-1.5 text-xs' : 'py-2.5 text-sm'} font-medium border-b-2 transition-colors whitespace-nowrap ${
+          className={`ui-tab inline-flex items-center gap-1.5 px-4 ${size === 'sm' ? 'ui-tab-small py-1.5' : 'py-2.5'} font-medium border-b-2 transition-colors whitespace-nowrap ${
             active === t.id
-              ? 'border-blue-500 text-blue-400'
+              ? 'border-action text-action'
               : 'border-transparent text-dim hover:text-ink'
           }`}
         >

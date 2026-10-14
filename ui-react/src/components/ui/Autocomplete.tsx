@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { Loader2 } from 'lucide-react'
 
 interface AutocompleteProps {
@@ -30,6 +30,7 @@ export function Autocomplete({
   onKeyDown,
   onBlur,
 }: AutocompleteProps) {
+  const fieldId = useId()
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -107,10 +108,11 @@ export function Autocomplete({
   }
 
   return (
-    <div ref={containerRef} className={`relative flex flex-col gap-1 ${className}`}>
-      {label && <label className="text-xs text-dim font-medium">{label}</label>}
+    <div ref={containerRef} className={`relative min-w-0 flex flex-col gap-1 ${className}`}>
+      {label && <label htmlFor={fieldId} className="text-xs text-dim font-medium">{label}</label>}
       <div className="relative">
         <input
+          id={fieldId}
           value={value}
           onChange={e => { onChange(e.target.value); setOpen(true) }}
           onFocus={() => { if (suggestions.length > 0) setOpen(true) }}
@@ -119,7 +121,7 @@ export function Autocomplete({
           placeholder={placeholder}
           disabled={disabled}
           autoComplete="off"
-          className="w-full bg-panel border border-edge text-ink rounded-md px-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 pr-7"
+          className="ui-control pr-7"
         />
         {loading && (
           <Loader2 size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-dim animate-spin" />
@@ -132,7 +134,7 @@ export function Autocomplete({
             <li
               key={s}
               onMouseDown={() => select(s)}
-              className={`px-3 py-2 text-sm cursor-pointer font-mono transition-colors ${
+              className={`break-words px-3 py-2 text-sm cursor-pointer font-mono transition-colors ${
                 i === active
                   ? 'bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-300'
                   : 'text-ink hover:bg-edge/30'
@@ -154,7 +156,7 @@ function highlight(text: string, query: string) {
   return (
     <>
       {text.slice(0, idx)}
-      <span className="text-blue-400 font-semibold">{text.slice(idx, idx + query.length)}</span>
+      <span className="text-action font-semibold">{text.slice(idx, idx + query.length)}</span>
       {text.slice(idx + query.length)}
     </>
   )

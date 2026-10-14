@@ -15,10 +15,10 @@ export interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> 
 
 export function Table({ dense = false, className = '', ...rest }: TableProps) {
   return (
-    <div className="relative w-full overflow-x-auto">
+    <div className="relative min-w-0 w-full overflow-x-auto">
       <table
         {...rest}
-        className={`w-full caption-bottom text-sm ${dense ? '[&_td]:py-1 [&_th]:py-1' : ''} ${className}`}
+        className={`ui-table w-full caption-bottom text-sm ${dense ? 'ui-table-dense' : ''} ${className}`}
       />
     </div>
   )

@@ -211,7 +211,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
 
       {/* Panel */}
-      <div className="relative bg-panel border border-edge rounded-2xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden">
+      <div className="relative ui-overlay-panel bg-panel border border-edge rounded-2xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden">
         {/* Search input */}
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-edge">
           <Search size={15} className="text-dim shrink-0" />

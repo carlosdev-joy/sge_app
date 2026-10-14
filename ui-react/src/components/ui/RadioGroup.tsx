@@ -49,7 +49,7 @@ export function RadioItem({ value, label, disabled, className = '' }: RadioItemP
   const isDisabled = disabled || ctx.disabled
   // `relative` no label: contém o input sr-only (absolute) — ver Checkbox.
   return (
-    <label className={`relative inline-flex items-center gap-2 select-none ${isDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${className}`}>
+    <label className={`ui-choice relative inline-flex items-center gap-2 select-none min-w-0 ${isDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${className}`}>
       <input
         type="radio"
         name={ctx.name}
@@ -61,9 +61,9 @@ export function RadioItem({ value, label, disabled, className = '' }: RadioItemP
       />
       <span
         aria-hidden="true"
-        className="relative h-4 w-4 shrink-0 rounded-full border border-edge bg-panel transition-colors peer-checked:border-blue-600 after:absolute after:left-1/2 after:top-1/2 after:h-2 after:w-2 after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:bg-blue-600 after:opacity-0 after:transition-opacity peer-checked:after:opacity-100 peer-focus-visible:ring-1 peer-focus-visible:ring-blue-500"
+        className="relative h-4 w-4 shrink-0 rounded-full border border-control-border bg-panel transition-colors peer-checked:border-blue-600 after:absolute after:left-1/2 after:top-1/2 after:h-2 after:w-2 after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:bg-blue-600 after:opacity-0 after:transition-opacity peer-checked:after:opacity-100 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus"
       />
-      {label && <span className="text-sm text-ink">{label}</span>}
+      {label && <span className="min-w-0 break-words text-sm text-ink">{label}</span>}
     </label>
   )
 }

@@ -26,7 +26,7 @@ function FieldLabel({ label, hint, htmlFor }: { label?: string; hint?: string; h
 // tela cheia, onde não há contêiner de scroll cortando.
 function FieldHelp({ ajuda, id }: { ajuda?: string; id?: string }) {
   if (!ajuda) return null
-  return <span id={id} className="text-[11px] leading-snug text-dim">{ajuda}</span>
+  return <span id={id} className="ui-help">{ajuda}</span>
 }
 
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
@@ -39,20 +39,23 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
   function Input({ label, error, hint, ajuda, className = '', id, ...rest }, ref) {
     const autoId = useId()
-    const fieldId = id ?? (label ? autoId : undefined)
-    const ajudaId = ajuda && fieldId ? `${fieldId}-ajuda` : undefined
+    const fieldId = id ?? autoId
+    const ajudaId = ajuda ? `${fieldId}-ajuda` : undefined
+    const errorId = error ? `${fieldId}-erro` : undefined
+    const describedBy = [rest['aria-describedby'], ajudaId, errorId].filter(Boolean).join(' ') || undefined
     return (
-      <div className="flex flex-col gap-1">
+      <div className="flex min-w-0 flex-col gap-1">
         <FieldLabel label={label} hint={hint} htmlFor={fieldId} />
         <input
           ref={ref}
           id={fieldId}
-          aria-describedby={ajudaId}
           {...rest}
-          className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 ${className}`}
+          aria-describedby={describedBy}
+          aria-invalid={error ? true : rest['aria-invalid']}
+          className={`ui-control ${className}`}
         />
         <FieldHelp ajuda={ajuda} id={ajudaId} />
-        {error && <span className="text-xs text-red-400">{error}</span>}
+        {error && <span id={errorId} className="text-xs text-error break-words">{error}</span>}
       </div>
     )
   }
@@ -67,21 +70,24 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
 
 export function Select({ label, error, hint, ajuda, className = '', id, children, ...rest }: SelectProps) {
   const autoId = useId()
-  const fieldId = id ?? (label ? autoId : undefined)
-  const ajudaId = ajuda && fieldId ? `${fieldId}-ajuda` : undefined
+  const fieldId = id ?? autoId
+  const ajudaId = ajuda ? `${fieldId}-ajuda` : undefined
+  const errorId = error ? `${fieldId}-erro` : undefined
+  const describedBy = [rest['aria-describedby'], ajudaId, errorId].filter(Boolean).join(' ') || undefined
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 flex-col gap-1">
       <FieldLabel label={label} hint={hint} htmlFor={fieldId} />
       <select
         id={fieldId}
-        aria-describedby={ajudaId}
         {...rest}
-        className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${className}`}
+        aria-describedby={describedBy}
+        aria-invalid={error ? true : rest['aria-invalid']}
+        className={`ui-control ${className}`}
       >
         {children}
       </select>
       <FieldHelp ajuda={ajuda} id={ajudaId} />
-      {error && <span className="text-xs text-red-400">{error}</span>}
+      {error && <span id={errorId} className="text-xs text-error break-words">{error}</span>}
     </div>
   )
 }
@@ -93,20 +99,23 @@ export const Textarea = React.forwardRef<
   }
 >(function Textarea({ label, error, hint, ajuda, className = '', id, ...rest }, ref) {
   const autoId = useId()
-  const fieldId = id ?? (label ? autoId : undefined)
-  const ajudaId = ajuda && fieldId ? `${fieldId}-ajuda` : undefined
+  const fieldId = id ?? autoId
+  const ajudaId = ajuda ? `${fieldId}-ajuda` : undefined
+  const errorId = error ? `${fieldId}-erro` : undefined
+  const describedBy = [rest['aria-describedby'], ajudaId, errorId].filter(Boolean).join(' ') || undefined
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 flex-col gap-1">
       <FieldLabel label={label} hint={hint} htmlFor={fieldId} />
       <textarea
         ref={ref}
         id={fieldId}
-        aria-describedby={ajudaId}
         {...rest}
-        className={`bg-panel border ${error ? 'border-red-500' : 'border-edge'} text-ink rounded-md px-3 py-1.5 text-sm placeholder-dim focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y ${className}`}
+        aria-describedby={describedBy}
+        aria-invalid={error ? true : rest['aria-invalid']}
+        className={`ui-control resize-y ${className}`}
       />
       <FieldHelp ajuda={ajuda} id={ajudaId} />
-      {error && <span className="text-xs text-red-400">{error}</span>}
+      {error && <span id={errorId} className="text-xs text-error break-words">{error}</span>}
     </div>
   )
 })

@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ['./index.html', './src/**/*.{ts,tsx}'],
+  content: ['./index.html', './src/**/*.{ts,tsx}', './examples/**/*.{html,tsx}'],
   // Toggle de tema via classe html.dark (igual à UI legada).
   darkMode: 'class',
   theme: {
@@ -12,6 +12,17 @@ export default {
         edge:    'rgb(var(--edge) / <alpha-value>)',
         ink:     'rgb(var(--ink) / <alpha-value>)',
         dim:     'rgb(var(--dim) / <alpha-value>)',
+        action: 'rgb(var(--action) / <alpha-value>)',
+        'action-strong': 'rgb(var(--action-strong) / <alpha-value>)',
+        'control-border': 'rgb(var(--control-border) / <alpha-value>)',
+        focus: 'rgb(var(--control-focus) / <alpha-value>)',
+        'primary-control': 'rgb(var(--primary-control) / <alpha-value>)',
+        'primary-control-strong': 'rgb(var(--primary-control-strong) / <alpha-value>)',
+        'on-action': 'rgb(var(--on-action) / <alpha-value>)',
+        success: { DEFAULT: 'rgb(var(--success-ink) / <alpha-value>)', surface: 'rgb(var(--success-surface) / <alpha-value>)' },
+        warning: { DEFAULT: 'rgb(var(--warning-ink) / <alpha-value>)', surface: 'rgb(var(--warning-surface) / <alpha-value>)' },
+        error: { DEFAULT: 'rgb(var(--error-ink) / <alpha-value>)', surface: 'rgb(var(--error-surface) / <alpha-value>)' },
+        info: { DEFAULT: 'rgb(var(--info-ink) / <alpha-value>)', surface: 'rgb(var(--info-surface) / <alpha-value>)' },
         orq: {
           bg:      '#0f1117',
           surface: '#1a1d27',

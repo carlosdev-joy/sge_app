@@ -21,7 +21,7 @@ export interface DropdownMenuProps {
 }
 
 const TRIGGER_PADRAO =
-  'inline-flex items-center gap-2 rounded-md border border-edge bg-panel px-3 py-1.5 text-sm font-medium text-ink shadow-sm hover:bg-canvas transition-colors focus:outline-none focus:ring-1 focus:ring-blue-500'
+  'ui-button inline-flex items-center gap-2 rounded-md border border-control-border bg-panel px-3 py-1.5 font-medium text-ink hover:bg-canvas transition-colors'
 
 export function DropdownMenu({ trigger, items, align = 'start', triggerClassName = '', menuClassName = '' }: DropdownMenuProps) {
   const [open, setOpen] = React.useState(false)
@@ -115,7 +115,7 @@ export function DropdownMenu({ trigger, items, align = 'start', triggerClassName
                   mover(-1, i)
                 }
               }}
-              className="block w-full px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-canvas focus:bg-canvas focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button block w-full break-words px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-canvas focus:bg-canvas focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             >
               {item.label}
             </button>

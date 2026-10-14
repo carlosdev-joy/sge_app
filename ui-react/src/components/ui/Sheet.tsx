@@ -36,14 +36,14 @@ export function Sheet({ open, onClose, title, children, side = 'right', widthCla
         aria-label={title}
         tabIndex={-1}
         onKeyDown={(e) => trapTabKey(e, panelRef.current)}
-        className={`absolute top-0 ${side === 'right' ? 'right-0' : 'left-0'} h-full w-full ${widthClass} bg-panel ${
+        className={`absolute top-0 ${side === 'right' ? 'right-0' : 'left-0'} h-full w-full ${widthClass} ui-overlay-panel bg-panel ${
           side === 'right' ? 'border-l' : 'border-r'
-        } border-edge shadow-2xl flex flex-col focus:outline-none animate-[sheetIn_0.25s_ease-out]`}
+        } border-edge shadow-2xl flex flex-col focus:outline-none ui-sheet motion-safe:animate-[sheetIn_0.15s_ease-out]`}
       >
         {title && (
-          <div className="flex items-center justify-between px-5 py-4 border-b border-edge shrink-0">
-            <h2 className="text-base font-semibold text-ink">{title}</h2>
-            <button onClick={onClose} aria-label="Fechar" className="text-dim hover:text-ink transition-colors">
+          <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-edge shrink-0">
+            <h2 className="ui-section-title min-w-0 text-ink">{title}</h2>
+            <button onClick={onClose} aria-label="Fechar" className="ui-button ui-button-small ui-icon-button shrink-0 rounded text-dim hover:text-ink transition-colors">
               <X size={18} />
             </button>
           </div>

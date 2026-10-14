@@ -4,5 +4,5 @@
 import React from 'react'
 
 export function Skeleton({ className = '', ...rest }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div {...rest} className={`animate-pulse rounded-md bg-ink/10 ${className}`} />
+  return <div {...rest} className={`motion-safe:animate-pulse rounded-md bg-ink/10 ${className}`} />
 }

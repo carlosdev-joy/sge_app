@@ -16,13 +16,13 @@ export const Switch = React.forwardRef<HTMLInputElement, SwitchProps>(
       <span className={`inline-flex items-center gap-1.5 ${className}`}>
         {/* `relative`: contém o input sr-only (absolute) — sem isso ele estica o documento
             quando fica abaixo da dobra (ver Checkbox). */}
-        <label className={`relative inline-flex items-center gap-2 select-none ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+        <label className={`ui-choice relative inline-flex items-center gap-2 select-none min-w-0 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
           <input ref={ref} type="checkbox" role="switch" disabled={disabled} {...rest} className="peer sr-only" />
           <span
             aria-hidden="true"
-            className="relative h-5 w-9 shrink-0 rounded-full bg-edge transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:border after:border-black/10 after:bg-white after:shadow after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:ring-1 peer-focus-visible:ring-blue-500"
+            className="relative h-5 w-9 shrink-0 rounded-full bg-edge transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:border after:border-black/10 after:bg-white after:shadow after:transition-transform peer-checked:bg-blue-600 peer-checked:after:translate-x-4 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus"
           />
-          {label && <span className="text-sm text-ink">{label}</span>}
+          {label && <span className="min-w-0 break-words text-sm text-ink">{label}</span>}
         </label>
         {hint && <Hint texto={hint} />}
       </span>
