@@ -40,6 +40,7 @@ DONOS: tuple[tuple[str, str], ...] = (
     ("chamados_triagem_", "Admin › Inteligência Artificial › Triagem de chamados"),
     # Comunicação
     ("teams_webhook_url", "Admin › Comunicação › Teams"),
+    ("teams_personal_", "Admin › Comunicação › Teams"),
     ("email_", "Admin › Comunicação › E-mail"),
     # Integrações & Dados › ServiceNow (servicenow_admin_perfis é da tela /chamados: sem dono aqui)
     ("servicenow_url", "Admin › Integrações & Dados › ServiceNow"),

@@ -241,7 +241,7 @@ def test_f3_triagem_em_ia_com_as_chaves(bancada):
 
 def test_f3_teams_dono_do_webhook_padrao(bancada):
     donos = {a["id"]: a["chavesConfig"] for a in bancada["abas"]}
-    assert donos["teams"] == ["teams_webhook_url"]
+    assert donos["teams"] == ["teams_webhook_url", "teams_personal_"]
     for chave in ("teams_webhook_url", "teams_webhook_url_ack", "teams_webhook_url_resolved"):
         assert bancada["busca"]["chaves"][chave] == "/admin/comunicacao/teams", chave
     assert "até a F3" not in _fonte()

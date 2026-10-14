@@ -139,6 +139,7 @@ from services.alert_dispatcher import reconcile_loop as alert_reconcile_loop
 from services.dag_reconcile import reconcile_loop
 from services.workspace_publication import reconcile_loop as workspace_reconcile_loop
 from routers import workspace_publication
+from routers import teams_personal
 from services.monitor_capture import capture_loop as monitor_capture_loop
 
 from routers import (
@@ -203,6 +204,7 @@ app.add_middleware(
 )
 
 # Registra todos os routers
+app.include_router(teams_personal.router)
 for _router_module in [
     auth, infra, pipelines, jobs, execucoes, dashboard,
     lineage, catalogo, sync, admin, agenda, sequence,
