@@ -83,9 +83,21 @@ def reserve_run(pipeline: str, run_id: str, body: dict, actor: str, *, reprocess
     connection = cursor = None
     try:
         connection = get_db_conn(); cursor = connection.cursor()
+        enrollment_enabled = os.getenv("EOC_ALERT_ENROLLMENT_ENABLED", "false").lower() == "true"
+        if enrollment_enabled:
+            # O COMMIT interno da procedure encerra só o nível aninhado;
+            # a transação externa conserva reserva + snapshot até o commit.
+            cursor.execute("IF @@TRANCOUNT=0 BEGIN TRANSACTION")
         row = cursor.execute("EXEC dbo.sp_workspace_reserve_run @name=?,@run_id=?,@request_hash=?,@actor=?,@reprocess=?,@expected_version=?,@expected_hash=?", (pipeline, run_id, checksum, actor, int(reprocess), version, content)).fetchone()
+        if enrollment_enabled and row[0]:
+            from services.alert_enrollment import enroll_command
+            enroll_command(cursor, pipeline, run_id, str(row[0]), existing=bool(row[1]))
         connection.commit()
         return str(row[0]) if row[0] else None, bool(row[1])
+    except HTTPException:
+        if connection:
+            connection.rollback()
+        raise
     except Exception as error:
         if connection:
             connection.rollback()

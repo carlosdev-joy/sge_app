@@ -175,7 +175,7 @@ def comando_sendmail(remetente: str) -> str:
     return f"{shlex.quote(binario)} -t -i -f {shlex.quote(rem)}"
 
 
-def run_sendmail(mensagem: bytes, remetente: str, timeout: int = 60) -> dict:
+def run_sendmail(mensagem: bytes, remetente: str, timeout: int = 60, *, before_send=None) -> dict:
     """Entrega uma mensagem MIME ao sendmail do servidor do DataStage pelo
     stdin da sessão SSH (o botão Testar de Admin › Comunicação › E-mail; spec
     docs/spec-notificacao-email.md). Nada digitado pelo usuário passa pela
@@ -188,6 +188,9 @@ def run_sendmail(mensagem: bytes, remetente: str, timeout: int = 60) -> dict:
     t0 = time.time()
     client = _conectar()
     try:
+        if before_send is not None:
+            before_send()
+        deadline = time.monotonic() + timeout
         stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
         escrita_erro = ""
         try:
@@ -195,8 +198,29 @@ def run_sendmail(mensagem: bytes, remetente: str, timeout: int = 60) -> dict:
             stdin.channel.shutdown_write()
         except OSError as e:  # o sendmail fechou a entrada antes de ler tudo
             escrita_erro = f"sendmail fechou a entrada antes de ler a mensagem inteira ({e})"
-        exit_code = stdout.channel.recv_exit_status()
-        err = stderr.read().decode(errors="replace").strip()
+        if before_send is None:
+            exit_code = stdout.channel.recv_exit_status()
+            err = stderr.read().decode(errors="replace").strip()
+        else:
+            # recv_exit_status pode bloquear sem respeitar settimeout e o
+            # canal pode encher antes do exit. Na entrega fenced, drenar ambos
+            # os streams, limitar RAM e encerrar incerto dentro do orçamento.
+            channel = stdout.channel
+            error_bytes = bytearray()
+            while True:
+                if time.monotonic() >= deadline:
+                    channel.close()
+                    raise TimeoutError('sendmail_budget_expired')
+                if channel.recv_ready():
+                    channel.recv(32768)
+                if channel.recv_stderr_ready():
+                    chunk = channel.recv_stderr(32768)
+                    error_bytes.extend(chunk[:max(0, 8000 - len(error_bytes))])
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    break
+                time.sleep(0.01)
+            exit_code = channel.recv_exit_status()
+            err = error_bytes.decode(errors="replace").strip()
         if escrita_erro:
             err = (err + " | " if err else "") + escrita_erro
             if exit_code == 0:

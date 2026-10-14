@@ -336,7 +336,9 @@ def test_decisao_sem_on_error_nao_inventa_chave(factory):
     jobs = [_job("JobA"), _job("Decisao", jtype="decisao", order=2, cond=_contagem_cond()),
             _job("JobB", order=3), _job("JobC", order=3)]
     src = factory._generate_dag_source(_pipeline(), jobs)
-    assert "'on_error'" not in src
+    decision = next(node for node in ast.walk(ast.parse(src))
+                    if isinstance(node, ast.FunctionDef) and node.name.startswith('_decide_'))
+    assert "'on_error'" not in ast.get_source_segment(src, decision)
 
 
 # ───────────────────── SKIPPED de 1ª classe (flow_close) ────────────────────

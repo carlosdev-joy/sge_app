@@ -190,9 +190,57 @@ def _helper(factory, **hook_resp):
     exec(compile(src, "<dag>", "exec"), ns)
     ns["MsSqlHook"] = _Hook
     ns["_teams_post_card"] = lambda **k: cards.append(k)
-    ns["requests"] = type("R", (), {"post": staticmethod(lambda *a, **k: posts.append((a, k)) or
-                                                        type("Resp", (), {"status_code": 200})())})
+    def post(*args, **kwargs):
+        posts.append((args, kwargs))
+        if hook_resp.get('post_error'):
+            raise RuntimeError('synthetic-private-webhook')
+        return type('Resp', (), {'status_code': hook_resp.get('post_status', 200)})()
+    ns["requests"] = type("R", (), {"post": staticmethod(post)})
     return ns["_resolve_e_envia_notificacao"], cards, posts
+
+
+@pytest.mark.parametrize('policy', ['continuar', 'falhar'])
+@pytest.mark.parametrize('failure', [
+    {'grupo': None}, {'grupo': ('https://synthetic.test/x',), 'post_status': 500},
+    {'grupo': ('https://synthetic.test/x',), 'post_status': 429},
+    {'grupo': ('https://synthetic.test/x',), 'post_error': True},
+])
+def test_f13_politica_teams_explicita(factory, policy, failure, capsys):
+    import json
+    cfg = (json.dumps({'grupo_id': 7, 'mensagem': 'oi', 'on_error': policy}),)
+    helper, cards, posts = _helper(factory, notify_json=cfg, **failure)
+    if policy == 'falhar':
+        with pytest.raises(RuntimeError, match='teams_'):
+            helper('Avisa', [], 'fixture', {'ti': None})
+    else:
+        helper('Avisa', [], 'fixture', {'ti': None})
+    assert cards == []
+    assert len(posts) <= 1  # Sem retry/recursão no nó customizado.
+    assert 'synthetic-private-webhook' not in capsys.readouterr().out
+
+
+def test_f13_opt_in_aceita_2xx(factory):
+    import json
+    cfg = (json.dumps({'grupo_id': 7, 'mensagem': 'oi', 'on_error': 'falhar'}),)
+    helper, cards, posts = _helper(factory, notify_json=cfg,
+                                 grupo=('https://synthetic.test/x',), post_status=202)
+    helper('Avisa', [], 'fixture', {'ti': None})
+    assert len(posts) == 1 and cards == []
+
+
+@pytest.mark.parametrize('policy', [None, 'continuar', 'falhar'])
+def test_f13_operator_teams_nao_herda_retry_do_pipeline(factory, policy):
+    cfg = {'grupo_id': 7, 'mensagem': 'oi'}
+    if policy is not None:
+        cfg['on_error'] = policy
+    src = factory._generate_dag_source(
+        _pipeline(retries_count=3), [_job('Avisa', jtype='notificacao', notify=cfg)])
+    _exec_source(src)  # Import real da fonte gerada com Airflow stubado.
+    tree = ast.parse(src)
+    assignment = next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == 't_notif_Avisa' for t in n.targets))
+    options = {kw.arg: kw.value for kw in assignment.value.keywords}
+    assert ast.literal_eval(options['retries']) == 0
 
 
 def test_ancora_canal_que_nao_resolve_nao_cai_no_webhook_padrao(factory):
@@ -252,3 +300,73 @@ def test_jobs_a_montante_seguem_no_codigo_gerado(factory):
                  notify={"grupo_id": 1, "template_id": None, "mensagem": ""})]
     src = factory._generate_dag_source(_pipeline(), jobs)
     assert "_up_jobs = ['Carga']" in src
+
+
+def test_f13_inventory_reads_real_compiler_artifact(factory):
+    from services.alert_enrollment import compiled_inventory
+    markers = {'workspace_version_id': 'fixture-version',
+               'workspace_content_hash': 'a'*64, 'workspace_projection_hash': 'b'*64}
+    source = factory._generate_dag_source(_pipeline(_workspace=markers), [
+        _job('Carga'), _job('Avisa', jtype='notificacao', order=2,
+                            depends='Carga', notify={'mensagem': 'fixture'})])
+    expected, processing = compiled_inventory(source, markers)
+    assert {'Carga', 'Avisa', 'check_agenda', 'publish_dataset', 'registrar_falha'} <= set(expected)
+    assert 'Carga' in processing and 'Avisa' in processing
+    assert 'teams_end' in expected and 'teams_end' not in processing
+
+    assert processing == ['Carga', 'Avisa']
+    from services.alert_result import aggregate_result
+    states = {task: 'success' for task in expected}
+    states.update(Avisa='failed', publish_dataset='upstream_failed')
+    assert aggregate_result('success', [(task, states[task]) for task in processing],
+                            expected_tasks=processing) == 'failure'
+    states['Carga'] = 'failed'
+    assert aggregate_result('success', [(task, states[task]) for task in processing],
+                            expected_tasks=processing) == 'failure'
+
+
+def test_f13_warning_mapping_real_mixed_factory(factory):
+    from services.alert_enrollment import compiled_inventory, compiled_warning_sources
+    markers = {'workspace_version_id': 'fixture-version',
+               'workspace_content_hash': 'a'*64, 'workspace_projection_hash': 'b'*64}
+    jobs = [_job('DS'), _job('Shell', jtype='shell'), _job('Python', jtype='python'),
+            dict(_job('HTTP', jtype='http'), job_command='http://fixture.invalid'),
+            dict(_job('Proc', jtype='procedure'), job_command='dbo.fixture')]
+    source = factory._generate_dag_source(_pipeline(_workspace=markers), jobs)
+    expected, processing = compiled_inventory(source, markers)
+    assert compiled_warning_sources(source, expected, processing) == {'DS': 'log_end_DS'}
+
+
+@pytest.mark.parametrize('code,raises', [(1, False), (2, False), (3, True)])
+def test_f13_generated_log_end_emits_exact_attempt(factory, code, raises):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    source = factory._generate_dag_source(_pipeline(), [_job('DS')])
+    tree = ast.parse(source)
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'log_end')
+    start = datetime(2026, 10, 14, 10, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 14, 10, 1, tzinfo=timezone.utc)
+    ti = MagicMock()
+    ti.xcom_pull.return_value = '{"status_code": %d}' % code
+    job_ti = SimpleNamespace(state='success', start_date=start, end_date=end,
+                             try_number=3, map_index=-1)
+    run = SimpleNamespace(dag_id='fixture', run_id='manual__fixture',
+                          get_task_instance=lambda task: job_ti)
+    scope = dict(MsSqlHook=MagicMock(), MSSQL_CONN_ID='fixture',
+                 State=SimpleNamespace(SUCCESS='success'), _now_str=lambda: 'fixture',
+                 _extract_status_code=lambda text: json.loads(text)['status_code'],
+                 _status_from_code=lambda code, state: {1:'SUCCESS', 2:'WARNING'}.get(code, 'FAILED'),
+                 _exec_telemetry=MagicMock(), _build_log_file=lambda *args: 'fixture',
+                 _update_status_code=MagicMock(), _update_last_execution=MagicMock())
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<fixture>', 'exec'), scope)
+    context = dict(ts_nodash='not-a-run', ti=ti, dag_run=run)
+    if raises:
+        with pytest.raises(RuntimeError):
+            scope['log_end']('DS', 'DS', 'DS', **context)
+        ti.xcom_push.assert_not_called()
+    else:
+        scope['log_end']('DS', 'DS', 'DS', **context)
+        proof = ti.xcom_push.call_args.kwargs['value']
+        assert proof == dict(pipeline='fixture', run='manual__fixture', task='DS',
+                             tryNumber=3, mapIndex=-1, startDate=start.isoformat(),
+                             endDate=end.isoformat(), statusCode=code)

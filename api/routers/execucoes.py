@@ -1528,46 +1528,73 @@ async def rerun_from_task(body: dict = Body(default={}),
     finally:
         if cur_original is not None: cur_original.close()
         if conn_original is not None: conn_original.close()
-    overrides_limpos_antes = False
-    if dag_run_id and not parametros_raw and not original_parametros:
-        _apagar_overrides_silencioso(oficial, dag_run_id)
-        overrides_limpos_antes = True
+    # F13: validar antes de reservar o fence; qualquer mutação de overrides
+    # fica depois da reserva original. A flag continua OFF até os gates internos.
+    linhas = []
     if parametros_raw:
-        conn = cur = None
+        conn_validar = cur_validar = None
         try:
-            conn = get_db_conn(); cur = conn.cursor()
-            linhas, erros = rerun_params.validar_overrides(cur, oficial, parametros_raw)
+            conn_validar = get_db_conn(); cur_validar = conn_validar.cursor()
+            linhas, erros = rerun_params.validar_overrides(cur_validar, oficial, parametros_raw)
             if erros:
                 raise HTTPException(status_code=422, detail={"errors": erros,
                                                              "mensagem": "; ".join(erros)})
-            rerun_params.gravar_overrides(cur, oficial, dag_run_id, linhas, usuario)
-            conn.commit()
-            overrides_nomes = [f"{p['job_name']}.{p['param_name']}" for p in linhas]
-        except HTTPException:
-            try:
-                conn and conn.rollback()
-            except Exception:
-                pass
-            raise
-        except Exception as e:
-            try:
-                conn and conn.rollback()
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"Erro DB ao gravar a sobreposição: {e}")
         finally:
-            for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+            if cur_validar is not None: cur_validar.close()
+            if conn_validar is not None: conn_validar.close()
+    from services.alert_cycle import begin_rerun_clear
+    clear_operation = begin_rerun_clear(oficial, dag_run_id, connection_factory=get_db_conn)
+    overrides_nomes = []
+    try:
+        overrides_limpos_antes = False
+        if dag_run_id and not parametros_raw and not original_parametros:
+            if clear_operation:
+                _apagar_overrides_silencioso(oficial, dag_run_id, strict=True)
+            else:
+                _apagar_overrides_silencioso(oficial, dag_run_id)
+            overrides_limpos_antes = True
+        if parametros_raw:
+            conn = cur = None
+            try:
+                conn = get_db_conn(); cur = conn.cursor()
+                rerun_params.gravar_overrides(cur, oficial, dag_run_id, linhas, usuario)
+                conn.commit()
+                overrides_nomes = [f"{p['job_name']}.{p['param_name']}" for p in linhas]
+            except HTTPException:
                 try:
-                    f and f()
+                    conn and conn.rollback()
                 except Exception:
                     pass
+                raise
+            except Exception as e:
+                try:
+                    conn and conn.rollback()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=500, detail=f"Erro DB ao gravar a sobreposição: {e}")
+            finally:
+                for f in (getattr(cur, "close", None), getattr(conn, "close", None)):
+                    try:
+                        f and f()
+                    except Exception:
+                        pass
 
-    try:
-        tasks_limpas = await _clear_no_airflow(dag_id, dag_run_id, exec_id, task_id, cascata)
-    except Exception:
-        # Compensação: o clear não aconteceu — a sobreposição não pode ficar
-        # esperando um disparo que não virá (o próximo rerun gravaria a sua).
-        if overrides_nomes:
+        if clear_operation:
+            tasks_limpas = await _clear_no_airflow(
+                dag_id, dag_run_id, exec_id, task_id, cascata, clear_operation=clear_operation)
+        else:
+            tasks_limpas = await _clear_no_airflow(dag_id, dag_run_id, exec_id, task_id, cascata)
+    except BaseException:
+        safe_to_compensate = clear_operation is None
+        if clear_operation:
+            from services.alert_cycle import reject_unsent_clear
+            # Apagar na MESMA transação/lock: uma nova reserva nunca perde
+            # os seus parâmetros pela compensação da operação anterior.
+            reject_unsent_clear(
+                oficial, dag_run_id, clear_operation,
+                compensate=(lambda cur: rerun_params.apagar_overrides(cur, oficial, dag_run_id))
+                if overrides_nomes else None)
+        if overrides_nomes and safe_to_compensate:
             _apagar_overrides_silencioso(oficial, dag_run_id)
         raise
     dag_run_id = tasks_limpas["dag_run_id"]
@@ -1605,7 +1632,7 @@ async def rerun_from_task(body: dict = Body(default={}),
     }
 
 
-def _apagar_overrides_silencioso(pipeline: str, dag_run_id: str) -> None:
+def _apagar_overrides_silencioso(pipeline: str, dag_run_id: str, *, strict: bool = False) -> None:
     """Compensação do F5 — best-effort: a recusa do clear já é o erro real."""
     conn = cur = None
     try:
@@ -1613,6 +1640,9 @@ def _apagar_overrides_silencioso(pipeline: str, dag_run_id: str) -> None:
         rerun_params.apagar_overrides(cur, pipeline, dag_run_id)
         conn.commit()
     except Exception as e:  # noqa: BLE001
+        if strict:
+            raise HTTPException(503, detail={"code": "alert_clear_overrides_unavailable",
+                                            "detail": "Parâmetros não reconciliados; Clear não enviado."}) from None
         log.warning("[RERUN] sobreposicao de %s/%s nao desfeita apos clear recusado: %s",
                     pipeline, dag_run_id, e)
     finally:
@@ -1624,7 +1654,7 @@ def _apagar_overrides_silencioso(pipeline: str, dag_run_id: str) -> None:
 
 
 async def _clear_no_airflow(dag_id: str, dag_run_id: str, exec_id: str, task_id: str,
-                            cascata: bool) -> dict:
+                            cascata: bool, *, clear_operation: str | None = None) -> dict:
     """O clear em si (o miolo histórico do POST /execucoes/rerun, intocado):
     resolve o dag_run quando não veio, recusa DAG pausada e limpa a etapa com
     o downstream. Devolve {dag_run_id, tasks_limpas}. Levanta HTTPException
@@ -1672,10 +1702,13 @@ async def _clear_no_airflow(dag_id: str, dag_run_id: str, exec_id: str, task_id:
         tarefas = rerun_svc.task_ids_do_clear(
             task_id, await _tasks_da_dag(client, dag_id))
         clear_body = rerun_svc.corpo_clear(dag_run_id, task_id, task_ids=tarefas)
-        r2 = await client.post(
-            f"/api/v1/dags/{dag_id}/clearTaskInstances",
-            json=clear_body,
-        )
+        if clear_operation:
+            from services.alert_cycle import post_reserved_clear
+            r2 = await post_reserved_clear(client, dag_id, dag_run_id, clear_body, clear_operation)
+        else:
+            r2 = await client.post(
+                f"/api/v1/dags/{dag_id}/clearTaskInstances", json=clear_body)
+
         if not r2.is_success:
             raise HTTPException(status_code=502,
                 detail=f"Airflow clearTaskInstances falhou: {r2.status_code} — {r2.text[:300]}")

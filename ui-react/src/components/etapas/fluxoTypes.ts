@@ -16,6 +16,8 @@ export interface NotifyConfig {
   grupo_id: number | null
   template_id: number | null
   mensagem: string
+  /** Ausência preserva o comportamento legado; falhar exige opt-in. */
+  on_error?: 'continuar' | 'falhar'
 }
 // Config do nó SQL (round-trip com /fluxo no campo `sql`).
 export interface SqlConfig {
@@ -77,6 +79,7 @@ export function toNotifyConfig(raw: NotifyConfig | null | undefined): NotifyConf
     grupo_id: typeof gid === 'number' ? gid : (gid != null && `${gid}`.trim() ? Number(gid) : null),
     template_id: typeof tid === 'number' ? tid : (tid != null && `${tid}`.trim() ? Number(tid) : null),
     mensagem: typeof raw.mensagem === 'string' ? raw.mensagem : '',
+    ...(raw.on_error === 'continuar' || raw.on_error === 'falhar' ? { on_error: raw.on_error } : {}),
   }
 }
 

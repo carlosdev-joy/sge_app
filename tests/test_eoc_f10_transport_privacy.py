@@ -30,7 +30,7 @@ class InMemorySocket:
 def test_signed_workflow_uses_exact_path_without_library_log_or_global_changes(monkeypatch, caplog, capsys, status, outcome):
     url = 'https://fixture.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/20/workflows/test/triggers/manual/paths/invoke?sig=fixture_signature%2B%2F&sv=1.0'
     target = c.Target('teamsChannel', url)
-    monkeypatch.setattr(c, 'resolve', lambda *_: (target, {'event': 'failure', 'pipeline': '__eoc_f10_fixture', 'run': '__eoc_f10_run'}))
+    monkeypatch.setattr(c, 'resolve', lambda *_, **kwargs: (target, {'event': 'failure', 'pipeline': '__eoc_f10_fixture', 'run': '__eoc_f10_run'}))
     socket = InMemorySocket(status)
     monkeypatch.setattr(HTTPSConnection, 'connect', lambda self: setattr(self, 'sock', socket))
     monkeypatch.setattr(HTTPSConnection, 'debuglevel', 1)

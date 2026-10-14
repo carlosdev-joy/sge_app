@@ -1839,7 +1839,7 @@ function FluxoEditorInner({
             notify: {
               grupo_id: cur.grupo_id,
               template_id: cur.template_id ?? null,
-              mensagem: (cur.mensagem ?? '').toString(),
+              mensagem: (cur.mensagem ?? '').toString(), ...(cur.on_error !== undefined ? { on_error: cur.on_error } : {}),
             },
           }
         }

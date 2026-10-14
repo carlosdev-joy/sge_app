@@ -7,12 +7,13 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { BellRing } from 'lucide-react'
 import { LinhaExecucaoNo } from './LinhaExecucaoNo'
 import type { ExecNoEtapa } from './execucaoEtapas'
+import type { NotifyConfig } from './fluxoTypes'
 
 // Config do nó (round-trip com /fluxo no campo `notify`). Guardamos o objeto
 // inteiro no `data` para ecoar no save; `label` é um resumo curto p/ o card.
 export interface NotificacaoNodeData {
   name: string
-  notify: { grupo_id: number | null; template_id: number | null; mensagem: string }
+  notify: NotifyConfig
   label: string
   // F3 (modo Execução): camada de status/horários desta etapa na data exibida.
   // Injetada pelo FluxoEditor em CÓPIAS dos nós (nunca no estado do desenho);

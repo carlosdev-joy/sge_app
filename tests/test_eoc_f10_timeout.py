@@ -4,7 +4,7 @@ from services import alert_channels as c
 
 def test_teams_timeout_unknown_no_retry(monkeypatch):
     target=c.Target('teamsChannel','https://fixture.webhook.office.com/test')
-    monkeypatch.setattr(c,'resolve',lambda *_:(target,dict(event='failure',pipeline='fixture',run='fixture')))
+    monkeypatch.setattr(c,'resolve',lambda *_,**kwargs:(target,dict(event='failure',pipeline='fixture',run='fixture')))
     client=Mock();client.request.side_effect=TimeoutError('fixture-private-webhook')
     monkeypatch.setattr(c,'HTTPSConnection',Mock(return_value=client))
     result=c.deliver(None,'fixture',dry_run=False,authorized_test_fingerprint=target.fingerprint)

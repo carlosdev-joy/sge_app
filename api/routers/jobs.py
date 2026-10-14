@@ -679,6 +679,8 @@ def _validate_notify(cfg) -> list[str]:
     msg = cfg.get("mensagem")
     if msg is not None and not isinstance(msg, str):
         errs.append("mensagem da notificação deve ser texto")
+    if cfg.get('on_error', 'continuar') not in ('continuar', 'falhar'):
+        errs.append("on_error da notificação deve ser continuar ou falhar")
     return errs
 
 
@@ -692,6 +694,7 @@ def _normalize_notify(cfg: dict) -> dict:
         "template_id": (None if tid is None or (isinstance(tid, str) and not str(tid).strip())
                         else int(tid)),
         "mensagem": (msg if isinstance(msg, str) else ""),
+        **({'on_error': cfg['on_error']} if 'on_error' in cfg else {}),
     }
 
 

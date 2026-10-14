@@ -1002,8 +1002,56 @@ _CENARIOS = {
 
 # ═══════════════════ ÂNCORA: não-regressão do fonte gerado ════════════════════
 
+_F13_HELPERS_APROVADOS = {
+    '_resolve_e_envia_notificacao': '745cec7fbc87770bcb67201a27099e6ee6fc4a51a3e35931c0bc87641921d413',
+    '_legacy_principal_allowed': 'fc03b3ead79bdc1ba3902046d86fd8c971469e1a3bab98607bdeec40adc54b9e',
+    'teams_start': 'e7945d012b10effa42bb67b291d31da1bf2579df36a0d7f7330d149af1c3839c',
+    'teams_end': 'bd3c7b6a0d9fac943a0cdd64dfcc08bd4d2bbe688c727e0d676d29b1b0899f8b',
+    'teams_error': 'd891d119a9016aa82762a739569c245bcfe4586ae9fc6f8dfc3861c39fc06c89',
+    'log_end': 'a700a0f5ae5d1d3280c980fe0d59c9276b8c834fafd41e4603fc407badf6f4db',
+}
+
+
+@pytest.fixture(scope='module')
+def factory_f12_pinada():
+    baseline = '3e5b88f6489dc5c3ae43f6f383f790acb2880c05'
+    raw = subprocess.run(['git', '-C', str(_ROOT), 'show', baseline + ':dags/etl_dag_factory.py'],
+                         capture_output=True, timeout=30, check=True).stdout
+    with tempfile.NamedTemporaryFile('wb', suffix='_factory_f12.py', delete=False) as file:
+        file.write(raw)
+        path = file.name
+    try:
+        return _load_module('factory_f12_pinada', path)
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def _reverter_delta_f13_aprovado(src, baseline):
+    """Hash exato e ocorrência única de seis helpers; todo resto byte-idêntico.
+
+    Restaura os bytes F12 para a âncora histórica. Nenhuma região arbitrária
+    é ignorada: qualquer alteração futura dos helpers falha no hash.
+    """
+    import hashlib
+    def functions(source):
+        return {node.name: ast.get_source_segment(source, node) for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef)}
+    current, old = functions(src), functions(baseline)
+    for name, digest in _F13_HELPERS_APROVADOS.items():
+        segment = current[name]
+        assert hashlib.sha256(segment.encode()).hexdigest() == digest, name
+        assert src.count(segment) == 1, name
+        if name in old:
+            src = src.replace(segment, old[name], 1)
+        else:
+            assert name == '_legacy_principal_allowed'
+            assert src.count(segment + '\n\n') == 1
+            src = src.replace(segment + '\n\n', '', 1)
+    return src
+
+
 @pytest.mark.parametrize("cenario", sorted(_CENARIOS))
-def test_ancora_fonte_sem_delta_e_byte_identico_ao_de_main(factory, factory_main,
+def test_ancora_fonte_sem_delta_e_byte_identico_ao_de_main(factory, factory_main, factory_f12_pinada,
                                                            cenario):
     """⛔ ÂNCORA DA F5 — ver o cabeçalho do arquivo.
 
@@ -1015,6 +1063,8 @@ def test_ancora_fonte_sem_delta_e_byte_identico_ao_de_main(factory, factory_main
     novo = factory._generate_dag_source(dict(pipeline), [dict(j) for j in jobs])
     antigo = factory_main._generate_dag_source(dict(pipeline),
                                                [dict(j) for j in jobs])
+    f12 = factory_f12_pinada._generate_dag_source(dict(pipeline), [dict(j) for j in jobs])
+    novo = _reverter_delta_f13_aprovado(novo, f12)
     assert _remover_delta(novo) == antigo
 
 

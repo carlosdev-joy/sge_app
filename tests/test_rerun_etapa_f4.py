@@ -638,6 +638,10 @@ class _CurRerun:
         s = " ".join(str(sql).split())
         self._rows = []
         self.rowcount = 0
+        if s.startswith("SELECT OBJECT_ID('dbo.etl_alert_cycle','U')"):
+            # Fixture legada anterior à migration188; não tem coorte EOC.
+            self._rows = [(None,)]
+            return
         if s.startswith("SELECT pipeline_name FROM dbo.etl_pipeline WHERE"):
             self._rows = [("DEV_F10_A",)]
             return
