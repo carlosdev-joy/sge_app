@@ -207,3 +207,14 @@ def test_missing_dependency_csv_is_derived_but_explicit_divergence_is_preserved_
     assert materialize(definition,LAYOUT,{})['etl_pipeline'][0]['depends_on']=='Parent'
     definition['metadata']['legacyPipeline']['depends_on']='Wrong'
     assert materialize(definition,LAYOUT,{})['etl_pipeline'][0]['depends_on']=='Wrong'
+
+
+def test_unknown_configuration_identifies_stage_and_field_without_losing_work():
+    definition=flow()
+    definition['nodes'][0]['configuration']['future']={'marker':'own-fixture'}
+    original=copy.deepcopy(definition)
+    errors,projected=validate_projection(definition,LAYOUT,{},CONNECTIONS)
+    assert projected is None
+    assert errors==[{'nodeId':definition['nodes'][0]['id'],'field':'configuration.future',
+                    'code':'unsupported_configuration','message':'Configuração adicional de etapa não é projetável'}]
+    assert definition==original

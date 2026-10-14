@@ -27,7 +27,7 @@ IDENT=re.compile(r"^[A-Za-z0-9_.-]+$")
 FOLDER=re.compile(r"^[\w .-]+$")
 ENABLED=lambda:os.getenv("WORKSPACE_PUBLICATIONS_ENABLED","false").lower()=="true"
 class PublicationBlocked(Exception):
- def __init__(self,code,message):self.code=code;self.message=message;super().__init__(message)
+ def __init__(self,code,message,*,node_id=None,field='definition'):self.code=code;self.message=message;self.node_id=node_id;self.field=field;super().__init__(message)
 
 def schema(cur):
  return bool(cur.execute("SELECT OBJECT_ID('dbo.etl_workspace_publicacao','U')").fetchone()[0])
@@ -114,7 +114,8 @@ def materialize(definition,layout,existing):
  positions=layout.get('nodes') or {};nodes=definition.get('nodes') or [];edges=definition.get('edges') or []
  for order,node in enumerate(nodes,1):
   cfg=node.get('configuration') or {}
-  if set(cfg)-({'legacyJob','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config','etl_job_lineage'} if captured else {'legacyJob','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config'}):raise PublicationBlocked('unsupported_configuration','Configuração adicional de etapa não é projetável')
+  unknown=sorted(set(cfg)-({'legacyJob','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config','etl_job_lineage'} if captured else {'legacyJob','etl_pipeline_job_param','etl_valida_arquivo_no','etl_valida_arquivo_config'}))
+  if unknown:raise PublicationBlocked('unsupported_configuration','Configuração adicional de etapa não é projetável',node_id=node.get('id'),field='configuration.'+unknown[0])
   if captured:
    lineage=cfg.get('etl_job_lineage')
    if not isinstance(lineage,list) or len(lineage)>5000 or any(not isinstance(row,dict) for row in lineage):raise PublicationBlocked('lineage_contract','Cada etapa exige uma lista de lineage válida')
@@ -169,7 +170,7 @@ def validate_projection(definition,layout,existing,connection_types,email_policy
  errors=[]
  def error(node,field,code,message):errors.append({'nodeId':node,'field':field,'code':code,'message':message})
  try:projection=materialize(definition,layout,existing)
- except PublicationBlocked as e:return [{'nodeId':None,'field':'definition','code':e.code,'message':e.message}],None
+ except PublicationBlocked as e:return [{'nodeId':e.node_id,'field':e.field,'code':e.code,'message':e.message}],None
  pipeline=projection['etl_pipeline'][0];name=pipeline['pipeline_name'];nodes=definition['nodes'];ids=[n['id'] for n in nodes]
  if not IDENT.fullmatch(name) or len(name)>200:error(None,'identity.pipelineName','engine_identity','Identificador incompatível com Airflow')
  for field in ('project_name','domain'):
