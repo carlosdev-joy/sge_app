@@ -337,7 +337,7 @@ def _cenario(tela: dict, nome: str) -> dict:
     # que levanta vira nó `erro:` em vez de derrubar o processo, justamente
     # para que a falha seja reportada aqui e não vire "cenário sem cards".
     assert dado["erros"] == [], f"{nome} renderizou com exceção: {dado['erros']}"
-    assert "Malha de Pipelines" in dado["texto"] or dado["editor"], (
+    assert "Malhas" in dado["texto"] or dado["editor"], (
         f"{nome} não renderizou página nenhuma — uma prova de ausência sobre "
         "uma tela em branco passa sempre")
     if not dado["editor"]:
@@ -734,7 +734,7 @@ def test_as_posicoes_dos_botoes_do_card_sao_fixas_entre_estados(tela):
     A mesma ordem em TODOS os estados desta fase — com corrida, sem corrida,
     degradado e "não abriu" —, e o que não cabe num estado é desabilitado, nunca
     removido."""
-    ordem = ["Acompanhar", "Diagrama", "Membros", "Renomear", "Inativar"]
+    ordem = ["Acompanhar", "Definição", "Membros", "Renomear", "Inativar"]
     for nome in ("fechando", "sabado", "expirada", "cancelada",
                  "dia_do_deploy", "api_velha", "sem_085"):
         card = _card(_cenario(tela, nome))

@@ -679,9 +679,10 @@ interface Props {
    *  clicou num card que mostrava a de ontem. A data sozinha não distingue duas
    *  corridas do mesmo ODATE (é a razão de a lente existir). */
   corridaInicial?: number | null
+  onContextoChange?: (modo: 'montagem' | 'execucao', data: string | null, corrida: number | null) => void
   /** Descer até o canvas de Etapas de um pipeline, na data exibida. Ausente =
    *  o gesto some (a malha continua exatamente como era). */
-  onAbrirEtapas?: (pipeline: string, data: string) => void
+  onAbrirEtapas?: (pipeline: string, data: string, corrida: number | null, runId: string) => void
 }
 
 // Wrapper com o provider (necessário p/ useReactFlow/fitView).
@@ -695,7 +696,7 @@ export function MalhaEditor(props: Props) {
 
 function MalhaEditorInner({
   malha, readOnly = false, modoInicial, dataInicial = null,
-  corridaInicial = null, onAbrirEtapas,
+  corridaInicial = null, onContextoChange, onAbrirEtapas,
 }: Props) {
   const colorMode = useColorMode()
   const rf = useReactFlow()
@@ -815,6 +816,14 @@ function MalhaEditorInner({
   // entre o painel e o disparo).
   const dataExibida = (corridaRef ? execData?.data_referencia : dataRef)
     ?? execData?.data_referencia ?? ''
+  // Agora resolve uma corrida no servidor. Registrar esse ID evita que reload
+  // transforme a corrida vista em um agregado do dia com múltiplos ciclos.
+  // A lente explícita por dia permanece por dia; nunca escolher sua última.
+  const corridaContexto = corridaRef
+    ?? (emExecucao && dataRef === null ? execData?.corrida?.id ?? null : null)
+  useEffect(() => {
+    onContextoChange?.(modo, dataExibida || dataRef, corridaContexto)
+  }, [onContextoChange, modo, dataExibida, dataRef, corridaContexto])
   // ── F4: a corrida desta lente ────────────────────────────────────────────
   // Chave AUSENTE (não `null`) é o contrato da degradação (Decisão 41): API
   // anterior à fase, banco sem a 085 e malha sem ciclo nenhum caem no MESMO
@@ -1021,8 +1030,13 @@ function MalhaEditorInner({
   // atalho no data de cada card.
   const descerParaEtapas = useCallback((pipelineId: string) => {
     if (!onAbrirEtapas || !dataExibida || ehNo(pipelineId)) return
-    onAbrirEtapas(pipelineId, dataExibida)
-  }, [onAbrirEtapas, dataExibida])
+    const runId = execPorPipeline.get(pipelineId)?.run_id
+    if (!runId) {
+      toast.info('Este pipeline não possui execução identificada nesta lente. Nenhuma outra corrida foi selecionada.')
+      return
+    }
+    onAbrirEtapas(pipelineId, dataExibida, corrida?.id ?? corridaRef, runId)
+  }, [onAbrirEtapas, dataExibida, corrida?.id, corridaRef, execPorPipeline])
 
   // ── F10: um clique até o problema, SEM sair da lente ─────────────────────
   // Clicar numa linha do painel acende a cadeia (o mesmo `PainelRealce` do

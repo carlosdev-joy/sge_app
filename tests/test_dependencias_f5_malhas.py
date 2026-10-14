@@ -218,8 +218,7 @@ def test_execucao_nao_liberou_ganha_faltantes(client, auth_editor):
 
 
 def test_execucao_sucesso_nao_ganha_faltantes(client, auth_editor):
-    """Contrato F9 intacto: campo novo SÓ nos dois status de espera — nas
-    demais linhas a resposta é a de sempre, chave a chave."""
+    """Faltantes continua exclusivo da espera; F14 inclui a identidade exata."""
     db = FakeDb(pipelines=_pipes())
     db.dependencias = [{"pipeline": "PIPE_A", "depende_de": "PIPE_B"}]
     db.execucoes = [_exec("PIPE_A", "SUCESSO",
@@ -228,7 +227,7 @@ def test_execucao_sucesso_nao_ganha_faltantes(client, auth_editor):
         _monta_malha(client, "M1", ["PIPE_A", "PIPE_B"])
         r = client.get("/malhas/M1/execucao?data_referencia=2026-08-01")
     assert r.json()["execucoes"] == [{
-        "pipeline_name": "PIPE_A", "status": "SUCESSO",
+        "pipeline_name": "PIPE_A", "run_id": "run_1", "status": "SUCESSO",
         "inicio": "2026-08-01 06:00:00", "fim": None,
         "disparado_por": "agenda", "motivo": None,
     }]

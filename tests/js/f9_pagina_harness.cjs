@@ -353,7 +353,8 @@ function paraObjeto(p) {
 export function useNavigate() {
   return (destino) => { globalThis.__BANCADA.navegacoes.push({ __to: destino }) }
 }
-export function useLocation() { return { pathname: '/malha', search: '' } }
+export function useLocation() { return { pathname: '/malha', search: '', key: 'fixture' } }
+export function useNavigationType() { return 'POP' }
 export function Link(props) { return { tipo: 'stub:Link', props: props || {}, filhos: [] } }
 `
 
