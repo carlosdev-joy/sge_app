@@ -43,7 +43,7 @@ BEGIN
     VALUES (@nova, @titulo, N'## Gestão de Falhas
 
 - Ocorrência exata, prioridade, responsável servidor e trilha de tratamento.
-- Conflitos409; repetição idempotente; tratamento não envia comunicação nem altera FAILED.
+- Conflitos409; repetição não reenvia; primeira comunicação legada após commit; tratamento não altera FAILED.
 - Histórico legado sem geração presumida e links exatos à execução.
 ', 'deploy');
 
