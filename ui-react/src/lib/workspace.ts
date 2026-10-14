@@ -7,7 +7,10 @@ export interface WorkspaceDefinition { schemaVersion: number; identity: { pipeli
 export interface WorkspaceLayout { schemaVersion: number; nodes: Record<string, { x: number; y: number; [key: string]: unknown }>; [key: string]: unknown }
 export interface WorkspaceLease { holderUser: string; fence: number; expiresAt: string; heldBySession: boolean }
 export interface WorkspaceDraft { draftId: string; pipelineName: string; baseVersionId: string | null; definition: WorkspaceDefinition; layout: WorkspaceLayout; revision: number; state: string; createdBy: string; responsible: string; createdAt: string; updatedAt: string; readOnlyReasons: string[]; lease: WorkspaceLease | null }
-export interface WorkspaceContext { pipelineName: string; draftsAvailable: boolean; environmentLabel?: string; summary?: JsonObject; published: { definition: WorkspaceDefinition; layout: WorkspaceLayout; readOnlyReasons: string[] } | null; draft: WorkspaceDraft | null }
+// `published.versionId`/`contentHash`: par da publicação CONFIRMADA (sem publicação
+// pendente), lido junto com o desenho publicado; ausente ou nulo fora do workspace
+// ou com publicação pendente. É o que o pedido de execução fixa ao abrir.
+export interface WorkspaceContext { pipelineName: string; draftsAvailable: boolean; environmentLabel?: string; summary?: JsonObject; published: { definition: WorkspaceDefinition; layout: WorkspaceLayout; readOnlyReasons: string[]; versionId?: string | null; contentHash?: string | null } | null; draft: WorkspaceDraft | null }
 export interface WorkspaceCapabilities { schemaVersion: number; enabled: boolean; knownNodeTypes: string[]; actions: { consultDefinition: boolean; consultStages: boolean; consultLogs: boolean; consultVersions?: boolean; editDraft: boolean; administer: boolean; publish: boolean; execute: boolean; reprocess?: boolean; pauseStages?: boolean; contextualNavigation?: boolean } }
 export type WorkspaceExperience = 'desenvolvimento' | 'consulta' | 'sustentacao'
 export function object(value: unknown): JsonObject { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {} }
