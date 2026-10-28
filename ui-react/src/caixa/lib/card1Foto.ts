@@ -14,8 +14,16 @@ export const STATUS_CARD1: StatusWorkflow = "pending_signature";
  *  idêntico (`ResumoCard1`/`PaginaCard1`), só a fonte muda (`/pio/card2/*`). */
 export const STATUS_CARD2: StatusWorkflow = "awaiting_payment";
 
+/** O Card 3 (Assinadas e Pagas) também: `/pio/card3/*`. Já está paga, então não
+ *  há "dias pendente" a mostrar. */
+export const STATUS_CARD3: StatusWorkflow = "paid";
+
 /** Cards do Workflow que leem a foto diária. */
-export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2];
+export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3];
+
+const PREFIXO_ID: Partial<Record<StatusWorkflow, string>> = {
+  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3",
+};
 
 export interface ResumoCard1 {
   disponivel: boolean;
@@ -107,7 +115,7 @@ export function propostaDoCard1(
   return {
     // `id_foto`, não o número da proposta: a query aceita pode repetir a mesma
     // proposta (JOIN), e chave repetida no React some com linha.
-    id: `${status === STATUS_CARD2 ? "pio2" : "pio1"}-${item.id_foto}`,
+    id: `${PREFIXO_ID[status] ?? "pio1"}-${item.id_foto}`,
     number: item.proposta,
     insuredName: item.nome,
     date: dataBr(item.data_venda),
@@ -124,7 +132,7 @@ export function propostaDoCard1(
     region: regiaoDaUf(item.uf),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
-    daysInPending: item.dias_pendente,
+    daysInPending: status === STATUS_CARD3 ? 0 : item.dias_pendente,
     foto,
   };
 }

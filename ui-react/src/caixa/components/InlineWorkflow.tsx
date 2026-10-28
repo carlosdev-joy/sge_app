@@ -47,12 +47,15 @@ import {
   listaDoCard,
   STATUS_CARD1,
   STATUS_CARD2,
+  STATUS_CARD3,
+  STATUS_DE_FOTO,
   useResumoCard1,
   usePropostasCard1,
   dataHoraBr,
   canaisDeEnvio,
 } from "../lib/pioCard1";
 import { useResumoCard2, usePropostasCard2 } from "../lib/pioCard2";
+import { useResumoCard3, usePropostasCard3 } from "../lib/pioCard3";
 
 // ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
 // alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
@@ -129,15 +132,22 @@ export default function InlineWorkflow() {
   // cards de foto, o que o desliga — a lista não é pedida às duas fontes.
   const emCard1 = selectedStatus === STATUS_CARD1;
   const emCard2 = selectedStatus === STATUS_CARD2;
+  const emCard3 = selectedStatus === STATUS_CARD3;
+  const emFoto = emCard1 || emCard2 || emCard3;
   const resumoCard1 = useResumoCard1();
   const resumoCard2 = useResumoCard2();
-  const paginaPio = usePropostasPio(emCard1 || emCard2 ? undefined : cardSelecionado, isExpanded, pagina, "");
+  const resumoCard3 = useResumoCard3();
+  const paginaPio = usePropostasPio(emFoto ? undefined : cardSelecionado, isExpanded, pagina, "");
   const fotoCard1 = usePropostasCard1(emCard1 && isExpanded, pagina, resumoCard1.data?.referencia);
   const fotoCard2 = usePropostasCard2(emCard2 && isExpanded, pagina, resumoCard2.data?.referencia);
+  const fotoCard3 = usePropostasCard3(emCard3 && isExpanded, pagina, resumoCard3.data?.referencia);
+  // Resumo e página do card selecionado (os três hooks rodam sempre: ordem fixa).
+  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3 } as Record<string, typeof resumoCard1>;
+  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3 } as Record<string, typeof fotoCard1>;
   const lista = listaDoCard(
-    emCard1 || emCard2, paginaPio,
+    emFoto, paginaPio,
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
-    emCard2 ? resumoCard2 : resumoCard1, emCard2 ? fotoCard2 : fotoCard1,
+    resumos[selectedStatus] ?? resumoCard1, fotos[selectedStatus] ?? fotoCard1,
     selectedStatus as StatusWorkflow);
 
   // Contagem real por card, só para os status que têm origem no PIO.
@@ -163,6 +173,11 @@ export default function InlineWorkflow() {
   delete reais[STATUS_CARD2];
   if (resumoCard2.data?.disponivel && resumoCard2.data.referencia) {
     reais[STATUS_CARD2] = resumoCard2.data.quantidade;
+  }
+  // Idem o Card 3.
+  delete reais[STATUS_CARD3];
+  if (resumoCard3.data?.disponivel && resumoCard3.data.referencia) {
+    reais[STATUS_CARD3] = resumoCard3.data.quantidade;
   }
 
   const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
@@ -270,8 +285,8 @@ export default function InlineWorkflow() {
                       carrega nem quando a leitura falha: zero é uma resposta
                       que ninguém investiga. "…" e "—" são perguntas. */}
                   <div className="text-xl font-bold text-center mt-1 text-ink">
-                    {status.value === STATUS_CARD1 || status.value === STATUS_CARD2 ? (
-                      <Card1Valor resumo={status.value === STATUS_CARD2 ? resumoCard2 : resumoCard1} />
+                    {STATUS_DE_FOTO.includes(status.value) ? (
+                      <Card1Valor resumo={resumos[status.value]} />
                     ) : ORIGEM_PIO[status.value] && contagens.isPending ? (
                       <span className="text-dim" title="consultando a carga">…</span>
                     ) : ORIGEM_PIO[status.value] && !contagens.data?.disponivel ? (
