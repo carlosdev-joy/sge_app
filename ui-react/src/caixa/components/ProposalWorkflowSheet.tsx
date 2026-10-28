@@ -166,7 +166,7 @@ export default function ProposalWorkflowSheet() {
           </p>
         )}
         {lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
-          <p className="text-xs text-dim mb-3">Nenhuma foto de {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]} foi publicada ainda; não há número nem lista a mostrar.</p>
+          <p className="text-xs text-dim mb-3">Ainda não há foto publicada para {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]}; não há número nem lista a mostrar.</p>
         )}
         {lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
           <p className="text-xs text-dim mb-3">

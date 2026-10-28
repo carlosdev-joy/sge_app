@@ -122,4 +122,4 @@ def test_aviso_de_foto_ausente_nomeia_o_card_pelo_status():
     for arq in ("InlineWorkflow.tsx", "ProposalWorkflowSheet.tsx"):
         corpo = _fonte(CAIXA / "components" / arq)
         assert "Nenhuma foto do Card 1" not in corpo, arq
-        assert "Nenhuma foto de {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]}" in corpo, arq
+        assert "Ainda não há foto publicada para {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]}" in corpo, arq
