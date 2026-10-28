@@ -1,5 +1,5 @@
 # Spec: Uso do módulo Busca & Vendas — Orquestra
-Data: 2026-10-28 · Status: em execução (F1) · Origem: pedido do solicitante do RITM0117336 ("a partir deste primeiro CARD construiremos monitoramento de usabilidade") + decisões do Carlos em 28/10/2026
+Data: 2026-10-28 · Status: em execução (F3 — QA e PR) · Origem: pedido do solicitante do RITM0117336 ("a partir deste primeiro CARD construiremos monitoramento de usabilidade") + decisões do Carlos em 28/10/2026
 
 ## 1. Visão
 Hoje o Orquestra não sabe quem usa o módulo `/caixa-seguro/*`, quando e o que abre: `etl_sessao` só guarda a sessão corrente (apagada no logout/expiração/novo login) e `etl_usuario.ultimo_login` guarda só o último. Esta feature registra o uso do módulo e o mostra numa tela nova **dentro do módulo** ("Uso do módulo", item novo do menu), liberada por permissão escolhida na Administração (qualquer perfil ou usuário). Serve para dizer, no futuro, **quais usuários acessam e o que acessam**.
@@ -76,7 +76,7 @@ Migration `141_uso_busca_vendas.sql` (idempotente, etapa 6c do `deploy.sh`) + `1
 - Validação: pytest (novos + suíte), migration rodada **duas vezes** no DEV, revisão de SQL (placeholder `?`).
 
 ### F3 — Integração, versão e documentação
-- Entregável: troca do mock pelo real, `dist/` recompilado, nota de versão, release notes (`docs/release-notes/`), memória do projeto.
+- Entregável: troca do mock pelo real (mock e `USO_USA_MOCK` removidos), `dist/` recompilado, nota de versão, release notes (`docs/release-notes/`), memória do projeto.
 - Aceite: ponta a ponta no DEV (navegar → evento → tela mostra); relogin após conceder a permissão.
 - Validação: `tsc -b` + eslint + build + pytest, **revisão adversarial** (agente `qa-adversarial`) antes de abrir a PR; PR `feat: monitoramento de uso do módulo Busca & Vendas`. **Merge só após aprovação do Carlos.**
 

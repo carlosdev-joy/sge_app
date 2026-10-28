@@ -12,6 +12,7 @@ com `tsc` e chamados pelo `node`. Prendem:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -99,3 +100,18 @@ def test_so_o_modulo_e_medido(rodar):
     assert rodar("""return ['/caixa-seguro', '/caixa-seguro/uso', '/caixa-seguro/acompanhamento/pendentes',
       '/caixa-seguro-x', '/admin', '/'].map(r.ehRotaDoModulo);""") == [
         True, True, True, False, False, False]
+
+
+def test_front_nao_carrega_mais_dados_simulados():
+    """A F1 usava um mock atrás de USO_USA_MOCK; a F3 o removeu (o simulado nunca vai a produção)."""
+    fontes = [p for p in (UI / "src").rglob("*.ts*") if "node_modules" not in p.parts]
+    assert not (LIB / "usoMock.ts").exists()
+    achados = [str(p.relative_to(RAIZ)) for p in fontes
+               if re.search(r"USO_USA_MOCK|usoMock|resumoUsoSimulado", p.read_text(encoding="utf-8"))]
+    assert achados == [], achados
+
+
+def test_tracker_so_envia_rota_do_modulo_e_nunca_a_matricula():
+    fonte = (LIB / "usoRastreio.ts").read_text(encoding="utf-8")
+    assert "matricula" not in re.sub(r"//.*", "", fonte)
+    assert 'JSON.stringify({ rota })' in fonte

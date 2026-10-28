@@ -4,7 +4,6 @@
 // e de formatação ficam em `usoDatas.ts`.
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "../../lib/api";
-import { resumoUsoSimulado } from "./usoMock";
 
 import type { GranularidadeUso, Periodo } from "./usoDatas";
 export type { GranularidadeUso, Periodo } from "./usoDatas";
@@ -50,17 +49,12 @@ export interface UsoResumo {
   ranking: UsoRanking[];
 }
 
-/** Enquanto a F2 (backend) não entra, a tela lê o simulado. A F3 remove a
- *  chave e o arquivo `usoMock.ts`. */
-export const USO_USA_MOCK = true;
-
 /** Janela de "online agora", em minutos — a mesma do servidor. */
 export const JANELA_ONLINE_MIN = 10;
 
 // ── Leitura ────────────────────────────────────────────────────────────────
 
 export function buscarResumoUso(periodo: Periodo, referencia: string): Promise<UsoResumo> {
-  if (USO_USA_MOCK) return Promise.resolve(resumoUsoSimulado(periodo, referencia));
   const p = new URLSearchParams({ periodo, referencia });
   return apiFetch<UsoResumo>(`/caixa/uso/resumo?${p.toString()}`);
 }

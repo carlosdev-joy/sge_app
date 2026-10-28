@@ -97,3 +97,5 @@ o processo em `CLAUDE.md` (skills `organizacao`, `gerador-spec`, `testes-automat
 - [Título do login](orquestra-login-nome.md) — correção pronta na branch `fix/login-nome-orquestra`; aguarda merge e deploy.
 
 - [Seletores de placeholders de e-mail](orquestra-email-placeholders.md) — F1 mergeada (#415); F2 implementada e validada, aguardando merge.
+
+- [Uso do módulo Busca & Vendas](orquestra-uso-busca-vendas.md) — branch `feat/uso-busca-vendas` a partir da main; v2.6.2, migrations 141/142; aguarda QA e aprovação de merge.

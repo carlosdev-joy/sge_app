@@ -8,7 +8,6 @@
 //   • falha é SILENCIOSA: medir nunca pode quebrar nem avisar quem está trabalhando.
 // A matrícula NÃO vai no corpo: o servidor a lê do token.
 import { apiFetch } from "../../lib/api";
-import { USO_USA_MOCK } from "./uso";
 import { deveRegistrarAcesso, ehRotaDoModulo } from "./usoRegras";
 
 export { INTERVALO_PRESENCA_MS } from "./usoRegras";
@@ -16,7 +15,6 @@ export { INTERVALO_PRESENCA_MS } from "./usoRegras";
 const vistosNaSessao = new Map<string, number>();
 
 function enviar(caminho: string, rota: string): void {
-  if (USO_USA_MOCK) return;
   apiFetch(caminho, { method: "POST", body: JSON.stringify({ rota }) }).catch(() => undefined);
 }
 
