@@ -144,7 +144,7 @@ from routers import (
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
     inventario, finalizacao, caixa_chat, ds_supervisao, malhas,
-    chamados, pio, pio_card1, pio_card2, caixa_uso, utilitarios, lineage_isx, maestro, email, agentes,
+    chamados, pio, pio_card1, pio_card2, pio_card3, caixa_uso, utilitarios, lineage_isx, maestro, email, agentes,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -204,6 +204,6 @@ for _router_module in [
     datastage, factory, airflow, change_plans, powerbi, lineage_xml,
     notificacoes, comunicados, backlog, monitor, mensagens, copias,
     inventario, finalizacao, caixa_chat, ds_supervisao, malhas,
-    chamados, pio, pio_card1, pio_card2, caixa_uso, utilitarios, lineage_isx, maestro, email, agentes,
+    chamados, pio, pio_card1, pio_card2, pio_card3, caixa_uso, utilitarios, lineage_isx, maestro, email, agentes,
 ]:
     app.include_router(_router_module.router)

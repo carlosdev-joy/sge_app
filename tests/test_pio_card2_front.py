@@ -67,7 +67,8 @@ RESUMO = "{data: {disponivel: true, referencia: '2026-10-27', atualizacao: null,
 
 def test_card2_e_awaiting_payment_e_card1_segue_pending_signature(rodar):
     assert rodar("return [m.STATUS_CARD1, m.STATUS_CARD2, m.STATUS_DE_FOTO];") == [
-        "pending_signature", "awaiting_payment", ["pending_signature", "awaiting_payment"]]
+        "pending_signature", "awaiting_payment",
+        ["pending_signature", "awaiting_payment", "paid"]]   # o Card 3 entrou depois
 
 
 def test_proposta_do_card2_tem_status_e_chave_proprios(rodar):
@@ -103,7 +104,7 @@ def test_componentes_ligam_o_card2_a_foto():
         assert "useResumoCard2" in corpo and "usePropostasCard2" in corpo, arq
         assert "STATUS_CARD2" in corpo, arq
         assert "delete reais[STATUS_CARD2]" in corpo, arq   # nunca a contagem legada
-        assert "usePropostasPio(emCard1 || emCard2 ? undefined" in corpo, arq
+        assert "usePropostasPio(emFoto ? undefined" in corpo, arq
 
 
 def test_hooks_do_card2_leem_os_endpoints_do_card2():
