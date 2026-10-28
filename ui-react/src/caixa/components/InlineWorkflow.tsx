@@ -12,6 +12,7 @@ import type { LucideIcon } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Input";
 import { toast } from "../../components/ui/Toast";
+import Card1Valor from "./Card1Valor";
 import ProposalDetailDialog from "./ProposalDetailDialog";
 import ResendLinkDialog from "./ResendLinkDialog";
 import DocumentUploadDialog from "./DocumentUploadDialog";
@@ -42,6 +43,14 @@ import {
   ORIGEM_PIO,
   TAMANHO_PAGINA_PIO,
 } from "../lib/pio";
+import {
+  listaDoCard,
+  STATUS_CARD1,
+  useResumoCard1,
+  usePropostasCard1,
+  dataHoraBr,
+  canaisDeEnvio,
+} from "../lib/pioCard1";
 
 // ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
 // alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
@@ -113,7 +122,17 @@ export default function InlineWorkflow() {
   // ── A carga do PIO ────────────────────────────────────────────────────────
   const contagens = useContagensPio();
   const cardSelecionado = ORIGEM_PIO[selectedStatus as StatusWorkflow];
-  const paginaPio = usePropostasPio(cardSelecionado, isExpanded, pagina, "");
+  // O Card 1 lê a FOTO diária (agregado para o número, fato para a lista); os
+  // outros sete seguem na carga legada. O hook legado recebe `undefined` no
+  // Card 1, o que o desliga — a lista não é pedida às duas fontes.
+  const emCard1 = selectedStatus === STATUS_CARD1;
+  const resumoCard1 = useResumoCard1();
+  const paginaPio = usePropostasPio(emCard1 ? undefined : cardSelecionado, isExpanded, pagina, "");
+  const fotoCard1 = usePropostasCard1(emCard1 && isExpanded, pagina, resumoCard1.data?.referencia);
+  const lista = listaDoCard(
+    emCard1, paginaPio,
+    (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
+    resumoCard1, fotoCard1);
 
   // Contagem real por card, só para os status que têm origem no PIO.
   const reais: Partial<Record<StatusWorkflow, number>> = {};
@@ -127,6 +146,13 @@ export default function InlineWorkflow() {
         reais[status] = porCard.get(card) ?? 0;
       });
   }
+  // A quantidade do Card 1 vem da foto, a mesma conta do total da lista. Sem
+  // leitura da foto, ele NÃO cai na contagem legada: dois números para o mesmo
+  // card seria pior que um "—".
+  delete reais[STATUS_CARD1];
+  if (resumoCard1.data?.disponivel && resumoCard1.data.referencia) {
+    reais[STATUS_CARD1] = resumoCard1.data.quantidade;
+  }
 
   const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
 
@@ -139,11 +165,8 @@ export default function InlineWorkflow() {
     ? undefined
     : SUB_FILTRO[selectedStatus as StatusWorkflow];
 
-  const propostasDoPio = (paginaPio.data?.itens ?? []).map(
-    (item) => propostaDoPio(item, selectedStatus as StatusWorkflow));
-
   const filteredProposals = cardSelecionado
-    ? propostasDoPio   // já vêm ordenadas pela consulta: mais antigas primeiro
+    ? lista.propostas   // já vêm ordenadas pela consulta: mais antigas primeiro
     : PROPOSTAS_DE_EXEMPLO
         .filter((proposta) => {
           const statusAtual = proposalStatuses[proposta.id] || proposta.status;
@@ -155,7 +178,7 @@ export default function InlineWorkflow() {
         })
         .sort((a, b) => b.daysInPending - a.daysInPending);
 
-  const totalDaPagina = paginaPio.data?.total ?? 0;
+  const totalDaPagina = lista.total;
   const temMaisPaginas = cardSelecionado
     ? (pagina + 1) * TAMANHO_PAGINA_PIO < totalDaPagina
     : false;
@@ -236,7 +259,9 @@ export default function InlineWorkflow() {
                       carrega nem quando a leitura falha: zero é uma resposta
                       que ninguém investiga. "…" e "—" são perguntas. */}
                   <div className="text-xl font-bold text-center mt-1 text-ink">
-                    {ORIGEM_PIO[status.value] && contagens.isPending ? (
+                    {status.value === STATUS_CARD1 ? (
+                      <Card1Valor resumo={resumoCard1} />
+                    ) : ORIGEM_PIO[status.value] && contagens.isPending ? (
                       <span className="text-dim" title="consultando a carga">…</span>
                     ) : ORIGEM_PIO[status.value] && !contagens.data?.disponivel ? (
                       <span
@@ -300,21 +325,36 @@ export default function InlineWorkflow() {
             {/* Procedência da lista — de onde vieram estas linhas e de quando.
                 Um número sem data de carga não deixa distinguir "a fila
                 esvaziou" de "a carga das 07:30 não rodou". */}
-            {cardSelecionado && paginaPio.data?.disponivel && (
+            {cardSelecionado && lista.disponivel && !lista.carregando && !lista.detalheIndisponivel && (lista.referencia || !lista.deFoto) && (
               <p className="text-xs text-dim">
-                {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} na carga
-                {paginaPio.data.referencia ? ` de ${dataBr(paginaPio.data.referencia)}` : ""}
+                {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} {lista.deFoto ? "na foto" : "na carga"}
+                {lista.referencia ? ` de ${dataBr(lista.referencia)}` : ""}
+                {lista.deFoto && lista.atualizacao ? `, publicada em ${dataHoraBr(lista.atualizacao)}` : ""}
                 {filteredProposals.length > 0 && (
                   <> · mostrando {filteredProposals.length.toLocaleString("pt-BR")}, as mais antigas primeiro</>
                 )}
               </p>
             )}
-            {cardSelecionado && paginaPio.isPending && (
-              <p className="text-xs text-dim">Consultando a carga do PIO…</p>
+            {lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
+          <p className="text-xs text-dim">Nenhuma foto do Card 1 foi publicada ainda; não há número nem lista a mostrar.</p>
+        )}
+        {lista.deFoto && lista.disponivel && lista.desatualizado && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Esta foto não é de hoje: a carga diária pode não ter rodado. Os números abaixo são os dela.
+              </p>
             )}
-            {cardSelecionado && !paginaPio.isPending && !paginaPio.data?.disponivel && (
+            {lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
+              <p className="text-xs text-dim">
+                O detalhe das propostas desta data já saiu da retenção (a lista guarda menos tempo
+                que o total do card). O número do card continua válido.
+              </p>
+            )}
+            {cardSelecionado && lista.carregando && (
+              <p className="text-xs text-dim">Consultando {lista.deFoto ? "a foto" : "a carga"} do PIO…</p>
+            )}
+            {cardSelecionado && !lista.carregando && !lista.disponivel && (
               <p className="text-xs text-red-600 dark:text-red-400">
-                Não foi possível ler a carga do PIO. A lista não está vazia — ela é desconhecida.
+                Não foi possível ler {lista.deFoto ? "a foto" : "a carga"} do PIO. A lista não está vazia — ela é desconhecida.
               </p>
             )}
             {/* Em "Todas as Propostas" a lista mostra só o que não vem da
@@ -438,7 +478,7 @@ export default function InlineWorkflow() {
                     variant="secondary"
                     size="sm"
                     onClick={() => setPagina((p) => Math.max(0, p - 1))}
-                    disabled={pagina === 0 || paginaPio.isFetching}
+                    disabled={pagina === 0 || lista.buscando}
                   >
                     Anterior
                   </Button>
@@ -446,7 +486,7 @@ export default function InlineWorkflow() {
                     variant="secondary"
                     size="sm"
                     onClick={() => setPagina((p) => p + 1)}
-                    disabled={!temMaisPaginas || paginaPio.isFetching}
+                    disabled={!temMaisPaginas || lista.buscando}
                   >
                     Próxima
                   </Button>
@@ -464,6 +504,7 @@ export default function InlineWorkflow() {
               ...selectedProposal,
               status: (proposalStatuses[selectedProposal.id] || selectedProposal.status) as StatusWorkflow,
             }}
+            foto={selectedProposal.foto}
             open={detailDialogOpen}
             onClose={() => setDetailDialogOpen(false)}
           />
@@ -476,6 +517,7 @@ export default function InlineWorkflow() {
               email: selectedProposal.email,
               phone: selectedProposal.phone,
             }}
+            contatos={selectedProposal.foto ? canaisDeEnvio(selectedProposal.foto.contato) : undefined}
             open={resendDialogOpen}
             onClose={() => setResendDialogOpen(false)}
           />

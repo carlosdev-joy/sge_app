@@ -10,6 +10,7 @@ import { toast } from "../../components/ui/Toast";
 import ProposalTimeline from "./ProposalTimeline";
 import ProposalShareDialog from "./ProposalShareDialog";
 import ProposalHistoryDialog from "./ProposalHistoryDialog";
+import type { FotoCard1 } from "../lib/workflow";
 
 export interface ProposalOrq {
   id: string;
@@ -54,6 +55,11 @@ export interface ProposalOrq {
 
 interface ProposalDetailDialogProps {
   proposal: ProposalOrq;
+  /** Contexto do Card 1 (RITM0117336): vem da foto diária e SÓ a lista do Card 1
+   *  o passa. Os outros sete cards e a busca global não o enviam, e o diálogo
+   *  se comporta como sempre. Não deduzir isto de `status`: a busca global abre
+   *  propostas `pending_signature` vindas da carga legada. */
+  foto?: FotoCard1;
   open: boolean;
   onClose: () => void;
 }
@@ -82,7 +88,7 @@ function CampoInfo({ rotulo, valor, className = "" }: { rotulo: string; valor: s
   );
 }
 
-export default function ProposalDetailDialog({ proposal, open, onClose }: ProposalDetailDialogProps) {
+export default function ProposalDetailDialog({ proposal, foto, open, onClose }: ProposalDetailDialogProps) {
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
 
@@ -124,11 +130,18 @@ export default function ProposalDetailDialog({ proposal, open, onClose }: Propos
                 <CampoInfo rotulo="Data de Venda:" valor={proposal.date} />
                 <CampoInfo rotulo="Matrícula do Indicador:" valor={proposal.indicatorId} />
                 <CampoInfo rotulo="Agência:" valor={proposal.agency} />
-                <CampoInfo
-                  rotulo="Usuário:"
-                  valor={`c${proposal.indicatorId.replace(/[^0-9]/g, "").substring(0, 6)}`}
-                  className="md:col-span-3"
-                />
+                {/* Card 1: o número da proposta entra em Dados da Venda. */}
+                {foto && <CampoInfo rotulo="Nº da Proposta:" valor={proposal.number} />}
+                {/* Card 1: "Usuário" sai da tela (pedido do Carlos em 27/10, que
+                    prevaleceu sobre "desativar" do chamado). O valor era derivado
+                    da matrícula, não vinha da foto. Os outros cards o mantêm. */}
+                {!foto && (
+                  <CampoInfo
+                    rotulo="Usuário:"
+                    valor={`c${proposal.indicatorId.replace(/[^0-9]/g, "").substring(0, 6)}`}
+                    className="md:col-span-3"
+                  />
+                )}
               </div>
             </div>
           </Secao>
@@ -187,20 +200,23 @@ export default function ProposalDetailDialog({ proposal, open, onClose }: Propos
               </Secao>
             )}
 
-          {/* Rodapé com resumo */}
-          <div className="bg-canvas p-4 rounded-lg border border-edge">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-ink">
-              <span className="font-semibold">{proposal.number}</span>
-              <span>{proposal.cpf}</span>
-              <span>{proposal.insuredName}</span>
-              <span>{proposal.product}</span>
-              <span>{proposal.value}</span>
-              <span>{proposal.date}</span>
-              <span>{proposal.agency}</span>
-              <span>{proposal.indicatorId}</span>
-              <span className="w-3 h-3 rounded-full bg-emerald-500" />
+          {/* Rodapé com resumo (com o ponto verde). No Card 1 sai da tela, a
+              pedido do Carlos em 27/10; os outros cards o mantêm. */}
+          {!foto && (
+            <div className="bg-canvas p-4 rounded-lg border border-edge">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-ink">
+                <span className="font-semibold">{proposal.number}</span>
+                <span>{proposal.cpf}</span>
+                <span>{proposal.insuredName}</span>
+                <span>{proposal.product}</span>
+                <span>{proposal.value}</span>
+                <span>{proposal.date}</span>
+                <span>{proposal.agency}</span>
+                <span>{proposal.indicatorId}</span>
+                <span className="w-3 h-3 rounded-full bg-emerald-500" />
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </Modal>
 
@@ -214,6 +230,7 @@ export default function ProposalDetailDialog({ proposal, open, onClose }: Propos
 
       <ProposalHistoryDialog
         proposalNumber={proposal.number}
+        foto={foto}
         open={isHistoryDialogOpen}
         onClose={() => setIsHistoryDialogOpen(false)}
       />
