@@ -116,3 +116,10 @@ def test_hooks_do_card2_leem_os_endpoints_do_card2():
 def test_router_do_card2_registrado_em_main():
     main = (RAIZ / "api" / "main.py").read_text(encoding="utf-8")
     assert main.count("pio_card2") == 2          # import + lista de include
+
+
+def test_aviso_de_foto_ausente_nomeia_o_card_pelo_status():
+    for arq in ("InlineWorkflow.tsx", "ProposalWorkflowSheet.tsx"):
+        corpo = _fonte(CAIXA / "components" / arq)
+        assert "Nenhuma foto do Card 1" not in corpo, arq
+        assert "Nenhuma foto de {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]}" in corpo, arq

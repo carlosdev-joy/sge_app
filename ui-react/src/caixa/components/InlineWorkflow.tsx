@@ -124,9 +124,6 @@ export default function InlineWorkflow() {
   // ── A carga do PIO ────────────────────────────────────────────────────────
   const contagens = useContagensPio();
   const cardSelecionado = ORIGEM_PIO[selectedStatus as StatusWorkflow];
-  // O Card 1 lê a FOTO diária (agregado para o número, fato para a lista); os
-  // outros sete seguem na carga legada. O hook legado recebe `undefined` no
-  // Card 1, o que o desliga — a lista não é pedida às duas fontes.
   // Cards 1 e 2 leem a FOTO diária (agregado para o número, fato para a lista);
   // os outros seis seguem na carga legada. O hook legado recebe `undefined` nos
   // cards de foto, o que o desliga — a lista não é pedida às duas fontes.
@@ -350,7 +347,7 @@ export default function InlineWorkflow() {
               </p>
             )}
             {lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
-          <p className="text-xs text-dim">Nenhuma foto do Card 1 foi publicada ainda; não há número nem lista a mostrar.</p>
+          <p className="text-xs text-dim">Nenhuma foto de {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]} foi publicada ainda; não há número nem lista a mostrar.</p>
         )}
         {lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
               <p className="text-xs text-dim">
