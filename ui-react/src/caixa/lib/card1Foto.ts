@@ -10,6 +10,13 @@ import { regiaoDaUf } from "./regiao";
 /** O card do Workflow que lê da foto. */
 export const STATUS_CARD1: StatusWorkflow = "pending_signature";
 
+/** O Card 2 (Pendentes de Pagamento) lê a mesma estrutura de foto — contrato
+ *  idêntico (`ResumoCard1`/`PaginaCard1`), só a fonte muda (`/pio/card2/*`). */
+export const STATUS_CARD2: StatusWorkflow = "awaiting_payment";
+
+/** Cards do Workflow que leem a foto diária. */
+export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2];
+
 export interface ResumoCard1 {
   disponivel: boolean;
   referencia: string | null;
@@ -86,6 +93,7 @@ export function dataHoraBr(iso: string | null): string {
  *  celular. Campos ausentes ficam VAZIOS, nunca inventados. */
 export function propostaDoCard1(
   item: ItemCard1, referencia: string | null, atualizacao: string | null,
+  status: StatusWorkflow = STATUS_CARD1,
 ): PropostaWorkflow {
   const foto: FotoCard1 = {
     idFoto: item.id_foto,
@@ -99,11 +107,11 @@ export function propostaDoCard1(
   return {
     // `id_foto`, não o número da proposta: a query aceita pode repetir a mesma
     // proposta (JOIN), e chave repetida no React some com linha.
-    id: `pio1-${item.id_foto}`,
+    id: `${status === STATUS_CARD2 ? "pio2" : "pio1"}-${item.id_foto}`,
     number: item.proposta,
     insuredName: item.nome,
     date: dataBr(item.data_venda),
-    status: STATUS_CARD1,
+    status,
     value: item.premio === null ? "" : MOEDA.format(item.premio),
     individualIncome: item.renda === null ? "" : MOEDA.format(item.renda),
     insuredAmount: item.imp_segurada === null ? "" : MOEDA.format(item.imp_segurada),
@@ -183,13 +191,14 @@ interface ConsultaLegada {
 }
 
 export function listaDoCard(
-  emCard1: boolean,
+  emFoto: boolean,
   legada: ConsultaLegada,
   mapearLegado: (item: never) => PropostaWorkflow,
   resumo: { data?: ResumoCard1; isPending: boolean },
   foto: { data?: PaginaCard1; isPending: boolean; isFetching: boolean },
+  status: StatusWorkflow = STATUS_CARD1,
 ): ListaPio {
-  if (!emCard1) {
+  if (!emFoto) {
     return {
       carregando: legada.isPending,
       buscando: legada.isFetching,
@@ -213,7 +222,7 @@ export function listaDoCard(
     referencia: pagina?.referencia ?? resumo.data?.referencia ?? null,
     total: pagina?.total ?? 0,
     propostas: (pagina?.itens ?? []).map((i) =>
-      propostaDoCard1(i, pagina?.referencia ?? null, pagina?.atualizacao ?? null)),
+      propostaDoCard1(i, pagina?.referencia ?? null, pagina?.atualizacao ?? null, status)),
     detalheIndisponivel: pagina ? !pagina.detalhe_disponivel : false,
     desatualizado: pagina?.desatualizado ?? resumo.data?.desatualizado ?? false,
     atualizacao: pagina?.atualizacao ?? resumo.data?.atualizacao ?? null,

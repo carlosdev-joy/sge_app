@@ -32,10 +32,12 @@ import {
 import {
   listaDoCard,
   STATUS_CARD1,
+  STATUS_CARD2,
   useResumoCard1,
   usePropostasCard1,
   dataHoraBr,
 } from "../lib/pioCard1";
+import { useResumoCard2, usePropostasCard2 } from "../lib/pioCard2";
 import Card1Valor from "./Card1Valor";
 
 // Mesma regra do card inline: as de exemplo somem dos status que já leem a
@@ -51,14 +53,21 @@ export default function ProposalWorkflowSheet() {
   const cardSelecionado = ORIGEM_PIO[selectedStatus as StatusWorkflow];
   // `aberto` no lugar do enabled: a gaveta fechada não consulta milhares de linhas.
   // Card 1 = foto diária; os outros sete, a carga legada (ver InlineWorkflow).
+  // Cards 1 e 2 leem a FOTO diária (agregado para o número, fato para a lista);
+  // os outros seis seguem na carga legada. O hook legado recebe `undefined` nos
+  // cards de foto, o que o desliga — a lista não é pedida às duas fontes.
   const emCard1 = selectedStatus === STATUS_CARD1;
+  const emCard2 = selectedStatus === STATUS_CARD2;
   const resumoCard1 = useResumoCard1();
-  const paginaPio = usePropostasPio(emCard1 ? undefined : cardSelecionado, aberto, pagina, "");
+  const resumoCard2 = useResumoCard2();
+  const paginaPio = usePropostasPio(emCard1 || emCard2 ? undefined : cardSelecionado, aberto, pagina, "");
   const fotoCard1 = usePropostasCard1(emCard1 && aberto, pagina, resumoCard1.data?.referencia);
+  const fotoCard2 = usePropostasCard2(emCard2 && aberto, pagina, resumoCard2.data?.referencia);
   const lista = listaDoCard(
-    emCard1, paginaPio,
+    emCard1 || emCard2, paginaPio,
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
-    resumoCard1, fotoCard1);
+    emCard2 ? resumoCard2 : resumoCard1, emCard2 ? fotoCard2 : fotoCard1,
+    selectedStatus as StatusWorkflow);
 
   const reais: Partial<Record<StatusWorkflow, number>> = {};
   if (contagens.data?.disponivel) {
@@ -72,6 +81,11 @@ export default function ProposalWorkflowSheet() {
   delete reais[STATUS_CARD1];
   if (resumoCard1.data?.disponivel && resumoCard1.data.referencia) {
     reais[STATUS_CARD1] = resumoCard1.data.quantidade;
+  }
+  // Idem o Card 2: a quantidade é a da foto, nunca a contagem legada.
+  delete reais[STATUS_CARD2];
+  if (resumoCard2.data?.disponivel && resumoCard2.data.referencia) {
+    reais[STATUS_CARD2] = resumoCard2.data.quantidade;
   }
 
   const contagem = contarPorStatus(PROPOSTAS_DE_EXEMPLO, {}, reais);
@@ -115,8 +129,8 @@ export default function ProposalWorkflowSheet() {
               {/* "…" enquanto lê e "—" quando não conseguiu: zero seria uma
                   resposta, e nenhuma das duas situações é uma resposta. */}
               <div className="text-2xl font-bold tracking-tight">
-                {etapa.value === STATUS_CARD1
-                  ? <Card1Valor resumo={resumoCard1} tom="colorido" destaque="text-xl" />
+                {etapa.value === STATUS_CARD1 || etapa.value === STATUS_CARD2
+                  ? <Card1Valor resumo={etapa.value === STATUS_CARD2 ? resumoCard2 : resumoCard1} tom="colorido" destaque="text-xl" />
                   : ORIGEM_PIO[etapa.value] && contagens.isPending
                   ? "…"
                   : ORIGEM_PIO[etapa.value] && !contagens.data?.disponivel
@@ -152,7 +166,7 @@ export default function ProposalWorkflowSheet() {
           </p>
         )}
         {lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
-          <p className="text-xs text-dim mb-3">Nenhuma foto do Card 1 foi publicada ainda; não há número nem lista a mostrar.</p>
+          <p className="text-xs text-dim mb-3">Ainda não há foto publicada para {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]}; não há número nem lista a mostrar.</p>
         )}
         {lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
           <p className="text-xs text-dim mb-3">
