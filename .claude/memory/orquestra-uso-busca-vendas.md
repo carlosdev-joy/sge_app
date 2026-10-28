@@ -1,6 +1,6 @@
 ---
 name: orquestra-uso-busca-vendas
-description: Monitoramento de uso do módulo Busca & Vendas (/caixa-seguro/*) — tela "Uso do módulo", recurso caixa_seguro_uso, tabelas etl_uso_evento/etl_uso_presenca; branch feat/uso-busca-vendas a partir da main; v2.6.2, migrations 141/142
+description: Monitoramento de uso do módulo Busca & Vendas (/caixa-seguro/*) — tela "Uso do módulo", recurso caixa_seguro_uso, tabelas etl_uso_evento/etl_uso_presenca; branch feat/uso-busca-vendas a partir da main; v2.6.2, migrations 141/142; PR #527 aguarda aprovação de merge
 metadata:
   type: project
 ---
