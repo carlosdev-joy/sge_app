@@ -154,11 +154,6 @@ export default function ProposalWorkflowSheet() {
         {lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
           <p className="text-xs text-dim mb-3">Nenhuma foto do Card 1 foi publicada ainda; não há número nem lista a mostrar.</p>
         )}
-        {lista.deFoto && lista.disponivel && lista.desatualizado && (
-          <p className="text-xs text-amber-700 dark:text-amber-400 mb-3">
-            Esta foto não é de hoje: a carga diária pode não ter rodado. Os números são os dela.
-          </p>
-        )}
         {lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
           <p className="text-xs text-dim mb-3">
             O detalhe das propostas desta data já saiu da retenção. O número do card continua válido.

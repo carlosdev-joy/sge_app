@@ -3,8 +3,8 @@
 // valores; os outros sete seguem com o número único de sempre.
 //
 // "…" enquanto lê e "—" quando não conseguiu: zero seria uma resposta, e nenhuma
-// das duas situações é uma resposta. Foto que não é de hoje ganha a data — é o que
-// separa "a fila esvaziou" de "a carga das 07:30 não rodou".
+// das duas situações é uma resposta. A data da foto aparece só no tooltip (title):
+// texto fixo no card, depois da meia-noite, parecia erro (decisão do Carlos, 28/10).
 import { dataBr } from "../lib/pio";
 import { dataHoraBr, formatarMoeda, type ResumoCard1 } from "../lib/pioCard1";
 
@@ -19,9 +19,6 @@ interface Card1ValorProps {
 
 export default function Card1Valor({ resumo, tom = "neutro", destaque = "text-lg" }: Card1ValorProps) {
   const apagado = tom === "colorido" ? "text-white/80" : "text-dim";
-  const alerta = tom === "colorido"
-    ? "text-white font-semibold"
-    : "text-amber-700 dark:text-amber-400 font-medium";
 
   if (resumo.isPending) {
     return <span className={apagado} title="consultando a foto do dia">…</span>;
@@ -56,11 +53,6 @@ export default function Card1Valor({ resumo, tom = "neutro", destaque = "text-lg
       <span className={`block text-[11px] font-normal leading-tight tabular-nums ${apagado}`}>
         {quantidade.toLocaleString("pt-BR")} contrato{quantidade === 1 ? "" : "s"}
       </span>
-      {dados.desatualizado && (
-        <span className={`block text-[10px] leading-tight ${alerta}`}>
-          foto de {dataBr(dados.referencia).slice(0, 5)}
-        </span>
-      )}
     </span>
   );
 }

@@ -199,3 +199,14 @@ def test_enviar_so_muda_com_contatos_do_card1():
 def test_router_do_card1_registrado_em_main():
     main = (RAIZ / "api" / "main.py").read_text(encoding="utf-8")
     assert main.count("pio_card1") == 2          # import + lista de include
+
+
+def test_foto_desatualizada_nao_gera_texto_fixo_so_o_tooltip():
+    """Decisão do Carlos (28/10): depois da meia-noite, "foto de XX" no card e o
+    aviso "Esta foto não é de hoje…" pareciam erro. A data da foto fica só no
+    tooltip (`title`) do card."""
+    for arq in ("Card1Valor.tsx", "InlineWorkflow.tsx", "ProposalWorkflowSheet.tsx"):
+        corpo = _fonte(CAIXA / "components" / arq)
+        assert "não é de hoje" not in corpo, arq
+        assert "foto de {" not in corpo, arq
+    assert "title={titulo}" in _fonte(CAIXA / "components" / "Card1Valor.tsx")
