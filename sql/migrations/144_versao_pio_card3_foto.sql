@@ -1,4 +1,4 @@
--- 144_versao_pio_card2_foto.sql
+-- 144_versao_pio_card3_foto.sql
 -- Idempotente — seguro para rodar mais de uma vez.
 -- Versão 2.6.4 (sobre a 2.6.3 da migration 143). Só registra a versão e sincroniza
 -- app_version/app_release_name: NÃO toca nas tabelas do PIO (AGG/FAT/CTL_ORQ_CARD03_*
