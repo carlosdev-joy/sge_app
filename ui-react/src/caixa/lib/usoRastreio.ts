@@ -8,6 +8,7 @@
 //   • falha é SILENCIOSA: medir nunca pode quebrar nem avisar quem está trabalhando.
 // A matrícula NÃO vai no corpo: o servidor a lê do token.
 import { apiFetch } from "../../lib/api";
+import { useAuthStore } from "../../store/auth";
 import { deveRegistrarAcesso, ehRotaDoModulo } from "./usoRegras";
 
 export { INTERVALO_PRESENCA_MS } from "./usoRegras";
@@ -20,7 +21,10 @@ function enviar(caminho: string, rota: string): void {
 
 export function registrarAcesso(rota: string, agora: number = Date.now()): void {
   if (!ehRotaDoModulo(rota)) return;
-  if (!deveRegistrarAcesso(rota, agora, vistosNaSessao)) return;
+  // A chave leva a MATRÍCULA: o logout não recarrega a página, e sem ela o primeiro
+  // acesso de quem entra depois na mesma estação seria engolido pelo de quem saiu.
+  const quem = useAuthStore.getState().user?.matricula ?? "";
+  if (!deveRegistrarAcesso(`${quem}|${rota}`, agora, vistosNaSessao)) return;
   enviar("/caixa/uso/acesso", rota);
 }
 

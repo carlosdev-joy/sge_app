@@ -59,6 +59,7 @@ JANELA_DEDUPE_MIN = 30
 JANELA_ONLINE_MIN = 10
 LIMITE_RANKING = 50
 LIMITE_NOMES_ONLINE = 20
+ANO_MIN, ANO_MAX = 2000, 2100
 
 _FUSO = ZoneInfo("America/Sao_Paulo")
 _MSG_INDISPONIVEL = ("Uso do módulo indisponível — aplique as migrations 141 e 142 "
@@ -74,13 +75,21 @@ class Rota(NamedTuple):
     com_detalhe: bool = False
 
 
-# Registro FECHADO das telas medidas. O `:status` do Acompanhamento vira `detalhe`
-# (só letras minúsculas e `_`, até 40: é o formato dos StatusWorkflow do front).
+# Os 8 StatusWorkflow do front (`caixa/lib/workflow.ts`): o único `detalhe` aceito.
+# Allowlist, não regex aberta: um `:status` livre deixaria um usuário gravar uma linha
+# por valor inventado (dedupe é por detalhe) e inflar a tabela e os próprios acessos.
+# tests/test_caixa_uso_api.py compara esta lista com o `workflow.ts`.
+STATUS_ACOMPANHAMENTO = (
+    "pending_signature", "awaiting_payment", "paid", "in_analysis",
+    "emission_sent", "declined", "refund_scheduled", "sensitization_monitoring",
+)
+
+# Registro FECHADO das telas medidas. O `:status` do Acompanhamento vira `detalhe`.
 ROTAS: tuple[Rota, ...] = (
     Rota(re.compile(r"^/caixa-seguro/?$"), "/caixa-seguro", "Consulta de Propostas"),
     Rota(re.compile(r"^/caixa-seguro/acompanhamento/?$"),
          "/caixa-seguro/acompanhamento", "Monitoramento Tático de Emissão"),
-    Rota(re.compile(r"^/caixa-seguro/acompanhamento/([a-z_]{1,40})/?$"),
+    Rota(re.compile(r"^/caixa-seguro/acompanhamento/(" + "|".join(STATUS_ACOMPANHAMENTO) + r")/?$"),
          "/caixa-seguro/acompanhamento/:status", "Acompanhamento por status", True),
     Rota(re.compile(r"^/caixa-seguro/portabilidades/?$"),
          "/caixa-seguro/portabilidades", "Portabilidades"),
@@ -130,13 +139,16 @@ def registrar_acesso(corpo: CorpoRota, user: dict = Depends(_require_modulo)) ->
         conn = get_db_conn()
         cur = conn.cursor()
         # INSERT … WHERE NOT EXISTS numa instrução só: o dedupe e a gravação não
-        # deixam brecha entre o SELECT e o INSERT.
+        # deixam brecha entre o SELECT e o INSERT. O CAST força VARCHAR nos parâmetros:
+        # o pyodbc envia `str` como NVARCHAR e, com collation SQL, a comparação com a
+        # coluna VARCHAR viraria scan (e o HOLDLOCK travaria um intervalo grande).
         cur.execute(f"""
             INSERT INTO {EVENTO} (matricula, modulo, rota, tela, detalhe)
             SELECT ?, ?, ?, ?, ?
              WHERE NOT EXISTS (
                    SELECT 1 FROM {EVENTO} WITH (UPDLOCK, HOLDLOCK)
-                    WHERE matricula = ? AND rota = ? AND ISNULL(detalhe, '') = ISNULL(?, '')
+                    WHERE matricula = CAST(? AS VARCHAR(20)) AND rota = CAST(? AS VARCHAR(120))
+                      AND ISNULL(detalhe, '') = ISNULL(CAST(? AS VARCHAR(40)), '')
                       AND ocorrido_em > DATEADD(MINUTE, ?, GETDATE()))
         """, [user["matricula"], MODULO, tela.rota, tela.tela, tela.detalhe,
               user["matricula"], tela.rota, tela.detalhe, -JANELA_DEDUPE_MIN])
@@ -254,6 +266,10 @@ def resumo(
         ref = date.fromisoformat(referencia) if referencia else hoje_brasilia()
     except ValueError:
         raise HTTPException(status_code=422, detail="referencia deve ser AAAA-MM-DD")
+    if not ANO_MIN <= ref.year <= ANO_MAX:
+        # Fora disso o datetime do SQL Server (>= 1753) ou o próprio calendário estouram
+        # — e o `except` abaixo transformaria em um 503 que acusa a migration, sem culpa dela.
+        raise HTTPException(status_code=422, detail=f"referencia deve estar entre {ANO_MIN} e {ANO_MAX}")
     janela = janela_do_periodo(periodo, ref)
     limites = [janela.inicio, janela.fim]
 

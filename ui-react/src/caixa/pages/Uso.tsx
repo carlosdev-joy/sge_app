@@ -193,6 +193,11 @@ function Conteudo({ dados }: { dados: UsoResumo }) {
             </Card>
 
             <Card title="Ranking de usuários">
+              {dados.ranking.length < dados.kpis.usuarios && (
+                <p className="text-xs text-dim mb-2">
+                  Mostrando os {numero(dados.ranking.length)} mais ativos de {numero(dados.kpis.usuarios)}.
+                </p>
+              )}
               <Table dense>
                 <TableHeader>
                   <TableRow>

@@ -112,6 +112,19 @@ def test_front_nao_carrega_mais_dados_simulados():
 
 
 def test_tracker_so_envia_rota_do_modulo_e_nunca_a_matricula():
+    fonte = re.sub(r"//.*", "", (LIB / "usoRastreio.ts").read_text(encoding="utf-8"))
+    # O corpo é só a rota; a matrícula (usada apenas na chave local de dedupe) nunca é enviada.
+    corpos = re.findall(r"JSON\.stringify\(([^)]*)\)", fonte)
+    assert corpos == ["{ rota }"], corpos
+
+
+def test_dedupe_do_cliente_e_por_matricula_e_nao_sobrevive_ao_logout():
+    """Quem entra depois na mesma estação não pode ter o 1º acesso engolido pelo de quem saiu."""
     fonte = (LIB / "usoRastreio.ts").read_text(encoding="utf-8")
-    assert "matricula" not in re.sub(r"//.*", "", fonte)
-    assert 'JSON.stringify({ rota })' in fonte
+    assert "useAuthStore.getState().user?.matricula" in fonte
+    assert "deveRegistrarAcesso(`${quem}|${rota}`" in fonte
+
+
+def test_ranking_cortado_avisa_na_tela():
+    tela = (UI / "src" / "caixa" / "pages" / "Uso.tsx").read_text(encoding="utf-8")
+    assert "dados.ranking.length < dados.kpis.usuarios" in tela and "mais ativos de" in tela

@@ -139,6 +139,7 @@ def test_rotas_do_registro_resolvem(bruta, esperado):
 @pytest.mark.parametrize("bruta", [
     "", "/", "/admin", "/dashboard", "/caixa-seguro-x", "/caixa-seguro/desconhecida",
     "/caixa-seguro/acompanhamento/Maiuscula", "/caixa-seguro/acompanhamento/a/b",
+    "/caixa-seguro/acompanhamento/aaa", "/caixa-seguro/acompanhamento/pending_signature_x",
     "/caixa-seguro/acompanhamento/" + "a" * 41, "/caixa-seguro?x=1", "x" * 201,
     "/caixa-seguro/../admin",
 ])
@@ -178,7 +179,10 @@ def test_acesso_dedupe_numa_instrucao_so_com_janela_de_30_min(como, banco):
     como("tela_caixa_seguro").post("/caixa/uso/acesso", json={"rota": "/caixa-seguro"})
     sql = banco["cur"].sqls[0]
     assert sql.startswith("INSERT INTO dbo.etl_uso_evento") and "WHERE NOT EXISTS" in sql
-    assert "ISNULL(detalhe, '') = ISNULL(?, '')" in sql
+    assert "ISNULL(detalhe, '') = ISNULL(CAST(? AS VARCHAR(40)), '')" in sql
+    assert "matricula = CAST(? AS VARCHAR(20))" in sql and "rota = CAST(? AS VARCHAR(120))" in sql
+    # A janela de 30 min é o que impede a duplicata: sem ela, o NOT EXISTS nunca barra.
+    assert "ocorrido_em > DATEADD(MINUTE, ?, GETDATE())" in sql
     assert banco["cur"].params[0][-1] == -30
 
 
@@ -305,3 +309,23 @@ def test_online_independe_do_periodo_e_usa_janela_de_10_min(como, banco):
     como("caixa_seguro_uso").get("/caixa/uso/resumo?periodo=ano&referencia=2020-01-01")
     presenca = [(s, p) for s, p in zip(banco["cur"].sqls, banco["cur"].params) if "etl_uso_presenca" in s]
     assert len(presenca) == 2 and all(p == [-10] for _, p in presenca)
+
+
+def test_status_do_acompanhamento_e_allowlist_igual_ao_workflow_ts():
+    """O `detalhe` aceito = os StatusWorkflow do front; inventar um status não grava linha."""
+    fonte = (RAIZ / "ui-react" / "src" / "caixa" / "lib" / "workflow.ts").read_text(encoding="utf-8")
+    uniao = re.search(r"export type StatusWorkflow\s*=(.*?);", fonte, re.S).group(1)
+    do_front = set(re.findall(r'"([a-z_]+)"', uniao))
+    assert do_front and do_front == set(caixa_uso.STATUS_ACOMPANHAMENTO)
+
+
+def test_status_inventado_nao_toca_o_banco(como, banco):
+    r = como("tela_caixa_seguro").post(
+        "/caixa/uso/acesso", json={"rota": "/caixa-seguro/acompanhamento/inventado"})
+    assert r.json()["registrado"] is False and banco["cur"].sqls == []
+
+
+@pytest.mark.parametrize("ref", ["9999-12-31", "0001-01-01", "1999-12-31", "2101-01-01"])
+def test_referencia_fora_do_intervalo_e_422_e_nao_503(como, banco, ref):
+    r = como("caixa_seguro_uso").get(f"/caixa/uso/resumo?periodo=ano&referencia={ref}")
+    assert r.status_code == 422 and banco["cur"].sqls == []
