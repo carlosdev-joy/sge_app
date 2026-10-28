@@ -32,6 +32,8 @@ import Monitoramento from './caixa/pages/Monitoramento'
 import Index from './caixa/pages/Index'
 import Portabilidades from './caixa/pages/Portabilidades'
 import PainelIA from './caixa/pages/PainelIA'
+import Uso from './caixa/pages/Uso'
+import UsoTracker from './caixa/components/UsoTracker'
 import Acompanhamento from './caixa/pages/Acompanhamento'
 import { ProfileProvider } from './caixa/contexts/ProfileContext'
 import { PageSpinner } from './components/ui/Spinner'
@@ -124,7 +126,7 @@ export default function App() {
               path="caixa-seguro"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Index /></ProfileProvider>
+                  <ProfileProvider><UsoTracker /><Index /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -137,7 +139,7 @@ export default function App() {
               path="caixa-seguro/acompanhamento"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Monitoramento /></ProfileProvider>
+                  <ProfileProvider><UsoTracker /><Monitoramento /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -150,7 +152,7 @@ export default function App() {
               path="caixa-seguro/portabilidades"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Portabilidades /></ProfileProvider>
+                  <ProfileProvider><UsoTracker /><Portabilidades /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -161,7 +163,7 @@ export default function App() {
               path="caixa-seguro/acompanhamento/:status"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><Acompanhamento /></ProfileProvider>
+                  <ProfileProvider><UsoTracker /><Acompanhamento /></ProfileProvider>
                 </RequirePerm>
               }
             />
@@ -173,7 +175,17 @@ export default function App() {
               path="caixa-seguro/ia-operacional"
               element={
                 <RequirePerm perm="tela_caixa_seguro">
-                  <ProfileProvider><PainelIA /></ProfileProvider>
+                  <ProfileProvider><UsoTracker /><PainelIA /></ProfileProvider>
+                </RequirePerm>
+              }
+            />
+            {/* Uso do módulo (spec docs/spec-uso-busca-vendas.md): recurso próprio,
+                concedido no Admin por perfil ou usuário — não é item do NAV. */}
+            <Route
+              path="caixa-seguro/uso"
+              element={
+                <RequirePerm perm="caixa_seguro_uso">
+                  <ProfileProvider><UsoTracker /><Uso /></ProfileProvider>
                 </RequirePerm>
               }
             />

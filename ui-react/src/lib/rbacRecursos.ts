@@ -22,6 +22,7 @@ export const RBAC_RECURSOS: [string, string][] = [
   ['tela_chamados', 'Chamados'],
   ['tela_caixa_seguro', 'Caixa Seguro'],
   ['caixa_seguro_operacional', 'Caixa Seguro — Operacional'],
+  ['caixa_seguro_uso', 'Caixa Seguro — Uso do módulo'],
   // Agentes de IA (spec docs/spec-agentes-datastage.md). `tela_agentes` é um
   // recurso normal (perfil ∪ overrides), como qualquer `tela_*` acima. Os
   // `agente_*`, ao contrário, são SEMPRE concedidos usuário a usuário —
