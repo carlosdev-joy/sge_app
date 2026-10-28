@@ -18,8 +18,18 @@ interface Proposal {
   phone: string;
 }
 
+/** Destinos do envio; `null` = o contato não existe na fonte. */
+interface Contatos {
+  email: string | null;
+  telefone: string | null;
+  whatsapp: string | null;
+}
+
 interface ResendLinkDialogProps {
   proposal: Proposal;
+  /** Card 1: destinos reais, um a um. Ausente (os demais usos), o diálogo é o de
+   *  sempre, com `proposal.email` / `proposal.phone`. */
+  contatos?: Contatos;
   open: boolean;
   onClose: () => void;
 }
@@ -27,7 +37,18 @@ interface ResendLinkDialogProps {
 type SendMethod = "email" | "phone" | "whatsapp" | "";
 type DialogState = "selection" | "confirmation" | "loading" | "success";
 
-export default function ResendLinkDialog({ proposal, open, onClose }: ResendLinkDialogProps) {
+const SEM_CONTATO = "Contato não informado";
+
+export default function ResendLinkDialog({ proposal, contatos, open, onClose }: ResendLinkDialogProps) {
+  const destino = {
+    email: contatos ? contatos.email : proposal.email,
+    phone: contatos ? contatos.telefone : proposal.phone,
+    whatsapp: contatos ? contatos.whatsapp : proposal.phone,
+  };
+  // Só com `contatos` (Card 1) o destino ausente vira "Contato não informado" e
+  // desabilita a opção; sem eles o diálogo é exatamente o de antes.
+  const semDestino = (v: string | null) => Boolean(contatos) && !v;
+  const rotuloDestino = (v: string | null) => (semDestino(v) ? SEM_CONTATO : (v ?? ""));
   const [sendMethod, setSendMethod] = useState<SendMethod>("");
   const [dialogState, setDialogState] = useState<DialogState>("selection");
 
@@ -80,13 +101,13 @@ export default function ResendLinkDialog({ proposal, open, onClose }: ResendLink
             <p className="font-semibold text-ink mb-4 text-center">Como você deseja reenviar o Link?</p>
             <RadioGroup value={sendMethod} onValueChange={(v) => setSendMethod(v as SendMethod)} label="Método de reenvio">
               <div className="flex items-center p-3 border border-edge rounded-lg hover:border-blue-400 transition-colors">
-                <RadioItem value="email" label={proposal.email} className="flex-1" />
+                <RadioItem value="email" label={rotuloDestino(destino.email)} disabled={semDestino(destino.email)} className="flex-1" />
               </div>
               <div className="flex items-center p-3 border border-edge rounded-lg hover:border-blue-400 transition-colors">
-                <RadioItem value="phone" label={proposal.phone} className="flex-1" />
+                <RadioItem value="phone" label={rotuloDestino(destino.phone)} disabled={semDestino(destino.phone)} className="flex-1" />
               </div>
               <div className="flex items-center p-3 border border-edge rounded-lg hover:border-blue-400 transition-colors">
-                <RadioItem value="whatsapp" label={`WhatsApp: ${proposal.phone}`} className="flex-1" />
+                <RadioItem value="whatsapp" label={`WhatsApp: ${rotuloDestino(destino.whatsapp)}`} disabled={semDestino(destino.whatsapp)} className="flex-1" />
               </div>
             </RadioGroup>
           </div>
@@ -107,7 +128,7 @@ export default function ResendLinkDialog({ proposal, open, onClose }: ResendLink
           <p className="text-center text-lg text-ink">
             Confirma o reenvio para o {getMethodLabel()}:{" "}
             <span className="font-bold">
-              {sendMethod === "email" ? proposal.email : sendMethod === "phone" ? proposal.phone : `WhatsApp ${proposal.phone}`}
+              {sendMethod === "email" ? destino.email : sendMethod === "phone" ? destino.phone : `WhatsApp ${destino.whatsapp}`}
             </span>
             ?
           </p>

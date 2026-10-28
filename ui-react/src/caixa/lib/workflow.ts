@@ -159,6 +159,26 @@ export interface PropostaWorkflow {
   refundSubStatus?: SubStatusDevolucao;
   paymentMethod?: "boleto" | "debit" | "credit";
   policy?: string;
+  /** Só as propostas do Card 1 (lidas da foto diária) o têm. É também o que
+   *  diferencia o "contexto Card 1" nos diálogos compartilhados: os outros sete
+   *  cards e a busca global nunca preenchem este campo. */
+  foto?: FotoCard1;
+}
+
+/** O que a foto diária do Card 1 sabe da proposta além do que a lista exibe. */
+export interface FotoCard1 {
+  idFoto: number;
+  /** `DTA_MOVIMENTO` da foto, em ISO. */
+  referencia: string | null;
+  /** Quando o lote foi publicado, em ISO (sem fuso). */
+  atualizacao: string | null;
+  /** `STA_SITUACAO`, `STA_ASSINATURA` e `STA_PAGO` como vieram. NÃO são histórico
+   *  de eventos nem status online: são o estado na data da foto. */
+  situacao: string;
+  assinatura: string;
+  pago: string;
+  /** Contatos separados; `null` = ausente (NULL, vazio, espaços ou zero). */
+  contato: { email: string | null; celular: string | null; residencial: string | null };
 }
 
 export const propostasWorkflow: PropostaWorkflow[] = [

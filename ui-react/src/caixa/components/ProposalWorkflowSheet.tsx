@@ -29,6 +29,14 @@ import {
   ORIGEM_PIO,
   TAMANHO_PAGINA_PIO,
 } from "../lib/pio";
+import {
+  listaDoCard,
+  STATUS_CARD1,
+  useResumoCard1,
+  usePropostasCard1,
+  dataHoraBr,
+} from "../lib/pioCard1";
+import Card1Valor from "./Card1Valor";
 
 // Mesma regra do card inline: as de exemplo somem dos status que já leem a
 // carga, para não conviverem com dado real na mesma lista.
@@ -42,7 +50,15 @@ export default function ProposalWorkflowSheet() {
   const contagens = useContagensPio();
   const cardSelecionado = ORIGEM_PIO[selectedStatus as StatusWorkflow];
   // `aberto` no lugar do enabled: a gaveta fechada não consulta milhares de linhas.
-  const paginaPio = usePropostasPio(cardSelecionado, aberto, pagina, "");
+  // Card 1 = foto diária; os outros sete, a carga legada (ver InlineWorkflow).
+  const emCard1 = selectedStatus === STATUS_CARD1;
+  const resumoCard1 = useResumoCard1();
+  const paginaPio = usePropostasPio(emCard1 ? undefined : cardSelecionado, aberto, pagina, "");
+  const fotoCard1 = usePropostasCard1(emCard1 && aberto, pagina, resumoCard1.data?.referencia);
+  const lista = listaDoCard(
+    emCard1, paginaPio,
+    (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
+    resumoCard1, fotoCard1);
 
   const reais: Partial<Record<StatusWorkflow, number>> = {};
   if (contagens.data?.disponivel) {
@@ -51,6 +67,11 @@ export default function ProposalWorkflowSheet() {
       ([status, card]) => {
         reais[status] = porCard.get(card) ?? 0;
       });
+  }
+  // Quantidade do Card 1 = a da foto; sem ela, nunca a contagem legada.
+  delete reais[STATUS_CARD1];
+  if (resumoCard1.data?.disponivel && resumoCard1.data.referencia) {
+    reais[STATUS_CARD1] = resumoCard1.data.quantidade;
   }
 
   const contagem = contarPorStatus(PROPOSTAS_DE_EXEMPLO, {}, reais);
@@ -61,13 +82,12 @@ export default function ProposalWorkflowSheet() {
   };
 
   const filteredProposals = cardSelecionado
-    ? (paginaPio.data?.itens ?? []).map(
-        (item) => propostaDoPio(item, selectedStatus as StatusWorkflow))
+    ? lista.propostas
     : selectedStatus === "all"
       ? PROPOSTAS_DE_EXEMPLO
       : PROPOSTAS_DE_EXEMPLO.filter((p) => p.status === selectedStatus);
 
-  const totalDaPagina = paginaPio.data?.total ?? 0;
+  const totalDaPagina = lista.total;
   const temMaisPaginas = cardSelecionado
     ? (pagina + 1) * TAMANHO_PAGINA_PIO < totalDaPagina
     : false;
@@ -95,7 +115,9 @@ export default function ProposalWorkflowSheet() {
               {/* "…" enquanto lê e "—" quando não conseguiu: zero seria uma
                   resposta, e nenhuma das duas situações é uma resposta. */}
               <div className="text-2xl font-bold tracking-tight">
-                {ORIGEM_PIO[etapa.value] && contagens.isPending
+                {etapa.value === STATUS_CARD1
+                  ? <Card1Valor resumo={resumoCard1} tom="colorido" destaque="text-xl" />
+                  : ORIGEM_PIO[etapa.value] && contagens.isPending
                   ? "…"
                   : ORIGEM_PIO[etapa.value] && !contagens.data?.disponivel
                     ? <span title="não foi possível ler a carga do PIO">—</span>
@@ -119,21 +141,35 @@ export default function ProposalWorkflowSheet() {
 
         {/* Procedência: número sem data de carga não distingue "esvaziou" de
             "a carga das 07:30 não rodou". */}
-        {cardSelecionado && paginaPio.data?.disponivel && (
+        {cardSelecionado && lista.disponivel && !lista.carregando && !lista.detalheIndisponivel && (lista.referencia || !lista.deFoto) && (
           <p className="text-xs text-dim mb-3">
-            {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} na carga
-            {paginaPio.data.referencia ? ` de ${dataBr(paginaPio.data.referencia)}` : ""}
+            {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} {lista.deFoto ? "na foto" : "na carga"}
+            {lista.referencia ? ` de ${dataBr(lista.referencia)}` : ""}
+            {lista.deFoto && lista.atualizacao ? `, publicada em ${dataHoraBr(lista.atualizacao)}` : ""}
             {filteredProposals.length > 0 && (
               <> · mostrando {filteredProposals.length.toLocaleString("pt-BR")}, as mais antigas primeiro</>
             )}
           </p>
         )}
-        {cardSelecionado && paginaPio.isPending && (
-          <p className="text-xs text-dim mb-3">Consultando a carga do PIO…</p>
+        {lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
+          <p className="text-xs text-dim mb-3">Nenhuma foto do Card 1 foi publicada ainda; não há número nem lista a mostrar.</p>
         )}
-        {cardSelecionado && !paginaPio.isPending && !paginaPio.data?.disponivel && (
+        {lista.deFoto && lista.disponivel && lista.desatualizado && (
+          <p className="text-xs text-amber-700 dark:text-amber-400 mb-3">
+            Esta foto não é de hoje: a carga diária pode não ter rodado. Os números são os dela.
+          </p>
+        )}
+        {lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
+          <p className="text-xs text-dim mb-3">
+            O detalhe das propostas desta data já saiu da retenção. O número do card continua válido.
+          </p>
+        )}
+        {cardSelecionado && lista.carregando && (
+          <p className="text-xs text-dim mb-3">Consultando {lista.deFoto ? "a foto" : "a carga"} do PIO…</p>
+        )}
+        {cardSelecionado && !lista.carregando && !lista.disponivel && (
           <p className="text-xs text-red-600 dark:text-red-400 mb-3">
-            Não foi possível ler a carga do PIO. A lista não está vazia — ela é desconhecida.
+            Não foi possível ler {lista.deFoto ? "a foto" : "a carga"} do PIO. A lista não está vazia — ela é desconhecida.
           </p>
         )}
         {selectedStatus === "all" && Object.keys(ORIGEM_PIO).length > 0 && (
@@ -190,7 +226,7 @@ export default function ProposalWorkflowSheet() {
                 variant="secondary"
                 size="sm"
                 onClick={() => setPagina((p) => Math.max(0, p - 1))}
-                disabled={pagina === 0 || paginaPio.isFetching}
+                disabled={pagina === 0 || lista.buscando}
               >
                 Anterior
               </Button>
@@ -198,7 +234,7 @@ export default function ProposalWorkflowSheet() {
                 variant="secondary"
                 size="sm"
                 onClick={() => setPagina((p) => p + 1)}
-                disabled={!temMaisPaginas || paginaPio.isFetching}
+                disabled={!temMaisPaginas || lista.buscando}
               >
                 Próxima
               </Button>

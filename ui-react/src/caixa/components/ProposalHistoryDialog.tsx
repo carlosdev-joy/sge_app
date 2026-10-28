@@ -3,9 +3,14 @@
 // vertical). O scroll fica no corpo do Modal (max-h-[90vh]), sem ScrollArea.
 import { Clock, CheckCircle, AlertCircle, FileText, Mail, CreditCard } from "lucide-react";
 import { Modal } from "../../components/ui/Modal";
+import type { FotoCard1 } from "../lib/workflow";
+import { dataBr } from "../lib/pio";
+import { dataHoraBr, estadoDaFoto } from "../lib/pioCard1";
 
 interface ProposalHistoryDialogProps {
   proposalNumber: string;
+  /** Card 1: mostra o estado real da foto no lugar dos eventos de exemplo. */
+  foto?: FotoCard1;
   open: boolean;
   onClose: () => void;
 }
@@ -36,7 +41,35 @@ const EVENT_STYLE: Record<HistoryEvent["type"], { ring: string; bg: string }> = 
   info: { ring: "border-blue-500 text-blue-600 dark:text-blue-400", bg: "bg-blue-500/10" },
 };
 
-export default function ProposalHistoryDialog({ proposalNumber, open, onClose }: ProposalHistoryDialogProps) {
+export default function ProposalHistoryDialog({ proposalNumber, foto, open, onClose }: ProposalHistoryDialogProps) {
+  // Card 1: a foto diária traz o ESTADO atual (assinatura, pagamento, situação),
+  // não eventos. Não se fabrica linha do tempo: mostra-se o estado com a data da
+  // foto e diz-se o que falta.
+  if (foto) {
+    return (
+      <Modal open={open} onClose={onClose} title={`Histórico da Proposta ${proposalNumber}`} size="lg">
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-sm text-dim">
+            <Clock className="h-4 w-4" />
+            Estado na foto de {dataBr(foto.referencia)}
+            {foto.atualizacao ? `, publicada em ${dataHoraBr(foto.atualizacao)}` : ""}.
+          </div>
+          <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {estadoDaFoto(foto).map((e) => (
+              <div key={e.rotulo} className="bg-canvas border border-edge rounded-lg p-4">
+                <dt className="text-sm text-dim">{e.rotulo}</dt>
+                <dd className="font-semibold text-ink">{e.valor}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="text-xs text-dim">
+            A foto diária não traz eventos nem datas de cada mudança de status; por isso este
+            histórico mostra só o estado na data da foto.
+          </p>
+        </div>
+      </Modal>
+    );
+  }
   return (
     <Modal open={open} onClose={onClose} title={`Histórico da Proposta ${proposalNumber}`} size="lg">
       <div className="flex items-center gap-2 text-sm text-dim mb-4">
