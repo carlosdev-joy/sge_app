@@ -66,7 +66,7 @@ RESUMO = "{data: {disponivel: true, referencia: '2026-10-28', atualizacao: null,
 
 
 def test_card3_e_paid_e_os_outros_seguem(rodar):
-    assert rodar("return [m.STATUS_CARD1, m.STATUS_CARD2, m.STATUS_CARD3, m.STATUS_DE_FOTO];") == [
+    assert rodar("return [m.STATUS_CARD1, m.STATUS_CARD2, m.STATUS_CARD3, m.STATUS_DE_FOTO.slice(0, 3)];") == [
         "pending_signature", "awaiting_payment", "paid",
         ["pending_signature", "awaiting_payment", "paid"]]
 

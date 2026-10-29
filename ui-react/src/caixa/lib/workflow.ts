@@ -179,6 +179,10 @@ export interface FotoCard1 {
   pago: string;
   /** Contatos separados; `null` = ausente (NULL, vazio, espaços ou zero). */
   contato: { email: string | null; celular: string | null; residencial: string | null };
+  /** Só o Card 4 (críticas por certificado). */
+  subSituacao?: string;
+  criticas?: number;
+  quitacao?: string | null;
 }
 
 export const propostasWorkflow: PropostaWorkflow[] = [

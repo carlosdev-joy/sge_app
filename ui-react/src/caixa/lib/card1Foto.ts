@@ -18,11 +18,15 @@ export const STATUS_CARD2: StatusWorkflow = "awaiting_payment";
  *  há "dias pendente" a mostrar. */
 export const STATUS_CARD3: StatusWorkflow = "paid";
 
+/** O Card 4 (Em Análise = críticas) também: `/pio/card4/*`. A unidade é o
+ *  CERTIFICADO — uma linha por certificado, com o nº de críticas dele. */
+export const STATUS_CARD4: StatusWorkflow = "in_analysis";
+
 /** Cards do Workflow que leem a foto diária. */
-export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3];
+export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4];
 
 const PREFIXO_ID: Partial<Record<StatusWorkflow, string>> = {
-  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3",
+  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4",
 };
 
 export interface ResumoCard1 {
@@ -58,6 +62,29 @@ export interface ItemCard1 {
   assinatura: string;
   pago: string;
   contato: { email: string | null; celular: string | null; residencial: string | null };
+  /** Só o Card 4 (críticas): situação da venda, nº de mensagens do certificado
+   *  e data de quitação (`null` = não informada). */
+  sub_situacao?: string;
+  criticas?: number;
+  quitacao?: string | null;
+}
+
+/** Uma mensagem de crítica de um certificado (Card 4): `DES_MSG_CRITICA` e
+ *  `DES_COMPLEMENTAR`, como vieram. Nenhuma ação é inferida do texto. */
+export interface PendenciaCard4 {
+  codigo: number | null;
+  descricao: string;
+  complemento: string;
+  data_critica: string | null;
+  imp_segurada: number | null;
+  premio: number | null;
+}
+
+export interface PendenciasCard4 {
+  disponivel: boolean;
+  referencia: string | null;
+  certificado: number;
+  itens: PendenciaCard4[];
 }
 
 export interface PaginaCard1 {
@@ -111,6 +138,9 @@ export function propostaDoCard1(
     assinatura: item.assinatura,
     pago: item.pago,
     contato: item.contato,
+    ...(item.criticas === undefined ? {} : {
+      subSituacao: item.sub_situacao ?? "", criticas: item.criticas, quitacao: item.quitacao ?? null,
+    }),
   };
   return {
     // `id_foto`, não o número da proposta: a query aceita pode repetir a mesma
@@ -156,6 +186,15 @@ function rotulo(mapa: Record<string, string>, codigo: string): string {
 }
 
 export function estadoDaFoto(foto: FotoCard1): { rotulo: string; valor: string }[] {
+  // Card 4: a fonte não tem assinatura/pagamento; tem a sub-situação, as
+  // mensagens de crítica e a data de quitação (que pode não existir).
+  if (foto.criticas !== undefined) {
+    return [
+      { rotulo: "Situação", valor: foto.subSituacao || "Não informado" },
+      { rotulo: "Críticas", valor: String(foto.criticas) },
+      { rotulo: "Quitação", valor: foto.quitacao ? dataBr(foto.quitacao) : "Não informada" },
+    ];
+  }
   return [
     { rotulo: "Assinatura", valor: rotulo(ROTULO_ASSINATURA, foto.assinatura) },
     { rotulo: "Pagamento", valor: rotulo(ROTULO_PAGO, foto.pago) },

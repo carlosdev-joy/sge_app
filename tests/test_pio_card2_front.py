@@ -66,9 +66,9 @@ RESUMO = "{data: {disponivel: true, referencia: '2026-10-27', atualizacao: null,
 
 
 def test_card2_e_awaiting_payment_e_card1_segue_pending_signature(rodar):
-    assert rodar("return [m.STATUS_CARD1, m.STATUS_CARD2, m.STATUS_DE_FOTO];") == [
+    assert rodar("return [m.STATUS_CARD1, m.STATUS_CARD2, m.STATUS_DE_FOTO.slice(0, 2)];") == [
         "pending_signature", "awaiting_payment",
-        ["pending_signature", "awaiting_payment", "paid"]]   # o Card 3 entrou depois
+        ["pending_signature", "awaiting_payment"]]
 
 
 def test_proposta_do_card2_tem_status_e_chave_proprios(rodar):
