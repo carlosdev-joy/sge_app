@@ -239,3 +239,13 @@ def test_limite_maximo_e_validado(cliente, banco):
 def test_pio_py_nao_conhece_as_tabelas_novas():
     assert "ORQ_CARD04" not in (RAIZ / "api" / "routers" / "pio.py").read_text(encoding="utf-8")
 
+
+
+def test_busca_por_documento_exibido_com_zero_a_esquerda_acha_o_numerico(cliente, banco):
+    banco["cur"] = Cursor(linhas=[_linha()])
+    cliente.get("/pio/card4/propostas?modo=cpf&busca=012.345.678-90")
+    idx = next(i for i, s in enumerate(banco["cur"].sqls) if "GROUP BY" in s)
+    assert "%1234567890%" in banco["cur"].params[idx]
+    cliente.get("/pio/card4/propostas?modo=agencia&busca=0316")      # agência não é afetada
+    idx = [i for i, s in enumerate(banco["cur"].sqls) if "GROUP BY" in s][-1]
+    assert "0316" in banco["cur"].params[idx]

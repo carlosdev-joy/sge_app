@@ -82,6 +82,16 @@ _NOMES = (
 )
 
 
+def _busca_sem_zeros(modo: str, termo: str) -> str:
+    """Certificado, CPF/CNPJ e matrícula são `numeric` aqui: o banco não guarda os zeros
+    à esquerda que a tela mostra (`012.345.678-90`). Nos modos que comparam esses
+    campos o termo perde os zeros iniciais, senão o documento exibido não é achado."""
+    if modo not in ("proposta", "cpf", "matricula"):
+        return termo
+    digitos = "".join(c for c in termo if c.isdigit())
+    return digitos.lstrip("0") or ("0" if digitos else termo)
+
+
 def _inteiro_texto(valor, largura: int = 0) -> str:
     """`numeric(n,0)` → texto de dígitos (sem `.0`), com zeros à esquerda se pedido."""
     if valor is None:
@@ -217,7 +227,8 @@ def pio_card4_propostas(
     da retenção (fato 24 meses, agregado 36).
     """
     resposta = _resposta_base(limite, offset)
-    filtro_busca, params_busca = _filtro_da_busca((modo or "").strip().lower(), busca, _BUSCA)
+    modo = (modo or "").strip().lower()
+    filtro_busca, params_busca = _filtro_da_busca(modo, _busca_sem_zeros(modo, busca), _BUSCA)
     conn = None
     linhas, foto, qtd_agregada = [], None, 0
     try:
