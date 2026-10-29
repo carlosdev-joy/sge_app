@@ -8,6 +8,7 @@ import { Modal } from "../../components/ui/Modal";
 import { Button } from "../../components/ui/Button";
 import { toast } from "../../components/ui/Toast";
 import ProposalTimeline from "./ProposalTimeline";
+import PendenciasCard4 from "./PendenciasCard4";
 import ProposalShareDialog from "./ProposalShareDialog";
 import ProposalHistoryDialog from "./ProposalHistoryDialog";
 import type { FotoCard1 } from "../lib/workflow";
@@ -184,6 +185,14 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
               <p className="text-xs text-dim mt-4 italic">*conforme registro civil</p>
             </div>
           </Secao>
+
+          {/* Card 4: as críticas do certificado (a lista o traz uma vez só). Só com
+              `foto.criticas`, que apenas a foto do Card 4 preenche. */}
+          {foto?.criticas !== undefined && (
+            <Secao titulo={`Pendências (${foto.criticas})`}>
+              <PendenciasCard4 certificado={proposal.number} referencia={foto.referencia} />
+            </Secao>
+          )}
 
           {/* Motivo de Declínio — inclui `declined`, o card "Propostas
               Rejeitadas": a recusa vem ANTES da devolução do prêmio, e é

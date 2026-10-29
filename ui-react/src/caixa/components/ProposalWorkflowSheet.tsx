@@ -34,6 +34,7 @@ import {
   STATUS_CARD1,
   STATUS_CARD2,
   STATUS_CARD3,
+  STATUS_CARD4,
   STATUS_DE_FOTO,
   useResumoCard1,
   usePropostasCard1,
@@ -41,6 +42,7 @@ import {
 } from "../lib/pioCard1";
 import { useResumoCard2, usePropostasCard2 } from "../lib/pioCard2";
 import { useResumoCard3, usePropostasCard3 } from "../lib/pioCard3";
+import { useResumoCard4, usePropostasCard4 } from "../lib/pioCard4";
 import Card1Valor from "./Card1Valor";
 
 // Mesma regra do card inline: as de exemplo somem dos status que já leem a
@@ -62,17 +64,20 @@ export default function ProposalWorkflowSheet() {
   const emCard1 = selectedStatus === STATUS_CARD1;
   const emCard2 = selectedStatus === STATUS_CARD2;
   const emCard3 = selectedStatus === STATUS_CARD3;
-  const emFoto = emCard1 || emCard2 || emCard3;
+  const emCard4 = selectedStatus === STATUS_CARD4;
+  const emFoto = emCard1 || emCard2 || emCard3 || emCard4;
   const resumoCard1 = useResumoCard1();
   const resumoCard2 = useResumoCard2();
   const resumoCard3 = useResumoCard3();
+  const resumoCard4 = useResumoCard4();
   const paginaPio = usePropostasPio(emFoto ? undefined : cardSelecionado, aberto, pagina, "");
   const fotoCard1 = usePropostasCard1(emCard1 && aberto, pagina, resumoCard1.data?.referencia);
   const fotoCard2 = usePropostasCard2(emCard2 && aberto, pagina, resumoCard2.data?.referencia);
   const fotoCard3 = usePropostasCard3(emCard3 && aberto, pagina, resumoCard3.data?.referencia);
+  const fotoCard4 = usePropostasCard4(emCard4 && aberto, pagina, resumoCard4.data?.referencia);
   // Resumo e página do card selecionado (os três hooks rodam sempre: ordem fixa).
-  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3 } as Record<string, typeof resumoCard1>;
-  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3 } as Record<string, typeof fotoCard1>;
+  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4 } as Record<string, typeof resumoCard1>;
+  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4 } as Record<string, typeof fotoCard1>;
   const lista = listaDoCard(
     emFoto, paginaPio,
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
@@ -101,6 +106,11 @@ export default function ProposalWorkflowSheet() {
   delete reais[STATUS_CARD3];
   if (resumoCard3.data?.disponivel && resumoCard3.data.referencia) {
     reais[STATUS_CARD3] = resumoCard3.data.quantidade;
+  }
+  // Idem o Card 4 (quantidade = CERTIFICADOS, nunca linhas de crítica).
+  delete reais[STATUS_CARD4];
+  if (resumoCard4.data?.disponivel && resumoCard4.data.referencia) {
+    reais[STATUS_CARD4] = resumoCard4.data.quantidade;
   }
 
   const contagem = contarPorStatus(PROPOSTAS_DE_EXEMPLO, {}, reais);
