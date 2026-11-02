@@ -176,14 +176,24 @@ def test_resumo_trata_zeros_como_nao_informado_menos_o_digito_da_conta():
     assert "presente(d.digito_conta)" not in comp and "d.digito_conta ?? NAO_INFORMADO" in comp   # 0 é dígito válido
 
 
-def test_gerenciar_devolucao_so_no_subcard_pendente_e_botao_do_dialogo_renomeado():
-    """Pedido do Carlos (03/11): sem o botão nos sub-cards verde (Realizada) e laranja (em Andamento)."""
+def test_gerenciar_devolucao_so_no_subcard_pendente(rodar):
+    """Pedido do Carlos (03/11): sem o botão nos sub-cards verde (Realizada) e laranja (em Andamento).
+    A regra é uma função pura, executada de verdade no node."""
+    r = rodar("""
+      const f = (s) => ({idFoto: 1, referencia: null, atualizacao: null, situacao: '', assinatura: '', pago: '',
+        contato: {email: null, celular: null, residencial: null},
+        devolucao: s === null ? undefined : {situacao: s, segmento: 'VG', status: '', retorno: '', dataMovimento: null, declinio: null}});
+      return [m.podeGerenciarDevolucao(f('realizada')), m.podeGerenciarDevolucao(f('andamento')),
+              m.podeGerenciarDevolucao(f('pendente')), m.podeGerenciarDevolucao(f(null)), m.podeGerenciarDevolucao(undefined)];""")
+    assert r == [False, False, True, True, True]          # pendente e registro sem a situação mantêm o botão
+
+
+def test_botao_gerenciar_usa_a_regra_e_o_dialogo_foi_renomeado():
     corpo = _fonte(CAIXA / "components" / "InlineWorkflow.tsx")
-    i = corpo.index('statusAtual === "refund_scheduled" &&')
-    bloco = corpo[i:corpo.index("Gerenciar Devolução", i) + 20]
-    assert 'proposta.foto?.devolucao?.situacao !== "realizada"' in bloco
-    assert 'proposta.foto?.devolucao?.situacao !== "andamento"' in bloco
-    assert "setRefundDialogOpen" in bloco                           # no pendente (e nas de exemplo) o botão segue abrindo o diálogo
+    i = corpo.index("Gerenciar Devolução")
+    bloco = corpo[i - 300:i + 20]
+    assert 'statusAtual === "refund_scheduled" && podeGerenciarDevolucao(proposta.foto) && (' in bloco
+    assert "setRefundDialogOpen" in bloco                      # no pendente o botão segue abrindo o diálogo
     dialogo = _fonte(CAIXA / "components" / "RefundManagementDialog.tsx")
     assert "Salvar Dados Bancários" in dialogo and "Programar Devolução" not in dialogo
     assert '"Processando..."' in dialogo

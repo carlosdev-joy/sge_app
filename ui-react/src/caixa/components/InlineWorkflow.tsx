@@ -54,6 +54,7 @@ import {
   STATUS_CARD7,
   STATUS_CARD8,
   seloDaProposta,
+  podeGerenciarDevolucao,
   STATUS_DE_FOTO,
   useResumoCard1,
   usePropostasCard1,
@@ -584,9 +585,7 @@ export default function InlineWorkflow() {
                               (RITM0118511); a devolução já existente segue no Card 7. */}
                           {/* Card 7 (foto): o botão sai dos sub-cards verde (Realizada) e laranja (em Andamento) —
                               pedido do Carlos, 03/11; fica só no vermelho (Pendente), onde há o que tratar. */}
-                          {statusAtual === "refund_scheduled" &&
-                            proposta.foto?.devolucao?.situacao !== "realizada" &&
-                            proposta.foto?.devolucao?.situacao !== "andamento" && (
+                          {statusAtual === "refund_scheduled" && podeGerenciarDevolucao(proposta.foto) && (
                             <Button variant="danger" size="sm" onClick={() => abrir(proposta, setRefundDialogOpen)}>
                               Gerenciar Devolução
                             </Button>
