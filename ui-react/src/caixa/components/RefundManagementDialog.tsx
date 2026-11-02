@@ -165,7 +165,7 @@ export default function RefundManagementDialog({ proposal, open, onClose, onStat
             Cancelar
           </Button>
           <Button variant="primary" onClick={handleSubmit} disabled={isLoading} loading={isLoading} className="flex-1 justify-center">
-            {isLoading ? "Processando..." : "Programar Devolução"}
+            {isLoading ? "Processando..." : "Salvar Dados Bancários"}
           </Button>
         </div>
       </div>

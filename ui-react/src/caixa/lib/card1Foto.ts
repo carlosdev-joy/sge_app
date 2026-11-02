@@ -306,6 +306,14 @@ function rotulo(mapa: Record<string, string>, codigo: string): string {
   return mapa[codigo.toUpperCase()] ?? codigo;
 }
 
+/** O botão "Gerenciar Devolução" dos registros do Card 7: só no sub-card PENDENTE (vermelho), onde há
+ *  dados bancários a tratar. Em Realizada (verde) e em Andamento (laranja) ele sai (pedido do Carlos,
+ *  03/11). Sem a situação (registro sem foto), vale o comportamento de sempre: o botão aparece. */
+export function podeGerenciarDevolucao(foto: FotoCard1 | undefined): boolean {
+  const situacao = foto?.devolucao?.situacao;
+  return situacao !== "realizada" && situacao !== "andamento";
+}
+
 export const ROTULO_SUBCARD_DEVOLUCAO: Record<SituacaoDevolucao, string> = {
   realizada: "Devolução Realizada", andamento: "Devolução em Andamento", pendente: "Devolução Pendente",
 };
