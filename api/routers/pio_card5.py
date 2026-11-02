@@ -64,6 +64,8 @@ _BUSCA = {
     "NUM_MATRICULA": "f.NUM_MATRI_VENDEDOR",
 }
 
+# `ID_FOTO` é a PK IDENTITY da FAT (DDL da carga: `ID_FOTO bigint IDENTITY PRIMARY KEY`), única por
+# linha — vale para a chave React e para `foto.idFoto`, mesmo com o mesmo NUM_SIVPF em VG e AP.
 # Ordem do SELECT da lista — e a ordem em que `_item` lê cada linha.
 _NOMES = (
     "ID_FOTO", "SEGMENTO", "NUM_SIVPF", "NOM_PESSOA", "COD_CPF_CNPJ", "NOM_PESSOA_PROD",
@@ -163,7 +165,7 @@ def pio_card5_resumo(
     ler"; `disponivel=true` com `quantidade=0` é "li a foto e não há".
     """
     resposta = _resposta_base()
-    resposta.update({"premio_total": None, "quantidade": 0, "grupos": 0})
+    resposta.update({"premio_total": None, "quantidade": 0, "grupos": 0, "premios_informados": 0})
     conn = None
     try:
         conn = get_db_conn()
@@ -191,6 +193,7 @@ def pio_card5_resumo(
         resposta["quantidade"] = int(agregado[0] or 0)
         resposta["grupos"] = int(agregado[2] or 0)
         informados = int(agregado[3] or 0)
+        resposta["premios_informados"] = informados   # < quantidade = prêmio parcial
         # Sem nenhum prêmio informado o total é desconhecido; com algum, a soma vale.
         resposta["premio_total"] = (_dinheiro(agregado[1]) or 0.0) if informados > 0 else (
             0.0 if resposta["quantidade"] == 0 else None)

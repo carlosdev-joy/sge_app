@@ -113,6 +113,13 @@ def test_resumo_le_o_agregado_e_nao_a_fato(cliente, banco):
     assert "SUM(QTD_CONTRATOS)" in _sql(banco) and "SUM(VLR_PREMIO_TOTAL)" in _sql(banco)
 
 
+def test_premio_parcial_expoe_quantos_contratos_tem_valor(cliente, banco):
+    banco["cur"] = Cursor(agg=(10, Decimal("500.00"), 3, 4))
+    d = cliente.get("/pio/card5/resumo").json()
+    assert d["quantidade"] == 10 and d["premios_informados"] == 4 and d["premio_total"] == 500.0
+    assert "QTD_PREMIOS_INFORMADOS" in _sql(banco)
+
+
 def test_premio_sem_nenhum_informado_e_desconhecido_nao_zero(cliente, banco):
     banco["cur"] = Cursor(agg=(10, None, 3, 0))
     assert cliente.get("/pio/card5/resumo").json()["premio_total"] is None

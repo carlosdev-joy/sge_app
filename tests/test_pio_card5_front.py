@@ -82,13 +82,15 @@ def test_selo_cor_por_tom_e_rotulo_e_a_situacao_real(rodar):
       const sel = (o) => { const p = m.propostaDoCard1(item(o), '2026-11-02', null, m.STATUS_CARD5);
                            const s = m.seloDaProposta(p, 'bg-blue-600', 'Emitida'); return [s.classe, s.rotulo]; };
       const velho = m.propostaDoCard1({...item(), tom_status: undefined}, '2026-11-02', null);
+      const vazio = (tom) => sel({tom_status: tom, sub_situacao: ''})[1];
       return [sel({}), sel({tom_status: 'suspensa', sub_situacao: 'Cobertura Suspensa'}),
               sel({tom_status: 'cancelada', sub_situacao: 'Cancelada após Aceitação'}),
-              sel({sub_situacao: ''}), m.seloDaProposta(velho, 'bg-amber-600', 'Pendente')];""")
+              sel({sub_situacao: ''}), m.seloDaProposta(velho, 'bg-amber-600', 'Pendente'), [vazio('cancelada'), vazio('suspensa'), vazio('emitida')]];""")
     assert r[0] == ["bg-blue-600 text-white", "Integrada"]
     assert r[1] == ["bg-amber-400 text-slate-900", "Cobertura Suspensa"]
     assert r[2] == ["bg-red-700 text-white", "Cancelada após Aceitação"]
     assert r[3] == ["bg-blue-600 text-white", "Emitida"]            # sem situação: cai no rótulo do card
+    assert r[5] == ["Cancelada", "Cobertura Suspensa", "Emitida"]      # texto acompanha a cor
     assert r[4] == {"classe": "bg-amber-600 text-white", "rotulo": "Pendente"} or r[4] == ["bg-amber-600 text-white", "Pendente"]
 
 

@@ -41,6 +41,8 @@ export interface ResumoCard1 {
   desatualizado: boolean;
   dias_defasagem: number;
   premio_total: number | null;
+  /** Só o Card 5: contratos com prêmio informado (< quantidade = soma parcial). */
+  premios_informados?: number;
   quantidade: number;
   grupos: number;
 }
@@ -220,7 +222,9 @@ export function seloDaProposta(
   const classe = e.tom === "cancelada" ? "bg-red-700 text-white"
     : e.tom === "suspensa" ? "bg-amber-400 text-slate-900"
     : "bg-blue-600 text-white";
-  return { classe, rotulo: e.subSituacao || rotuloDoCard };
+  // Sem situação na fonte, o texto acompanha a cor — nunca "Emitida" num selo vermelho.
+  const porTom = e.tom === "cancelada" ? "Cancelada" : e.tom === "suspensa" ? "Cobertura Suspensa" : rotuloDoCard;
+  return { classe, rotulo: e.subSituacao || porTom };
 }
 
 export function estadoDaFoto(foto: FotoCard1): { rotulo: string; valor: string }[] {
