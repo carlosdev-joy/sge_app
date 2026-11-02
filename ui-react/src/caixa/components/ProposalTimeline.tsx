@@ -2,7 +2,9 @@
 // ProposalTimeline shadcn (mesmos fluxos ideal/DPS/devolução e mesmas cores de
 // etapa), com tokens ink/dim/edge. Usado pelo ProposalDetailDialog (F3) e
 // reutilizável no acompanhamento por status (F6).
-import { Check, FileText, CreditCard, CheckCircle, Inbox, XCircle } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { Check, FileText, CreditCard, CheckCircle, Inbox, XCircle, Search, RotateCcw, Send } from "lucide-react";
+import type { PassoFluxo, TomPasso } from "../lib/fluxoProposta";
 
 interface TimelineStep {
   id: string;
@@ -16,8 +18,8 @@ interface ProposalTimelineProps {
   currentStatus: string;
   /** Card 7: etapa REAL da devolução (0 pendente, 1 em andamento, 2 realizada). Sem ela, o fluxo antigo. */
   refundStep?: 0 | 1 | 2;
-  /** Card 8: passos REAIS vindos da foto (movimento encaminhado → situação da proposta). Têm prioridade. */
-  passos?: { id: string; label: string; tom: "laranja" | "ambar" | "verde" | "vermelho"; estado: TimelineStep["status"] }[];
+  /** O FLUXO até a etapa atual (`passosDoFluxo`): anteriores concluídas, atual em destaque. Tem prioridade. */
+  passos?: PassoFluxo[];
 }
 
 // Cores de etapa fixas (as vars do tema shadcn aposentado não existem): laranja CAIXA, âmbar, verde e vermelho — legíveis nos 2 temas
@@ -26,14 +28,34 @@ const LARANJA = "#F26B00";
 const AMBAR = "#f59e0b";
 const VERDE = "#10b981";
 const VERMELHO = "#ef4444";
+const AZUL = "#2563eb";
+const AZUL_ESCURO = "#0F4C88";
+
+// Ícone da etapa ATUAL (as concluídas mostram o check).
+const ICONE_DA_ETAPA: Record<PassoFluxo["id"], React.ReactNode> = {
+  pending_signature: <FileText className="h-5 w-5" />,
+  awaiting_payment: <CreditCard className="h-5 w-5" />,
+  paid: <CheckCircle className="h-5 w-5" />,
+  in_analysis: <Search className="h-5 w-5" />,
+  emission_sent: <Check className="h-5 w-5" />,
+  declined: <XCircle className="h-5 w-5" />,
+  refund_scheduled: <RotateCcw className="h-5 w-5" />,
+  sensitization_monitoring: <Send className="h-5 w-5" />,
+};
 
 export default function ProposalTimeline({ currentStatus, refundStep, passos }: ProposalTimelineProps) {
   const getTimelineSteps = (): TimelineStep[] => {
     if (passos) {
-      const cor = { laranja: LARANJA, ambar: AMBAR, verde: VERDE, vermelho: VERMELHO };
-      return passos.map((p, i) => ({
+      const cor: Record<TomPasso, string> = {
+        laranja: LARANJA, ambar: AMBAR, verde: VERDE, vermelho: VERMELHO, azul: AZUL, azulEscuro: AZUL_ESCURO,
+      };
+      return passos.map((p) => ({
         id: p.id, label: p.label, color: cor[p.tom], status: p.estado,
-        icon: i === 0 ? <FileText className="h-5 w-5" /> : <CheckCircle className="h-5 w-5" />,
+        // Etapa concluída = check (sucesso); a atual traz o ícone da própria etapa.
+        icon: p.estado === "completed" ? <Check className="h-5 w-5" />
+          // Emitida em VERMELHO é cancelada: um check contradiria a cor.
+          : p.id === "emission_sent" && p.tom === "vermelho" ? <XCircle className="h-5 w-5" />
+          : ICONE_DA_ETAPA[p.id],
       }));
     }
     const isExceptionFlow = currentStatus === "pending_dps";
@@ -88,9 +110,16 @@ export default function ProposalTimeline({ currentStatus, refundStep, passos }: 
 
   const steps = getTimelineSteps();
 
+  // Fluxo longo no celular rola na horizontal: abre na etapa ATUAL (a última), com o histórico à esquerda.
+  const trilho = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = trilho.current;
+    if (el && steps.length > 3) el.scrollLeft = el.scrollWidth;
+  }, [steps.length, currentStatus]);
+
   return (
-    <div className="py-8">
-      <div className="flex items-start justify-between relative px-4">
+    <div ref={trilho} className="py-8 overflow-x-auto" data-testid="linha-do-tempo">
+      <div className={`flex items-start justify-between relative px-4 ${steps.length > 3 ? "min-w-max sm:min-w-0" : ""}`}>
         {/* Linha de fundo entre o primeiro e o último círculo */}
         <div
           className="absolute top-6 h-1 bg-[#1A5FA8]/20 -z-10"
@@ -98,10 +127,10 @@ export default function ProposalTimeline({ currentStatus, refundStep, passos }: 
         />
 
         {steps.map((step, index) => (
-          <div key={step.id} className="flex flex-col items-center relative flex-1">
+          <div key={step.id} className={`flex flex-col items-center relative flex-1 ${steps.length > 3 ? "min-w-[104px]" : ""}`}>
             {/* Círculo com ícone */}
             <div
-              className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${
+              className={`relative z-10 w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${
                 step.status === "active" || step.status === "completed"
                   ? "text-white shadow-lg scale-110"
                   : "bg-edge/60 text-dim"

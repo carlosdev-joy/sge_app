@@ -160,16 +160,10 @@ def test_resumo_da_devolucao_traz_banco_so_no_resumo_e_nao_inventa_contato():
         assert not re.search(proibido, lista), proibido
 
 
-def test_linha_do_tempo_da_devolucao_segue_a_etapa_real():
+def test_linha_do_tempo_da_devolucao_e_o_fluxo_ate_a_devolucao_com_o_estado_real():
+    """Desde 02/11 o Resumo mostra o FLUXO inteiro (tests/test_fluxo_proposta.py); a etapa atual é o sub-card."""
     tl = _fonte(CAIXA / "components" / "ProposalTimeline.tsx")
-    assert "refundStep?: 0 | 1 | 2" in tl and "const etapa = refundStep ?? 1" in tl
+    assert "refundStep?: 0 | 1 | 2" in tl and "const etapa = refundStep ?? 1" in tl        # o fluxo antigo (Acompanhamento) segue
     dialogo = _fonte(CAIXA / "components" / "ProposalDetailDialog.tsx")
-    assert 'currentStatus="refund_pending"' in dialogo
-    assert 'situacao === "realizada" ? 2 : foto.devolucao.situacao === "andamento" ? 1 : 0' in dialogo
-
-
-def test_resumo_trata_zeros_como_nao_informado_menos_o_digito_da_conta():
-    comp = _fonte(CAIXA / "components" / "DevolucaoCard7.tsx")
-    for campo in ("d.banco", "d.agencia", "d.operacao", "d.conta"):
-        assert f"presente({campo})" in comp, campo
-    assert "presente(d.digito_conta)" not in comp and "d.digito_conta ?? NAO_INFORMADO" in comp   # 0 é dígito válido
+    assert "atualDoFluxo(foto)" in dialogo
+    assert "ROTULO_SUBCARD_DEVOLUCAO[d.situacao]" in _fonte(CAIXA / "lib" / "card1Foto.ts")

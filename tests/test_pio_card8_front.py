@@ -165,9 +165,11 @@ def test_resumo_mostra_valor_movimento_e_data_de_envio_e_nao_o_segurado():
     assert dialogo.index('titulo="Dados da Venda"') < dialogo.index('titulo="Dados da Sensibilização"') < dialogo.index('titulo="Dados do Segurado"')
 
 
-def test_workflow_mostra_os_dois_estados_reais_movimento_e_proposta():
-    dialogo = _fonte(CAIXA / "components" / "ProposalDetailDialog.tsx")
-    assert "passos={[" in dialogo and "Movimento: ${foto.sensibilizacao.statusMovimento}" in dialogo
-    assert "Proposta: ${foto.sensibilizacao.statusAtual}" in dialogo
+def test_workflow_do_card8_e_o_fluxo_ate_a_sensibilizacao_com_o_ultimo_movimento():
+    """O Resumo mostra o FLUXO inteiro (tests/test_fluxo_proposta.py); os dois estados reais ficam em Dados da Sensibilização."""
+    puro = _fonte(PURO)
+    assert "`Sensibilização · ${foto.sensibilizacao.statusMovimento}`" in puro
+    comp = _fonte(CAIXA / "components" / "SensibilizacaoCard8.tsx")
+    assert "Movimento encaminhado" in comp and "Situação atual da proposta" in comp
     tl = _fonte(CAIXA / "components" / "ProposalTimeline.tsx")
     assert "if (passos) {" in tl and tl.index("if (passos) {") < tl.index("const isExceptionFlow")

@@ -6,6 +6,7 @@
 
 import type { FotoCard1, PropostaWorkflow, SituacaoDevolucao, StatusWorkflow } from "./workflow";
 import { regiaoDaUf } from "./regiao";
+import type { AtualDoFluxo } from "./fluxoProposta";
 
 /** O card do Workflow que lê da foto. */
 export const STATUS_CARD1: StatusWorkflow = "pending_signature";
@@ -313,6 +314,27 @@ export const ROTULO_SUBCARD_DEVOLUCAO: Record<SituacaoDevolucao, string> = {
 const COR_SUBCARD_DEVOLUCAO: Record<SituacaoDevolucao, string> = {
   realizada: "bg-emerald-600 text-white", andamento: "bg-amber-600 text-white", pendente: "bg-red-700 text-white",
 };
+
+/** A etapa ATUAL do fluxo do Resumo, quando o card sabe mais que o nome dele: o selo real do Card 5
+ *  (Cancelada, Cobertura Suspensa…), o sub-card da devolução, o último movimento da sensibilização e
+ *  a situação da análise. Sem foto (ou sem nada a dizer), `undefined`: vale o nome do card. */
+export function atualDoFluxo(foto: FotoCard1 | undefined): AtualDoFluxo | undefined {
+  if (!foto) return undefined;
+  if (foto.emitida) {
+    const e = foto.emitida;
+    return {
+      rotulo: e.subSituacao || undefined,
+      tom: e.tom === "cancelada" ? "vermelho" : e.tom === "suspensa" ? "ambar" : "azul",
+    };
+  }
+  if (foto.devolucao) {
+    const d = foto.devolucao;
+    return { rotulo: ROTULO_SUBCARD_DEVOLUCAO[d.situacao], tom: d.situacao === "realizada" ? "verde" : d.situacao === "andamento" ? "ambar" : "vermelho" };
+  }
+  if (foto.sensibilizacao) return { rotulo: `Sensibilização · ${foto.sensibilizacao.statusMovimento}` };
+  if (foto.criticas !== undefined && foto.subSituacao) return { rotulo: `Em Análise · ${foto.subSituacao}` };
+  return undefined;
+}
 
 export function rotuloSegmento(segmento: string): string {
   const s = segmento.toUpperCase();
