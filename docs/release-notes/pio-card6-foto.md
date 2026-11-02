@@ -16,6 +16,8 @@ mesma foto (data + lote). Os demais cards e a busca global seguem como estavam.
   Dados da Venda** (`DES_MSG_CRITICA` + `DES_COMPLEMENTAR`, rota nova `GET /pio/card6/motivos?certificado=`, só leitura).
 - **Workflow da proposta:** a linha do tempo da rejeitada termina em **"Proposta Rejeitada"** (vermelho), não em "Proposta Emitida".
 - **Histórico:** Situação, Motivos, Declínio e Quitação.
+- **Valor do card no celular:** prêmios longos (≥ 12 caracteres, ex.: R$ 940.842,79) encolhem abaixo de 640 px em vez de quebrar no
+  meio do número. A mudança está em `Card1Valor`, logo vale também para os Cards 1–5; no desktop nada muda.
 - **Fora do escopo:** mapa do Brasil (mesma decisão dos Cards 4 e 5); o mesmo ajuste de Workflow nos demais cards.
 - "Região" fica vazia: UF/cidade são da **agência de cobrança**, não do segurado.
 
@@ -46,6 +48,14 @@ Reverter o código (API + `dist/`). Tabelas e pipeline Fabric não são tocados.
   a lista usa `MIN()` por certificado.
 - `TOP 1`/`NOLOCK` nos contatos da origem, e datas futuras possíveis (sem limite superior): regra preservada.
 - O botão de devolução desta tela sai; o fluxo de devolução existente segue no Card 7.
+
+- **Preflight de unicidade (recomendado):** a lista usa `MIN()` por coluna dentro do certificado. A carga garante prêmio e as 13
+  dimensões únicas, mas não contatos, IS, declínio e quitação. Rodar na foto real e esperar zero linhas:
+  `SELECT NUM_SIVPF FROM dbo.FAT_ORQ_CARD06_FOTO WHERE DTA_MOVIMENTO=<foto> GROUP BY NUM_SIVPF HAVING COUNT(DISTINCT COD_DDD_CELULAR)>1
+  OR COUNT(DISTINCT NUM_CELULAR)>1 OR COUNT(DISTINCT COD_TELEFONE)>1 OR COUNT(DISTINCT DTH_DECLINIO)>1 OR COUNT(DISTINCT DTH_QUITACAO)>1
+  OR COUNT(DISTINCT VLR_IS_VENDA)>1`. Se vier linha, escolher uma linha por certificado (`ROW_NUMBER`) em vez de `MIN`.
+- O "(n)" de "Motivos da Rejeição" é `QTD_MOTIVOS` = linhas da query; o mesmo motivo repetido em linhas distintas conta duas vezes.
+- Na foto de 02/11 há 0 linhas sem quitação; o Workflow da rejeitada assume assinatura e pagamento concluídos.
 
 ## Pendências conhecidas
 - Mapa do Brasil e geografia comum (agência × segurado); Workflow real nos Cards 3, 4 e 5 (cancelada); alertas/identidade de serviço e CU(s) do pipeline.

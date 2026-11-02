@@ -240,3 +240,9 @@ def test_limite_maximo_e_validado(cliente, banco):
 def test_pio_py_nao_conhece_as_tabelas_novas_e_router_registrado():
     assert "ORQ_CARD06" not in (RAIZ / "api" / "routers" / "pio.py").read_text(encoding="utf-8")
     assert (RAIZ / "api" / "main.py").read_text(encoding="utf-8").count("pio_card6") == 2
+
+
+def test_colunas_da_lista_e_nomes_andam_juntos():
+    """O SELECT da lista e o `_item` leem por POSIÇÃO: um desalinhamento troca campos em silêncio."""
+    from routers.pio_card6 import _COLUNAS_LISTA, _NOMES
+    assert len(_COLUNAS_LISTA) == len(_NOMES) == len(_linha())
