@@ -26,11 +26,15 @@ export const STATUS_CARD4: StatusWorkflow = "in_analysis";
  *  (segmento + nº), já emitido: não há "dias pendente". */
 export const STATUS_CARD5: StatusWorkflow = "emission_sent";
 
+/** O Card 6 (Rejeitadas, Vida em Grupo) também: `/pio/card6/*`. A unidade é o
+ *  CERTIFICADO — uma linha por certificado, com os motivos dele no Resumo. */
+export const STATUS_CARD6: StatusWorkflow = "declined";
+
 /** Cards do Workflow que leem a foto diária. */
-export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4, STATUS_CARD5];
+export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4, STATUS_CARD5, STATUS_CARD6];
 
 const PREFIXO_ID: Partial<Record<StatusWorkflow, string>> = {
-  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4", [STATUS_CARD5]: "pio5",
+  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4", [STATUS_CARD5]: "pio5", [STATUS_CARD6]: "pio6",
 };
 
 export interface ResumoCard1 {
@@ -80,6 +84,26 @@ export interface ItemCard1 {
   inativo?: boolean;
   cancelamento?: string | null;
   motivo_cancelamento?: string | null;
+  /** Só o Card 6: nº de motivos do certificado, declínio e dias da quitação ao declínio. */
+  motivos?: number;
+  declinio?: string | null;
+  dias_venda_declinio?: number | null;
+}
+
+/** Um motivo de rejeição de um certificado (Card 6): `DES_MSG_CRITICA` e
+ *  `DES_COMPLEMENTAR`, como vieram. Nenhuma ação é inferida do texto. */
+export interface MotivoCard6 {
+  codigo: number | null;
+  descricao: string;
+  complemento: string;
+  data_motivo: string | null;
+}
+
+export interface MotivosCard6 {
+  disponivel: boolean;
+  referencia: string | null;
+  certificado: number;
+  itens: MotivoCard6[];
 }
 
 /** Uma mensagem de crítica de um certificado (Card 4): `DES_MSG_CRITICA` e
@@ -154,6 +178,12 @@ export function propostaDoCard1(
     ...(item.criticas === undefined ? {} : {
       subSituacao: item.sub_situacao ?? "", criticas: item.criticas, quitacao: item.quitacao ?? null,
     }),
+    ...(item.motivos === undefined ? {} : {
+      rejeitada: {
+        subSituacao: item.sub_situacao ?? "", motivos: item.motivos, quitacao: item.quitacao ?? null,
+        declinio: item.declinio ?? null, diasVendaDeclinio: item.dias_venda_declinio ?? null,
+      },
+    }),
     ...(item.tom_status === undefined ? {} : {
       emitida: {
         tom: item.tom_status, segmento: item.segmento ?? "", subSituacao: item.sub_situacao ?? "",
@@ -182,7 +212,7 @@ export function propostaDoCard1(
     region: regiaoDaUf(item.uf),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
-    daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 ? 0 : item.dias_pendente,
+    daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 || status === STATUS_CARD6 ? 0 : item.dias_pendente,
     foto,
   };
 }
@@ -230,6 +260,16 @@ export function seloDaProposta(
 export function estadoDaFoto(foto: FotoCard1): { rotulo: string; valor: string }[] {
   // Card 4: a fonte não tem assinatura/pagamento; tem a sub-situação, as
   // mensagens de crítica e a data de quitação (que pode não existir).
+  // Card 6: rejeitada — situação, motivos do certificado, declínio e quitação.
+  if (foto.rejeitada) {
+    const r = foto.rejeitada;
+    return [
+      { rotulo: "Situação", valor: r.subSituacao || "Não informado" },
+      { rotulo: "Motivos", valor: String(r.motivos) },
+      { rotulo: "Declínio", valor: r.declinio ? dataBr(r.declinio) : "Não informado" },
+      { rotulo: "Quitação", valor: r.quitacao ? dataBr(r.quitacao) : "Não informada" },
+    ];
+  }
   // Card 5: contrato emitido (VG ou AP) — situação real, emissão e segmento.
   if (foto.emitida) {
     return [

@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { toast } from "../../components/ui/Toast";
 import ProposalTimeline from "./ProposalTimeline";
 import PendenciasCard4 from "./PendenciasCard4";
+import MotivosCard6 from "./MotivosCard6";
 import ProposalShareDialog from "./ProposalShareDialog";
 import ProposalHistoryDialog from "./ProposalHistoryDialog";
 import type { FotoCard1 } from "../lib/workflow";
@@ -132,7 +133,7 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
                 <CampoInfo rotulo="Matrícula do Indicador:" valor={proposal.indicatorId} />
                 <CampoInfo rotulo="Agência:" valor={proposal.agency} />
                 {/* Card 1: o número da proposta entra em Dados da Venda. */}
-                {foto && <CampoInfo rotulo={foto.emitida ? "Proposta/Certificado:" : "Nº da Proposta:"} valor={proposal.number} />}
+                {foto && <CampoInfo rotulo={foto.emitida || foto.rejeitada ? "Proposta/Certificado:" : "Nº da Proposta:"} valor={proposal.number} />}
                 {/* Card 1: "Usuário" sai da tela (pedido do Carlos em 27/10, que
                     prevaleceu sobre "desativar" do chamado). O valor era derivado
                     da matrícula, não vinha da foto. Os outros cards o mantêm. */}
@@ -142,6 +143,12 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
                     valor={`c${proposal.indicatorId.replace(/[^0-9]/g, "").substring(0, 6)}`}
                     className="md:col-span-3"
                   />
+                )}
+                {/* Card 6: os motivos de declínio, como ÚLTIMA informação deste quadro. */}
+                {foto?.rejeitada && (
+                  <div className="md:col-span-3">
+                    <MotivosCard6 certificado={proposal.number} referencia={foto.referencia} total={foto.rejeitada.motivos} />
+                  </div>
                 )}
                 {/* Card 5: contrato inativo (cancelado) mostra o motivo, como ÚLTIMA
                     informação deste quadro. Sem motivo na fonte, diz isso — não some. */}
