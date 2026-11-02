@@ -122,8 +122,9 @@ def test_hooks_do_card6_leem_os_endpoints_do_card6():
 def test_gerenciar_devolucao_sai_da_rejeitada_e_fica_na_devolucao():
     corpo = _fonte(CAIXA / "components" / "InlineWorkflow.tsx")
     i = corpo.index("Gerenciar Devolução")
-    assert 'statusAtual === "refund_scheduled" && (' in corpo[i - 200:i]
-    assert 'statusAtual === "declined"' not in corpo[i - 200:i]
+    # o botão é do Card 7 (refund_scheduled) — hoje só no sub-card Pendente —, nunca da rejeitada
+    assert 'statusAtual === "refund_scheduled" &&' in corpo[i - 400:i]
+    assert 'statusAtual === "declined"' not in corpo[i - 400:i]
 
 
 def test_motivos_sao_a_ultima_informacao_de_dados_da_venda_e_so_com_foto_do_card6():

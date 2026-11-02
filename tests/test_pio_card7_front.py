@@ -174,3 +174,23 @@ def test_resumo_trata_zeros_como_nao_informado_menos_o_digito_da_conta():
     for campo in ("d.banco", "d.agencia", "d.operacao", "d.conta"):
         assert f"presente({campo})" in comp, campo
     assert "presente(d.digito_conta)" not in comp and "d.digito_conta ?? NAO_INFORMADO" in comp   # 0 é dígito válido
+
+
+def test_gerenciar_devolucao_so_no_subcard_pendente_e_botao_do_dialogo_renomeado():
+    """Pedido do Carlos (03/11): sem o botão nos sub-cards verde (Realizada) e laranja (em Andamento)."""
+    corpo = _fonte(CAIXA / "components" / "InlineWorkflow.tsx")
+    i = corpo.index('statusAtual === "refund_scheduled" &&')
+    bloco = corpo[i:corpo.index("Gerenciar Devolução", i) + 20]
+    assert 'proposta.foto?.devolucao?.situacao !== "realizada"' in bloco
+    assert 'proposta.foto?.devolucao?.situacao !== "andamento"' in bloco
+    assert "setRefundDialogOpen" in bloco                           # no pendente (e nas de exemplo) o botão segue abrindo o diálogo
+    dialogo = _fonte(CAIXA / "components" / "RefundManagementDialog.tsx")
+    assert "Salvar Dados Bancários" in dialogo and "Programar Devolução" not in dialogo
+    assert '"Processando..."' in dialogo
+
+
+def test_workflow_da_tela_principal_abre_por_padrao():
+    corpo = _fonte(CAIXA / "components" / "InlineWorkflow.tsx")
+    assert "const [isExpanded, setIsExpanded] = useState(true);" in corpo
+    assert "setIsExpanded(!isExpanded)" in corpo                    # a barra ainda recolhe
+
