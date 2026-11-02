@@ -56,6 +56,9 @@ _SR_ONLY_CONHECIDOS = {
     "components/admin/casca/MenuAdmin.tsx": 1,
     # "(abre em nova aba)" do link para o admin (F4) — dentro do próprio <a relative>
     "components/admin/LinkAdmin.tsx": 1,
+    # estado ("concluída"/"etapa atual") de cada etapa da linha do tempo do Resumo do Seguro — dentro da
+    # etapa (`flex flex-col items-center relative flex-1`), que é o invólucro posicionado
+    "caixa/components/ProposalTimeline.tsx": 2,
 }
 
 
