@@ -512,7 +512,9 @@ export default function InlineWorkflow() {
                             )}
                           </div>
                         </div>
-                        <div className="flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+                        {/* Os botões não podem acionar o cartão: nem o clique nem o ENTER (o cartão abre o Resumo com Enter,
+                            e o evento do teclado sobe do botão interno). */}
+                        <div className="flex flex-col gap-2" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                           {statusAtual === "pending_signature" && (
                             <Button variant="primary" size="sm" onClick={() => abrir(proposta, setResendDialogOpen)}>
                               <Send className="h-4 w-4" />
@@ -522,7 +524,7 @@ export default function InlineWorkflow() {
                           {/* Card 3 (Assinadas e Pagas): "Reenviar Proposta" é, POR ENQUANTO, sem ação — nada é
                               enviado; o clique só gera o alerta de proposta reenviada (pedido do Carlos, 03/11).
                               Quando houver integração, o envio entra aqui. */}
-                          {statusAtual === "paid" && (
+                          {statusAtual === "paid" && proposta.foto && (
                             <Button
                               variant="primary"
                               size="sm"

@@ -125,7 +125,7 @@ def test_router_do_card3_registrado_em_main():
 def test_card3_tem_o_botao_reenviar_proposta_sem_acao_que_so_gera_o_alerta():
     """Pedido do Carlos (03/11): botão "Reenviar Proposta" em cada registro do Card 3, inicialmente SEM AÇÃO."""
     corpo = _fonte(CAIXA / "components" / "InlineWorkflow.tsx")
-    i = corpo.index('statusAtual === "paid" && (')
+    i = corpo.index('statusAtual === "paid" && proposta.foto && (')
     bloco = corpo[i:corpo.index("</Button>", i) + 9]
     assert "Reenviar Proposta" in bloco and 'data-testid="reenviar-proposta"' in bloco
     assert 'toast.info("Proposta reenviada.")' in bloco
@@ -134,3 +134,13 @@ def test_card3_tem_o_botao_reenviar_proposta_sem_acao_que_so_gera_o_alerta():
         assert acao not in bloco, acao
     # só o Card 3: nenhum outro status ganha o botão
     assert corpo.count("Reenviar Proposta") == 1
+
+
+def test_reenviar_so_nos_registros_da_foto_e_enter_nao_abre_o_resumo():
+    """Revisão adversarial: Enter no botão borbulhava até o cartão (abre o Resumo) e a proposta de EXEMPLO
+    `paid` de "Todas as Propostas" ganhava o botão."""
+    corpo = _fonte(CAIXA / "components" / "InlineWorkflow.tsx")
+    assert 'statusAtual === "paid" && proposta.foto && (' in corpo           # só registros reais (foto), não os de exemplo
+    assert 'onKeyDown={(e) => e.stopPropagation()}' in corpo                 # o wrapper dos botões segura o teclado
+    i = corpo.index('onClick={(e) => e.stopPropagation()} onKeyDown')
+    assert 'className="flex flex-col gap-2"' in corpo[i - 80:i]
