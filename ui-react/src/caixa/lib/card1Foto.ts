@@ -4,7 +4,7 @@
 // (`tests/test_pio_card1_front.py`). Os hooks de leitura ficam em `pioCard1.ts`,
 // que reexporta este módulo — os componentes importam de um lugar só.
 
-import type { FotoCard1, PropostaWorkflow, StatusWorkflow } from "./workflow";
+import type { FotoCard1, PropostaWorkflow, SituacaoDevolucao, StatusWorkflow } from "./workflow";
 import { regiaoDaUf } from "./regiao";
 
 /** O card do Workflow que lê da foto. */
@@ -30,11 +30,16 @@ export const STATUS_CARD5: StatusWorkflow = "emission_sent";
  *  CERTIFICADO — uma linha por certificado, com os motivos dele no Resumo. */
 export const STATUS_CARD6: StatusWorkflow = "declined";
 
+/** O Card 7 (Devolução de Prêmio, VG + AP) também: `/pio/card7/*`. Diferente dos outros, o
+ *  card NÃO abre lista: abre 3 sub-cards (realizada, em andamento, pendente) e só o clique em
+ *  um deles lista os contratos. O número do card é o VALOR DEVOLVIDO (todos os status). */
+export const STATUS_CARD7: StatusWorkflow = "refund_scheduled";
+
 /** Cards do Workflow que leem a foto diária. */
-export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4, STATUS_CARD5, STATUS_CARD6];
+export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4, STATUS_CARD5, STATUS_CARD6, STATUS_CARD7];
 
 const PREFIXO_ID: Partial<Record<StatusWorkflow, string>> = {
-  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4", [STATUS_CARD5]: "pio5", [STATUS_CARD6]: "pio6",
+  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4", [STATUS_CARD5]: "pio5", [STATUS_CARD6]: "pio6", [STATUS_CARD7]: "pio7",
 };
 
 export interface ResumoCard1 {
@@ -47,6 +52,8 @@ export interface ResumoCard1 {
   premio_total: number | null;
   /** Só o Card 5: contratos com prêmio informado (< quantidade = soma parcial). */
   premios_informados?: number;
+  /** Só o Card 7: contratos e valor devolvido por sub-card (somam o total do card). */
+  por_situacao?: Record<SituacaoDevolucao, { quantidade: number; valor: number | null; valores_informados: number }>;
   quantidade: number;
   grupos: number;
 }
@@ -88,6 +95,39 @@ export interface ItemCard1 {
   motivos?: number;
   declinio?: string | null;
   dias_venda_declinio?: number | null;
+  /** Só o Card 7: sub-card, status do último movimento e data dele. */
+  devolucao?: {
+    situacao: SituacaoDevolucao; status: string; retorno: string;
+    data_movimento: string | null; declinio: string | null;
+  };
+}
+
+/** Dados da devolução e BANCÁRIOS de um contrato do Card 7 (`/pio/card7/devolucao`).
+ *  Campo ausente na fonte vem `null`; banco só tem o código (o nome não está na foto). */
+export interface DevolucaoDetalhe {
+  situacao: SituacaoDevolucao;
+  valor: number | null;
+  status: string;
+  retorno: string;
+  codigo_movimento: string | null;
+  data_movimento: string | null;
+  data_lancamento: string | null;
+  parcela: number | null;
+  forma_pagamento: string | null;
+  banco: string | null;
+  agencia: string | null;
+  operacao: string | null;
+  conta: string | null;
+  digito_conta: string | null;
+}
+
+export interface RespostaDevolucao {
+  disponivel: boolean;
+  referencia: string | null;
+  segmento: string;
+  numero: number;
+  encontrado: boolean;
+  devolucao: DevolucaoDetalhe | null;
 }
 
 /** Um motivo de rejeição de um certificado (Card 6): `DES_MSG_CRITICA` e
@@ -178,6 +218,13 @@ export function propostaDoCard1(
     ...(item.criticas === undefined ? {} : {
       subSituacao: item.sub_situacao ?? "", criticas: item.criticas, quitacao: item.quitacao ?? null,
     }),
+    ...(item.devolucao === undefined ? {} : {
+      devolucao: {
+        situacao: item.devolucao.situacao, segmento: item.segmento ?? "", status: item.devolucao.status,
+        retorno: item.devolucao.retorno, dataMovimento: item.devolucao.data_movimento,
+        declinio: item.devolucao.declinio,
+      },
+    }),
     ...(item.motivos === undefined ? {} : {
       rejeitada: {
         subSituacao: item.sub_situacao ?? "", motivos: item.motivos, quitacao: item.quitacao ?? null,
@@ -212,7 +259,7 @@ export function propostaDoCard1(
     region: regiaoDaUf(item.uf),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
-    daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 || status === STATUS_CARD6 ? 0 : item.dias_pendente,
+    daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 || status === STATUS_CARD6 || status === STATUS_CARD7 ? 0 : item.dias_pendente,
     foto,
   };
 }
@@ -235,6 +282,15 @@ function rotulo(mapa: Record<string, string>, codigo: string): string {
   return mapa[codigo.toUpperCase()] ?? codigo;
 }
 
+export const ROTULO_SUBCARD_DEVOLUCAO: Record<SituacaoDevolucao, string> = {
+  realizada: "Devolução Realizada", andamento: "Devolução em Andamento", pendente: "Devolução Pendente",
+};
+
+/** Cor do selo da devolução (fundo sólido + texto branco, como `STATUS_COR`). */
+const COR_SUBCARD_DEVOLUCAO: Record<SituacaoDevolucao, string> = {
+  realizada: "bg-emerald-600 text-white", andamento: "bg-amber-600 text-white", pendente: "bg-red-700 text-white",
+};
+
 export function rotuloSegmento(segmento: string): string {
   const s = segmento.toUpperCase();
   return s === "VG" ? "Vida em Grupo" : s === "AP" ? "Acidentes Pessoais" : segmento || "Não informado";
@@ -247,6 +303,9 @@ export function rotuloSegmento(segmento: string): string {
 export function seloDaProposta(
   proposta: PropostaWorkflow, corDoCard: string, rotuloDoCard: string,
 ): { classe: string; rotulo: string } {
+  const d = proposta.foto?.devolucao;
+  // Card 7: o selo mostra o status REAL do último movimento, na cor do sub-card.
+  if (d) return { classe: COR_SUBCARD_DEVOLUCAO[d.situacao], rotulo: d.status || ROTULO_SUBCARD_DEVOLUCAO[d.situacao] };
   const e = proposta.foto?.emitida;
   if (!e) return { classe: `${corDoCard} text-white`, rotulo: rotuloDoCard };
   const classe = e.tom === "cancelada" ? "bg-red-700 text-white"
@@ -260,6 +319,15 @@ export function seloDaProposta(
 export function estadoDaFoto(foto: FotoCard1): { rotulo: string; valor: string }[] {
   // Card 4: a fonte não tem assinatura/pagamento; tem a sub-situação, as
   // mensagens de crítica e a data de quitação (que pode não existir).
+  // Card 7: devolução — onde está (sub-card), status do último movimento e a data dele.
+  if (foto.devolucao) {
+    const d = foto.devolucao;
+    return [
+      { rotulo: "Situação", valor: ROTULO_SUBCARD_DEVOLUCAO[d.situacao] },
+      { rotulo: "Movimento", valor: d.status || "Sem Movimento" },
+      { rotulo: d.situacao === "andamento" ? "Previsão" : "Data", valor: d.dataMovimento ? dataBr(d.dataMovimento) : "Não informada" },
+    ];
+  }
   // Card 6: rejeitada — situação, motivos do certificado, declínio e quitação.
   if (foto.rejeitada) {
     const r = foto.rejeitada;

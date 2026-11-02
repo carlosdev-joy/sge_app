@@ -187,6 +187,21 @@ export interface FotoCard1 {
   emitida?: EmitidaCard5;
   /** Só o Card 6 (Rejeitadas, Vida em Grupo): o que a foto sabe da rejeição. */
   rejeitada?: RejeitadaCard6;
+  /** Só o Card 7 (Devolução de Prêmio, VG + AP): onde a devolução está. */
+  devolucao?: DevolucaoCard7;
+}
+
+export type SituacaoDevolucao = "realizada" | "andamento" | "pendente";
+
+/** Card 7: sub-card do contrato, segmento (VG certificado / AP bilhete), status do último
+ *  movimento como veio da fonte e a data dele (`null` = a fonte não trouxe). */
+export interface DevolucaoCard7 {
+  situacao: SituacaoDevolucao;
+  segmento: string;
+  status: string;
+  retorno: string;
+  dataMovimento: string | null;
+  declinio: string | null;
 }
 
 /** Card 6: nº de motivos do certificado (linhas da query), datas de quitação e

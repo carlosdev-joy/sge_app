@@ -51,6 +51,7 @@ import {
   STATUS_CARD4,
   STATUS_CARD5,
   STATUS_CARD6,
+  STATUS_CARD7,
   seloDaProposta,
   STATUS_DE_FOTO,
   useResumoCard1,
@@ -63,6 +64,9 @@ import { useResumoCard3, usePropostasCard3 } from "../lib/pioCard3";
 import { useResumoCard4, usePropostasCard4 } from "../lib/pioCard4";
 import { useResumoCard5, usePropostasCard5 } from "../lib/pioCard5";
 import { useResumoCard6, usePropostasCard6 } from "../lib/pioCard6";
+import { useResumoCard7, usePropostasCard7 } from "../lib/pioCard7";
+import DevolucaoSubcards from "./DevolucaoSubcards";
+import type { SituacaoDevolucao } from "../lib/workflow";
 
 // ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
 // alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
@@ -121,6 +125,8 @@ export default function InlineWorkflow() {
   const [proposalStatuses, setProposalStatuses] = useState<Record<string, string>>({});
   const [sendingEmission, setSendingEmission] = useState<string | null>(null);
   const [pagina, setPagina] = useState(0);
+  /** Card 7: o sub-card escolhido. Sem ele NÃO há lista (o card principal só abre os 3 sub-cards). */
+  const [devolucao, setDevolucao] = useState<SituacaoDevolucao | null>(null);
 
   /** Trocar de card volta para a primeira página: sem isso, sair de um card
    *  com 8.700 propostas na página 40 e entrar em outro com 12 deixaria a
@@ -128,6 +134,12 @@ export default function InlineWorkflow() {
   const selecionar = (status: string) => {
     setSelectedStatus(status);
     setSelectedSubStatus("all");
+    setPagina(0);
+    setDevolucao(null);
+  };
+
+  const escolherDevolucao = (situacao: SituacaoDevolucao | null) => {
+    setDevolucao(situacao);
     setPagina(0);
   };
 
@@ -143,13 +155,17 @@ export default function InlineWorkflow() {
   const emCard4 = selectedStatus === STATUS_CARD4;
   const emCard5 = selectedStatus === STATUS_CARD5;
   const emCard6 = selectedStatus === STATUS_CARD6;
-  const emFoto = emCard1 || emCard2 || emCard3 || emCard4 || emCard5 || emCard6;
+  const emCard7 = selectedStatus === STATUS_CARD7;
+  const emFoto = emCard1 || emCard2 || emCard3 || emCard4 || emCard5 || emCard6 || emCard7;
+  /** Card 7 sem sub-card escolhido: não há lista nem aviso de lista a mostrar. */
+  const semLista = emCard7 && devolucao === null;
   const resumoCard1 = useResumoCard1();
   const resumoCard2 = useResumoCard2();
   const resumoCard3 = useResumoCard3();
   const resumoCard4 = useResumoCard4();
   const resumoCard5 = useResumoCard5();
   const resumoCard6 = useResumoCard6();
+  const resumoCard7 = useResumoCard7();
   const paginaPio = usePropostasPio(emFoto ? undefined : cardSelecionado, isExpanded, pagina, "");
   const fotoCard1 = usePropostasCard1(emCard1 && isExpanded, pagina, resumoCard1.data?.referencia);
   const fotoCard2 = usePropostasCard2(emCard2 && isExpanded, pagina, resumoCard2.data?.referencia);
@@ -157,9 +173,10 @@ export default function InlineWorkflow() {
   const fotoCard4 = usePropostasCard4(emCard4 && isExpanded, pagina, resumoCard4.data?.referencia);
   const fotoCard5 = usePropostasCard5(emCard5 && isExpanded, pagina, resumoCard5.data?.referencia);
   const fotoCard6 = usePropostasCard6(emCard6 && isExpanded, pagina, resumoCard6.data?.referencia);
+  const fotoCard7 = usePropostasCard7(emCard7 && isExpanded, pagina, resumoCard7.data?.referencia, devolucao);
   // Resumo e página do card selecionado (os três hooks rodam sempre: ordem fixa).
-  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4, [STATUS_CARD5]: resumoCard5, [STATUS_CARD6]: resumoCard6 } as Record<string, typeof resumoCard1>;
-  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4, [STATUS_CARD5]: fotoCard5, [STATUS_CARD6]: fotoCard6 } as Record<string, typeof fotoCard1>;
+  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4, [STATUS_CARD5]: resumoCard5, [STATUS_CARD6]: resumoCard6, [STATUS_CARD7]: resumoCard7 } as Record<string, typeof resumoCard1>;
+  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4, [STATUS_CARD5]: fotoCard5, [STATUS_CARD6]: fotoCard6, [STATUS_CARD7]: fotoCard7 } as Record<string, typeof fotoCard1>;
   const lista = listaDoCard(
     emFoto, paginaPio,
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
@@ -209,6 +226,11 @@ export default function InlineWorkflow() {
   delete reais[STATUS_CARD6];
   if (resumoCard6.data?.disponivel && resumoCard6.data.referencia) {
     reais[STATUS_CARD6] = resumoCard6.data.quantidade;
+  }
+  // Idem o Card 7 (quantidade = CONTRATOS com devolução, nunca a contagem legada).
+  delete reais[STATUS_CARD7];
+  if (resumoCard7.data?.disponivel && resumoCard7.data.referencia) {
+    reais[STATUS_CARD7] = resumoCard7.data.quantidade;
   }
 
   const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
@@ -372,6 +394,10 @@ export default function InlineWorkflow() {
               )}
             </div>
 
+            {emCard7 && (
+              <DevolucaoSubcards resumo={resumoCard7} selecionada={devolucao} onSelecionar={escolherDevolucao} />
+            )}
+
             {/* Alerta em lote */}
             {filteredProposals.length > 0 && selectedStatus !== "all" && (
               <Button variant="primary" onClick={() => setAlertDialogOpen(true)} className="w-full justify-center">
@@ -382,29 +408,29 @@ export default function InlineWorkflow() {
             {/* Procedência da lista — de onde vieram estas linhas e de quando.
                 Um número sem data de carga não deixa distinguir "a fila
                 esvaziou" de "a carga das 07:30 não rodou". */}
-            {cardSelecionado && lista.disponivel && !lista.carregando && !lista.detalheIndisponivel && (lista.referencia || !lista.deFoto) && (
+            {cardSelecionado && !semLista && lista.disponivel && !lista.carregando && !lista.detalheIndisponivel && (lista.referencia || !lista.deFoto) && (
               <p className="text-xs text-dim">
                 {totalDaPagina.toLocaleString("pt-BR")} proposta{totalDaPagina === 1 ? "" : "s"} {lista.deFoto ? "na foto" : "na carga"}
                 {lista.referencia ? ` de ${dataBr(lista.referencia)}` : ""}
-                {lista.deFoto && lista.atualizacao ? `, publicada em ${dataHoraBr(lista.atualizacao)}` : ""}
+                {!semLista && lista.deFoto && lista.atualizacao ? `, publicada em ${dataHoraBr(lista.atualizacao)}` : ""}
                 {filteredProposals.length > 0 && (
                   <> · mostrando {filteredProposals.length.toLocaleString("pt-BR")}, as mais antigas primeiro</>
                 )}
               </p>
             )}
-            {lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
+            {!semLista && lista.deFoto && lista.disponivel && !lista.carregando && !lista.referencia && (
           <p className="text-xs text-dim">Ainda não há foto publicada para {STATUS_LABEL_CURTO[selectedStatus as StatusWorkflow]}; não há número nem lista a mostrar.</p>
         )}
-        {lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
+        {!semLista && lista.deFoto && lista.disponivel && lista.detalheIndisponivel && (
               <p className="text-xs text-dim">
                 O detalhe das propostas desta data já saiu da retenção (a lista guarda menos tempo
                 que o total do card). O número do card continua válido.
               </p>
             )}
-            {cardSelecionado && lista.carregando && (
+            {cardSelecionado && !semLista && lista.carregando && (
               <p className="text-xs text-dim">Consultando {lista.deFoto ? "a foto" : "a carga"} do PIO…</p>
             )}
-            {cardSelecionado && !lista.carregando && !lista.disponivel && (
+            {cardSelecionado && !semLista && !lista.carregando && !lista.disponivel && (
               <p className="text-xs text-red-600 dark:text-red-400">
                 Não foi possível ler {lista.deFoto ? "a foto" : "a carga"} do PIO. A lista não está vazia — ela é desconhecida.
               </p>

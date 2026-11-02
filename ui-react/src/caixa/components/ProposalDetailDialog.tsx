@@ -10,6 +10,7 @@ import { toast } from "../../components/ui/Toast";
 import ProposalTimeline from "./ProposalTimeline";
 import PendenciasCard4 from "./PendenciasCard4";
 import MotivosCard6 from "./MotivosCard6";
+import DevolucaoCard7 from "./DevolucaoCard7";
 import ProposalShareDialog from "./ProposalShareDialog";
 import ProposalHistoryDialog from "./ProposalHistoryDialog";
 import type { FotoCard1 } from "../lib/workflow";
@@ -107,7 +108,15 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
       <Modal open={open} onClose={onClose} title="Resumo do seguro" size="xl">
         <div className="space-y-6">
           {/* Linha do tempo do status */}
-          <ProposalTimeline currentStatus={proposal.status} />
+          {foto?.devolucao ? (
+            // Card 7: a etapa da devolução vem da foto (pendente 0, em andamento 1, realizada 2).
+            <ProposalTimeline
+              currentStatus="refund_pending"
+              refundStep={foto.devolucao.situacao === "realizada" ? 2 : foto.devolucao.situacao === "andamento" ? 1 : 0}
+            />
+          ) : (
+            <ProposalTimeline currentStatus={proposal.status} />
+          )}
 
           {/* Ações */}
           <div className="flex flex-wrap justify-center gap-3">
@@ -133,7 +142,7 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
                 <CampoInfo rotulo="Matrícula do Indicador:" valor={proposal.indicatorId} />
                 <CampoInfo rotulo="Agência:" valor={proposal.agency} />
                 {/* Card 1: o número da proposta entra em Dados da Venda. */}
-                {foto && <CampoInfo rotulo={foto.emitida || foto.rejeitada ? "Proposta/Certificado:" : "Nº da Proposta:"} valor={proposal.number} />}
+                {foto && <CampoInfo rotulo={foto.devolucao ? (foto.devolucao.segmento === "AP" ? "Bilhete:" : "Proposta/Certificado:") : foto.emitida || foto.rejeitada ? "Proposta/Certificado:" : "Nº da Proposta:"} valor={proposal.number} />}
                 {/* Card 1: "Usuário" sai da tela (pedido do Carlos em 27/10, que
                     prevaleceu sobre "desativar" do chamado). O valor era derivado
                     da matrícula, não vinha da foto. Os outros cards o mantêm. */}
@@ -183,8 +192,9 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
                 <CampoInfo rotulo="Nome civil*:" valor={proposal.insuredName} />
                 <CampoInfo rotulo="CPF:" valor={proposal.cpf} />
                 <CampoInfo rotulo="Produto:" valor={proposal.product} />
-                <CampoInfo rotulo="Telefone:" valor={proposal.phone} />
-                <CampoInfo rotulo="E-mail:" valor={proposal.email} />
+                {/* Card 7: a foto não traz contato; o quadro da devolução diz isso. */}
+                {!foto?.devolucao && <CampoInfo rotulo="Telefone:" valor={proposal.phone} />}
+                {!foto?.devolucao && <CampoInfo rotulo="E-mail:" valor={proposal.email} />}
                 {/* Só aparece quando a carga trouxe a renda. Proposta de
                     exemplo não tem — e um campo vazio é melhor que o número
                     errado que estava aqui. */}
@@ -201,6 +211,13 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
               <p className="text-xs text-dim mt-4 italic">*conforme registro civil</p>
             </div>
           </Secao>
+
+          {/* Card 7: valor devolvido, banco, agência, conta, status e data do crédito. */}
+          {foto?.devolucao && (
+            <Secao titulo="Dados da Devolução">
+              <DevolucaoCard7 devolucao={foto.devolucao} referencia={foto.referencia} numero={proposal.number} />
+            </Secao>
+          )}
 
           {/* Card 4: as críticas do certificado (a lista o traz uma vez só). Só com
               `foto.criticas`, que apenas a foto do Card 4 preenche. */}

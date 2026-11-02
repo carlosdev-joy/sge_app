@@ -14,6 +14,8 @@ interface TimelineStep {
 
 interface ProposalTimelineProps {
   currentStatus: string;
+  /** Card 7: etapa REAL da devolução (0 pendente, 1 em andamento, 2 realizada). Sem ela, o fluxo antigo. */
+  refundStep?: 0 | 1 | 2;
 }
 
 // Cores de etapa fixas (as vars do tema shadcn aposentado não existem): laranja CAIXA, âmbar, verde e vermelho — legíveis nos 2 temas
@@ -23,16 +25,19 @@ const AMBAR = "#f59e0b";
 const VERDE = "#10b981";
 const VERMELHO = "#ef4444";
 
-export default function ProposalTimeline({ currentStatus }: ProposalTimelineProps) {
+export default function ProposalTimeline({ currentStatus, refundStep }: ProposalTimelineProps) {
   const getTimelineSteps = (): TimelineStep[] => {
     const isExceptionFlow = currentStatus === "pending_dps";
     const isRefundFlow = currentStatus === "refund_pending";
 
     if (isRefundFlow) {
+      // Card 7: a etapa vem da foto. Antes dela, o fluxo ficou fixo na etapa do meio.
+      const etapa = refundStep ?? 1;
+      const situacao = (i: number): TimelineStep["status"] => (i < etapa ? "completed" : i === etapa ? "active" : "pending");
       return [
-        { id: "available", label: "Valor disponível para devolução", icon: <CreditCard className="h-5 w-5" />, color: LARANJA, status: "completed" },
-        { id: "scheduled", label: "Devolução Programada", icon: <CheckCircle className="h-5 w-5" />, color: AMBAR, status: "active" },
-        { id: "completed", label: "Pagamento efetivado", icon: <Check className="h-5 w-5" />, color: VERDE, status: "pending" },
+        { id: "available", label: "Valor disponível para devolução", icon: <CreditCard className="h-5 w-5" />, color: LARANJA, status: refundStep === undefined ? "completed" : situacao(0) },
+        { id: "scheduled", label: "Devolução Programada", icon: <CheckCircle className="h-5 w-5" />, color: AMBAR, status: situacao(1) },
+        { id: "completed", label: "Pagamento efetivado", icon: <Check className="h-5 w-5" />, color: VERDE, status: situacao(2) },
       ];
     }
 
@@ -76,7 +81,7 @@ export default function ProposalTimeline({ currentStatus }: ProposalTimelineProp
 
   return (
     <div className="py-8">
-      <div className="flex items-center justify-between relative px-4">
+      <div className="flex items-start justify-between relative px-4">
         {/* Linha de fundo entre o primeiro e o último círculo */}
         <div
           className="absolute top-6 h-1 bg-[#1A5FA8]/20 -z-10"
