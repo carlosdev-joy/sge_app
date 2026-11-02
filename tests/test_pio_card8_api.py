@@ -194,6 +194,8 @@ def test_item_numero_e_a_proposta_e_sem_ela_a_identificacao(cliente, banco):
     a, b = cliente.get("/pio/card8/propostas").json()["itens"]
     assert a["proposta"] == "123456789" and a["nome"] == "Vida em Grupo" and a["dias_pendente"] == 0
     assert b["proposta"] == "42" and b["nome"] == "Acidentes Pessoais"
+    z = _item_de(_linha(3, proposta=Decimal("0"), ident=Decimal("99")))
+    assert z["proposta"] == "99"                                   # 0 é placeholder, não número de proposta
     assert a["premio"] == 120.4 and a["uf_agencia"] == "RJ" and a["data_venda"] == "2025-12-01"
     assert a["sensibilizacao"]["identificacao"] == "777000111" and a["sensibilizacao"]["data_envio"] == "2026-10-31"
     assert a["sensibilizacao"]["status_movimento"] == "Enviada" and a["sensibilizacao"]["status_atual"] == "Enviado"

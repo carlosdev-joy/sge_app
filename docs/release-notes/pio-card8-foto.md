@@ -35,6 +35,12 @@ O **total da lista sai da AGG** (nenhum COUNT na FAT) e a lista ordena por (empr
 milhões de linhas a cada página). A consulta de exemplo da documentação ordena por `DATA_ULTIMO_MOVIMENTO DESC`: não foi adotada por isso. Medir no DEV
 (foto real) a latência da 1ª página e de uma página profunda; páginas profundas leem `offset + limite` chaves.
 
+**Medir no DEV antes de promover** (a revisão apontou que os testes não provam desempenho): com `SET STATISTICS IO, TIME ON`, o plano e a leitura de (a) a 1ª
+página, (b) uma página funda (offset de milhares), (c) o `SELECT TOP 1 1 … WHERE DTA_MOVIMENTO=? AND LOTE_ID=?` de existência — `LOTE_ID` não está no índice único e
+é predicado residual: fica barato se o lote publicado tem as linhas, mas varre a data inteira se elas forem de outro lote —, e (d) o `SUM(QTD_CONTRATOS)` da AGG (2,3 milhões
+de grupos), que cada página repete para devolver o `total`. Se algum custar caro: `OPTION (FORCE ORDER)`/hint de índice, limitar a profundidade da navegação ou calcular o
+total só na 1ª página. Confirmar também que FAT e AGG têm a mesma contagem por lote e se o pyodbc preserva os 3 bytes NUL (se truncar para vazio, o status vira "Sem status").
+
 ## Lacunas da fonte e premissas
 - A foto **não traz o segurado** (nome, CPF, contato) nem `COD_USUARIO`; `COD_ERRO`, endereço e CEP da agência não são expostos.
 - "Data de envio do movimento" = `DATA_GERACAO_LOTE` (premissa a **homologar**; há também `DATA_PROCESSAMENTO_LOTE` e `IND_ENVIO`).

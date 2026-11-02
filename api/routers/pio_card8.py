@@ -111,6 +111,8 @@ def _item(linha) -> dict:
     r = dict(zip(_NOMES, linha))
     identificacao = _inteiro_texto(r["NUM_IDENTIFICACAO_SIVPF"])
     proposta = _inteiro_texto(r["NUM_PROPOSTA"]) if r["NUM_PROPOSTA"] is not None else ""
+    if proposta.strip("0") == "":
+        proposta = ""           # NULL ou 0 (placeholder): sem proposta, vale a identificação
     linha_negocio = (_texto(r["LINHA_NEGOCIO"]) or "").upper()
     desc_mov = _legivel(r["DESCRICAO_STATUS_ULTIMO_MOV"]) or _legivel(r["STATUS_ULTIMO_MOV"]) or SEM_STATUS
     desc_atual = _legivel(r["DESCRICAO_SIT_ATUAL"]) or _legivel(r["SIT_PROPOSTA_ATUAL"]) or SEM_STATUS
