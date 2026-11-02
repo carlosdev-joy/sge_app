@@ -8,6 +8,8 @@ import { Modal } from "../../components/ui/Modal";
 import { Button } from "../../components/ui/Button";
 import { toast } from "../../components/ui/Toast";
 import ProposalTimeline from "./ProposalTimeline";
+import { passosDoFluxo } from "../lib/fluxoProposta";
+import { atualDoFluxo } from "../lib/card1Foto";
 import PendenciasCard4 from "./PendenciasCard4";
 import MotivosCard6 from "./MotivosCard6";
 import DevolucaoCard7 from "./DevolucaoCard7";
@@ -108,25 +110,9 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
     <>
       <Modal open={open} onClose={onClose} title="Resumo do seguro" size="xl">
         <div className="space-y-6">
-          {/* Linha do tempo do status */}
-          {foto?.sensibilizacao ? (
-            // Card 8: o Workflow mostra os DOIS estados reais — o do último movimento e o da proposta.
-            <ProposalTimeline
-              currentStatus="sensitization_monitoring"
-              passos={[
-                { id: "movimento", label: `Movimento: ${foto.sensibilizacao.statusMovimento}`, tom: "ambar", estado: "completed" },
-                { id: "proposta", label: `Proposta: ${foto.sensibilizacao.statusAtual}`, tom: foto.sensibilizacao.podeSensibilizar ? "laranja" : "verde", estado: "active" },
-              ]}
-            />
-          ) : foto?.devolucao ? (
-            // Card 7: a etapa da devolução vem da foto (pendente 0, em andamento 1, realizada 2).
-            <ProposalTimeline
-              currentStatus="refund_pending"
-              refundStep={foto.devolucao.situacao === "realizada" ? 2 : foto.devolucao.situacao === "andamento" ? 1 : 0}
-            />
-          ) : (
-            <ProposalTimeline currentStatus={proposal.status} />
-          )}
+          {/* Linha do tempo: o FLUXO até a etapa atual — as anteriores concluídas (sucesso) e a do card em
+              destaque. Status fora dos cards do Workflow (pending_dps, refund_pending…) seguem no fluxo antigo. */}
+          <ProposalTimeline currentStatus={proposal.status} passos={passosDoFluxo(proposal.status, atualDoFluxo(foto)) ?? undefined} />
 
           {/* Ações */}
           <div className="flex flex-wrap justify-center gap-3">

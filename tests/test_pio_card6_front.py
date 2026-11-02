@@ -137,8 +137,11 @@ def test_motivos_sao_a_ultima_informacao_de_dados_da_venda_e_so_com_foto_do_card
         assert acao not in comp, "nenhuma ação é inferida do texto do motivo"
 
 
-def test_workflow_da_rejeitada_termina_no_status_real():
-    tl = _fonte(CAIXA / "components" / "ProposalTimeline.tsx")
+def test_workflow_da_rejeitada_e_o_fluxo_ate_rejeitada_sem_passar_por_emitida():
+    """Desde 02/11 o Resumo mostra o FLUXO inteiro (tests/test_fluxo_proposta.py); a rejeitada não passa por Emitida."""
+    puro = _fonte(CAIXA / "lib" / "fluxoProposta.ts")
+    assert 'declined: ["pending_signature", "awaiting_payment", "paid", "in_analysis", "declined"]' in puro
+    tl = _fonte(CAIXA / "components" / "ProposalTimeline.tsx")           # o ramo antigo segue como reserva
     bloco = tl[tl.index('currentStatus === "declined"'):tl.index("if (isExceptionFlow)")]
     assert "Proposta Rejeitada" in bloco and "Proposta Emitida" not in bloco and "VERMELHO" in bloco
 
