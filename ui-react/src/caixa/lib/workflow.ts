@@ -185,6 +185,18 @@ export interface FotoCard1 {
   quitacao?: string | null;
   /** Só o Card 5 (Emitidas, VG + AP): o que a foto sabe do contrato emitido. */
   emitida?: EmitidaCard5;
+  /** Só o Card 6 (Rejeitadas, Vida em Grupo): o que a foto sabe da rejeição. */
+  rejeitada?: RejeitadaCard6;
+}
+
+/** Card 6: nº de motivos do certificado (linhas da query), datas de quitação e
+ *  declínio (`null` = a fonte não trouxe) e dias da quitação ao declínio. */
+export interface RejeitadaCard6 {
+  subSituacao: string;
+  motivos: number;
+  quitacao: string | null;
+  declinio: string | null;
+  diasVendaDeclinio: number | null;
 }
 
 /** Card 5: cor do selo (`tom`), segmento, datas e, quando o contrato está

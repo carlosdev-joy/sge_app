@@ -2,7 +2,7 @@
 // ProposalTimeline shadcn (mesmos fluxos ideal/DPS/devolução e mesmas cores de
 // etapa), com tokens ink/dim/edge. Usado pelo ProposalDetailDialog (F3) e
 // reutilizável no acompanhamento por status (F6).
-import { Check, FileText, CreditCard, CheckCircle, Inbox } from "lucide-react";
+import { Check, FileText, CreditCard, CheckCircle, Inbox, XCircle } from "lucide-react";
 
 interface TimelineStep {
   id: string;
@@ -33,6 +33,15 @@ export default function ProposalTimeline({ currentStatus }: ProposalTimelineProp
         { id: "available", label: "Valor disponível para devolução", icon: <CreditCard className="h-5 w-5" />, color: LARANJA, status: "completed" },
         { id: "scheduled", label: "Devolução Programada", icon: <CheckCircle className="h-5 w-5" />, color: AMBAR, status: "active" },
         { id: "completed", label: "Pagamento efetivado", icon: <Check className="h-5 w-5" />, color: VERDE, status: "pending" },
+      ];
+    }
+
+    // Rejeitada (Card 6): o fluxo termina no status REAL, não em "Proposta Emitida".
+    if (currentStatus === "declined") {
+      return [
+        { id: "signature", label: "Aguardando Assinatura", icon: <FileText className="h-5 w-5" />, color: LARANJA, status: "completed" },
+        { id: "payment", label: "Aguardando Pagamento", icon: <CreditCard className="h-5 w-5" />, color: AMBAR, status: "completed" },
+        { id: "declined", label: "Proposta Rejeitada", icon: <XCircle className="h-5 w-5" />, color: VERMELHO, status: "active" },
       ];
     }
 

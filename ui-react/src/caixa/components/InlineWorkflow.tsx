@@ -50,6 +50,7 @@ import {
   STATUS_CARD3,
   STATUS_CARD4,
   STATUS_CARD5,
+  STATUS_CARD6,
   seloDaProposta,
   STATUS_DE_FOTO,
   useResumoCard1,
@@ -61,6 +62,7 @@ import { useResumoCard2, usePropostasCard2 } from "../lib/pioCard2";
 import { useResumoCard3, usePropostasCard3 } from "../lib/pioCard3";
 import { useResumoCard4, usePropostasCard4 } from "../lib/pioCard4";
 import { useResumoCard5, usePropostasCard5 } from "../lib/pioCard5";
+import { useResumoCard6, usePropostasCard6 } from "../lib/pioCard6";
 
 // ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
 // alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
@@ -140,21 +142,24 @@ export default function InlineWorkflow() {
   const emCard3 = selectedStatus === STATUS_CARD3;
   const emCard4 = selectedStatus === STATUS_CARD4;
   const emCard5 = selectedStatus === STATUS_CARD5;
-  const emFoto = emCard1 || emCard2 || emCard3 || emCard4 || emCard5;
+  const emCard6 = selectedStatus === STATUS_CARD6;
+  const emFoto = emCard1 || emCard2 || emCard3 || emCard4 || emCard5 || emCard6;
   const resumoCard1 = useResumoCard1();
   const resumoCard2 = useResumoCard2();
   const resumoCard3 = useResumoCard3();
   const resumoCard4 = useResumoCard4();
   const resumoCard5 = useResumoCard5();
+  const resumoCard6 = useResumoCard6();
   const paginaPio = usePropostasPio(emFoto ? undefined : cardSelecionado, isExpanded, pagina, "");
   const fotoCard1 = usePropostasCard1(emCard1 && isExpanded, pagina, resumoCard1.data?.referencia);
   const fotoCard2 = usePropostasCard2(emCard2 && isExpanded, pagina, resumoCard2.data?.referencia);
   const fotoCard3 = usePropostasCard3(emCard3 && isExpanded, pagina, resumoCard3.data?.referencia);
   const fotoCard4 = usePropostasCard4(emCard4 && isExpanded, pagina, resumoCard4.data?.referencia);
   const fotoCard5 = usePropostasCard5(emCard5 && isExpanded, pagina, resumoCard5.data?.referencia);
+  const fotoCard6 = usePropostasCard6(emCard6 && isExpanded, pagina, resumoCard6.data?.referencia);
   // Resumo e página do card selecionado (os três hooks rodam sempre: ordem fixa).
-  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4, [STATUS_CARD5]: resumoCard5 } as Record<string, typeof resumoCard1>;
-  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4, [STATUS_CARD5]: fotoCard5 } as Record<string, typeof fotoCard1>;
+  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4, [STATUS_CARD5]: resumoCard5, [STATUS_CARD6]: resumoCard6 } as Record<string, typeof resumoCard1>;
+  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4, [STATUS_CARD5]: fotoCard5, [STATUS_CARD6]: fotoCard6 } as Record<string, typeof fotoCard1>;
   const lista = listaDoCard(
     emFoto, paginaPio,
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
@@ -199,6 +204,11 @@ export default function InlineWorkflow() {
   delete reais[STATUS_CARD5];
   if (resumoCard5.data?.disponivel && resumoCard5.data.referencia) {
     reais[STATUS_CARD5] = resumoCard5.data.quantidade;
+  }
+  // Idem o Card 6 (quantidade = CERTIFICADOS rejeitados, nunca linhas de motivo).
+  delete reais[STATUS_CARD6];
+  if (resumoCard6.data?.disponivel && resumoCard6.data.referencia) {
+    reais[STATUS_CARD6] = resumoCard6.data.quantidade;
   }
 
   const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
@@ -501,10 +511,9 @@ export default function InlineWorkflow() {
                               {sendingEmission === proposta.id ? "Enviando..." : "Enviar movimento de Emissão"}
                             </Button>
                           )}
-                          {/* Rejeitada e devolução compartilham o diálogo: na
-                              rejeitada ele INICIA a devolução (o card 6 vira o
-                              7); na devolução, gerencia a que já existe. */}
-                          {(statusAtual === "declined" || statusAtual === "refund_scheduled") && (
+                          {/* O botão sai do Card 6 (Rejeitadas) a pedido do solicitante
+                              (RITM0118511); a devolução já existente segue no Card 7. */}
+                          {statusAtual === "refund_scheduled" && (
                             <Button variant="danger" size="sm" onClick={() => abrir(proposta, setRefundDialogOpen)}>
                               Gerenciar Devolução
                             </Button>
