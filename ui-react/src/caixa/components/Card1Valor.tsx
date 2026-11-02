@@ -43,12 +43,15 @@ export default function Card1Valor({ resumo, tom = "neutro", destaque = "text-lg
   }
 
   const quantidade = dados.quantidade;
+  const parcial = dados.premios_informados !== undefined && dados.premios_informados < quantidade;
   const titulo = `Foto de ${dataBr(dados.referencia)}${
-    dados.atualizacao ? `, publicada em ${dataHoraBr(dados.atualizacao)}` : ""}`;
+    dados.atualizacao ? `, publicada em ${dataHoraBr(dados.atualizacao)}` : ""}${
+    parcial ? `. Prêmio somado de ${dados.premios_informados} dos ${quantidade} contratos (os demais sem valor na origem)` : ""}`;
   return (
     <span className="block" title={titulo}>
       <span className={`block ${destaque} font-bold leading-tight tabular-nums break-words`}>
-        {formatarMoeda(dados.premio_total ?? 0)}
+        {/* Prêmio desconhecido (nenhum contrato com valor informado) não é R$ 0,00. */}
+        {dados.premio_total === null && quantidade > 0 ? "—" : formatarMoeda(dados.premio_total ?? 0)}
       </span>
       <span className={`block text-[11px] font-normal leading-tight tabular-nums ${apagado}`}>
         {quantidade.toLocaleString("pt-BR")} contrato{quantidade === 1 ? "" : "s"}

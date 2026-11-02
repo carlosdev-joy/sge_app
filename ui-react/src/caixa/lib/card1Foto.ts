@@ -22,11 +22,15 @@ export const STATUS_CARD3: StatusWorkflow = "paid";
  *  CERTIFICADO — uma linha por certificado, com o nº de críticas dele. */
 export const STATUS_CARD4: StatusWorkflow = "in_analysis";
 
+/** O Card 5 (Emitidas, VG + AP) também: `/pio/card5/*`. A unidade é o CONTRATO
+ *  (segmento + nº), já emitido: não há "dias pendente". */
+export const STATUS_CARD5: StatusWorkflow = "emission_sent";
+
 /** Cards do Workflow que leem a foto diária. */
-export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4];
+export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4, STATUS_CARD5];
 
 const PREFIXO_ID: Partial<Record<StatusWorkflow, string>> = {
-  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4",
+  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4", [STATUS_CARD5]: "pio5",
 };
 
 export interface ResumoCard1 {
@@ -37,6 +41,8 @@ export interface ResumoCard1 {
   desatualizado: boolean;
   dias_defasagem: number;
   premio_total: number | null;
+  /** Só o Card 5: contratos com prêmio informado (< quantidade = soma parcial). */
+  premios_informados?: number;
   quantidade: number;
   grupos: number;
 }
@@ -67,6 +73,13 @@ export interface ItemCard1 {
   sub_situacao?: string;
   criticas?: number;
   quitacao?: string | null;
+  /** Só o Card 5: tom do selo, segmento (VG/AP), emissão e dados do cancelamento. */
+  tom_status?: "emitida" | "suspensa" | "cancelada";
+  segmento?: string;
+  emissao?: string | null;
+  inativo?: boolean;
+  cancelamento?: string | null;
+  motivo_cancelamento?: string | null;
 }
 
 /** Uma mensagem de crítica de um certificado (Card 4): `DES_MSG_CRITICA` e
@@ -141,6 +154,13 @@ export function propostaDoCard1(
     ...(item.criticas === undefined ? {} : {
       subSituacao: item.sub_situacao ?? "", criticas: item.criticas, quitacao: item.quitacao ?? null,
     }),
+    ...(item.tom_status === undefined ? {} : {
+      emitida: {
+        tom: item.tom_status, segmento: item.segmento ?? "", subSituacao: item.sub_situacao ?? "",
+        emissao: item.emissao ?? null, inativo: item.inativo ?? false,
+        cancelamento: item.cancelamento ?? null, motivo: item.motivo_cancelamento ?? null,
+      },
+    }),
   };
   return {
     // `id_foto`, não o número da proposta: a query aceita pode repetir a mesma
@@ -162,7 +182,7 @@ export function propostaDoCard1(
     region: regiaoDaUf(item.uf),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
-    daysInPending: status === STATUS_CARD3 ? 0 : item.dias_pendente,
+    daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 ? 0 : item.dias_pendente,
     foto,
   };
 }
@@ -185,9 +205,39 @@ function rotulo(mapa: Record<string, string>, codigo: string): string {
   return mapa[codigo.toUpperCase()] ?? codigo;
 }
 
+export function rotuloSegmento(segmento: string): string {
+  const s = segmento.toUpperCase();
+  return s === "VG" ? "Vida em Grupo" : s === "AP" ? "Acidentes Pessoais" : segmento || "Não informado";
+}
+
+/** Selo de status da lista. No Card 5 mostra a SITUAÇÃO REAL do contrato e a cor
+ *  vem do tom (azul = emitida, amarelo = cobertura suspensa, vermelho = cancelada);
+ *  nos demais cards segue o rótulo e a cor do card. Texto sempre legível: branco
+ *  sobre azul/vermelho 600+ e grafite sobre o amarelo. */
+export function seloDaProposta(
+  proposta: PropostaWorkflow, corDoCard: string, rotuloDoCard: string,
+): { classe: string; rotulo: string } {
+  const e = proposta.foto?.emitida;
+  if (!e) return { classe: `${corDoCard} text-white`, rotulo: rotuloDoCard };
+  const classe = e.tom === "cancelada" ? "bg-red-700 text-white"
+    : e.tom === "suspensa" ? "bg-amber-400 text-slate-900"
+    : "bg-blue-600 text-white";
+  // Sem situação na fonte, o texto acompanha a cor — nunca "Emitida" num selo vermelho.
+  const porTom = e.tom === "cancelada" ? "Cancelada" : e.tom === "suspensa" ? "Cobertura Suspensa" : rotuloDoCard;
+  return { classe, rotulo: e.subSituacao || porTom };
+}
+
 export function estadoDaFoto(foto: FotoCard1): { rotulo: string; valor: string }[] {
   // Card 4: a fonte não tem assinatura/pagamento; tem a sub-situação, as
   // mensagens de crítica e a data de quitação (que pode não existir).
+  // Card 5: contrato emitido (VG ou AP) — situação real, emissão e segmento.
+  if (foto.emitida) {
+    return [
+      { rotulo: "Situação", valor: foto.emitida.subSituacao || "Não informado" },
+      { rotulo: "Emissão", valor: foto.emitida.emissao ? dataBr(foto.emitida.emissao) : "Não informada" },
+      { rotulo: "Segmento", valor: rotuloSegmento(foto.emitida.segmento) },
+    ];
+  }
   if (foto.criticas !== undefined) {
     return [
       { rotulo: "Situação", valor: foto.subSituacao || "Não informado" },

@@ -132,7 +132,7 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
                 <CampoInfo rotulo="Matrícula do Indicador:" valor={proposal.indicatorId} />
                 <CampoInfo rotulo="Agência:" valor={proposal.agency} />
                 {/* Card 1: o número da proposta entra em Dados da Venda. */}
-                {foto && <CampoInfo rotulo="Nº da Proposta:" valor={proposal.number} />}
+                {foto && <CampoInfo rotulo={foto.emitida ? "Proposta/Certificado:" : "Nº da Proposta:"} valor={proposal.number} />}
                 {/* Card 1: "Usuário" sai da tela (pedido do Carlos em 27/10, que
                     prevaleceu sobre "desativar" do chamado). O valor era derivado
                     da matrícula, não vinha da foto. Os outros cards o mantêm. */}
@@ -140,6 +140,15 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
                   <CampoInfo
                     rotulo="Usuário:"
                     valor={`c${proposal.indicatorId.replace(/[^0-9]/g, "").substring(0, 6)}`}
+                    className="md:col-span-3"
+                  />
+                )}
+                {/* Card 5: contrato inativo (cancelado) mostra o motivo, como ÚLTIMA
+                    informação deste quadro. Sem motivo na fonte, diz isso — não some. */}
+                {foto?.emitida?.inativo && (
+                  <CampoInfo
+                    rotulo="Motivo do Cancelamento:"
+                    valor={foto.emitida.motivo ?? "Não informado na origem"}
                     className="md:col-span-3"
                   />
                 )}
