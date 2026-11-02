@@ -66,7 +66,7 @@ RESUMO = "{data: {disponivel: true, referencia: '2026-10-29', atualizacao: null,
 
 def test_card4_e_in_analysis_e_entra_nos_cards_de_foto(rodar):
     assert rodar("return [m.STATUS_CARD4, m.STATUS_DE_FOTO];") == [
-        "in_analysis", ["pending_signature", "awaiting_payment", "paid", "in_analysis"]]
+        "in_analysis", ["pending_signature", "awaiting_payment", "paid", "in_analysis", "emission_sent"]]
 
 
 def test_proposta_do_card4_tem_chave_propria_e_leva_as_criticas(rodar):

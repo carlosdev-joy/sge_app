@@ -49,6 +49,8 @@ import {
   STATUS_CARD2,
   STATUS_CARD3,
   STATUS_CARD4,
+  STATUS_CARD5,
+  seloDaProposta,
   STATUS_DE_FOTO,
   useResumoCard1,
   usePropostasCard1,
@@ -58,6 +60,7 @@ import {
 import { useResumoCard2, usePropostasCard2 } from "../lib/pioCard2";
 import { useResumoCard3, usePropostasCard3 } from "../lib/pioCard3";
 import { useResumoCard4, usePropostasCard4 } from "../lib/pioCard4";
+import { useResumoCard5, usePropostasCard5 } from "../lib/pioCard5";
 
 // ÍCONE, não bolinha: a forma carrega o significado sozinha. Um triângulo de
 // alerta, uma seta caindo e um "certo" são lidos de relance mesmo em preto e
@@ -136,19 +139,22 @@ export default function InlineWorkflow() {
   const emCard2 = selectedStatus === STATUS_CARD2;
   const emCard3 = selectedStatus === STATUS_CARD3;
   const emCard4 = selectedStatus === STATUS_CARD4;
-  const emFoto = emCard1 || emCard2 || emCard3 || emCard4;
+  const emCard5 = selectedStatus === STATUS_CARD5;
+  const emFoto = emCard1 || emCard2 || emCard3 || emCard4 || emCard5;
   const resumoCard1 = useResumoCard1();
   const resumoCard2 = useResumoCard2();
   const resumoCard3 = useResumoCard3();
   const resumoCard4 = useResumoCard4();
+  const resumoCard5 = useResumoCard5();
   const paginaPio = usePropostasPio(emFoto ? undefined : cardSelecionado, isExpanded, pagina, "");
   const fotoCard1 = usePropostasCard1(emCard1 && isExpanded, pagina, resumoCard1.data?.referencia);
   const fotoCard2 = usePropostasCard2(emCard2 && isExpanded, pagina, resumoCard2.data?.referencia);
   const fotoCard3 = usePropostasCard3(emCard3 && isExpanded, pagina, resumoCard3.data?.referencia);
   const fotoCard4 = usePropostasCard4(emCard4 && isExpanded, pagina, resumoCard4.data?.referencia);
+  const fotoCard5 = usePropostasCard5(emCard5 && isExpanded, pagina, resumoCard5.data?.referencia);
   // Resumo e página do card selecionado (os três hooks rodam sempre: ordem fixa).
-  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4 } as Record<string, typeof resumoCard1>;
-  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4 } as Record<string, typeof fotoCard1>;
+  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4, [STATUS_CARD5]: resumoCard5 } as Record<string, typeof resumoCard1>;
+  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4, [STATUS_CARD5]: fotoCard5 } as Record<string, typeof fotoCard1>;
   const lista = listaDoCard(
     emFoto, paginaPio,
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
@@ -188,6 +194,11 @@ export default function InlineWorkflow() {
   delete reais[STATUS_CARD4];
   if (resumoCard4.data?.disponivel && resumoCard4.data.referencia) {
     reais[STATUS_CARD4] = resumoCard4.data.quantidade;
+  }
+  // Idem o Card 5 (quantidade = CONTRATOS emitidos na foto).
+  delete reais[STATUS_CARD5];
+  if (resumoCard5.data?.disponivel && resumoCard5.data.referencia) {
+    reais[STATUS_CARD5] = resumoCard5.data.quantidade;
   }
 
   const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
@@ -417,9 +428,20 @@ export default function InlineWorkflow() {
                         <div className="flex-1 min-w-[240px] space-y-2">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-semibold text-ink">{proposta.number}</span>
-                            <span className={`${STATUS_COR[statusAtual] ?? "bg-slate-500"} text-white rounded-full px-2 py-0.5 text-xs font-medium`}>
-                              {STATUS_LABEL_CURTO[statusAtual] ?? statusAtual}
-                            </span>
+                            {(() => {
+                              const selo = seloDaProposta(
+                                proposta, STATUS_COR[statusAtual] ?? "bg-slate-500",
+                                STATUS_LABEL_CURTO[statusAtual] ?? statusAtual);
+                              return (
+                                <span
+                                  className={`${selo.classe} rounded-full px-2 py-0.5 text-xs font-medium`}
+                                  data-testid="selo-status"
+                                  data-tom={proposta.foto?.emitida?.tom}
+                                >
+                                  {selo.rotulo}
+                                </span>
+                              );
+                            })()}
                             {proposta.daysInPending > 0 && (
                               <span className="inline-flex items-center rounded-full border border-[#F26B00] text-[#F26B00] px-2 py-0.5 text-xs font-medium">
                                 {proposta.daysInPending} dias pendente

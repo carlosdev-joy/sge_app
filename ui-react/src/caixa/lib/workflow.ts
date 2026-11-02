@@ -183,6 +183,20 @@ export interface FotoCard1 {
   subSituacao?: string;
   criticas?: number;
   quitacao?: string | null;
+  /** Só o Card 5 (Emitidas, VG + AP): o que a foto sabe do contrato emitido. */
+  emitida?: EmitidaCard5;
+}
+
+/** Card 5: cor do selo (`tom`), segmento, datas e, quando o contrato está
+ *  inativo, o motivo do cancelamento (`null` = a fonte não registrou). */
+export interface EmitidaCard5 {
+  tom: "emitida" | "suspensa" | "cancelada";
+  segmento: string;
+  subSituacao: string;
+  emissao: string | null;
+  inativo: boolean;
+  cancelamento: string | null;
+  motivo: string | null;
 }
 
 export const propostasWorkflow: PropostaWorkflow[] = [
