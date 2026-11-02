@@ -149,3 +149,10 @@ def test_valor_longo_encolhe_no_celular_em_vez_de_quebrar_no_meio_do_numero():
     assert "tamanhoDoValor(valorTexto, destaque)" in corpo
     # classes literais (o Tailwind só gera o que está escrito inteiro)
     assert '"sm:text-lg"' in corpo and '"sm:text-xl"' in corpo and "text-sm" in corpo and "text-base" in corpo
+
+
+def test_valor_de_bilhoes_tem_faixa_propria_para_nao_quebrar_no_card_do_desktop_nem_do_celular():
+    """"R$ 9.532.334.215,69" (Card 8) quebrava no meio mesmo no desktop: faixa >= 18 caracteres."""
+    corpo = _fonte(CAIXA / "components" / "Card1Valor.tsx")
+    assert "texto.length >= 18" in corpo and '"text-xs sm:text-base"' in corpo and "text-xs" in corpo
+    assert corpo.index("texto.length >= 18") < corpo.index("texto.length >= 15") < corpo.index("texto.length >= 12")

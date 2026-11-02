@@ -11,6 +11,7 @@ import ProposalTimeline from "./ProposalTimeline";
 import PendenciasCard4 from "./PendenciasCard4";
 import MotivosCard6 from "./MotivosCard6";
 import DevolucaoCard7 from "./DevolucaoCard7";
+import SensibilizacaoCard8 from "./SensibilizacaoCard8";
 import ProposalShareDialog from "./ProposalShareDialog";
 import ProposalHistoryDialog from "./ProposalHistoryDialog";
 import type { FotoCard1 } from "../lib/workflow";
@@ -108,7 +109,16 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
       <Modal open={open} onClose={onClose} title="Resumo do seguro" size="xl">
         <div className="space-y-6">
           {/* Linha do tempo do status */}
-          {foto?.devolucao ? (
+          {foto?.sensibilizacao ? (
+            // Card 8: o Workflow mostra os DOIS estados reais — o do último movimento e o da proposta.
+            <ProposalTimeline
+              currentStatus="sensitization_monitoring"
+              passos={[
+                { id: "movimento", label: `Movimento: ${foto.sensibilizacao.statusMovimento}`, tom: "ambar", estado: "completed" },
+                { id: "proposta", label: `Proposta: ${foto.sensibilizacao.statusAtual}`, tom: foto.sensibilizacao.podeSensibilizar ? "laranja" : "verde", estado: "active" },
+              ]}
+            />
+          ) : foto?.devolucao ? (
             // Card 7: a etapa da devolução vem da foto (pendente 0, em andamento 1, realizada 2).
             <ProposalTimeline
               currentStatus="refund_pending"
@@ -186,6 +196,15 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
               três primeiros: nome, parentesco e percentual eram fixos
               ("Herdeiros Legais", "100%"). Se o beneficiário voltar, vem da carga.
               Ver docs/pio-fonte-de-dados.md → "Que coluna preenche cada campo". */}
+          {/* Card 8: valor do prêmio, movimento encaminhado e data de envio do movimento. */}
+          {foto?.sensibilizacao && (
+            <Secao titulo="Dados da Sensibilização">
+              <SensibilizacaoCard8 proposal={proposal} s={foto.sensibilizacao} />
+            </Secao>
+          )}
+
+          {/* Card 8: a foto não traz o segurado; o quadro seria só campos vazios. */}
+          {!foto?.sensibilizacao && (
           <Secao titulo="Dados do Segurado">
             <div className="bg-canvas p-6 rounded-lg border border-edge">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -211,6 +230,7 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
               <p className="text-xs text-dim mt-4 italic">*conforme registro civil</p>
             </div>
           </Secao>
+          )}
 
           {/* Card 7: valor devolvido, banco, agência, conta, status e data do crédito. */}
           {foto?.devolucao && (
