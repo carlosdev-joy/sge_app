@@ -52,6 +52,7 @@ import {
   STATUS_CARD5,
   STATUS_CARD6,
   STATUS_CARD7,
+  STATUS_CARD8,
   seloDaProposta,
   STATUS_DE_FOTO,
   useResumoCard1,
@@ -65,6 +66,7 @@ import { useResumoCard4, usePropostasCard4 } from "../lib/pioCard4";
 import { useResumoCard5, usePropostasCard5 } from "../lib/pioCard5";
 import { useResumoCard6, usePropostasCard6 } from "../lib/pioCard6";
 import { useResumoCard7, usePropostasCard7 } from "../lib/pioCard7";
+import { useResumoCard8, usePropostasCard8 } from "../lib/pioCard8";
 import DevolucaoSubcards from "./DevolucaoSubcards";
 import type { SituacaoDevolucao } from "../lib/workflow";
 
@@ -156,7 +158,8 @@ export default function InlineWorkflow() {
   const emCard5 = selectedStatus === STATUS_CARD5;
   const emCard6 = selectedStatus === STATUS_CARD6;
   const emCard7 = selectedStatus === STATUS_CARD7;
-  const emFoto = emCard1 || emCard2 || emCard3 || emCard4 || emCard5 || emCard6 || emCard7;
+  const emCard8 = selectedStatus === STATUS_CARD8;
+  const emFoto = emCard1 || emCard2 || emCard3 || emCard4 || emCard5 || emCard6 || emCard7 || emCard8;
   /** Card 7 sem sub-card escolhido: não há lista nem aviso de lista a mostrar. */
   const semLista = emCard7 && devolucao === null;
   const resumoCard1 = useResumoCard1();
@@ -166,6 +169,7 @@ export default function InlineWorkflow() {
   const resumoCard5 = useResumoCard5();
   const resumoCard6 = useResumoCard6();
   const resumoCard7 = useResumoCard7();
+  const resumoCard8 = useResumoCard8();
   const paginaPio = usePropostasPio(emFoto ? undefined : cardSelecionado, isExpanded, pagina, "");
   const fotoCard1 = usePropostasCard1(emCard1 && isExpanded, pagina, resumoCard1.data?.referencia);
   const fotoCard2 = usePropostasCard2(emCard2 && isExpanded, pagina, resumoCard2.data?.referencia);
@@ -174,9 +178,10 @@ export default function InlineWorkflow() {
   const fotoCard5 = usePropostasCard5(emCard5 && isExpanded, pagina, resumoCard5.data?.referencia);
   const fotoCard6 = usePropostasCard6(emCard6 && isExpanded, pagina, resumoCard6.data?.referencia);
   const fotoCard7 = usePropostasCard7(emCard7 && isExpanded, pagina, resumoCard7.data?.referencia, devolucao);
+  const fotoCard8 = usePropostasCard8(emCard8 && isExpanded, pagina, resumoCard8.data?.referencia);
   // Resumo e página do card selecionado (os três hooks rodam sempre: ordem fixa).
-  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4, [STATUS_CARD5]: resumoCard5, [STATUS_CARD6]: resumoCard6, [STATUS_CARD7]: resumoCard7 } as Record<string, typeof resumoCard1>;
-  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4, [STATUS_CARD5]: fotoCard5, [STATUS_CARD6]: fotoCard6, [STATUS_CARD7]: fotoCard7 } as Record<string, typeof fotoCard1>;
+  const resumos = { [STATUS_CARD1]: resumoCard1, [STATUS_CARD2]: resumoCard2, [STATUS_CARD3]: resumoCard3, [STATUS_CARD4]: resumoCard4, [STATUS_CARD5]: resumoCard5, [STATUS_CARD6]: resumoCard6, [STATUS_CARD7]: resumoCard7, [STATUS_CARD8]: resumoCard8 } as Record<string, typeof resumoCard1>;
+  const fotos = { [STATUS_CARD1]: fotoCard1, [STATUS_CARD2]: fotoCard2, [STATUS_CARD3]: fotoCard3, [STATUS_CARD4]: fotoCard4, [STATUS_CARD5]: fotoCard5, [STATUS_CARD6]: fotoCard6, [STATUS_CARD7]: fotoCard7, [STATUS_CARD8]: fotoCard8 } as Record<string, typeof fotoCard1>;
   const lista = listaDoCard(
     emFoto, paginaPio,
     (item) => propostaDoPio(item, selectedStatus as StatusWorkflow),
@@ -231,6 +236,11 @@ export default function InlineWorkflow() {
   delete reais[STATUS_CARD7];
   if (resumoCard7.data?.disponivel && resumoCard7.data.referencia) {
     reais[STATUS_CARD7] = resumoCard7.data.quantidade;
+  }
+  // Idem o Card 8 (quantidade = IDENTIFICAÇÕES com último movimento, nunca a contagem legada).
+  delete reais[STATUS_CARD8];
+  if (resumoCard8.data?.disponivel && resumoCard8.data.referencia) {
+    reais[STATUS_CARD8] = resumoCard8.data.quantidade;
   }
 
   const counts = contarPorStatus(PROPOSTAS_DE_EXEMPLO, proposalStatuses, reais);
@@ -414,7 +424,7 @@ export default function InlineWorkflow() {
                 {lista.referencia ? ` de ${dataBr(lista.referencia)}` : ""}
                 {!semLista && lista.deFoto && lista.atualizacao ? `, publicada em ${dataHoraBr(lista.atualizacao)}` : ""}
                 {filteredProposals.length > 0 && (
-                  <> · mostrando {filteredProposals.length.toLocaleString("pt-BR")}, as mais antigas primeiro</>
+                  <> · mostrando {filteredProposals.length.toLocaleString("pt-BR")}, {lista.ordem === "identificacao" ? "por nº de identificação" : "as mais antigas primeiro"}</>
                 )}
               </p>
             )}
@@ -526,7 +536,23 @@ export default function InlineWorkflow() {
                               Alterar forma de pagamento
                             </Button>
                           )}
-                          {statusAtual === "sensitization_monitoring" && (
+                          {/* Card 8 (foto): "Sensibilizar" habilita quando a situação da proposta DIFERE do
+                              último movimento encaminhado (equivalência declarada no backend). O envio do
+                              movimento ainda NÃO está integrado: o clique avisa, sem sucesso falso. */}
+                          {statusAtual === "sensitization_monitoring" && proposta.foto?.sensibilizacao && (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              disabled={!proposta.foto.sensibilizacao.podeSensibilizar}
+                              title={proposta.foto.sensibilizacao.podeSensibilizar
+                                ? "Enviar o movimento de sensibilização"
+                                : "O último movimento encaminhado já corresponde à situação da proposta"}
+                              onClick={() => toast.info("O envio do movimento de sensibilização ainda não está integrado. Nenhum movimento foi enviado.")}
+                            >
+                              Sensibilizar
+                            </Button>
+                          )}
+                          {statusAtual === "sensitization_monitoring" && !proposta.foto?.sensibilizacao && (
                             <Button
                               variant="primary"
                               size="sm"

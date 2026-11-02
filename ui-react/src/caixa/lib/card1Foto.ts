@@ -35,11 +35,15 @@ export const STATUS_CARD6: StatusWorkflow = "declined";
  *  um deles lista os contratos. O número do card é o VALOR DEVOLVIDO (todos os status). */
 export const STATUS_CARD7: StatusWorkflow = "refund_scheduled";
 
+/** O Card 8 (Sensibilizações = último movimento de propostas Vida) também: `/pio/card8/*`. A unidade
+ *  é a IDENTIFICAÇÃO (o número da proposta pode faltar). O número do card é o valor sensibilizado. */
+export const STATUS_CARD8: StatusWorkflow = "sensitization_monitoring";
+
 /** Cards do Workflow que leem a foto diária. */
-export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4, STATUS_CARD5, STATUS_CARD6, STATUS_CARD7];
+export const STATUS_DE_FOTO: StatusWorkflow[] = [STATUS_CARD1, STATUS_CARD2, STATUS_CARD3, STATUS_CARD4, STATUS_CARD5, STATUS_CARD6, STATUS_CARD7, STATUS_CARD8];
 
 const PREFIXO_ID: Partial<Record<StatusWorkflow, string>> = {
-  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4", [STATUS_CARD5]: "pio5", [STATUS_CARD6]: "pio6", [STATUS_CARD7]: "pio7",
+  [STATUS_CARD1]: "pio1", [STATUS_CARD2]: "pio2", [STATUS_CARD3]: "pio3", [STATUS_CARD4]: "pio4", [STATUS_CARD5]: "pio5", [STATUS_CARD6]: "pio6", [STATUS_CARD7]: "pio7", [STATUS_CARD8]: "pio8",
 };
 
 export interface ResumoCard1 {
@@ -53,6 +57,8 @@ export interface ResumoCard1 {
   /** Só o Card 5: contratos com prêmio informado (< quantidade = soma parcial). */
   premios_informados?: number;
   /** Só o Card 7: contratos e valor devolvido por sub-card (somam o total do card). */
+  /** Só o Card 8: identificações sem status de movimento (NULL ou código de controle). */
+  sem_status?: number;
   por_situacao?: Record<SituacaoDevolucao, { quantidade: number; valor: number | null; valores_informados: number }>;
   quantidade: number;
   grupos: number;
@@ -95,6 +101,12 @@ export interface ItemCard1 {
   motivos?: number;
   declinio?: string | null;
   dias_venda_declinio?: number | null;
+  /** Só o Card 8: último movimento da identificação, situação da proposta e o botão Sensibilizar. */
+  sensibilizacao?: {
+    identificacao: string; linha: string; status_movimento: string; status_movimento_codigo: string;
+    status_atual: string; status_atual_codigo: string; motivo: string | null; data_movimento: string | null;
+    data_envio: string | null; pode_sensibilizar: boolean;
+  };
   /** Só o Card 7: sub-card, status do último movimento e data dele. */
   devolucao?: {
     situacao: SituacaoDevolucao; status: string; retorno: string;
@@ -174,6 +186,8 @@ export interface PaginaCard1 {
   limite: number;
   offset: number;
   detalhe_disponivel: boolean;
+  /** Só o Card 8: como a lista está ordenada (`identificacao`); sem isso, mais antigas primeiro. */
+  ordem?: string;
   itens: ItemCard1[];
 }
 
@@ -218,6 +232,15 @@ export function propostaDoCard1(
     ...(item.criticas === undefined ? {} : {
       subSituacao: item.sub_situacao ?? "", criticas: item.criticas, quitacao: item.quitacao ?? null,
     }),
+    ...(item.sensibilizacao === undefined ? {} : {
+      sensibilizacao: {
+        identificacao: item.sensibilizacao.identificacao, linha: item.sensibilizacao.linha,
+        statusMovimento: item.sensibilizacao.status_movimento, statusMovimentoCodigo: item.sensibilizacao.status_movimento_codigo,
+        statusAtual: item.sensibilizacao.status_atual, statusAtualCodigo: item.sensibilizacao.status_atual_codigo,
+        motivo: item.sensibilizacao.motivo, dataMovimento: item.sensibilizacao.data_movimento,
+        dataEnvio: item.sensibilizacao.data_envio, podeSensibilizar: item.sensibilizacao.pode_sensibilizar,
+      },
+    }),
     ...(item.devolucao === undefined ? {} : {
       devolucao: {
         situacao: item.devolucao.situacao, segmento: item.segmento ?? "", status: item.devolucao.status,
@@ -259,7 +282,7 @@ export function propostaDoCard1(
     region: regiaoDaUf(item.uf),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
-    daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 || status === STATUS_CARD6 || status === STATUS_CARD7 ? 0 : item.dias_pendente,
+    daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 || status === STATUS_CARD6 || status === STATUS_CARD7 || status === STATUS_CARD8 ? 0 : item.dias_pendente,
     foto,
   };
 }
@@ -303,6 +326,9 @@ export function rotuloSegmento(segmento: string): string {
 export function seloDaProposta(
   proposta: PropostaWorkflow, corDoCard: string, rotuloDoCard: string,
 ): { classe: string; rotulo: string } {
+  const sens = proposta.foto?.sensibilizacao;
+  // Card 8: o selo mostra o status REAL do último movimento (ou que ele não é identificável).
+  if (sens) return { classe: `${corDoCard} text-white`, rotulo: sens.statusMovimento || rotuloDoCard };
   const d = proposta.foto?.devolucao;
   // Card 7: o selo mostra o status REAL do último movimento, na cor do sub-card.
   if (d) return { classe: COR_SUBCARD_DEVOLUCAO[d.situacao], rotulo: d.status || ROTULO_SUBCARD_DEVOLUCAO[d.situacao] };
@@ -319,6 +345,15 @@ export function seloDaProposta(
 export function estadoDaFoto(foto: FotoCard1): { rotulo: string; valor: string }[] {
   // Card 4: a fonte não tem assinatura/pagamento; tem a sub-situação, as
   // mensagens de crítica e a data de quitação (que pode não existir).
+  // Card 8: o último movimento (e a data dele) e a situação ATUAL da proposta — estados diferentes.
+  if (foto.sensibilizacao) {
+    const s = foto.sensibilizacao;
+    return [
+      { rotulo: "Último movimento", valor: s.statusMovimento },
+      { rotulo: "Data", valor: s.dataMovimento ? dataBr(s.dataMovimento) : "Não informada" },
+      { rotulo: "Situação da proposta", valor: s.statusAtual },
+    ];
+  }
   // Card 7: devolução — onde está (sub-card), status do último movimento e a data dele.
   if (foto.devolucao) {
     const d = foto.devolucao;
@@ -387,6 +422,8 @@ export interface ListaPio {
   desatualizado: boolean;
   atualizacao: string | null;
   deFoto: boolean;
+  /** Card 8: `identificacao` = lista por nº de identificação (não é "as mais antigas primeiro"). */
+  ordem: string | null;
 }
 
 interface ConsultaLegada {
@@ -412,6 +449,7 @@ export function listaDoCard(
       total: legada.data?.total ?? 0,
       propostas: (legada.data?.itens ?? []).map((i) => mapearLegado(i as never)),
       detalheIndisponivel: false,
+      ordem: null,
       desatualizado: false,
       atualizacao: null,
       deFoto: false,
@@ -429,6 +467,7 @@ export function listaDoCard(
     propostas: (pagina?.itens ?? []).map((i) =>
       propostaDoCard1(i, pagina?.referencia ?? null, pagina?.atualizacao ?? null, status)),
     detalheIndisponivel: pagina ? !pagina.detalhe_disponivel : false,
+    ordem: pagina?.ordem ?? null,
     desatualizado: pagina?.desatualizado ?? resumo.data?.desatualizado ?? false,
     atualizacao: pagina?.atualizacao ?? resumo.data?.atualizacao ?? null,
     deFoto: true,

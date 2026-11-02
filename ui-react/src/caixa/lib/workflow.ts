@@ -189,6 +189,23 @@ export interface FotoCard1 {
   rejeitada?: RejeitadaCard6;
   /** Só o Card 7 (Devolução de Prêmio, VG + AP): onde a devolução está. */
   devolucao?: DevolucaoCard7;
+  /** Só o Card 8 (Sensibilizações, VG + AP): o último movimento da identificação e a proposta. */
+  sensibilizacao?: SensibilizacaoCard8;
+}
+
+/** Card 8: a foto guarda o ÚLTIMO movimento de cada identificação (últimos 12 meses). O estado do
+ *  MOVIMENTO (`statusMovimento`) e o da PROPOSTA (`statusAtual`) são estados diferentes. */
+export interface SensibilizacaoCard8 {
+  identificacao: string;
+  linha: string;
+  statusMovimento: string;
+  statusMovimentoCodigo: string;
+  statusAtual: string;
+  statusAtualCodigo: string;
+  motivo: string | null;
+  dataMovimento: string | null;
+  dataEnvio: string | null;
+  podeSensibilizar: boolean;
 }
 
 export type SituacaoDevolucao = "realizada" | "andamento" | "pendente";

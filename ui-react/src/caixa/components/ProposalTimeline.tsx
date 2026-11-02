@@ -16,6 +16,8 @@ interface ProposalTimelineProps {
   currentStatus: string;
   /** Card 7: etapa REAL da devolução (0 pendente, 1 em andamento, 2 realizada). Sem ela, o fluxo antigo. */
   refundStep?: 0 | 1 | 2;
+  /** Card 8: passos REAIS vindos da foto (movimento encaminhado → situação da proposta). Têm prioridade. */
+  passos?: { id: string; label: string; tom: "laranja" | "ambar" | "verde" | "vermelho"; estado: TimelineStep["status"] }[];
 }
 
 // Cores de etapa fixas (as vars do tema shadcn aposentado não existem): laranja CAIXA, âmbar, verde e vermelho — legíveis nos 2 temas
@@ -25,8 +27,15 @@ const AMBAR = "#f59e0b";
 const VERDE = "#10b981";
 const VERMELHO = "#ef4444";
 
-export default function ProposalTimeline({ currentStatus, refundStep }: ProposalTimelineProps) {
+export default function ProposalTimeline({ currentStatus, refundStep, passos }: ProposalTimelineProps) {
   const getTimelineSteps = (): TimelineStep[] => {
+    if (passos) {
+      const cor = { laranja: LARANJA, ambar: AMBAR, verde: VERDE, vermelho: VERMELHO };
+      return passos.map((p, i) => ({
+        id: p.id, label: p.label, color: cor[p.tom], status: p.estado,
+        icon: i === 0 ? <FileText className="h-5 w-5" /> : <CheckCircle className="h-5 w-5" />,
+      }));
+    }
     const isExceptionFlow = currentStatus === "pending_dps";
     const isRefundFlow = currentStatus === "refund_pending";
 

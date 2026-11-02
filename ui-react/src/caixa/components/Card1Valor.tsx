@@ -26,6 +26,8 @@ const A_PARTIR_DE_SM: Record<string, string> = { "text-lg": "sm:text-lg", "text-
 function tamanhoDoValor(texto: string, destaque: string): string {
   const grande = A_PARTIR_DE_SM[destaque];
   if (!grande) return destaque;
+  // Bilhões ("R$ 9.532.334.215,69", 19 caracteres): nem o card do desktop comporta o corpo grande.
+  if (texto.length >= 18) return destaque === "text-lg" ? "text-xs sm:text-base" : `text-xs ${grande}`;
   if (texto.length >= 15) return `text-sm ${grande}`;
   if (texto.length >= 12) return `text-base ${grande}`;
   return destaque;
