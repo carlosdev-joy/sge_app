@@ -120,3 +120,17 @@ def test_hooks_do_card3_leem_os_endpoints_do_card3():
 def test_router_do_card3_registrado_em_main():
     main = (RAIZ / "api" / "main.py").read_text(encoding="utf-8")
     assert main.count("pio_card3") == 2
+
+
+def test_card3_tem_o_botao_reenviar_proposta_sem_acao_que_so_gera_o_alerta():
+    """Pedido do Carlos (03/11): botão "Reenviar Proposta" em cada registro do Card 3, inicialmente SEM AÇÃO."""
+    corpo = _fonte(CAIXA / "components" / "InlineWorkflow.tsx")
+    i = corpo.index('statusAtual === "paid" && (')
+    bloco = corpo[i:corpo.index("</Button>", i) + 9]
+    assert "Reenviar Proposta" in bloco and 'data-testid="reenviar-proposta"' in bloco
+    assert 'toast.info("Proposta reenviada.")' in bloco
+    # sem ação: nenhuma chamada de API, nenhum diálogo, nenhuma mudança de estado
+    for acao in ("apiFetch", "fetch(", "mutate", "abrir(", "setProposalStatuses", "useMutation"):
+        assert acao not in bloco, acao
+    # só o Card 3: nenhum outro status ganha o botão
+    assert corpo.count("Reenviar Proposta") == 1

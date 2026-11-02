@@ -519,6 +519,20 @@ export default function InlineWorkflow() {
                               Enviar
                             </Button>
                           )}
+                          {/* Card 3 (Assinadas e Pagas): "Reenviar Proposta" é, POR ENQUANTO, sem ação — nada é
+                              enviado; o clique só gera o alerta de proposta reenviada (pedido do Carlos, 03/11).
+                              Quando houver integração, o envio entra aqui. */}
+                          {statusAtual === "paid" && (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              data-testid="reenviar-proposta"
+                              onClick={() => toast.info("Proposta reenviada.")}
+                            >
+                              <Send className="h-4 w-4" />
+                              Reenviar Proposta
+                            </Button>
+                          )}
                           {/* A DPS virou sub-status da crítica: o botão segue a
                               pendência da proposta, não mais o card. */}
                           {statusAtual === "in_analysis" &&
