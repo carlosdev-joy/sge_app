@@ -32,6 +32,7 @@ from deps import get_current_user  # noqa: E402
 from routers.pio_card8 import (  # noqa: E402
     _COLUNAS_LISTA, _NOMES, EQUIVALENTES, SEM_CODIGO, SEM_STATUS, _codigo, _legivel, pode_sensibilizar,
 )
+from routers.pio_card8 import _item as _item_de  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[1]
 LOTE = "00000000-0000-4000-8000-0000000000a8"
