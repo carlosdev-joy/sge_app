@@ -119,7 +119,7 @@ export default function ProposalTimeline({ currentStatus, refundStep, passos }: 
 
   return (
     <div ref={trilho} className="py-8 overflow-x-auto" data-testid="linha-do-tempo">
-      <div className={`flex items-start justify-between relative px-4 ${steps.length > 3 ? "min-w-max sm:min-w-0" : ""}`}>
+      <div role="list" className={`flex items-start justify-between relative px-4 ${steps.length > 3 ? "min-w-max sm:min-w-0" : ""}`}>
         {/* Linha de fundo entre o primeiro e o último círculo */}
         <div
           className="absolute top-6 h-1 bg-[#1A5FA8]/20 -z-10"
@@ -127,7 +127,12 @@ export default function ProposalTimeline({ currentStatus, refundStep, passos }: 
         />
 
         {steps.map((step, index) => (
-          <div key={step.id} className={`flex flex-col items-center relative flex-1 ${steps.length > 3 ? "min-w-[104px]" : ""}`}>
+          <div
+            key={step.id}
+            role="listitem"
+            aria-current={step.status === "active" ? "step" : undefined}
+            className={`flex flex-col items-center relative flex-1 ${steps.length > 3 ? "min-w-[104px]" : ""}`}
+          >
             {/* Círculo com ícone */}
             <div
               className={`relative z-10 w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${
@@ -157,6 +162,9 @@ export default function ProposalTimeline({ currentStatus, refundStep, passos }: 
                 }`}
               >
                 {step.label}
+                {/* O estado não pode depender só da cor/ícone: leitor de tela ouve "concluída" / "etapa atual". */}
+                {step.status === "completed" && <span className="sr-only"> (concluída)</span>}
+                {step.status === "active" && <span className="sr-only"> (etapa atual)</span>}
               </p>
             </div>
           </div>

@@ -119,9 +119,9 @@ def test_atual_do_fluxo_le_o_estado_real_da_foto_de_cada_card(card1):
       const base = {idFoto: 1, referencia: null, atualizacao: null, situacao: '', assinatura: '', pago: '',
         contato: {email: null, celular: null, residencial: null}};
       const emit = (tom, sub) => m.atualDoFluxo({...base, emitida: {tom, segmento: 'VG', subSituacao: sub, emissao: null, inativo: false, cancelamento: null, motivo: null}});
-      const dev = (s) => m.atualDoFluxo({...base, devolucao: {situacao: s, segmento: 'VG', status: 'x', retorno: '', dataMovimento: null, declinio: null}});
+      const dev = (s, st = '') => m.atualDoFluxo({...base, devolucao: {situacao: s, segmento: 'VG', status: st, retorno: '', dataMovimento: null, declinio: null}});
       return [emit('emitida', 'Integrada'), emit('suspensa', 'Cobertura Suspensa'), emit('cancelada', 'Cancelada após Aceitação'), emit('cancelada', ''),
-              dev('realizada'), dev('andamento'), dev('pendente'),
+              dev('realizada'), dev('andamento'), dev('pendente'), dev('andamento', 'Processando'),
               m.atualDoFluxo({...base, sensibilizacao: {identificacao: '1', linha: 'VG', statusMovimento: 'Enviada', statusMovimentoCodigo: 'ENV', statusAtual: 'S', statusAtualCodigo: 'S', motivo: null, dataMovimento: null, dataEnvio: null, podeSensibilizar: false}}),
               m.atualDoFluxo({...base, criticas: 2, subSituacao: 'Em Crítica', quitacao: null}),
               m.atualDoFluxo({...base, criticas: 2, subSituacao: '', quitacao: null}),
@@ -131,8 +131,9 @@ def test_atual_do_fluxo_le_o_estado_real_da_foto_de_cada_card(card1):
     assert r[2] == {"rotulo": "Cancelada após Aceitação", "tom": "vermelho"} and r[3]["tom"] == "vermelho" and r[3].get("rotulo") is None
     assert r[4] == {"rotulo": "Devolução Realizada", "tom": "verde"} and r[5] == {"rotulo": "Devolução em Andamento", "tom": "ambar"}
     assert r[6] == {"rotulo": "Devolução Pendente", "tom": "vermelho"}
-    assert r[7] == {"rotulo": "Sensibilização · Enviada"} and r[8] == {"rotulo": "Em Análise · Em Crítica"}
-    assert r[9] is None and r[10] is None and r[11] is None and r[12] is None
+    assert r[7] == {"rotulo": "Devolução em Andamento · Processando", "tom": "ambar"}      # sub-card + status real, como o selo
+    assert r[8] == {"rotulo": "Sensibilização · Enviada"} and r[9] == {"rotulo": "Em Análise · Em Crítica"}
+    assert r[10] is None and r[11] is None and r[12] is None and r[13] is None
 
 
 def test_resumo_do_seguro_usa_o_fluxo_para_todos_os_cards():
@@ -160,3 +161,10 @@ def test_linha_do_tempo_abre_na_etapa_atual_e_o_circulo_fica_acima_do_traco():
 def test_emitida_cancelada_nao_leva_check_na_etapa_atual():
     tl = _fonte(CAIXA / "components" / "ProposalTimeline.tsx")
     assert 'p.id === "emission_sent" && p.tom === "vermelho" ? <XCircle' in tl
+
+
+def test_linha_do_tempo_tem_semantica_de_lista_e_diz_a_etapa_atual_a_leitores_de_tela():
+    tl = _fonte(CAIXA / "components" / "ProposalTimeline.tsx")
+    assert 'role="list"' in tl and 'role="listitem"' in tl
+    assert "aria-current={step.status === \"active\" ? \"step\" : undefined}" in tl
+    assert "sr-only" in tl and "concluída" in tl and "etapa atual" in tl

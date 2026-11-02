@@ -329,7 +329,7 @@ export function atualDoFluxo(foto: FotoCard1 | undefined): AtualDoFluxo | undefi
   }
   if (foto.devolucao) {
     const d = foto.devolucao;
-    return { rotulo: ROTULO_SUBCARD_DEVOLUCAO[d.situacao], tom: d.situacao === "realizada" ? "verde" : d.situacao === "andamento" ? "ambar" : "vermelho" };
+    return { rotulo: d.status ? `${ROTULO_SUBCARD_DEVOLUCAO[d.situacao]} · ${d.status}` : ROTULO_SUBCARD_DEVOLUCAO[d.situacao], tom: d.situacao === "realizada" ? "verde" : d.situacao === "andamento" ? "ambar" : "vermelho" };
   }
   if (foto.sensibilizacao) return { rotulo: `Sensibilização · ${foto.sensibilizacao.statusMovimento}` };
   if (foto.criticas !== undefined && foto.subSituacao) return { rotulo: `Em Análise · ${foto.subSituacao}` };
