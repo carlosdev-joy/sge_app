@@ -166,3 +166,10 @@ def test_linha_do_tempo_da_devolucao_segue_a_etapa_real():
     dialogo = _fonte(CAIXA / "components" / "ProposalDetailDialog.tsx")
     assert 'currentStatus="refund_pending"' in dialogo
     assert 'situacao === "realizada" ? 2 : foto.devolucao.situacao === "andamento" ? 1 : 0' in dialogo
+
+
+def test_resumo_trata_zeros_como_nao_informado_menos_o_digito_da_conta():
+    comp = _fonte(CAIXA / "components" / "DevolucaoCard7.tsx")
+    for campo in ("d.banco", "d.agencia", "d.operacao", "d.conta"):
+        assert f"presente({campo})" in comp, campo
+    assert "presente(d.digito_conta)" not in comp and "d.digito_conta ?? NAO_INFORMADO" in comp   # 0 é dígito válido

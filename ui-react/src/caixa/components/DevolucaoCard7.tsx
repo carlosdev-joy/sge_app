@@ -16,6 +16,12 @@ function Campo({ rotulo, valor, apagado = false }: { rotulo: string; valor: stri
 }
 
 const NAO_INFORMADO = "Não informado";
+
+/** Só zeros (`"0"`, `"000"`) é placeholder da fonte, não banco/agência/conta. O DÍGITO da conta
+ *  fica de fora: 0 é um dígito verificador válido. */
+function presente(valor: string | null): string | null {
+  return valor !== null && valor.replace(/0/g, "") !== "" ? valor : null;
+}
 const FORA_DA_FOTO = "Não disponível nesta foto";
 
 export default function DevolucaoCard7({ devolucao, referencia, numero }: {
@@ -41,10 +47,10 @@ export default function DevolucaoCard7({ devolucao, referencia, numero }: {
           <Campo rotulo="Valor devolvido:" valor={d.valor === null ? NAO_INFORMADO : formatarMoeda(d.valor)} />
           <Campo rotulo="Status da devolução:" valor={d.status} />
           <Campo rotulo={rotuloData} valor={d.data_movimento ? dataBr(d.data_movimento) : NAO_INFORMADO} />
-          <Campo rotulo="Instituição financeira:" valor={d.banco ? `Banco ${d.banco}` : NAO_INFORMADO} />
-          <Campo rotulo="Agência:" valor={d.agencia ?? NAO_INFORMADO} />
-          <Campo rotulo="Operação:" valor={d.operacao ?? NAO_INFORMADO} />
-          <Campo rotulo="Conta:" valor={d.conta ?? NAO_INFORMADO} />
+          <Campo rotulo="Instituição financeira:" valor={presente(d.banco) ? `Banco ${d.banco}` : NAO_INFORMADO} />
+          <Campo rotulo="Agência:" valor={presente(d.agencia) ?? NAO_INFORMADO} />
+          <Campo rotulo="Operação:" valor={presente(d.operacao) ?? NAO_INFORMADO} />
+          <Campo rotulo="Conta:" valor={presente(d.conta) ?? NAO_INFORMADO} />
           <Campo rotulo="Dígito da conta:" valor={d.digito_conta ?? NAO_INFORMADO} />
           <div />
           <Campo rotulo="E-mail do cliente:" valor={FORA_DA_FOTO} apagado />

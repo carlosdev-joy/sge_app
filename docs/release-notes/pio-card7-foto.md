@@ -37,7 +37,10 @@ DMDB41), uma linha por contrato (VG = certificado, AP = bilhete, sempre com o se
    colunas `QTD_CONTRATOS`/`VLR_DEVOLUCAO_TOTAL`/`QTD_VALORES_INFORMADOS` na AGG e `COD_SIT_MOVIMENTO`/`DES_SIT_MOVIMENTO`/`NUM_CONTA_DEBITO` na FAT.
    Conferir os códigos reais: `SELECT SEGMENTO, COD_SIT_MOVIMENTO, DES_SIT_MOVIMENTO, COUNT_BIG(*) FROM FAT … GROUP BY …` — todo código fora do mapa cai em Pendente.
 2. `scripts/deploy_prod.sh`: migrations pendentes (141–147 se ainda não aplicadas, e a 148) → **s**; `config/` → **n**.
-3. Validar: valor e contratos do card × consulta de resumo da carga (02/11: 6.023 contratos, R$ 1.059.627,20); os 3 sub-cards somam o card; total da lista =
+3. **Paridade dos sub-cards** (a regra roda no SQL Server; a collation da DMDB41 não foi confirmada — `F` minúsculo ou espaço à direita
+   dependem dela): comparar `SUM(QTD_CONTRATOS)` da AGG com `COUNT_BIG(*)` da FAT por sub-card na foto do dia (o mesmo `CASE` de `_bucket`);
+   devem coincidir, e a soma dos três = o total. VG `8` sem `DES_SIT_MOVIMENTO` (não esperado) cairia em Em Andamento.
+4. Validar: valor e contratos do card × consulta de resumo da carga (02/11: 6.023 contratos, R$ 1.059.627,20); os 3 sub-cards somam o card; total da lista =
    contratos do sub-card; Cards 1–6 e 8 inalterados.
 
 ## Smoke (a–i)

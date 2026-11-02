@@ -268,3 +268,8 @@ def test_limite_maximo_e_validado(cliente, banco):
 def test_pio_py_nao_conhece_as_tabelas_novas_e_router_registrado():
     assert "ORQ_CARD07" not in (RAIZ / "api" / "routers" / "pio.py").read_text(encoding="utf-8")
     assert (RAIZ / "api" / "main.py").read_text(encoding="utf-8").count("pio_card7") == 2
+
+
+def test_numero_gigante_e_recusado_com_422_nao_vira_erro_mascarado(cliente, banco):
+    assert cliente.get("/pio/card7/devolucao?segmento=VG&numero=1000000000000000").status_code == 422
+    assert cliente.get("/pio/card7/devolucao?segmento=VG&numero=999999999999999").status_code == 200

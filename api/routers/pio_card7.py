@@ -296,7 +296,7 @@ def pio_card7_propostas(
 @router.get("/pio/card7/devolucao", dependencies=[Depends(_require_caixa)])
 def pio_card7_devolucao(
     segmento: Literal["VG", "AP"] = Query(..., description="VG (certificado) ou AP (bilhete)"),
-    numero: int = Query(..., ge=1, description="NUM_SIVPF (VG) ou NUM_BILHETE_TITULO (AP)"),
+    numero: int = Query(..., ge=1, le=999_999_999_999_999, description="NUM_SIVPF (VG) ou NUM_BILHETE_TITULO (AP); numeric(15,0)"),
     data: date | None = Query(None, description="DTA_MOVIMENTO; padrão = última publicada"),
 ) -> dict:
     """Dados da devolução e BANCÁRIOS de UM contrato, na foto — lendo a FAT.
