@@ -50,13 +50,14 @@ Uma única tela: aba/agente **Terminal** em `/agentes`. Sem reordenar o que já 
 - **RBAC:** `agente_terminal` (leitura; elegível a `desenvolvedor`, concessão manual por usuário, admin sempre) e `agente_terminal_escrita` (só admin concede, usuário a usuário, nunca por perfil; `require_agente` já ignora recurso vindo do perfil). Cada ferramenta ainda checa o que o usuário já tem (conexões de banco do agente, `acao_editar` etc.). `consulta` nunca recebe.
 - **Auditoria:** toda proposta, confirmação, recusa, execução e bloqueio vira linha com usuário, matrícula, servidor, comando (já redigido), classe, estado, código de saída, duração, bytes, `conversa_id`, IP. Saída armazenada só resumida/redigida (teto 8 KB).
 - **IA:** provedor `ia_*` (`ia_provedor.py`) com `identidade_gateway()`; prompt do agente versionado como os demais (`agentes_prompt.py`). Sem chave/segredo no prompt.
+- **Contrato do comando para o front (fixado na F1, `lib/terminalComando.ts`):** estados `proposto → executando → executado|falhou`, `proposto → recusado|expirado`, `bloqueado` (classe proibido, nasce assim); `falhou` vale também para leitura. Datas sempre ISO-8601 em UTC com sufixo `Z`; o front formata no fuso local. Para não depender do relógio do navegador, a resposta traz `segundos_restantes` (o front soma ao seu relógio) além de `expira_em`. `cmd_id` é UUID gerado no servidor. O servidor é a única autoridade: a UI só esconde botões, e a confirmação repete as checagens (usuário, recurso, hash, prazo, estado). Limite de saída do servidor: 64 KB / 2000 linhas (o front mostra 40 linhas + "Mostrar tudo").
 - **Alternativas descartadas:** tela `/terminal` independente (duplica RBAC/auditoria); PTY/xterm.js (superfície enorme, fora do pedido); IA classificando leitura×escrita (injeção de prompt contorna); `docker exec` pela API (concede o host).
 
 ## 5. Modelo de dados
-Migration `197_agente_terminal.sql` (idempotente, aplicada na etapa 6c do `deploy.sh`):
+Migration de dados da F2 (`NNN_agente_terminal.sql`, **próximo número livre no momento do merge** — conferir `origin/develop` e as worktrees `/root/orquestra-*`; as 197–200 estavam reservadas pela Malha F16 em andamento; a numeração não admite lacuna), idempotente, aplicada na etapa 6c do `deploy.sh`:
 - `etl_agente_terminal_cmd`: `cmd_id UNIQUEIDENTIFIER PK`, `conversa_id`, `matricula VARCHAR(20)`, `servidor VARCHAR(60)`, `comando NVARCHAR(2000)` (contar UTF-16 — `cortar_utf16`), `hash CHAR(64)`, `classe VARCHAR(10)` (leitura/escrita/proibido), `estado VARCHAR(12)` (proposto/confirmado/recusado/expirado/executado/falhou/bloqueado), `motivo NVARCHAR(500)`, `codigo_saida INT NULL`, `duracao_ms INT NULL`, `saida_resumo NVARCHAR(4000) NULL`, `ip VARCHAR(45)`, `criado_em`, `decidido_em`, `executado_em`. Índices por `(matricula, criado_em)` e `(conversa_id)`.
 - Recurso `agente_terminal` e `agente_terminal_escrita`: entram em `RBAC_RECURSOS` **e** na lista espelhada do front (DOIS lugares; exige relogin). Chaves de config: `agente_terminal_enabled` (padrão desligado), `agente_terminal_escrita_enabled` (padrão desligado — kill switch).
-- Migration de versão separada por fase (nome sem a palavra "enviar"), segundo número +1 na primeira funcionalidade.
+- Migration de versão a partir da F2 (nome sem a palavra "enviar"), segundo número +1; a F1 (só front simulado, fora do catálogo) não registra versão.
 - API e UI degradam se a tabela não existir (503 nomeando a migration).
 
 ## 6. Fases (front primeiro, com `impeccable` como portão)
@@ -67,7 +68,7 @@ Migration `197_agente_terminal.sql` (idempotente, aplicada na etapa 6c do `deplo
 - Revisão adversarial (`qa-adversarial`) antes da PR. PR: `feat: terminal do agente — interface (dados simulados)`.
 
 ### F2 — Fundação: catálogo, RBAC, auditoria
-- Entregável: migration 197 + versão; agente `terminal` no catálogo; recursos RBAC; interruptores; modelo de dados; endpoint de auditoria admin (leitura).
+- Entregável: migration de dados + migration de versão (a F1 não registrou versão; **próximos números livres no momento do merge**, sequenciais sem lacuna); agente `terminal` no catálogo; recursos RBAC; interruptores; modelo de dados; endpoint de auditoria admin (leitura).
 - Aceite: usuário sem recurso recebe `motivo_sem_acesso`; perfil `consulta` nunca elegível; `agente_terminal_escrita` não é concedido por perfil (teste espelhando o de `agente_datastage`); migration roda 2×.
 - Validação: pytest completo (8 falhas pré-existentes, zero novas), `tests/test_migrations_idempotentes.py`, QA adversarial. PR: `feat: agente terminal — fundação e auditoria`.
 

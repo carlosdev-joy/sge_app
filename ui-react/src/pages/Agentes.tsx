@@ -34,6 +34,7 @@ import { ChatAgente } from '../components/agentes/ChatAgente'
 import { CuradoriaAprendizados } from '../components/agentes/CuradoriaAprendizados'
 import { GaleriaAgentes, GaleriaCarregando } from '../components/agentes/GaleriaAgentes'
 import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
+import { TerminalSimulado } from '../components/agentes/TerminalSimulado'
 import { IndicadorProjeto } from '../components/agentes/IndicadorProjeto'
 import { toast } from '../components/ui/Toast'
 import { useAuthStore } from '../store/auth'
@@ -476,7 +477,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   )
 }
 
-export default function Agentes() {
+function AgentesReal() {
   const [params, setParams] = useSearchParams()
   const agenteParam = params.get('agente')
   const matricula = useAuthStore(s => s.user?.matricula ?? '')
@@ -593,4 +594,17 @@ export default function Agentes() {
       />
     </div>
   )
+}
+
+/**
+ * F1 da spec docs/spec-agente-terminal.md: o Terminal só abre, com dados SIMULADOS, em
+ * `?agente=terminal&simulado=1`. Sem os dois parâmetros nada muda na tela real; a
+ * F2 cria o agente no catálogo e a F5 troca o simulador pela API.
+ */
+export default function Agentes() {
+  const [params] = useSearchParams()
+  if (params.get('agente') === 'terminal' && params.get('simulado') === '1') {
+    return <TerminalSimulado podeEscrever={params.get('escrita') === '1'} />
+  }
+  return <AgentesReal />
 }
