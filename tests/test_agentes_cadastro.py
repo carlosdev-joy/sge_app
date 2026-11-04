@@ -379,7 +379,7 @@ def test_criar_nasce_desativado_com_prompt_v1_na_mesma_transacao(cadastro):
     assert p == {**p, "agente_id": "assistente", "versao": 1, "texto": "Você é o assistente da equipe de dados.",
                  "motivo": "criação", "criado_por": "ADM1"}
     lista = cliente.get("/agentes/admin/agentes").json()
-    assert [a["id"] for a in lista["agentes"]] == ["datastage", "assistente"]
+    assert [a["id"] for a in lista["agentes"]] == ["datastage", "terminal", "assistente"]
     assert lista["agentes"][0]["origem"] == "codigo"
     assert lista["ferramentas"] == list(svc.FERRAMENTAS_DATASTAGE)
 
@@ -551,15 +551,16 @@ def test_desativar_sempre_passa_mesmo_com_linha_editada_a_mao():
         reg.validar_alteracao(atual, {"ativo": True}, PERFIS)
 
 
-@pytest.mark.parametrize("agente_id", ["curador", "x_curador", "datastage", "admin", "Maiuscula", "ab"])
+@pytest.mark.parametrize("agente_id", ["curador", "x_curador", "datastage", "terminal", "terminal_escrita",
+                                       "x_escrita", "escrita", "admin", "Maiuscula", "ab"])
 def test_carga_ignora_id_invalido_ou_reservado_gravado_a_mao(agente_id):
     cur = MagicMock()
     cur.fetchall.return_value = [_linha(agente_id, ferramentas=("base",)), _linha("valido")]
     agentes = reg.carregar(cur)
-    assert set(agentes) == {"datastage", "valido"}
+    assert set(agentes) == {"datastage", "terminal", "valido"}
     svc.mapa_de_recursos(agentes)  # não levanta: nada colide com o agente_curador do DataStage
     cur.fetchone.return_value = _linha(agente_id)
-    assert agente_id == "datastage" or reg.um(cur, agente_id) is None
+    assert agente_id in ("datastage", "terminal") or reg.um(cur, agente_id) is None
 
 
 def test_erro_do_banco_que_nao_e_tabela_ausente_nao_vira_404(cadastro):

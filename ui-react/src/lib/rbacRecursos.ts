@@ -30,6 +30,8 @@ export const RBAC_RECURSOS: [string, string][] = [
   ['tela_agentes', 'Agentes'],
   ['agente_datastage', 'Agente — Mapeamento DataStage'],
   ['agente_curador', 'Agente — Curador dos aprendizados'],
+  ['agente_terminal', 'Agente — Terminal'],
+  ['agente_terminal_escrita', 'Agente — Terminal (executar comandos que alteram o servidor)'],
   ['acao_executar', 'Executar/Rerun/Ack'],
   ['acao_editar', 'Cadastrar/Editar'],
   ['acao_publicar', 'Publicar versões de pipeline'],
