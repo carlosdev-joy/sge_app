@@ -43,6 +43,7 @@ from services import agentes_ferramentas as af
 from services import agentes_prompt as apr
 from services import agentes_registro as reg
 from services import agentes_sql as asql
+from services import agentes_terminal as aterm
 from services import ia_provedor
 
 router = APIRouter()
@@ -422,6 +423,11 @@ async def agentes_admin_config_get(_admin: dict = Depends(get_admin_user)):
     # custou uma vez (tests/test_rbac_recursos_admin.py existe por isso).
     catalogo = [{"id": ag["id"], "nome": ag["nome"], "recurso": ag["recurso"],
                  "recurso_curador": ag["recurso_curador"],
+                 # Terminal: recurso e kill switch da ESCRITA (None nos demais agentes).
+                 "recurso_escrita": ag.get("recurso_escrita"),
+                 "config_escrita": ag.get("config_escrita"),
+                 # False = ainda não entregue: a tela mostra o interruptor travado e o agente não abre.
+                 "disponivel": ag.get("disponivel", True),
                  "config_enabled": ag["config_enabled"],
                  "perfis_elegiveis": list(ag["perfis_elegiveis"])}
                 for ag in svc.CATALOGO.values()]
@@ -434,7 +440,8 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
     valores: dict[str, str] = {}
     erros: list[str] = []
 
-    for chave in ("agentes_enabled", "agente_datastage_enabled"):
+    for chave in ("agentes_enabled", "agente_datastage_enabled", "agente_terminal_enabled",
+                  "agente_terminal_escrita_enabled"):
         if chave in body:
             valores[chave] = "1" if _verdadeiro(body.get(chave)) else "0"
 
@@ -500,6 +507,35 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
                 [k, v, admin["matricula"], v, admin["matricula"]])
         conn.commit()
     return {"sucesso": True, "mensagem": "Configuração de Agentes salva."}
+
+
+# ── Terminal: auditoria dos comandos (spec docs/spec-agente-terminal.md, F2) ─
+#
+# Só admin e só leitura. O texto já foi redigido na gravação; aqui nada é executado.
+
+@router.get("/agentes/terminal/auditoria", tags=["agentes-admin"])
+async def agentes_terminal_auditoria(
+        matricula: str | None = Query(default=None, max_length=20),
+        estado: str | None = Query(default=None, max_length=12),
+        classe: str | None = Query(default=None, max_length=10),
+        desde: str | None = Query(default=None, max_length=10),
+        ate: str | None = Query(default=None, max_length=10),
+        limite: int = Query(default=aterm.LIMITE_PADRAO, ge=1, le=aterm.LIMITE_MAX),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+        _admin: dict = Depends(get_admin_user)):
+    try:
+        with _conexao() as (_conn, cur):
+            dados = aterm.listar(cur, matricula=matricula, estado=estado, classe=classe,
+                                 desde=desde, ate=ate, limite=limite, offset=offset)
+    except aterm.AuditoriaInvalida as e:
+        raise HTTPException(status_code=422, detail={"code": "auditoria_filtro_invalido", "message": str(e)})
+    except Exception as e:  # noqa: BLE001
+        if _tabela_ausente(e):
+            raise HTTPException(status_code=503, detail={
+                "code": "auditoria_indisponivel",
+                "message": "Auditoria do Terminal indisponível: aplique a migration 197_agente_terminal."})
+        raise
+    return {"sucesso": True, **dados}
 
 
 # ── Prompt do domínio: versões (spec docs/spec-agentes-admin.md §3.3, A1) ───

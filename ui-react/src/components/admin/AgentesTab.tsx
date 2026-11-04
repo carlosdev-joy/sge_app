@@ -39,6 +39,11 @@ interface AgenteAdmin {
   nome: string
   recurso: string
   recurso_curador: string
+  /** Terminal: recurso e interruptor da ESCRITA (null nos demais agentes). */
+  recurso_escrita: string | null
+  config_escrita: string | null
+  /** false = agente ainda não entregue (Terminal até a F5): o interruptor fica travado. */
+  disponivel: boolean
   config_enabled: string
   perfis_elegiveis: string[]
 }
@@ -49,6 +54,8 @@ interface AgenteComAcesso {
   recurso: string
   /** `null`: agente só de conversa — sem curadoria. */
   recurso_curador: string | null
+  /** Só o Terminal: quem pode executar comandos que ALTERAM o servidor. */
+  recurso_escrita?: string | null
   perfis_elegiveis: string[]
   /** Só os criados pela tela podem ser 'perfil'. */
   acesso?: 'manual' | 'perfil'
@@ -221,6 +228,9 @@ export function AgentesTab() {
     // Curadoria só existe em agente com ferramentas (os só de conversa não geram aprendizados).
     ...(ag.recurso_curador ? [{ chave: `${ag.id}:curador`, recurso: ag.recurso_curador, titulo: 'Curadores',
       texto: 'Validam, rejeitam e marcam como obsoletos os aprendizados do agente, na aba Curadoria da tela Agentes — o curador também precisa estar em “Quem pode usar” para abrir a tela.' }] : []),
+    // Terminal: executar comandos que ALTERAM o servidor (sempre com “Confirmar” do próprio usuário).
+    ...(ag.recurso_escrita ? [{ chave: `${ag.id}:escrita`, recurso: ag.recurso_escrita, titulo: 'Quem pode executar comandos que alteram o servidor',
+      texto: 'Poder mais sensível do agente: cada comando que altera algo exige o “Confirmar” do próprio usuário e fica na auditoria. Concedido usuário a usuário; precisa estar em “Quem pode usar” também.' }] : []),
   ]
 
   /** Sair do agente aberto descarta o rascunho do prompt: confirma antes. */
@@ -367,9 +377,14 @@ export function AgentesTab() {
                 aria-label={ligado(ag.config_enabled) ? `${ag.nome}: ligado` : `${ag.nome}: desligado`}
                 aria-describedby={ligado('agentes_enabled') ? undefined : 'agentes-geral-desligado'}
                 checked={ligado(ag.config_enabled)}
-                disabled={salvar.isPending || !ligado('agentes_enabled')}
+                disabled={salvar.isPending || !ligado('agentes_enabled') || !ag.disponivel}
                 onChange={e => salvar.mutate({ [ag.config_enabled]: e.target.checked })}
               />
+              {!ag.disponivel && (
+                <span className="text-[11px] text-dim" data-agentes-indisponivel>
+                  ainda não disponível — chega com a interface real
+                </span>
+              )}
               {/* Texto visível, não balão: a tabela tem rolagem horizontal e
                   cortaria um balão (o mesmo problema da #441). */}
               {!ligado('agentes_enabled') && (
@@ -452,6 +467,25 @@ export function AgentesTab() {
                   {`Só usuários ativos dos perfis elegíveis (${agenteSel.perfis_elegiveis.join(', ') || '—'}) aparecem para conceder; `
                     + 'o administrador já tem acesso por acao_admin, sem precisar de concessão.'}
                 </p>
+                {(() => {
+                  // Kill switch da ESCRITA (só o Terminal): desligado, ninguém confirma comando que altera o servidor.
+                  const chave = agentes.find(a => a.id === agenteSel.id)?.config_escrita
+                  if (!chave) return null
+                  return (
+                    <div className="flex flex-col gap-1" data-agentes-escrita-interruptor>
+                      <Switch
+                        label={ligado(chave) ? 'Escrita liberada' : 'Escrita bloqueada'}
+                        aria-label={`${agenteSel.nome}: escrita ${ligado(chave) ? 'liberada' : 'bloqueada'}`}
+                        checked={ligado(chave)}
+                        disabled={salvar.isPending}
+                        onChange={e => salvar.mutate({ [chave]: e.target.checked })}
+                      />
+                      <p className="text-xs text-dim max-w-[75ch]">
+                        Interruptor geral da escrita: desligado, nenhum usuário consegue confirmar comandos que alteram o servidor, mesmo com a permissão. Nasce desligado.
+                      </p>
+                    </div>
+                  )
+                })()}
                 <div className="grid gap-6 lg:grid-cols-2">
                   {papeisDe(agenteSel).map(papel => {
                     const ag = agenteSel
