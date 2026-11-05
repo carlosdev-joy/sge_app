@@ -539,6 +539,89 @@ async def agentes_terminal_auditoria(
     return {"sucesso": True, **dados}
 
 
+# ── Terminal: confirmar/recusar comandos que ALTERAM o servidor (spec docs/spec-agente-terminal.md, F4) ──
+#
+# O cliente manda só `cmd_id` (+ o `hash` que viu): o comando executado é SEMPRE o gravado no servidor. Só o dono da
+# proposta confirma; kill switch + recurso de escrita são checados aqui (`svc.exigir_escrita`), além da proposta.
+
+def _http_confirmacao(e: "aterm.ConfirmacaoErro") -> HTTPException:
+    return HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message})
+
+
+def _tabela_terminal_ausente() -> HTTPException:
+    return HTTPException(status_code=503, detail={
+        "code": "auditoria_indisponivel",
+        "message": "Auditoria do Terminal indisponível: aplique a migration 197_agente_terminal."})
+
+
+@router.post("/agentes/terminal/confirmar", tags=["agentes"])
+async def agentes_terminal_confirmar(body: dict = Body(default={}), user: dict = Depends(get_current_user)):
+    cmd_id = str(body.get("cmd_id") or "").strip()
+    hash_visto = str(body.get("hash") or "").strip()
+    if not cmd_id or not hash_visto:
+        raise HTTPException(status_code=422, detail={"code": "corpo_invalido", "message": "cmd_id e hash são obrigatórios"})
+    with _conexao() as (_c, cur):
+        cfg = svc.carregar_config(cur)
+    svc.exigir_escrita(user, cfg, svc.AGENTE_TERMINAL)  # kill switch (vale p/ todos) + uso + recurso de escrita
+    try:
+        ssh_max = int(cfg.get("agentes_ssh_max") or 10)
+    except (TypeError, ValueError):
+        ssh_max = 10
+    try:
+        resultado = await aterm.confirmar_comando(_abrir, cmd_id=cmd_id, hash_visto=hash_visto, usuario=user, ssh_max=ssh_max)
+    except aterm.ConfirmacaoErro as e:
+        raise _http_confirmacao(e) from None
+    except Exception as e:  # noqa: BLE001
+        if _tabela_ausente(e):
+            raise _tabela_terminal_ausente() from None
+        raise
+    return {"sucesso": True, "resultado": resultado}
+
+
+@router.post("/agentes/terminal/recusar", tags=["agentes"])
+async def agentes_terminal_recusar(body: dict = Body(default={}), user: dict = Depends(get_current_user)):
+    cmd_id = str(body.get("cmd_id") or "").strip()
+    if not cmd_id:
+        raise HTTPException(status_code=422, detail={"code": "corpo_invalido", "message": "cmd_id é obrigatório"})
+    motivo = svc.motivo_sem_acesso(user, svc.CATALOGO[svc.AGENTE_TERMINAL])  # recusar não exige a escrita, só o uso do agente
+    if motivo is not None:
+        raise HTTPException(status_code=403, detail={"code": motivo[0], "message": motivo[1]})
+    try:
+        resultado = aterm.recusar_comando(_abrir, cmd_id=cmd_id, usuario=user)
+    except aterm.ConfirmacaoErro as e:
+        raise _http_confirmacao(e) from None
+    except Exception as e:  # noqa: BLE001
+        if _tabela_ausente(e):
+            raise _tabela_terminal_ausente() from None
+        raise
+    return {"sucesso": True, "resultado": resultado}
+
+
+@router.get("/agentes/terminal/comandos/{cmd_id}", tags=["agentes"])
+async def agentes_terminal_comando(cmd_id: str, user: dict = Depends(get_current_user)):
+    """Estado de UM comando do próprio usuário (a tela reidrata o card depois de recarregar o histórico)."""
+    motivo = svc.motivo_sem_acesso(user, svc.CATALOGO[svc.AGENTE_TERMINAL])
+    if motivo is not None:
+        raise HTTPException(status_code=403, detail={"code": motivo[0], "message": motivo[1]})
+    try:
+        with _conexao() as (conn, cur):
+            aterm.varrer_propostas_vencidas(cur)
+            aterm.varrer_interrompidos(cur)  # a tela reidrata pelo GET: escrita presa não pode ficar "executando" para o dono
+            conn.commit()
+            row = aterm._dono_ou_erro(aterm.obter(cur, cmd_id), user)
+    except aterm.AuditoriaInvalida as e:
+        raise HTTPException(status_code=422, detail={"code": "cmd_id_invalido", "message": str(e)}) from None
+    except aterm.ConfirmacaoErro as e:
+        raise _http_confirmacao(e) from None
+    except Exception as e:  # noqa: BLE001
+        if _tabela_ausente(e):
+            raise _tabela_terminal_ausente() from None
+        raise
+    return {"sucesso": True, "comando": {k: row[k] for k in ("cmd_id", "comando", "servidor", "hash", "classe", "estado", "motivo",
+                                                           "segundos_restantes", "decidido_por", "decidido_em", "executado_em",
+                                                           "codigo_saida", "duracao_ms", "saida_resumo")}}
+
+
 # ── Prompt do domínio: versões (spec docs/spec-agentes-admin.md §3.3, A1) ───
 #
 # Só admin. O corpo é validado ANTES de abrir conexão (um 422 não toca o
@@ -832,7 +915,9 @@ def _preparar_conversa(body: dict, user: dict, ag: dict | None = None) -> dict:
                 identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
                 acao_editar=acao_editar, matricula=matricula,
                 validade_fatos_dias=_validade_dias(agentes_cfg), falhas_anteriores=falhas_anteriores,
-                conversa_id=conversa_id)}
+                conversa_id=conversa_id,
+                # F4: quem pode CONFIRMAR comandos que alteram o servidor (recurso próprio + kill switch). Só o Terminal.
+                pode_escrever=svc.pode_escrever(user, agentes_cfg, agente_id, {agente_id: ag}))}
 
 
 async def _rodar_e_gravar(ctx: dict, emit_status=None) -> dict:

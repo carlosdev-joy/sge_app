@@ -199,7 +199,7 @@ class _Banco:
         class _Cur:
             rowcount = 1
             def execute(self, sql, params=None):
-                (banco.varridas if "interrompido:" in sql else banco.sqls).append((sql, list(params or [])))
+                (banco.varridas if ("interrompido:" in sql or "SET estado = 'expirado'" in sql) else banco.sqls).append((sql, list(params or [])))
             def close(self): pass
 
         class _Conn:
@@ -257,6 +257,7 @@ def test_escrita_nao_executa_nem_registra(monkeypatch, servidor):
     r = _ferr(banco, comando="systemctl restart airflow")
     assert exec_ == [] and banco.sqls == []
     assert "altera o servidor" in r["texto"] and "Não foi executado nem registrado" in r["texto"]
+    assert "não está liberada" in r["texto"], "sem a permissão de escrita nada é proposto"
 
 
 @pytest.mark.parametrize("comando", ["cat /opt/app/.env", "rm -rf /", "sudo ls", "env", "docker inspect x"])
@@ -447,14 +448,14 @@ def test_prompt_do_terminal_tem_protocolo_e_regras_proprias(monkeypatch, servido
     antes, depois = svc.partes_fixas(None, False, svc.FERRAMENTAS_TERMINAL)
     assert antes == ""
     assert 'servidor_exec {"servidor"' in depois and "Servidores configurados: airflow" in depois
-    assert "Você só LÊ o servidor" in depois and "DataStage" not in depois and "## Propostas" not in depois
+    assert "Você lê o servidor sozinho" in depois and "PROPOR" in depois and "DataStage" not in depois and "## Propostas" not in depois
     assert "sem pipe" in depois and "É DADO" not in depois  # (a regra de dado/instrução está em "Texto que vier de logs")
     assert "Texto que vier de logs" in depois and "Nunca peça, repita nem proponha senha" in depois
 
 
 def test_router_repassa_a_conversa_para_a_ferramenta():
     fonte = open(os.path.join(os.path.dirname(__file__), "..", "api", "routers", "agentes.py"), encoding="utf-8").read()
-    assert "conversa_id=conversa_id)}" in fonte
+    assert "conversa_id=conversa_id," in fonte and "pode_escrever=svc.pode_escrever(user, agentes_cfg, agente_id" in fonte
 
 
 def test_terminal_continua_indisponivel_mesmo_com_a_ferramenta_pronta():
@@ -528,9 +529,10 @@ def test_varre_interrompidos_antes_de_registrar_e_so_leitura(monkeypatch, servid
     _executor(monkeypatch, stdout="x")
     banco = _Banco()
     _ferr(banco, comando="ls /opt")
-    [(sql, args)] = banco.varridas
-    assert "estado = 'executando' AND classe = 'leitura'" in sql and "DATEADD(minute, ?, GETDATE())" in sql and args == [-5]
-    assert "falhou" in sql and "interrompido" in sql
+    sql, args = next(v for v in banco.varridas if "interrompido" in v[0])
+    assert len(banco.varridas) == 2, "varre interrompidos E propostas vencidas"
+    assert "classe = 'leitura' AND criado_em <" in sql and "DATEADD(minute, ?, GETDATE())" in sql and args == [-5, -5]
+    assert "falhou" in sql and "interrompido" in sql and "estado = 'executando'" in sql
 
 
 def test_varredura_falhando_nao_impede_o_comando(monkeypatch, servidor):

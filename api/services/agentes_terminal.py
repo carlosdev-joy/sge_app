@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import shlex
 import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
@@ -252,7 +253,8 @@ def listar(cur, *, matricula: str | None = None, estado: str | None = None, clas
         args.append(d1)
     filtro = (" WHERE " + " AND ".join(onde)) if onde else ""
     try:
-        varrer_interrompidos(cur)  # a consulta do admin nunca mostra "em andamento" eterno (best-effort, mesma conexão)
+        varrer_interrompidos(cur)  # a consulta do admin nunca mostra "em andamento"/"aguardando" eterno (best-effort)
+        varrer_propostas_vencidas(cur)
     except Exception:  # noqa: BLE001
         pass
     cur.execute(f"SELECT COUNT(*) FROM dbo.etl_agente_terminal_cmd{filtro}", args)
@@ -289,9 +291,11 @@ def listar(cur, *, matricula: str | None = None, estado: str | None = None, clas
 
 MAX_LINHAS_SAIDA = 2000
 MAX_FILTRO = 100
-TEXTO_ESCRITA_F3 = ("Este comando altera o servidor (ou não é um comando de leitura reconhecido) e a execução com "
-                    "confirmação ainda não está disponível. Não foi executado nem registrado. Use um comando de "
-                    "leitura (ls, cat, tail, head, grep, find, ps, df, docker ps/logs, journalctl, airflow dags list…).")
+TEXTO_SEM_ESCRITA = ("Este comando altera o servidor (ou não é um comando de leitura reconhecido) e a execução de comandos "
+                     "que alteram o servidor não está liberada para este usuário (ou está desligada pelo administrador). "
+                     "Não foi executado nem registrado. Use um comando de leitura (ls, cat, tail, head, grep, find, ps, df, "
+                     "docker ps/logs, journalctl, airflow dags list…).")
+MAX_PROPOSTAS_VIVAS = 5  # propostas `proposto` simultâneas por usuário (impede inundar a tela de cards)
 
 
 def _inteiro(valor, minimo: int, maximo: int) -> int | None:
@@ -373,7 +377,7 @@ def _resposta(comando: str, servidor: str, res: tssh.ResultadoExec | None, corpo
 
 
 async def ferramenta_servidor_exec(abrir_conn, args: dict, *, matricula: str | None, conversa_id: str | None,
-                                   ssh_max: int, espera_max_s: float) -> dict:
+                                   ssh_max: int, espera_max_s: float, pode_escrever: bool = False) -> dict:
     """Executa UM comando de LEITURA no servidor pedido. Devolve `{"texto": ...}` para o modelo; nunca levanta
     por regra de negócio (recusas e falhas viram texto nomeado)."""
     matricula = (matricula or "").strip()
@@ -397,7 +401,8 @@ async def ferramenta_servidor_exec(abrir_conn, args: dict, *, matricula: str | N
                 if redigido else cls.classificar(texto, raizes=srv.raizes, containers=srv.containers))
 
     if veredito.classe == "escrita":
-        return {"texto": f"{TEXTO_ESCRITA_F3} Motivo: {veredito.motivo}."}
+        return _propor_escrita(abrir_conn, texto, srv, veredito, args, matricula=matricula, conversa_id=conversa_id,
+                               pode_escrever=pode_escrever)
 
     # Parse dos filtros ANTES de registrar: nada que possa levantar fica entre o registro e a execução.
     filtrar = str(args.get("filtrar") or "").strip()[:MAX_FILTRO] or None
@@ -405,7 +410,7 @@ async def ferramenta_servidor_exec(abrir_conn, args: dict, *, matricula: str | N
     ultimas = _inteiro(args.get("ultimas"), 1, MAX_LINHAS_SAIDA) if primeiras is None else None
     linha = cls.linha_de_execucao(veredito.argv) if veredito.classe == "leitura" else ""
 
-    _gravar_seguro(abrir_conn, varrer_interrompidos)  # best-effort: linhas de execuções que a API não chegou a fechar
+    _gravar_seguro(abrir_conn, lambda cur: (varrer_interrompidos(cur), varrer_propostas_vencidas(cur)))  # best-effort
     try:
         reg = _gravar(abrir_conn, lambda cur: registrar(
             cur, conversa_id=conversa_id, matricula=matricula, servidor=srv.id, comando=texto,
@@ -448,14 +453,20 @@ async def ferramenta_servidor_exec(abrir_conn, args: dict, *, matricula: str | N
 
 
 def varrer_interrompidos(cur, minutos: int = 5) -> int:
-    """Leitura que ficou `executando` há mais de `minutos` (a API caiu/foi reiniciada entre `registrar` e `finalizar`; 5 min porque o pior caso
-    legítimo — fila 30 s + conexão ~40 s + sessão 10 s + execução 30 s — chega a ~110 s)
-    vira `falhou` — auditoria nunca fica "em andamento" para sempre. Só `leitura`: `executando` de ESCRITA é da F4 e tem
-    outra regra. Idempotente. Não faz commit."""
+    """Leitura OU escrita que ficou `executando` há mais de `minutos` (a API caiu/foi reiniciada entre `registrar`/`iniciar` e
+    `finalizar`) vira `falhou` — a auditoria nunca fica "em andamento" para sempre. 5 min porque o pior caso legítimo (fila + conexão +
+    sessão + 30 s de execução) fica abaixo de ~110 s. Escrita é medida pelo `decidido_em` e ganha a nota "PODE ter sido executado";
+    `falhou` é final, então nada reabre nem repete. Idempotente. Não faz commit."""
+    # Leitura: pelo `criado_em`. ESCRITA presa em `executando` (API morta entre `iniciar` e `finalizar`): pelo `decidido_em` (a proposta
+    # pode ter até 120 s de idade) e com a nota HONESTA de que o comando PODE ter rodado — `falhou` é final, nada reabre nem repete.
+    n = -abs(int(minutos))
     cur.execute(
-        "UPDATE dbo.etl_agente_terminal_cmd SET estado = 'falhou', saida_resumo = 'interrompido: a API não registrou o fim da execução', "
-        "executado_em = GETDATE() WHERE estado = 'executando' AND classe = 'leitura' AND criado_em < DATEADD(minute, ?, GETDATE())",
-        [-abs(int(minutos))])
+        "UPDATE dbo.etl_agente_terminal_cmd SET estado = 'falhou', executado_em = GETDATE(), "
+        "saida_resumo = CASE WHEN classe = 'escrita' THEN 'interrompido: o comando PODE ter sido executado (a API não registrou o fim)' "
+        "ELSE 'interrompido: a API não registrou o fim da execução' END "
+        "WHERE estado = 'executando' AND ((classe = 'leitura' AND criado_em < DATEADD(minute, ?, GETDATE())) "
+        "OR (classe = 'escrita' AND decidido_em < DATEADD(minute, ?, GETDATE())))",
+        [n, n])
     return max(0, cur.rowcount or 0)
 
 
@@ -474,3 +485,219 @@ def _finalizar_seguro(abrir_conn, cmd_id: str, estado: str, *, codigo_saida=None
             log.warning("terminal: %s já não estava `executando` ao finalizar como %s (varrido como interrompido?)", cmd_id, estado)
     except Exception as e:  # noqa: BLE001
         log.warning("terminal: não foi possível finalizar %s em %s (%s)", cmd_id, estado, type(e).__name__)
+
+
+# ═══════════ F4: ESCRITA com confirmação do usuário ════════════════════════
+#
+# Fluxo: o modelo PROPÕE (`servidor_exec` → classe `escrita`) → o backend grava `proposto` com o texto EXATO e o hash
+# → a tela mostra o card → o usuário clica Confirmar/Recusar → `confirmar_comando`/`recusar_comando`.
+# O que garante que "o que o usuário viu é o que roda":
+#   • o COMANDO nunca vem do cliente na confirmação: o cliente manda só `cmd_id` + o `hash` que viu; o texto executado é
+#     o gravado em `etl_agente_terminal_cmd` (e o hash é recalculado a partir dele — adulteração no banco também falha);
+#   • só o MESMO usuário que recebeu a proposta confirma (nem o admin confirma proposta alheia);
+#   • `iniciar` é atômico (`proposto → executando` só dentro do prazo e uma única vez): duplo clique = uma execução;
+#   • o kill switch e o recurso de escrita são checados na confirmação (`exigir_escrita`), não só na proposta;
+#   • o comando é RECLASSIFICADO na hora de rodar: se a denylist passou a proibi-lo, não roda;
+#   • comando com segredo (`redigido`) e `proibido` nunca chegam a `proposto` (CHECKs do banco + `registrar`).
+# O texto executado roda num `/bin/sh -c` com o `timeout` remoto: o shell vê EXATAMENTE a string do card.
+
+class ConfirmacaoErro(Exception):
+    """Recusa nomeada da confirmação/recusa (vira HTTP no router)."""
+
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+def obter(cur, cmd_id: str) -> dict | None:
+    """Linha de auditoria pelo id (None se não existe). `expira_em` é comparado no BANCO (`segundos_restantes`)."""
+    cur.execute(
+        "SELECT cmd_id, conversa_id, matricula, servidor, comando, hash, classe, estado, motivo, redigido, "
+        "DATEDIFF(second, GETDATE(), expira_em), decidido_por, codigo_saida, duracao_ms, saida_resumo, executado_em, decidido_em "
+        "FROM dbo.etl_agente_terminal_cmd WHERE cmd_id = ?", [_uuid(cmd_id)])
+    r = cur.fetchone()
+    if not r:
+        return None
+    chaves = ("cmd_id", "conversa_id", "matricula", "servidor", "comando", "hash", "classe", "estado", "motivo", "redigido",
+              "segundos_restantes", "decidido_por", "codigo_saida", "duracao_ms", "saida_resumo", "executado_em", "decidido_em")
+    d = dict(zip(chaves, r))
+    d["cmd_id"] = str(d["cmd_id"])
+    d["redigido"] = bool(d["redigido"])
+    for k in ("executado_em", "decidido_em"):
+        d[k] = d[k].isoformat() if d[k] else None
+    return d
+
+
+def varrer_propostas_vencidas(cur) -> int:
+    """`proposto` com prazo vencido (relógio do BANCO) vira `expirado`. Idempotente. Não faz commit."""
+    cur.execute("UPDATE dbo.etl_agente_terminal_cmd SET estado = 'expirado' "
+                "WHERE estado = 'proposto' AND expira_em IS NOT NULL AND expira_em <= GETDATE()")
+    return max(0, cur.rowcount or 0)
+
+
+JANELA_RECUSA_MIN = 10  # um comando recusado não pode ser re-proposto por este tempo (o modelo não vence o usuário por cansaço)
+
+
+def proposta_repetida(cur, matricula: str, hash_: str) -> str | None:
+    """`"viva"` se o MESMO comando (hash) já aguarda confirmação deste usuário; `"recusada"` se ele o recusou há menos de
+    `JANELA_RECUSA_MIN` min; senão None."""
+    cur.execute(
+        "SELECT TOP 1 estado FROM dbo.etl_agente_terminal_cmd WHERE matricula = ? AND hash = ? AND classe = 'escrita' AND "
+        "((estado = 'proposto' AND expira_em > GETDATE()) OR (estado = 'recusado' AND decidido_em > DATEADD(minute, ?, GETDATE()))) "
+        "ORDER BY criado_em DESC", [matricula, hash_, -JANELA_RECUSA_MIN])
+    r = cur.fetchone()
+    return None if not r else ("viva" if r[0] == "proposto" else "recusada")
+
+
+def contar_propostas_vivas(cur, matricula: str) -> int:
+    cur.execute("SELECT COUNT(*) FROM dbo.etl_agente_terminal_cmd WHERE matricula = ? AND estado = 'proposto' "
+                "AND expira_em > GETDATE()", [matricula])
+    return int(cur.fetchone()[0])
+
+
+def reabrir(cur, cmd_id: str) -> bool:
+    """`executando → proposto`, SÓ se ainda dentro do prazo e SÓ para escrita: usado quando a execução falhou ANTES de sair (fila de
+    sessões cheia/conexão recusada) — o comando não rodou, então o usuário pode confirmar de novo. Atômico. Não faz commit."""
+    cur.execute(
+        "UPDATE dbo.etl_agente_terminal_cmd SET estado = 'proposto', decidido_por = NULL, decidido_em = NULL "
+        "WHERE cmd_id = ? AND estado = 'executando' AND classe = 'escrita' AND redigido = 0 AND expira_em > GETDATE()", [_uuid(cmd_id)])
+    return cur.rowcount == 1
+
+
+def _propor_escrita(abrir_conn, texto: str, srv, veredito, args: dict, *, matricula: str, conversa_id: str | None,
+                    pode_escrever: bool) -> dict:
+    """Registra a PROPOSTA (não executa). Sem permissão de escrita, nada é registrado."""
+    if not pode_escrever:
+        return {"texto": f"{TEXTO_SEM_ESCRITA} Motivo: {veredito.motivo}."}
+    # O `motivo` é do MODELO (e aparece ao lado do comando no card): redigido como o resto, cortado, e o card mostra o MESMO texto
+    # que fica gravado. Não-string (lista/dict) vale como ausente — nada de `str(dict)` no card.
+    bruto = args.get("motivo")
+    if isinstance(bruto, str):  # sem controle/bidi/zero-width: o motivo também aparece no card (auditoria da F4, 2ª rodada)
+        bruto = "".join(c for c in bruto if c in "\n\t" or unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp"))
+    motivo = (_texto(redigir_comando(bruto.strip()[:2000]), MAX_MOTIVO) if isinstance(bruto, str) and bruto.strip() else None) or veredito.motivo
+    _h = preparar_comando(texto)[1]
+    try:
+        def _fn(cur):
+            varrer_propostas_vencidas(cur)
+            if proposta_repetida(cur, matricula, _h) == "recusada":
+                return "recusada"
+            if proposta_repetida(cur, matricula, _h) == "viva":
+                return "viva"
+            if contar_propostas_vivas(cur, matricula) >= MAX_PROPOSTAS_VIVAS:
+                return None
+            return registrar(cur, conversa_id=conversa_id, matricula=matricula, servidor=srv.id, comando=texto,
+                             classe="escrita", motivo=motivo)
+        reg = _gravar(abrir_conn, _fn)
+    except Exception as e:  # noqa: BLE001 — sem auditoria, sem proposta
+        log.warning("terminal: auditoria indisponível ao propor (%s)", type(e).__name__)
+        return {"texto": "A auditoria do Terminal está indisponível — por segurança nenhuma proposta foi registrada."}
+    if reg == "recusada":
+        return {"texto": f"O usuário RECUSOU este mesmo comando há menos de {JANELA_RECUSA_MIN} minutos. Não o proponha de novo: "
+                         "pergunte o que ele prefere ou ofereça outra abordagem."}
+    if reg == "viva":
+        return {"texto": "Este mesmo comando já está AGUARDANDO a confirmação do usuário. Não o proponha de novo; avise que o card está pendente."}
+    if reg is None:
+        return {"texto": f"Já há {MAX_PROPOSTAS_VIVAS} comandos aguardando confirmação deste usuário. Peça para confirmar ou "
+                         "recusar os pendentes antes de propor outro."}
+    return {
+        "texto": (f"Proposta registrada e AGUARDANDO a confirmação do usuário (válida por {reg['validade_s']} s): `{reg['comando']}` "
+                  f"em {srv.id}. O comando NÃO foi executado. Diga ao usuário que ele precisa confirmar ou recusar no card; "
+                  "não proponha o mesmo comando de novo e não tente executá-lo de outra forma."),
+        "proposta_comando": {"cmd_id": reg["cmd_id"], "hash": reg["hash"], "comando": reg["comando"], "servidor": srv.id,
+                             "motivo": motivo, "classe": "escrita", "estado": "proposto",
+                             "segundos_restantes": reg["validade_s"]},
+    }
+
+
+def _dono_ou_erro(row: dict | None, usuario: dict) -> dict:
+    if row is None:
+        raise ConfirmacaoErro(404, "comando_inexistente", "Comando não encontrado.")
+    if (row["matricula"] or "").strip() != (usuario.get("matricula") or "").strip():
+        # 404 (e não 403): não confirma a existência do comando de outra pessoa.
+        raise ConfirmacaoErro(404, "comando_inexistente", "Comando não encontrado.")
+    return row
+
+
+def recusar_comando(abrir_conn, *, cmd_id: str, usuario: dict) -> dict:
+    """O usuário RECUSA a proposta. Só o dono; só enquanto `proposto`."""
+    try:
+        def _fn(cur):
+            row = _dono_ou_erro(obter(cur, cmd_id), usuario)
+            ok = finalizar(cur, cmd_id, "recusado", decidido_por=usuario["matricula"])
+            return row, ok
+        row, ok = _gravar(abrir_conn, _fn)
+    except AuditoriaInvalida as e:
+        raise ConfirmacaoErro(422, "cmd_id_invalido", str(e)) from None
+    if not ok:
+        raise ConfirmacaoErro(409, "ja_decidido", "Este comando já foi decidido ou expirou.")
+    return {"cmd_id": row["cmd_id"], "estado": "recusado", "decidido_por": usuario["matricula"]}
+
+
+async def confirmar_comando(abrir_conn, *, cmd_id: str, hash_visto: str, usuario: dict, ssh_max: int,
+                            espera_max_s: float = 10.0) -> dict:
+    """O usuário CONFIRMA: executa o texto gravado, uma única vez. Quem chama já passou por `exigir_escrita` (kill switch +
+    recurso de escrita). Levanta `ConfirmacaoErro`; nunca executa nada fora dos casos abaixo."""
+    hash_visto = (hash_visto or "").strip().lower()
+    try:
+        row = _gravar(abrir_conn, lambda cur: (varrer_propostas_vencidas(cur), varrer_interrompidos(cur), obter(cur, cmd_id))[2])
+    except AuditoriaInvalida as e:
+        raise ConfirmacaoErro(422, "cmd_id_invalido", str(e)) from None
+    row = _dono_ou_erro(row, usuario)
+    if row["classe"] != "escrita" or row["redigido"]:
+        raise ConfirmacaoErro(409, "nao_confirmavel", "Este comando não pode ser confirmado.")
+    if hash_visto != row["hash"]:
+        raise ConfirmacaoErro(409, "hash_diferente", "O comando mudou desde que você o viu — peça a proposta de novo.")
+    if hashlib.sha256((row["comando"] or "").encode("utf-8")).hexdigest() != row["hash"]:
+        log.error("terminal: hash do comando %s não confere com o texto gravado", row["cmd_id"])
+        raise ConfirmacaoErro(500, "integridade", "Falha de integridade do comando — nada foi executado.")
+    if row["estado"] == "expirado" or (row["estado"] == "proposto" and (row["segundos_restantes"] or 0) <= 0):
+        raise ConfirmacaoErro(409, "expirada", "A proposta expirou. Peça o comando de novo.")
+    if row["estado"] != "proposto":
+        raise ConfirmacaoErro(409, "ja_decidido", "Este comando já foi decidido.")
+    srv = tssh.servidores().get(row["servidor"])
+    if srv is None:
+        raise ConfirmacaoErro(503, "servidor_indisponivel", "O servidor deste comando não está mais configurado.")
+    # Reclassifica AGORA: uma denylist atualizada depois da proposta vale (nunca roda o que passou a ser proibido).
+    if cls.classificar(row["comando"], raizes=srv.raizes, containers=srv.containers).classe == "proibido":
+        _gravar_seguro(abrir_conn, lambda cur: finalizar(cur, cmd_id, "recusado", decidido_por=usuario["matricula"]))
+        raise ConfirmacaoErro(409, "agora_proibido", "Este comando passou a ser proibido — não foi executado.")
+
+    # Libera a execução: ATÔMICO, uma vez, só dentro do prazo (relógio do banco).
+    if not _gravar(abrir_conn, lambda cur: iniciar(cur, cmd_id, usuario["matricula"])):
+        raise ConfirmacaoErro(409, "ja_decidido", "Este comando já foi decidido ou expirou.")
+
+    linha = "/bin/sh -c " + shlex.quote(row["comando"])  # o shell remoto recebe EXATAMENTE o texto do card
+    try:
+        res = await tssh.executar(srv, linha, teto_sessoes=ssh_max, espera_max_s=espera_max_s)
+    except asyncio.CancelledError:
+        # `executar` usa `asyncio.shield`: a sessão pode seguir rodando depois do cancelamento — o resultado é DESCONHECIDO.
+        _finalizar_seguro(abrir_conn, cmd_id, "falhou", saida="interrompido: o comando PODE ter sido executado (requisição cancelada)")
+        raise
+    except (af.ServidorOcupado, tssh.TerminalSshErro) as e:
+        # Falha CERTA e anterior à execução (fila de sessões cheia, conexão recusada, known_hosts): o comando NÃO saiu. Devolve a
+        # proposta a `proposto` (se ainda dentro do prazo) para o usuário poder confirmar de novo sem pedir ao modelo outra vez.
+        voltou = False
+        try:
+            voltou = _gravar(abrir_conn, lambda cur: reabrir(cur, cmd_id))
+        except Exception:  # noqa: BLE001
+            pass
+        if not voltou:
+            _finalizar_seguro(abrir_conn, cmd_id, "falhou", saida=f"não executado: {e}")
+        raise ConfirmacaoErro(503, "servidor_ocupado_ou_indisponivel",
+                              f"{af.redigir(str(e))} O comando NÃO foi executado" + (" — você pode confirmar de novo." if voltou else ".")) from None
+    except Exception as e:  # noqa: BLE001 — falha DEPOIS de abrir a sessão: o resultado é ambíguo, não reabre
+        _finalizar_seguro(abrir_conn, cmd_id, "falhou", saida=f"erro inesperado ({type(e).__name__}); o comando PODE ter sido executado")
+        raise ConfirmacaoErro(502, "falha_na_execucao", f"Falha ao executar ({type(e).__name__}). O comando PODE ter sido executado.") from None
+    try:
+        corpo = redigir_saida(res.stdout + (("\n" + res.stderr) if res.stderr.strip() else ""))
+        corpo, descartadas = filtrar_saida(corpo)
+    except Exception as e:  # noqa: BLE001 — o comando JÁ rodou: fecha a linha e nunca devolve a saída crua
+        log.warning("terminal: falha ao redigir a saída da escrita %s (%s)", cmd_id, type(e).__name__)
+        corpo = "[saída indisponível: falha ao redigir — o comando foi executado]"
+    ok = res.exit_code == 0 and not res.estourou_tempo
+    _finalizar_seguro(abrir_conn, cmd_id, "executado" if ok else "falhou", codigo_saida=res.exit_code,
+                      duracao_ms=res.duracao_ms, saida=corpo)
+    return {"cmd_id": row["cmd_id"], "estado": "executado" if ok else "falhou", "comando": row["comando"], "servidor": srv.id,
+            "codigo_saida": res.exit_code, "duracao_ms": res.duracao_ms, "saida": af._truncar(corpo),
+            "truncada": res.truncada, "interrompido": res.estourou_tempo or res.exit_code in (124, 137),
+            "decidido_por": usuario["matricula"]}
