@@ -333,7 +333,7 @@ def test_listar_combina_filtros_e_trata_ate_como_inclusivo():
     out = aterm.listar(cur, matricula=" DEV1 ", estado="executado", classe="leitura", desde="2026-11-01", ate="2026-11-04")
     assert out["total"] == 1 and out["itens"][0]["criado_em"] == "2026-11-04T10:00:00"
     assert out["itens"][0]["cmd_id"] == ID
-    sql, args = cur.execute.call_args_list[0][0]
+    sql, args = next(c[0] for c in cur.execute.call_args_list if "COUNT(*)" in c[0][0])  # a 1ª chamada é a varredura de interrompidos
     assert all(f"{c} = ?" in sql for c in ("matricula", "estado", "classe"))
     assert args[0] == "DEV1" and args[3] == datetime(2026, 11, 1) and args[4] == datetime(2026, 11, 5), \
         "`ate` é inclusivo: o filtro vai até < dia seguinte"
@@ -441,7 +441,9 @@ class _Conn:
         return self._cur
 
     def commit(self):
-        pass
+        hook = getattr(self._cur, "commit_hook", None)
+        if hook:
+            hook()
 
     def close(self):
         pass
@@ -566,7 +568,7 @@ def test_lista_admin_de_agentes_inclui_o_terminal_desligado(cliente):
     lista = {a["id"]: a for a in c.get("/agentes/admin/agentes").json()["agentes"]}
     t = lista["terminal"]
     assert t["origem"] == "codigo" and t["acesso"] == "manual" and t["ativo"] is False
-    assert t["recurso"] == "agente_terminal" and t["perfis"] == ["desenvolvedor"] and t["ferramentas"] == []
+    assert t["recurso"] == "agente_terminal" and t["perfis"] == ["desenvolvedor"] and t["ferramentas"] == ["servidor_exec"]
 
 
 def test_aba_admin_trava_o_interruptor_do_agente_indisponivel():
@@ -579,3 +581,95 @@ def test_config_admin_get_informa_disponibilidade(cliente):
     c, _ = cliente
     ag = {a["id"]: a for a in c.get("/agentes/admin/config").json()["agentes"]}
     assert ag["terminal"]["disponivel"] is False and ag["datastage"]["disponivel"] is True
+
+
+# ═══════════ 6. redação da SAÍDA (auditoria da F3) ═════════════════════════
+
+@pytest.mark.parametrize("entrada,segredo", [
+    ("tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 fim", "abc123def456"),
+    ("key AKIAIOSFODNN7EXAMPLE end", "AKIAIOSFODNN7EXAMPLE"),
+    ("t ghp_abcdefghijklmnopqrstuvwxyz0123456789", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+    ("xoxb-1234567890-abcdefghij", "xoxb-1234567890"),
+    ("a\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nxyz789\n-----END PRIVATE KEY-----\nb", "MIIEvQIBADANBgkq"),
+    ("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA9w0", "MIIEowIBAAKCAQEA9w0"),
+    ("fernet_key = abcDEF123456==", "abcDEF123456"), ("access_key = AKxxxx999", "AKxxxx999"), ("private_key: x1y2z3w4", "x1y2z3w4"),
+    ("DB_PASS: hunter2", "hunter2"), ("SESSION_ID=sess99887", "sess99887"),
+    ("password:\n  hunter2\nuser: bob", "hunter2"),
+    ("- name: DB_PASSWORD\n  value: hunter2\n- name: HOME\n  value: /x", "hunter2"),
+    ("env:\n  - name: API_TOKEN\n    value: zz9top\n", "zz9top"),
+    ("Server=h;Database=d;User Id=u;Password=Sup3rS3cret;Encrypt=yes", "Sup3rS3cret"),
+    ("postgres://u:p4ss@h/db", "p4ss"), ("curl -H 'Authorization: Bearer abc123tok' x", "abc123tok"),
+    # 2ª rodada: JSON com a chave entre aspas, auth em base64, block scalar do YAML, linha em branco, --flag composta, formatos novos
+    ('{"db_pass":"Zx9secret","passphrase":"p4ssw0rd9","credential":"cr3d","access_key":"AKx99"}', "Zx9secret"),
+    ('{"db_pass":"Zx9secret","passphrase":"p4ssw0rd9"}', "p4ssw0rd9"), ('{"a":1,"credential":"cr3d"}', "cr3d"),
+    ('"auth": "dXNlcjpwYXNz"', "dXNlcjpwYXNz"), ("password: |\n  Zx9-Qm4\nuser: bob", "Zx9-Qm4"),
+    ("password:\n\n  Zx9-Qm4", "Zx9-Qm4"), ("app --db-pass hunter9 --x 1", "hunter9"),
+    ("k sk-abcdefghijklmnopqrstuvwxyz0123", "sk-abcdefghijklmnopqrstuvwxyz0123"), ("github_pat_11ABCDEFG0abcdefghijklmnopqrstuv", "github_pat_11ABCDEFG0"),
+    ("glpat-abcdefghijklmnopqrst", "glpat-abcdefghijklmnopqrst"), ("hvs.CAESIabcdefghijklmnopqrstuv", "hvs.CAESIabcdefghijklmnopqrstuv"),
+    ("AIzaSyA1234567890abcdefghijklmnopqrstuv", "AIzaSyA1234567890"), ("npm_abcdefghijklmnopqrstuvwxyz0123456789", "npm_abcdefghijklmnopqrstuvwxyz0123456789"),
+    ("PuTTY-User-Key-File-2: ssh-rsa\nPrivate-Lines: 2\nAAAAB3Nza\nPrivate-MAC: 1a2b3c", "AAAAB3Nza"),
+])
+def test_saida_mascara_segredos_que_a_auditoria_achou(entrada, segredo):
+    assert segredo not in aterm.redigir_saida(entrada), entrada
+
+
+def test_saida_preserva_o_que_nao_e_segredo():
+    out = aterm.redigir_saida("- name: HOME\n  value: /root\nseq 1 2 3\nuser: bob\n")
+    assert "value: /root" in out and "seq 1 2 3" in out and "user: bob" in out
+
+
+def test_redacao_da_saida_tem_tempo_limitado_em_entrada_hostil_de_64kb():
+    """Antes: `"pass"*16000` (64 KB) levava 18 s e travava o loop da API (auditoria M2). Limite folgado, mas muito abaixo disso."""
+    import time
+    hostis = {"pass": "pass" * 16000, "a": "a" * 65536, "pass=": "pass=" + "a" * 65000, "BEGIN": "-----BEGIN PRIVATE KEY-----\n" * 2200,
+              "eyJ": "eyJ" + "a" * 30000 + ".", "nl": "password:\n" * 6000, "dois-pontos": "x:" * 30000,
+              "nome": ("a" * 40 + "pass" + "b" * 40 + " ") * 700, "url": "://a:" * 10000, "name": "name: DB_PASS\n" * 4000,
+              "bearer": "bearer " * 9000, "mysql": "mysql " + "-x " * 20000 + "-p", "AKIA": "AKIA" * 16000, "yaml": "name: X_PASS\n  value: y\n" * 3000}
+    for nome, entrada in hostis.items():
+        t0 = time.monotonic()
+        aterm.redigir_saida(entrada)
+        assert time.monotonic() - t0 < 2.0, f"{nome}: {time.monotonic() - t0:.1f}s"
+
+
+def test_redacao_da_saida_corta_a_entrada_enorme():
+    assert len(aterm.redigir_saida("x" * 500_000)) <= 131_072
+
+
+def _gatilhos():
+    return ["mysql ", "mysqldump ", "mariadb ", "sqlcmd ", "bcp ", "sshpass ", "login ", "docker login ", "pass", "password", "token", "secret",
+            "api_key", "fernet", "private_key", "name: ", "value: ", "password: ", "-p", "-P", "://", "a:", "bearer ", "Authorization: ",
+            "Cookie: ", "eyJ", "AKIA", "ghp_", "github_pat_", "sk-", "-----BEGIN PRIVATE KEY-----\n", "PuTTY-User-Key-File-2:", "--password ",
+            "--db-pass ", "Server=h;Password=", '"auth":', "name: X_PASS\n", "pwd=", '"db_pass":', "password: |\n"]
+
+
+def test_redacao_nao_tem_regex_lenta_em_nenhuma_combinacao_de_gatilho():
+    """Teste SISTEMÁTICO de ReDoS (a 2ª rodada da auditoria achou 3 regex de cliente que a 1ª não pegou): todo gatilho conhecido
+    × vários preenchimentos × 3 layouts, em 64 KB, para `redigir_saida` E `redigir_comando`. Nenhuma combinação pode passar de 1 s."""
+    import time
+    N = 65536
+    lentos = []
+    for g in _gatilhos():
+        for f in ("a", " ", "\n", ":"):
+            M = N // 2  # o layout "mix" repete o gatilho muitas vezes: metade do tamanho já o exercita
+            for nome, ent in (("rep", (g * (N // len(g) + 1))[:N]), ("fill", g + f * N), ("mix", ((g + f * 5) * (M // (len(g) + 5) + 1))[:M])):
+                for fn in (aterm.redigir_saida, aterm.redigir_comando):
+                    t0 = time.monotonic()
+                    fn(ent)
+                    dt = time.monotonic() - t0
+                    if dt > 1.0:
+                        lentos.append((g, f, nome, fn.__name__, round(dt, 1)))
+    assert not lentos, lentos
+
+
+def test_linha_gigante_e_cortada_antes_da_redacao():
+    out = aterm.redigir_saida("a" * 50_000 + "\nsegunda linha password: hunter2\n")
+    assert "…[linha cortada]" in out and "hunter2" not in out and "segunda linha" in out
+
+
+def test_o_get_da_auditoria_comita_a_varredura(cliente):
+    """QA da F3: o `listar` varre interrompidos (UPDATE); sem commit o ROLLBACK ao fechar a conexão desfazia."""
+    c, estado = cliente
+    commits = []
+    estado["cur"].commit_hook = lambda: commits.append(1)
+    r = c.get("/agentes/terminal/auditoria")
+    assert r.status_code == 200 and commits, "o router precisa commitar"

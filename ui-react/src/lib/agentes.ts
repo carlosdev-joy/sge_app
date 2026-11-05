@@ -296,6 +296,7 @@ export const FERRAMENTAS: Record<string, string> = {
   isx_extrair: 'extração ISX',
   banco_estrutura: 'estrutura do banco',
   banco_consulta: 'banco',
+  servidor_exec: 'servidor (leitura)',
 }
 
 /** O nome na linha "Consultei:" — com o par, quando é consulta a banco. */
