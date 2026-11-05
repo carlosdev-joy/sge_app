@@ -1,5 +1,5 @@
 # Spec: Agente "Terminal" (chat estilo terminal) — Orquestra
-Data: 2026-11-04 · Status: rascunho
+Data: 2026-11-04 · Status: F1–F4 na develop; F5 em PR (deploy pendente)
 
 Base: `origin/develop` (5739862a). Reaproveita `docs/spec-agentes-datastage.md`, `docs/spec-agentes-admin.md` e `docs/spec-agentes-ferramenta-banco.md`.
 
@@ -119,8 +119,11 @@ k) Desligar `agente_terminal_escrita_enabled`: propostas de escrita viram aviso,
 l) Tema claro/escuro e celular (375 px) conferidos.
 
 ## 9. Pendências e decisões em aberto
+
+**Decididas pelo usuário:** bancos entram no Terminal na F5 (admin escolhe os pares); retenção da auditoria de 180 dias com purga automática (05/11/2026); migrations 197–198 do Terminal com a Malha F16 renumerando (04/11/2026; estendido a 199–201 — F16 vai para 202+).
+
+**Ainda em aberto:**
 1. Qual **servidor/usuário SSH** representa "servidor do Orquestra/Airflow" no DEV (host, usuário de serviço, privilégios)? Hoje só há `DS_SSH_*` (DataStage).
 2. Lista inicial exata de comandos de leitura (proponho a da §4; ajustar no QA da F3).
-3. Retenção da auditoria (proponho 180 dias) e se `saida_resumo` deve ser guardada ou só metadados.
-4. Quem concede `agente_terminal_escrita` (proponho apenas admin).
-5. Produção/Caixa: fora desta spec; exige decisão de segurança própria.
+3. Quem concede `agente_terminal_escrita` (proponho apenas admin).
+4. Produção/Caixa: fora desta spec; exige decisão de segurança própria.

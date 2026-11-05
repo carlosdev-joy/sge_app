@@ -98,7 +98,8 @@ def test_so_leitura_traz_argv():
 
 def test_recursivo_injeta_excludes_de_segredo_e_o_usuario_nao_remove():
     v = classificar("grep -rn falha /opt/airflow/logs")
-    assert "--exclude=.env*" in v.argv and "--exclude-dir=.ssh" in v.argv and "--exclude=*.pem" in v.argv
+    assert f"--exclude={cls._glob_sem_caixa('.env')}" in v.argv and f"--exclude-dir={cls._glob_sem_caixa('.ssh')}" in v.argv
+    assert f"--exclude={cls._glob_sem_caixa('*.pem')}" in v.argv
     assert classificar("grep -r x /opt --exclude=nada").classe == "escrita", "o usuário não pode passar --exclude/--include"
     assert classificar("grep -r x /opt --include=*.env").classe == "escrita"
     assert not any(a.startswith("--exclude") for a in classificar("grep falha /opt/a.log").argv)
@@ -275,9 +276,10 @@ def test_segredos_que_a_auditoria_achou_sao_proibidos(comando):
 def test_grep_recursivo_exclui_tambem_os_novos_segredos():
     """`--exclude` só vê NOME de arquivo: tudo que a denylist proíbe de ler direto não pode vir de carona numa busca recursiva."""
     argv = classificar("grep -r -e sql_alchemy /opt/app").argv
-    for g in ("*.cfg", "*.conf", "*.ini", "*.properties", "*.bak", "*.tfstate*", "docker-compose*", "webserver_config*", "DSParams", ".htpasswd", "kubeconfig*"):
-        assert f"--exclude={g}" in argv, g
-    assert "--exclude-dir=.git" in argv and "--exclude-dir=.ssh" in argv
+    for nome in ("a.cfg", "a.conf", "a.ini", "a.properties", "a.bak", "x.tfstate", "x.tfstate.backup", "docker-compose.yml",
+                 "webserver_config.py", "DSParams", ".htpasswd", "kubeconfig"):
+        assert _excluido(argv, nome), nome
+    assert f"--exclude-dir={cls._glob_sem_caixa('.git')}" in argv and f"--exclude-dir={cls._glob_sem_caixa('.ssh')}" in argv
 
 
 def test_raizes_padrao_nao_incluem_tmp_e_symlinks_nao_sao_seguidos():
@@ -338,10 +340,10 @@ def test_denylist_da_2a_rodada(comando):
 
 def test_excludes_da_busca_recursiva_cobrem_a_2a_rodada():
     argv = classificar("grep -r -e x /opt/app").argv
-    for g in (".envrc", ".my.cnf", ".vault-token", "auth.json", "appsettings*", "settings.py", "*.ppk", "*.gpg"):
-        assert f"--exclude={g}" in argv, g
+    for nome in (".envrc", ".my.cnf", ".vault-token", "auth.json", "appsettings.json", "settings.py", "a.ppk", "a.gpg"):
+        assert _excluido(argv, nome), nome
     for d in ("private", "keys", "vault"):
-        assert f"--exclude-dir={d}" in argv, d
+        assert f"--exclude-dir={cls._glob_sem_caixa(d)}" in argv, d
 
 
 # ── F4: a denylist vale para COMANDO COMPOSTO (auditoria da F4, ALTO) ───────────────────────────────────────
@@ -419,3 +421,86 @@ def test_reiniciar_container_do_orquestra_e_rotina_confirmavel(comando):
 def test_a_regra_do_docker_so_vale_quando_docker_e_o_comando():
     for c in ("grep -rn 'docker stop' /opt/airflow/dags", "docker logs --tail 20 update-airflow-worker"):
         assert classificar(c).classe == "leitura", c
+
+
+# ── F5: auditoria final (M1) — a busca recursiva exclui EXATAMENTE o que a denylist proíbe ler, sem caixa ────────
+
+import fnmatch
+import shutil
+import subprocess
+
+
+def _excluido(argv, nome: str, *, diretorio: bool = False) -> bool:
+    """Simula o GNU grep: `--exclude=G` casa o NOME (sensível a maiúsculas — por isso os globs vêm com [xX])."""
+    chave = "--exclude-dir=" if diretorio else "--exclude="
+    return any(fnmatch.fnmatchcase(nome, a[len(chave):]) for a in argv if a.startswith(chave))
+
+
+def _variantes(nome: str):
+    yield nome
+    yield nome.upper()
+    yield nome.capitalize()
+    yield "".join(c.upper() if i % 2 else c for i, c in enumerate(nome))
+
+
+NOMES_SENSIVEIS = [
+    ".env", ".env.prod", "app.env", ".envrc", "secrets.json", "secret.txt", "credential.json", "credentials",
+    "client_secret.json", "id_rsa", "id_ed25519.pub", "server.pem", "x.key", "cert.p12", "a.pfx", "a.jks", "a.keystore",
+    ".netrc", ".pgpass", ".git-credentials", ".htpasswd", ".npmrc", ".pypirc", ".bash_history", "authorized_keys",
+    "airflow.cfg", "nginx.conf", "odbc.ini", "app.properties", "docker-compose.yml", "docker-compose.prod.yaml",
+    "webserver_config.py", "DSParams", "kubeconfig", ".my.cnf", ".vault-token", "auth.json", "appsettings.Production.json",
+    "settings.py", "local_settings.py", "terraform.tfstate", "x.bak", "x.old", "x.orig", "a.dump", ".a.swp", "a.ppk", "a.gpg",
+]
+
+
+@pytest.mark.parametrize("nome", NOMES_SENSIVEIS)
+def test_busca_recursiva_exclui_o_que_a_denylist_proibe_em_qualquer_caixa(nome):
+    argv = classificar("grep -r -e x /opt/app").argv
+    for v in _variantes(nome):
+        if cls.caminho_sensivel(f"/opt/app/{v}"):
+            assert _excluido(argv, v), f"{v!r} é proibido ler direto mas entra na busca recursiva"
+
+
+@pytest.mark.parametrize("d", [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".git", "secret", "secrets", "private", "keys", "vault"])
+def test_busca_recursiva_exclui_diretorios_sensiveis_em_qualquer_caixa(d):
+    argv = classificar("grep -r -e x /opt/app").argv
+    for v in _variantes(d):
+        assert _excluido(argv, v, diretorio=True), v
+
+
+def test_equivalencia_denylist_x_excludes_varre_a_fonte_unica():
+    """Todo glob da fonte única que a denylist reconhece precisa sair no argv, e vice-versa nos nomes amostrados."""
+    argv = classificar("grep -r -e x /opt/app").argv
+    for g in cls._GLOBS_SENSIVEIS:
+        assert f"--exclude={cls._glob_sem_caixa(g)}" in argv, g
+    for d in cls._DIRS_SENSIVEIS:
+        assert f"--exclude-dir={cls._glob_sem_caixa(d)}" in argv, d
+    for nome in NOMES_SENSIVEIS:
+        if cls.caminho_sensivel(f"/opt/app/{nome}"):
+            assert _excluido(argv, nome), nome
+
+
+@pytest.mark.parametrize("comum", ["app.py", "dag_etl.py", "README.md", "job.log", "dados.csv", "main.ts", "envio.py", "keyboard.txt"])
+def test_excludes_nao_engolem_arquivos_comuns(comum):
+    assert not _excluido(classificar("grep -r -e x /opt/app").argv, comum)
+
+
+@pytest.mark.skipif(not shutil.which("grep"), reason="sem GNU grep")
+def test_gnu_grep_real_nao_vaza_segredo_de_nome_com_maiusculas(tmp_path):
+    """Executa o argv CLASSIFICADO no GNU grep real, numa árvore com segredos de nomes variados."""
+    raiz = tmp_path / "app"
+    (raiz / ".SSH").mkdir(parents=True)
+    (raiz / "Secrets").mkdir()
+    (raiz / "sub").mkdir()
+    segredos = {"Secrets.json": 1, "APP.ENV": 1, ".Env": 1, "Airflow.CFG": 1, "client_secret.json": 1, ".bash_history": 1,
+                ".SSH/id_rsa": 1, "Secrets/a.txt": 1, "sub/Credentials": 1, "sub/Docker-Compose.yml": 1}
+    for rel in segredos:
+        (raiz / rel).write_text("SEGREDO_CANARIO_42\n", encoding="utf-8")
+    (raiz / "sub" / "app.py").write_text("SEGREDO_CANARIO_42 visivel\n", encoding="utf-8")
+    v = classificar(f"grep -r -e SEGREDO_CANARIO_42 {raiz}".replace(str(tmp_path), "/opt"))
+    assert v.classe == "leitura", v
+    argv = [str(raiz) if a == "/opt/app" else a for a in v.argv]
+    saida = subprocess.run(argv, capture_output=True, text=True, timeout=20).stdout
+    assert "app.py" in saida, "o arquivo comum precisa continuar visível (senão o teste não prova nada)"
+    for rel in segredos:
+        assert rel.split("/")[-1] not in saida, f"{rel} vazou: {saida}"

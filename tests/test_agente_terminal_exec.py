@@ -458,10 +458,12 @@ def test_router_repassa_a_conversa_para_a_ferramenta():
     assert "conversa_id=conversa_id," in fonte and "pode_escrever=svc.pode_escrever(user, agentes_cfg, agente_id" in fonte
 
 
-def test_terminal_continua_indisponivel_mesmo_com_a_ferramenta_pronta():
-    """A trava `disponivel: False` só cai na F5 (interface real)."""
+def test_terminal_liberado_obedece_o_interruptor():
+    """F5: `disponivel` caiu; o interruptor do agente continua mandando."""
     cfg = {"agentes_enabled": "1", "agente_terminal_enabled": "1", "agente_terminal_escrita_enabled": "1"}
-    assert svc.CATALOGO["terminal"]["disponivel"] is False and not svc.agente_ligado(cfg, "terminal")
+    assert svc.CATALOGO["terminal"]["disponivel"] is True and svc.agente_ligado(cfg, "terminal")
+    assert not svc.agente_ligado({**cfg, "agente_terminal_enabled": "0"}, "terminal")
+    assert not svc.agente_ligado({**cfg, "agentes_enabled": "0"}, "terminal")
 
 
 # ═══════════ 5. achados da auditoria/QA da F3 ═══════════════════════════

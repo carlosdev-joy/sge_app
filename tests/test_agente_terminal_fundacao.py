@@ -350,31 +350,33 @@ def test_valores_do_filtro_nunca_vao_no_texto_do_sql():
 
 # ═══════════ 3b. trava de disponibilidade e kill switch ════════════════
 
-def test_terminal_nao_esta_disponivel_ate_a_f5_mesmo_com_tudo_ligado():
-    """QA da F2: sem ferramentas ele seria um chat que inventa comandos/saídas de servidor."""
-    assert TERMINAL["disponivel"] is False
-    assert svc.agente_ligado(LIGADO, "terminal") is False
+def test_terminal_liberado_na_f5_mas_trancado_pelo_interruptor_e_pelo_recurso():
+    """F5 liberou `disponivel`; quem tranca agora é o interruptor do agente e o recurso por usuário."""
+    assert TERMINAL["disponivel"] is True
+    assert svc.agente_ligado(LIGADO, "terminal") is True
+    off = {**LIGADO, "agente_terminal_enabled": "0"}
+    assert svc.agente_ligado(off, "terminal") is False and svc.escrita_ligada(off, "terminal") is False
     u = _user(extras=("agente_terminal", "agente_terminal_escrita"))
-    assert not [a for a in svc.catalogo_do_usuario(u, LIGADO) if a["id"] == "terminal"]
-    assert svc.escrita_ligada(LIGADO, "terminal") is False, "sem agente ligado não há escrita"
+    assert [a for a in svc.catalogo_do_usuario(u, LIGADO) if a["id"] == "terminal"]
+    assert not [a for a in svc.catalogo_do_usuario(u, off) if a["id"] == "terminal"]
+    assert not [a for a in svc.catalogo_do_usuario(_user(extras=()), LIGADO) if a["id"] == "terminal"], "sem o recurso, sem Terminal"
 
 
 def test_agente_do_codigo_sem_a_flag_continua_disponivel():
     assert svc.agente_ligado({"agentes_enabled": "1", "agente_datastage_enabled": "1"}, "datastage") is True
 
 
-def test_conversar_com_o_terminal_indisponivel_e_recusado(cliente, monkeypatch):
-    """Rota genérica `/agentes/{id}/conversar`: ligado + permissão + admin NÃO abrem o Terminal.
-    A config é a REAL do dublê (tudo ligado) — o 503 só pode vir da trava de disponibilidade — e um
-    teste de mutação (flag removida) prova que sem ela a rota passaria da checagem."""
+def test_conversar_com_o_terminal_desligado_e_recusado(cliente, monkeypatch):
+    """Rota genérica `/agentes/{id}/conversar`: com o interruptor do Terminal desligado, nem o admin abre.
+    Mutação: religado, a MESMA requisição deixa de ser recusada por "desligado"."""
     c, estado = cliente
-    estado["cur"].config = dict(LIGADO)
+    estado["cur"].config = {**LIGADO, "agente_terminal_enabled": "0"}
     for rota in ("/agentes/terminal/conversar", "/agentes/terminal/conversar/stream"):
         r = c.post(rota, json={"mensagem": "liste os containers"})
         assert r.status_code == 503, (rota, r.status_code, r.text)
         assert r.json()["detail"]["code"] in ("agente_desligado", "agente_indisponivel"), r.text
     # mutação: sem a trava, a MESMA requisição deixa de ser recusada por "desligado"
-    monkeypatch.setitem(TERMINAL, "disponivel", True)
+    estado["cur"].config = dict(LIGADO)
     r = c.post("/agentes/terminal/conversar", json={"mensagem": "liste os containers"})
     detalhe = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else None
     codigo = detalhe.get("code") if isinstance(detalhe, dict) else None
@@ -402,6 +404,8 @@ def test_exigir_escrita_aplica_o_kill_switch_ate_ao_admin(monkeypatch):
 # ═══════════ 4. rota admin e config ═════════════════════════════════════
 
 class _Cur:
+    rowcount = 0
+
     def __init__(self, tabela_ausente=False):
         self.tabela_ausente = tabela_ausente
         self.config: dict[str, str] = {}
@@ -568,7 +572,8 @@ def test_lista_admin_de_agentes_inclui_o_terminal_desligado(cliente):
     lista = {a["id"]: a for a in c.get("/agentes/admin/agentes").json()["agentes"]}
     t = lista["terminal"]
     assert t["origem"] == "codigo" and t["acesso"] == "manual" and t["ativo"] is False
-    assert t["recurso"] == "agente_terminal" and t["perfis"] == ["desenvolvedor"] and t["ferramentas"] == ["servidor_exec"]
+    assert t["recurso"] == "agente_terminal" and t["perfis"] == ["desenvolvedor"] and t["ferramentas"] == ["resolver_projeto", "dsjob", *svc.FERRAMENTAS_TERMINAL], \
+        "sem pares de banco liberados, a lista do admin não promete as ferramentas de banco"
 
 
 def test_aba_admin_trava_o_interruptor_do_agente_indisponivel():
@@ -580,7 +585,7 @@ def test_aba_admin_trava_o_interruptor_do_agente_indisponivel():
 def test_config_admin_get_informa_disponibilidade(cliente):
     c, _ = cliente
     ag = {a["id"]: a for a in c.get("/agentes/admin/config").json()["agentes"]}
-    assert ag["terminal"]["disponivel"] is False and ag["datastage"]["disponivel"] is True
+    assert ag["terminal"]["disponivel"] is True and ag["datastage"]["disponivel"] is True
 
 
 # ═══════════ 6. redação da SAÍDA (auditoria da F3) ═════════════════════════

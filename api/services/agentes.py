@@ -79,6 +79,9 @@ FERRAMENTAS_TELA = FERRAMENTAS_DATASTAGE + FERRAMENTAS_BANCO
 # Terminal (spec docs/spec-agente-terminal.md, F3): comandos de LEITURA no servidor. FORA de `FERRAMENTAS_TELA` de
 # propósito: agente criado pela tela nunca pode escolher `servidor_exec` (o registro valida contra FERRAMENTAS_TELA).
 FERRAMENTAS_TERMINAL = ("servidor_exec",)
+# O que o agente Terminal recebe (F5): servidor + DataStage AO VIVO (`resolver_projeto` + `dsjob`, a ferramenta já endurecida) + banco
+# (só-SELECT, nos pares que o admin liberar em `agente_terminal_bancos`; sem par, as de banco saem na hora da conversa).
+FERRAMENTAS_DO_TERMINAL = ("resolver_projeto", "dsjob") + FERRAMENTAS_BANCO + FERRAMENTAS_TERMINAL
 # Tudo que `conversar` sabe despachar, na ordem canônica — o filtro de "ferramenta do agente" usa ESTE conjunto.
 FERRAMENTAS_CONVERSA = FERRAMENTAS_TELA + FERRAMENTAS_TERMINAL
 # Perfis que NUNCA recebem agente: `consulta` é o perfil de quem entra sem
@@ -127,11 +130,11 @@ CATALOGO: dict[str, dict] = {
         "concessao": "manual_por_usuario",
         "origem": "codigo",
         "acesso": "manual",
-        "ferramentas": FERRAMENTAS_TERMINAL,
-        # TRAVA até a F5 (QA da F2): sem ferramentas o agente seria só um chat que inventaria
-        # comandos e saídas de servidor. `agente_ligado` devolve False enquanto isto for False,
-        # mesmo com os interruptores ligados e a permissão concedida; a F5 vira a flag.
-        "disponivel": False,
+        "ferramentas": FERRAMENTAS_DO_TERMINAL,
+        # Liberado na F5 (tela real + auditoria da superfície inteira). Quem segura o uso continua sendo o interruptor
+        # `agente_terminal_enabled` (nasce desligado), o recurso por usuário e, para escrita, o kill switch próprio.
+        # `disponivel: False` volta a travar tudo (catálogo e conversa), se for preciso.
+        "disponivel": True,
     },
 }
 
@@ -334,6 +337,10 @@ CONFIG_DEFAULTS: dict[str, str] = {
     # Terminal (spec docs/spec-agente-terminal.md): ambos nascem DESLIGADOS.
     "agente_terminal_enabled": "0",
     "agente_terminal_escrita_enabled": "0",
+    # Pares conexão/banco que o Terminal consulta (JSON `[{"conexao","banco"}]`), dados pessoais mascarados, retenção da auditoria.
+    "agente_terminal_bancos": "[]",
+    "agente_terminal_mascarar": "1",
+    "agente_terminal_retencao_dias": "180",
     # 'header:NOME' | 'body:CAMPO' — vazio = D-01 ainda não fechada, e a
     # sonda devolve sem_contrato sem chamar o gateway (ver ia_provedor).
     "agentes_gateway_campo_usuario": "",
@@ -345,6 +352,36 @@ CONFIG_DEFAULTS: dict[str, str] = {
     "agentes_banco_conexao_s": "10",
     "agentes_banco_consulta_s": "30",
 }
+
+
+def bancos_do_terminal(config: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    """Pares `(conexao, banco)` liberados ao Terminal (config JSON). Lixo na config = nenhum par (fecha, nunca abre)."""
+    try:
+        lista = json.loads(config.get("agente_terminal_bancos") or "[]")
+    except (TypeError, ValueError):
+        return ()
+    pares = []
+    for item in lista if isinstance(lista, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("conexao"), str) and isinstance(item.get("banco"), str):
+            par = (item["conexao"].strip(), item["banco"].strip())
+            if all(par) and len(par[0]) <= 100 and len(par[1]) <= 128 and par not in pares:
+                pares.append(par)
+    return tuple(pares)
+
+
+def retencao_terminal_dias(config: dict[str, str]) -> int:
+    try:
+        n = int(config.get("agente_terminal_retencao_dias") or 180)
+    except (TypeError, ValueError):
+        return 180
+    return n if 30 <= n <= 3650 else 180
+
+
+def agente_terminal_para_conversa(ag: dict, config: dict[str, str]) -> dict:
+    """O Terminal com os pares de banco da config; sem par, as ferramentas de banco saem (o prompt não promete o que não há)."""
+    bancos = bancos_do_terminal(config)
+    ferramentas = tuple(f for f in ag.get("ferramentas", ()) if bancos or f not in FERRAMENTAS_BANCO)
+    return {**ag, "bancos": bancos, "ferramentas": ferramentas, "mascarar_dados": (config.get("agente_terminal_mascarar") or "1") != "0"}
 
 
 def limites_banco(config: dict[str, str]) -> tuple[int, int]:
@@ -896,7 +933,16 @@ def partes_fixas(projeto: str | None, projeto_tem_dsx: bool = False,
     if not ferramentas:
         return "", _BLOCO_REGRAS_CONVERSA
     if "servidor_exec" in ferramentas:
-        return "", "\n\n".join((_bloco_protocolo(ferramentas, bancos), _BLOCO_REGRAS_TERMINAL))
+        # Terminal: contexto do projeto (se tem DataStage), protocolo de TODAS as ferramentas dele e as regras próprias + as de
+        # DataStage/banco que valerem. Sem bloco de propostas/aprendizados (o Terminal não tem curadoria).
+        regras = [_BLOCO_REGRAS_TERMINAL]
+        if any(f in FERRAMENTAS_DATASTAGE for f in ferramentas):
+            regras.append("- Pelo `dsjob` você só LÊ o DataStage (status, stages, parâmetros, relatório). Alterar algo no servidor só "
+                          "por `servidor_exec`, como PROPOSTA que o usuário confirma.")
+        if any(f in FERRAMENTAS_BANCO for f in ferramentas):
+            regras += list(_LINHAS_BANCO)
+        return (_bloco_contexto(projeto, projeto_tem_dsx, ferramentas),
+                "\n\n".join((_bloco_protocolo(ferramentas, bancos), "\n".join(regras))))
     propostas = _bloco_propostas(ferramentas)
     regras = _bloco_regras(ferramentas, bool(propostas))
     return (_bloco_contexto(projeto, projeto_tem_dsx, ferramentas),
@@ -1253,7 +1299,8 @@ def _gravar_fatos_seguro(abrir_conn, *, matricula: str | None, **kw) -> None:
 def _registrar_seguro(abrir_conn, aprendizado: dict | None, agente: str = AGENTE_DATASTAGE) -> None:
     """Grava um aprendizado numa conexão curta própria. Como os fatos: nunca
     derruba a rodada (o aprendizado é efeito colateral, não a resposta)."""
-    if not aprendizado:
+    if not aprendizado or agente == AGENTE_TERMINAL:
+        # O Terminal não tem curador: aprendizado dele viraria regra "validada" que ninguém revisa (auditoria/QA da F5).
         return
     try:
         _com_conexao(abrir_conn, lambda conn, cur: ap.registrar(conn, cur, agente=agente, a=aprendizado))
@@ -1786,6 +1833,10 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
             historico.append({"role": "assistant", "content": resposta})
             texto, brutas_ap = ap.extrair_sugestoes(texto or resposta)
             texto, brutas = ac.extrair_propostas(texto)
+            if agente == AGENTE_TERMINAL:
+                # Sem curadoria: o Terminal não grava interpretações na base de conhecimento do DataStage (compartilhada com quem
+                # usa o agente DataStage) nem sugere aprendizados — os blocos são só retirados do texto (auditoria da F5, B2).
+                brutas, brutas_ap = [], []
             propostas, recusadas = ac.filtrar_propostas(brutas, projeto=projeto, saidas=saidas)
             evidencia_sug = "\n".join(s["texto"] for s in saidas)[:1500] or "(sem leitura de ferramenta nesta pergunta)"
             sugestoes, recusadas_ap = ap.filtrar_sugestoes(brutas_ap, evidencia=f"Leituras da pergunta:\n{evidencia_sug}")
@@ -1889,6 +1940,9 @@ async def conversar(abrir_conn, *, mensagens: list[dict], projeto_atual: str | N
                                 "sql": dado["sql"]}
         if dado.get("meta"):
             artefato["banco"] = dado["meta"]
+        if dado.get("comando_executado"):
+            # F5: a tela desenha o bloco do comando (com a saída REDIGIDA e cortada) a partir deste artefato.
+            artefato["comando_executado"] = dado["comando_executado"]
         if dado.get("proposta_comando"):
             # F4: o card de confirmação da tela nasce deste artefato (cmd_id + hash + o texto EXATO que roda).
             artefato["proposta_comando"] = dado["proposta_comando"]

@@ -21,6 +21,8 @@ export interface AgenteCatalogo {
    * à Fase B, que só tinha o DataStage (com todas).
    */
   ferramentas?: string[]
+  /** Terminal (F4/F5): o usuário pode CONFIRMAR comandos que alteram o servidor (recurso + kill switch). */
+  escrita?: boolean
 }
 
 /** Agente só de conversa: a API mandou o conjunto, e ele está vazio. */

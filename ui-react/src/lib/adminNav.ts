@@ -112,6 +112,7 @@ export const ABAS_ADMIN: AbaAdmin[] = [
     palavrasChave: ['agente', 'datastage', 'prompt', 'banco', 'ssh', 'gateway', 'cadastro', 'fato', 'aprendizado'],
     chavesConfig: [
       'agentes_enabled', 'agente_datastage_enabled', 'agente_terminal_enabled', 'agente_terminal_escrita_enabled',
+      'agente_terminal_bancos', 'agente_terminal_mascarar', 'agente_terminal_retencao_dias',
       'agentes_gateway_campo_usuario', 'agentes_cadastro_texto',
       'agentes_ssh_max', 'agentes_fato_validade_dias', 'agentes_banco_conexao_s', 'agentes_banco_consulta_s',
     ],

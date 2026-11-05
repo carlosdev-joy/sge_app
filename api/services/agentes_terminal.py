@@ -420,7 +420,8 @@ async def ferramenta_servidor_exec(abrir_conn, args: dict, *, matricula: str | N
         return {"texto": "A auditoria do Terminal está indisponível — por segurança o comando não foi executado."}
 
     if veredito.classe == "proibido":
-        return {"texto": f"$ {texto}\n{veredito.motivo}. Nada foi executado."}
+        return {"texto": f"$ {texto}\n{veredito.motivo}. Nada foi executado.",
+                "comando_executado": _bloco_para_tela(reg["cmd_id"], texto, srv.id, "proibido", "bloqueado", motivo=veredito.motivo)}
 
     res: tssh.ResultadoExec | None = None
     try:
@@ -449,7 +450,50 @@ async def ferramenta_servidor_exec(abrir_conn, args: dict, *, matricula: str | N
         notas.append("[busca recursiva: arquivos sensíveis (.env, chaves, *.cfg, *.conf…) são omitidos — a ausência de ocorrência pode ser por isso]")
     if args.get("primeiras") not in (None, "") and args.get("ultimas") not in (None, ""):
         notas.append("[`primeiras` e `ultimas` juntos: só `primeiras` foi aplicado]")
-    return {"texto": _resposta(texto, srv.id, res, corpo, descartadas) + ("\n" + "\n".join(notas) if notas else "")}
+    return {"texto": _resposta(texto, srv.id, res, corpo, descartadas) + ("\n" + "\n".join(notas) if notas else ""),
+            "comando_executado": _bloco_para_tela(reg["cmd_id"], texto, srv.id, "leitura", "executado" if ok else "falhou",
+                                                  saida=corpo, codigo_saida=res.exit_code, duracao_ms=res.duracao_ms,
+                                                  truncada=res.truncada, interrompido=res.estourou_tempo or res.exit_code in (124, 137),
+                                                  notas=notas)}
+
+
+MAX_SAIDA_TELA = 4000  # a saída que vai ao artefato (gravado em artefatos_json) — já redigida
+
+
+def _bloco_para_tela(cmd_id: str, comando: str, servidor: str, classe: str, estado: str, *, saida: str | None = None,
+                     codigo_saida: int | None = None, duracao_ms: int | None = None, truncada: bool = False,
+                     interrompido: bool = False, motivo: str | None = None, notas=()) -> dict:
+    """O que a TELA recebe de um comando executado/bloqueado (F5). Tudo já redigido: comando (`preparar_comando`) e saída
+    (`redigir_saida`); a saída é cortada em `MAX_SAIDA_TELA` porque fica gravada no histórico da conversa."""
+    corte = saida is not None and len(saida) > MAX_SAIDA_TELA
+    return {"cmd_id": cmd_id, "comando": comando, "servidor": servidor, "classe": classe, "estado": estado,
+            "saida": (saida[:MAX_SAIDA_TELA] if saida else saida), "codigo_saida": codigo_saida, "duracao_ms": duracao_ms,
+            "truncada": bool(truncada or corte), "interrompido": bool(interrompido), "motivo": motivo, "notas": list(notas)}
+
+
+_ULTIMA_PURGA = [0.0]
+INTERVALO_PURGA_S = 3600
+
+
+def purgar_antigos(cur, dias: int) -> int:
+    """Retenção da auditoria (decisão do usuário, 05/11/2026: 180 dias, purga automática): apaga linhas em estado FINAL com mais de
+    `dias`. Nunca apaga `proposto`/`executando`. Não faz commit."""
+    dias = max(30, min(int(dias), 3650))
+    marcas = ",".join("?" for _ in ESTADOS_FINAIS)
+    cur.execute(f"DELETE FROM dbo.etl_agente_terminal_cmd WHERE criado_em < DATEADD(day, ?, GETDATE()) AND estado IN ({marcas})",
+                [-dias, *ESTADOS_FINAIS])
+    return max(0, cur.rowcount or 0)
+
+
+def purgar_se_for_hora(abrir_conn, dias: int, agora: float | None = None) -> bool:
+    """Purga no máximo uma vez por hora por processo (best-effort; o índice (estado, criado_em) cobre o DELETE)."""
+    import time as _t
+    agora = _t.monotonic() if agora is None else agora
+    if agora - _ULTIMA_PURGA[0] < INTERVALO_PURGA_S and _ULTIMA_PURGA[0]:
+        return False
+    _ULTIMA_PURGA[0] = agora
+    _gravar_seguro(abrir_conn, lambda cur: purgar_antigos(cur, dias))
+    return True
 
 
 def varrer_interrompidos(cur, minutos: int = 5) -> int:
@@ -543,10 +587,11 @@ def proposta_repetida(cur, matricula: str, hash_: str) -> str | None:
     `JANELA_RECUSA_MIN` min; senão None."""
     cur.execute(
         "SELECT TOP 1 estado FROM dbo.etl_agente_terminal_cmd WHERE matricula = ? AND hash = ? AND classe = 'escrita' AND "
-        "((estado = 'proposto' AND expira_em > GETDATE()) OR (estado = 'recusado' AND decidido_em > DATEADD(minute, ?, GETDATE()))) "
+        "((estado = 'proposto' AND expira_em > GETDATE()) OR estado = 'executando' "
+        "OR (estado = 'recusado' AND decidido_em > DATEADD(minute, ?, GETDATE()))) "
         "ORDER BY criado_em DESC", [matricula, hash_, -JANELA_RECUSA_MIN])
     r = cur.fetchone()
-    return None if not r else ("viva" if r[0] == "proposto" else "recusada")
+    return None if not r else ("recusada" if r[0] == "recusado" else "viva")
 
 
 def contar_propostas_vivas(cur, matricula: str) -> int:
@@ -595,7 +640,8 @@ def _propor_escrita(abrir_conn, texto: str, srv, veredito, args: dict, *, matric
         return {"texto": f"O usuário RECUSOU este mesmo comando há menos de {JANELA_RECUSA_MIN} minutos. Não o proponha de novo: "
                          "pergunte o que ele prefere ou ofereça outra abordagem."}
     if reg == "viva":
-        return {"texto": "Este mesmo comando já está AGUARDANDO a confirmação do usuário. Não o proponha de novo; avise que o card está pendente."}
+        return {"texto": "Este mesmo comando já está AGUARDANDO a confirmação do usuário ou EXECUTANDO. Não o proponha de novo; "
+                         "avise que o card está pendente (ou que a execução está em andamento)."}
     if reg is None:
         return {"texto": f"Já há {MAX_PROPOSTAS_VIVAS} comandos aguardando confirmação deste usuário. Peça para confirmar ou "
                          "recusar os pendentes antes de propor outro."}

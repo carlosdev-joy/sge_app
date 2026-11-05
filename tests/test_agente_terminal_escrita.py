@@ -406,7 +406,7 @@ def test_endpoint_kill_switch_desligado_bloqueia_ate_o_admin(api):
     for u in (_user(), _user("ADM", extras=(), perfil="admin", perms=(PERM_ADMIN,))):
         estado["user"] = u
         r = c.post("/agentes/terminal/confirmar", json={"cmd_id": p["cmd_id"], "hash": p["hash"]})
-        assert r.status_code == 503 and r.json()["detail"]["code"] == "agente_escrita_desligada"
+        assert r.status_code == 503 and r.json()["detail"]["code"] in ("agente_escrita_desligada", "agente_desligado"), r.text
     assert m.execs == [] and m.linhas[p["cmd_id"]]["estado"] == "proposto"
 
 
@@ -464,11 +464,12 @@ def test_endpoint_estado_do_comando_so_do_dono(api):
     assert c.get("/agentes/terminal/comandos/nao-e-uuid").status_code in (404, 422)
 
 
-def test_terminal_travado_nao_confirma_nada(mundo, monkeypatch):
-    """Sem a flag `disponivel` (F5) nenhuma rota de escrita funciona, nem para o admin."""
-    assert TERMINAL["disponivel"] is False
+@pytest.mark.parametrize("desligar", ["agente_terminal_enabled", "agente_terminal_escrita_enabled", "agentes_enabled"])
+def test_terminal_travado_nao_confirma_nada(mundo, monkeypatch, desligar):
+    """Com qualquer interruptor desligado nenhuma rota de escrita funciona, nem para o admin."""
+    assert TERMINAL["disponivel"] is True
     estado = {"cur": _Cur()}
-    estado["cur"].config = dict(LIGADO)
+    estado["cur"].config = {**LIGADO, desligar: "0"}
     _app.dependency_overrides[get_current_user] = lambda: _user("ADM", extras=(), perfil="admin", perms=(PERM_ADMIN,))
     monkeypatch.setattr("routers.agentes._abrir", lambda: (_Conn(estado["cur"]), estado["cur"]))
     try:
