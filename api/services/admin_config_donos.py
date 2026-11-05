@@ -30,6 +30,11 @@ DONOS: tuple[tuple[str, str], ...] = (
     # Inteligência Artificial › Agentes (chaves inteiras: agentes_titulo_redigido_em é marca de migration)
     ("agentes_enabled", "Admin › Inteligência Artificial › Agentes"),
     ("agente_datastage_enabled", "Admin › Inteligência Artificial › Agentes"),
+    ("agente_terminal_enabled", "Admin › Inteligência Artificial › Agentes"),
+    ("agente_terminal_escrita_enabled", "Admin › Inteligência Artificial › Agentes"),
+    ("agente_terminal_bancos", "Admin › Inteligência Artificial › Agentes"),
+    ("agente_terminal_mascarar", "Admin › Inteligência Artificial › Agentes"),
+    ("agente_terminal_retencao_dias", "Admin › Inteligência Artificial › Agentes"),
     ("agentes_gateway_campo_usuario", "Admin › Inteligência Artificial › Agentes"),
     ("agentes_cadastro_texto", "Admin › Inteligência Artificial › Agentes"),
     ("agentes_ssh_max", "Admin › Inteligência Artificial › Agentes"),

@@ -34,6 +34,7 @@ import { ChatAgente } from '../components/agentes/ChatAgente'
 import { CuradoriaAprendizados } from '../components/agentes/CuradoriaAprendizados'
 import { GaleriaAgentes, GaleriaCarregando } from '../components/agentes/GaleriaAgentes'
 import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
+import { TerminalAgente } from '../components/agentes/TerminalAgente'
 import { IndicadorProjeto } from '../components/agentes/IndicadorProjeto'
 import { toast } from '../components/ui/Toast'
 import { useAuthStore } from '../store/auth'
@@ -582,7 +583,17 @@ export default function Agentes() {
         </button>
       </header>
 
-      {/* `key`: trocar de agente descarta a conversa anterior por completo. */}
+      {/* `key`: trocar de agente descarta a conversa anterior por completo. O Terminal tem tela própria (spec agente-terminal F5). */}
+      {agente.id === 'terminal' ? (
+        <TerminalAgente
+          key={agente.id}
+          agente={agente}
+          sonda={status.data?.estado}
+          cadastroTexto={catalogo.data?.cadastro_texto}
+          onRecarregarSonda={() => { void status.refetch() }}
+          recarregandoSonda={status.isFetching}
+        />
+      ) : (
       <PainelConversa
         key={agente.id}
         agente={agente}
@@ -591,6 +602,7 @@ export default function Agentes() {
         onRecarregarSonda={() => { void status.refetch() }}
         recarregandoSonda={status.isFetching}
       />
+      )}
     </div>
   )
 }

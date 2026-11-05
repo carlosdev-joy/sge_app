@@ -1192,6 +1192,18 @@ Só o que está validado chega ao agente. A **evidência** de cada item fica ao 
 parece segredo antes de gravar e antes de enviar ao gateway, mas a proteção é para
 acidentes, não para uso normal.
 
+### 3.13 Agentes — o Terminal (menu Agentes)
+
+Chat em formato de terminal: você pergunta em linguagem livre e o agente consulta, por você, o **servidor do Orquestra/Airflow**, o **DataStage** (status, stages, parâmetros, relatório — via `dsjob`) e os **bancos** que o administrador liberou (só consultas SELECT). Liberado usuário a usuário pelo administrador (perfil desenvolvedor).
+
+- **Leitura** (ex.: "mostre as últimas linhas do log da malha") roda direto e aparece como um bloco com o comando exato, o selo **leitura** e a saída. Segredos na saída (senhas, tokens, chaves) aparecem mascarados (••••).
+- **O que altera o servidor** (reiniciar um serviço, apagar um arquivo…) **nunca roda sozinho**: o agente só **propõe**, e aparece um card âmbar com o comando **inteiro**, **onde** ele vai rodar e um prazo de 2 minutos. Só roda se **você** clicar em **Confirmar e executar** — e roda exatamente o texto do card. A "alegação do assistente" é a explicação do agente, **não verificada**: confira o comando. Se o comando tiver mais de uma linha, o card avisa — todas serão executadas. **Recusar** descarta a proposta (o mesmo comando não pode ser re-proposto por 10 minutos).
+- Só aparece o botão de confirmar para quem tem a permissão de **escrita** (concedida à parte) e enquanto o administrador mantém a escrita ligada.
+- **Bloqueado**: arquivos de segredo (`.env`, chaves, configurações com credenciais), comandos que expõem o ambiente, `sudo`, desligar o servidor, apagar pastas do sistema e parar containers do Orquestra são bloqueados quando escritos de forma reconhecível. **A proteção é textual**: um comando disfarçado (curingas como `.e?v`, `$( … )`, aspas no meio do nome) não é reconhecido e aparece como um card comum de confirmação — **leia o comando do card**: é ele que roda, e quem confirma responde pelo texto. O limite real do que o Terminal consegue fazer é a conta de serviço configurada pelo administrador.
+- Depois de confirmar: o selo mostra **executado** (verde), **falhou** (vermelho, com o código de saída) ou **expirado**/**recusado**. "O comando PODE ter sido executado" aparece quando a conexão caiu no meio: confira antes de repetir.
+- **Parar** abandona uma resposta demorada (o que já rodou continua na auditoria; se o agente estava propondo um comando, a proposta some da tela e expira sozinha em até 2 minutos). **Nova conversa** recomeça do zero. **Recarregar a página também recomeça** a conversa do Terminal — os comandos ficam na auditoria.
+- Todo comando que chega ao servidor — lido, proposto, executado ou bloqueado — fica na **auditoria** (Admin), com quem pediu, onde e como terminou. (Um pedido recusado antes de chegar ao servidor — por exemplo, servidor ocupado — aparece só como mensagem na conversa.)
+
 ## 4. Perfil Administrador
 
 Tudo dos demais, mais a aba **Admin** (visível apenas para administradores).
@@ -1723,6 +1735,15 @@ agente criado aqui não tem padrão — começa na versão 1.
   para *Seu texto* (para copiar) e o editor mostra a versão nova.
 - O Orquestra **recusa** um texto com valor de credencial (`senha=…`, token, chave) —
   o prompt vai ao gateway de IA a cada pergunta.
+
+### 4.12 Terminal: bancos, auditoria e retenção (Admin › Inteligência Artificial › Agentes › Terminal)
+
+- **Ligar**: o agente **Terminal** tem interruptor próprio (nasce desligado). A **escrita** (confirmar comandos que alteram o servidor) tem outro interruptor geral — **desligado, ninguém confirma nada**, nem o administrador.
+- **Acesso**: "Quem pode usar" e "Quem pode executar comandos que alteram o servidor" são concedidos **usuário a usuário** (nunca por perfil). Quem não tem a escrita só lê.
+- **Bancos**: escolha as conexões/bancos que o Terminal consulta (só SELECT, garantido pelo plano do SQL Server; ao salvar, cada banco novo é conferido no servidor). Sem banco marcado, o Terminal não oferece consulta a banco. "Mascarar dados pessoais" vale para os resultados.
+- **Retenção**: comandos encerrados há mais de **180 dias** (padrão; de 30 a 3650) são apagados automaticamente da auditoria.
+- **Auditoria**: lista cada comando com data, usuário, servidor, comando (redigido), classe, estado e código de saída; clique no comando para ver o motivo e o resumo da saída. Filtros por matrícula, estado, classe e período.
+- **Servidores e limites (equipe de infraestrutura)**: definidos por variáveis de ambiente da API (`DS_SSH_*` para o DataStage, `AF_SSH_*` para o Orquestra/Airflow, `*_SSH_KNOWN_HOSTS` obrigatório, pastas `TERMINAL_RAIZES_<ID>` e containers `TERMINAL_CONTAINERS_<ID>`). **A conta SSH é o limite real** do que o Terminal faz: use conta de menor privilégio, sem `sudo` e sem o grupo `docker`.
 
 ## 5. Perguntas frequentes
 

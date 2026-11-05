@@ -21,6 +21,8 @@ export interface AgenteCatalogo {
    * à Fase B, que só tinha o DataStage (com todas).
    */
   ferramentas?: string[]
+  /** Terminal (F4/F5): o usuário pode CONFIRMAR comandos que alteram o servidor (recurso + kill switch). */
+  escrita?: boolean
 }
 
 /** Agente só de conversa: a API mandou o conjunto, e ele está vazio. */
@@ -296,6 +298,7 @@ export const FERRAMENTAS: Record<string, string> = {
   isx_extrair: 'extração ISX',
   banco_estrutura: 'estrutura do banco',
   banco_consulta: 'banco',
+  servidor_exec: 'servidor (leitura)',
 }
 
 /** O nome na linha "Consultei:" — com o par, quando é consulta a banco. */

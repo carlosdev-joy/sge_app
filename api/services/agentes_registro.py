@@ -10,7 +10,7 @@ acesso de `services/agentes` recebem em `agentes=`.
     o acesso vale na próxima requisição, nos dois.
   • **Id nunca reaproveitado**: desativar é `ativo = 0`; não há exclusão.
   • **Recursos sem colisão**: `agente_<id>` (uso) e `agente_<id>_curador`
-    (só com ferramentas). Os ids `curador` e `*_curador` são reservados — senão
+    (só com ferramentas). Os ids `curador`, `*_curador` e `*_escrita` são reservados — senão
     um grant daria dois papéis (o uso de `curador` seria o `agente_curador` do
     DataStage).
 """
@@ -40,7 +40,10 @@ ACESSOS = ("manual", "perfil")
 
 def id_reservado(agente_id: str) -> bool:
     return (agente_id in svc.CATALOGO or agente_id in _IDS_DE_ROTA
-            or agente_id == "curador" or agente_id.endswith("_curador"))
+            or agente_id == "curador" or agente_id.endswith("_curador")
+            # `agente_<id>_escrita` é o recurso de escrita do Terminal: um id assim colidiria com ele
+            # (`mapa_de_recursos` levanta "recurso repetido" e derruba o catálogo inteiro).
+            or agente_id == "escrita" or agente_id.endswith("_escrita"))
 
 
 class AgenteInvalido(ValueError):

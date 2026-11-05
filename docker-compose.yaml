@@ -199,6 +199,21 @@ services:
       # chave do servidor. Definido, host key desconhecida é RECUSADA; vazio =
       # aceita qualquer (paridade com o Console). Em produção, defina.
       DS_SSH_KNOWN_HOSTS: "${DS_SSH_KNOWN_HOSTS:-}"
+      # Agente Terminal (spec docs/spec-agente-terminal.md, F3): servidores onde ele LÊ. `datastage` reaproveita as DS_SSH_*
+      # acima; `airflow` usa as AF_SSH_* (sem elas, "não configurado"). Conta de MENOR privilégio, sem grupo docker.
+      # known_hosts é OBRIGATÓRIO (<PREFIXO>_SSH_KNOWN_HOSTS, ou o DS_SSH_KNOWN_HOSTS acima); só no DEV,
+      # TERMINAL_SSH_AUTO_ADD=1 aceita qualquer host key. Pastas/containers liberados por servidor (vazio = padrão do código).
+      AF_SSH_HOST:      "${AF_SSH_HOST:-}"
+      AF_SSH_PORT:      "${AF_SSH_PORT:-22}"
+      AF_SSH_USER:      "${AF_SSH_USER:-}"
+      AF_SSH_PASSWORD:  "${AF_SSH_PASSWORD:-}"
+      AF_SSH_KEY_FILE:  "${AF_SSH_KEY_FILE:-}"
+      AF_SSH_KNOWN_HOSTS: "${AF_SSH_KNOWN_HOSTS:-}"
+      TERMINAL_SSH_AUTO_ADD:       "${TERMINAL_SSH_AUTO_ADD:-}"
+      TERMINAL_RAIZES_DATASTAGE:   "${TERMINAL_RAIZES_DATASTAGE:-}"
+      TERMINAL_RAIZES_AIRFLOW:     "${TERMINAL_RAIZES_AIRFLOW:-}"
+      TERMINAL_CONTAINERS_DATASTAGE: "${TERMINAL_CONTAINERS_DATASTAGE:-}"
+      TERMINAL_CONTAINERS_AIRFLOW:   "${TERMINAL_CONTAINERS_AIRFLOW:-}"
       DS_DSHOME:        "${DS_DSHOME:-/opt/IBM/InformationServer/Server/DSEngine}"
       # E-mail (spec docs/spec-notificacao-email.md): binário do MTA no servidor
       # do DataStage. Config de SERVIDOR, nunca entrada de usuário. Em alguns
