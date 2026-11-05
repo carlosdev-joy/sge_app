@@ -34,6 +34,7 @@ import { InfoBanner } from '../ui/InfoBanner'
 import { Input, Select } from '../ui/Input'
 import { Switch } from '../ui/Switch'
 import { toast } from '../ui/Toast'
+import { AuditoriaTerminal, TerminalBancos } from './TerminalAdmin'
 
 interface AgenteAdmin {
   id: string
@@ -105,7 +106,7 @@ export function AgentesTab() {
   const [aIncluir, setAIncluir] = useState<Record<string, string>>({})
   // O agente aberto no detalhe (um por vez) e a seção dele.
   const [selecionado, setSelecionado] = useState<string | null>(null)
-  const [secao, setSecao] = useState<'acesso' | 'prompt'>('acesso')
+  const [secao, setSecao] = useState<'acesso' | 'prompt' | 'bancos' | 'auditoria'>('acesso')
   // O prompt aberto tem texto NÃO salvo? (as duas abas ficam montadas; só
   // trocar de agente, fechar ou Esc desmontam — e aí pedimos confirmação).
   const [promptSujo, setPromptSujo] = useState(false)
@@ -255,7 +256,11 @@ export function AgentesTab() {
   }
 
   // Abas do detalhe: setas trocam, como num tablist de verdade.
-  const SECOES = [{ id: 'acesso', rotulo: 'Acesso' }, { id: 'prompt', rotulo: 'Prompt' }] as const
+  const SECOES: readonly { id: 'acesso' | 'prompt' | 'bancos' | 'auditoria'; rotulo: string }[] = [
+    { id: 'acesso', rotulo: 'Acesso' }, { id: 'prompt', rotulo: 'Prompt' },
+    // Só o Terminal (spec agente-terminal F5): bancos que ele consulta + retenção, e a auditoria dos comandos.
+    ...(agenteSel?.id === 'terminal' ? [{ id: 'bancos' as const, rotulo: 'Bancos' }, { id: 'auditoria' as const, rotulo: 'Auditoria' }] : []),
+  ]
   function teclaNaAba(e: React.KeyboardEvent<HTMLButtonElement>) {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
     e.preventDefault()
@@ -460,6 +465,16 @@ export function AgentesTab() {
                hidden={secao !== 'prompt'} className="p-4">
             <PromptAgente key={agenteSel.id} agente={agenteSel} embutido onSujo={setPromptSujo} />
           </div>
+          {agenteSel.id === 'terminal' && (
+            <>
+              <div id="agente-painel-bancos" role="tabpanel" aria-labelledby="agente-aba-bancos" hidden={secao !== 'bancos'} className="p-4">
+                <TerminalBancos key={String(cfg.agente_terminal_bancos ?? '')} config={cfg} onSalvo={invalidar} />
+              </div>
+              <div id="agente-painel-auditoria" role="tabpanel" aria-labelledby="agente-aba-auditoria" hidden={secao !== 'auditoria'} className="p-4">
+                {secao === 'auditoria' && <AuditoriaTerminal />}
+              </div>
+            </>
+          )}
           <div id="agente-painel-acesso" role="tabpanel" aria-labelledby="agente-aba-acesso"
                hidden={secao !== 'acesso'} className="p-4">
             {(

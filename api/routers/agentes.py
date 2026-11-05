@@ -44,6 +44,7 @@ from services import agentes_prompt as apr
 from services import agentes_registro as reg
 from services import agentes_sql as asql
 from services import agentes_terminal as aterm
+from services import agentes_terminal_ssh as tssh
 from services import ia_provedor
 
 router = APIRouter()
@@ -441,7 +442,7 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
     erros: list[str] = []
 
     for chave in ("agentes_enabled", "agente_datastage_enabled", "agente_terminal_enabled",
-                  "agente_terminal_escrita_enabled"):
+                  "agente_terminal_escrita_enabled", "agente_terminal_mascarar"):
         if chave in body:
             valores[chave] = "1" if _verdadeiro(body.get(chave)) else "0"
 
@@ -458,6 +459,15 @@ async def agentes_admin_config_set(body: dict = Body(default={}),
             erros.append("agentes_cadastro_texto excede 500 caracteres")
         else:
             valores["agentes_cadastro_texto"] = v or svc.CONFIG_DEFAULTS["agentes_cadastro_texto"]
+
+    if "agente_terminal_retencao_dias" in body:
+        try:
+            n = int(body.get("agente_terminal_retencao_dias"))
+            if not (30 <= n <= 3650):
+                raise ValueError
+            valores["agente_terminal_retencao_dias"] = str(n)
+        except (TypeError, ValueError):
+            erros.append("agente_terminal_retencao_dias deve ser um número inteiro entre 30 e 3650")
 
     if "agentes_ssh_max" in body:
         try:
@@ -525,6 +535,7 @@ async def agentes_terminal_auditoria(
         _admin: dict = Depends(get_admin_user)):
     try:
         with _conexao() as (conn, cur):
+            aterm.purgar_antigos(cur, svc.retencao_terminal_dias(svc.carregar_config(cur)))  # retenção (180 dias por padrão)
             dados = aterm.listar(cur, matricula=matricula, estado=estado, classe=classe,
                                  desde=desde, ate=ate, limite=limite, offset=offset)
             conn.commit()  # `listar` varre execuções interrompidas (UPDATE idempotente): sem commit, o ROLLBACK ao fechar a desfaria
@@ -562,6 +573,7 @@ async def agentes_terminal_confirmar(body: dict = Body(default={}), user: dict =
         raise HTTPException(status_code=422, detail={"code": "corpo_invalido", "message": "cmd_id e hash são obrigatórios"})
     with _conexao() as (_c, cur):
         cfg = svc.carregar_config(cur)
+    aterm.purgar_se_for_hora(_abrir, svc.retencao_terminal_dias(cfg))  # antes da checagem: a retenção não depende da escrita
     svc.exigir_escrita(user, cfg, svc.AGENTE_TERMINAL)  # kill switch (vale p/ todos) + uso + recurso de escrita
     try:
         ssh_max = int(cfg.get("agentes_ssh_max") or 10)
@@ -595,6 +607,44 @@ async def agentes_terminal_recusar(body: dict = Body(default={}), user: dict = D
             raise _tabela_terminal_ausente() from None
         raise
     return {"sucesso": True, "resultado": resultado}
+
+
+@router.get("/agentes/terminal/servidores", tags=["agentes"])
+async def agentes_terminal_servidores(user: dict = Depends(get_current_user)):
+    """Os servidores do Terminal (id, rótulo, configurado) — nunca host, usuário ou senha."""
+    motivo = svc.motivo_sem_acesso(user, svc.CATALOGO[svc.AGENTE_TERMINAL])
+    if motivo is not None:
+        raise HTTPException(status_code=403, detail={"code": motivo[0], "message": motivo[1]})
+    return {"servidores": [s for s in tssh.listar() if s["configurado"]]}
+
+
+@router.put("/agentes/admin/terminal/bancos", tags=["agentes-admin"])
+async def agentes_admin_terminal_bancos(body: dict = Body(default={}), admin: dict = Depends(get_admin_user)):
+    """Pares conexão/banco que o Terminal consulta (só-SELECT). Mesma régua dos agentes da tela: formato + conferência no servidor
+    dos pares NOVOS (abre, existe, tem SHOWPLAN); avisa (não impede) login com escrita."""
+    with _conexao() as (_c, cur):
+        cfg = svc.carregar_config(cur)
+    try:
+        # Sem a chave `bancos`, os pares atuais ficam (mudar só a máscara não apaga os bancos).
+        pares = (reg._bancos(body["bancos"]) if "bancos" in body  # noqa: SLF001 — o validador do cadastro, sem 2ª régua
+                 else list(svc.bancos_do_terminal(cfg)))
+    except reg.AgenteInvalido as e:
+        raise _422_agente(e) from None
+    antes = set(svc.bancos_do_terminal(cfg))
+    avisos = await _conferir_pares([p for p in pares if p not in antes])
+    valores = {"agente_terminal_bancos": json.dumps([{"conexao": c, "banco": b} for c, b in pares], ensure_ascii=False)}
+    if "mascarar_dados" in body:
+        valores["agente_terminal_mascarar"] = "1" if _verdadeiro(body.get("mascarar_dados")) else "0"
+    with _conexao() as (conn, cur):
+        for k, v in valores.items():
+            cur.execute(
+                "MERGE dbo.etl_app_config AS t USING (SELECT ? AS k) AS s ON t.config_key = s.k "
+                "WHEN MATCHED THEN UPDATE SET config_value=?, updated_by=?, updated_at=GETDATE() "
+                "WHEN NOT MATCHED THEN INSERT (config_key, config_value, descricao, updated_by, updated_at) "
+                "  VALUES (s.k, ?, 'Tela Agentes', ?, GETDATE());",
+                [k, v, admin["matricula"], v, admin["matricula"]])
+        conn.commit()
+    return {"sucesso": True, "bancos": [{"conexao": c, "banco": b} for c, b in pares], "avisos": avisos}
 
 
 @router.get("/agentes/terminal/comandos/{cmd_id}", tags=["agentes"])
@@ -644,6 +694,10 @@ def _agente_com_prompt(agente_id: str) -> str:
 def _ferramentas_do(agente_id: str) -> tuple[tuple[str, ...], tuple]:
     """(ferramentas, pares de banco) do agente — para a prévia das partes fixas."""
     ag = svc.agente(agente_id)
+    if ag is not None and agente_id == svc.AGENTE_TERMINAL:
+        with _conexao() as (_conn, cur):
+            ag = svc.agente_terminal_para_conversa(ag, svc.carregar_config(cur))  # a prévia mostra o que a conversa vai usar
+        return tuple(ag["ferramentas"]), tuple(ag["bancos"])
     if ag is not None:
         return tuple(ag.get("ferramentas", svc.FERRAMENTAS_DATASTAGE)), ()
     with _conexao() as (_conn, cur):
@@ -833,6 +887,9 @@ def _preparar_conversa(body: dict, user: dict, ag: dict | None = None) -> dict:
     # try/except/else antigo vazava a conexão nesse caso (achado da F2).
     with _conexao() as (conn, cur):
         agentes_cfg = svc.carregar_config(cur)
+        if agente_id == svc.AGENTE_TERMINAL:
+            ag = svc.agente_terminal_para_conversa(ag, agentes_cfg)  # pares de banco da config (F5)
+            aterm.purgar_se_for_hora(_abrir, svc.retencao_terminal_dias(agentes_cfg))  # retenção automática (≤ 1×/hora)
         if not svc.agente_ligado(agentes_cfg, agente_id, {agente_id: ag}):
             raise HTTPException(status_code=503, detail={
                 "code": "agente_desligado", "message": f"Agente {ag['nome']} desligado"})
@@ -988,6 +1045,8 @@ def _bancos_para_api(ag: dict) -> list[dict]:
 
 
 def _agente_para_admin(ag: dict, cfg: dict[str, str]) -> dict:
+    if ag.get("id") == svc.AGENTE_TERMINAL:
+        ag = svc.agente_terminal_para_conversa(ag, cfg)  # bancos/máscara vêm da config
     return {"id": ag["id"], "nome": ag["nome"], "descricao": ag["descricao"],
             "origem": ag.get("origem", "codigo"), "acesso": ag.get("acesso", "manual"),
             "perfis": list(ag["perfis_elegiveis"]), "ferramentas": list(ag.get("ferramentas", ())),
