@@ -117,3 +117,16 @@ def test_a_escrita_so_aparece_para_quem_o_catalogo_libera():
 def test_o_card_rotula_o_motivo_como_alegacao_e_avisa_multilinha():
     card = codigo(COMP / "ConfirmarComando.tsx")
     assert "Alegação do assistente" in card and "data-terminal-multilinha" in card and "todas serão executadas" in card
+
+
+def test_decisao_em_voo_so_e_descartada_por_nova_conversa_nao_por_enviar_ou_parar():
+    """2ª rodada do QA da F5: o guarda da decisão é a CONVERSA (só "Nova conversa" troca), não o pedido (enviar/Parar)."""
+    fonte = codigo(AGENTE)
+    nova = fonte.split("function nova()", 1)[1].split("\n  }", 1)[0]
+    parar = fonte.split("onParar={() => {", 1)[1].split("}}", 1)[0]
+    enviar = fonte.split("async function enviar", 1)[1].split("async function", 1)[0] if "async function enviar" in fonte else ""
+    assert "conversaRef.current++" in nova
+    assert "conversaRef" not in parar and "conversaRef" not in enviar
+    decidir = fonte.split("async function decidir", 1)[1].split("function nova", 1)[0]
+    assert "const conversa = conversaRef.current" in decidir and "pedidoRef" not in decidir
+    assert "res.estado === 'recusado'" in decidir, "recusa em voo não vira toast de 'confirmado'"

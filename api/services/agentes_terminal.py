@@ -624,6 +624,7 @@ def _propor_escrita(abrir_conn, texto: str, srv, veredito, args: dict, *, matric
     try:
         def _fn(cur):
             varrer_propostas_vencidas(cur)
+            varrer_interrompidos(cur)  # escrita presa em `executando` (API caiu) não bloqueia a re-proposta para sempre
             if proposta_repetida(cur, matricula, _h) == "recusada":
                 return "recusada"
             if proposta_repetida(cur, matricula, _h) == "viva":

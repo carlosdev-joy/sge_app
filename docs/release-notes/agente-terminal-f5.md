@@ -12,6 +12,8 @@
 
 ## Endurecimento antes da liberação (auditoria da superfície inteira + QA)
 - **Busca recursiva** (`grep -r`) passou a excluir EXATAMENTE o que a denylist proíbe ler direto: fonte única de nomes, sem diferenciar maiúsculas (o `--exclude` do GNU grep diferencia, mesmo com `-i`: `Secrets.json`, `APP.ENV`, `.SSH/` vazavam) e com os nomes que faltavam (`secret.txt`, `credential.json`, `client_secret.json`, `.bash_history`, `authorized_keys`…). Teste de equivalência + execução real do GNU grep provam.
+- **Logs de autenticação** (2ª rodada do QA): `grep -r /var/log` não despeja mais `auth.log`, `secure`, `sudo.log`, `btmp`, `wtmp`, `lastlog` nem `audit/`; e a leitura direta passou a barrar a rotação `dateext` do RHEL (`secure-20261101`, `btmp-20261101`), não só `auth.log.1`.
+- Uma decisão (confirmar/recusar) em andamento não se perde se o usuário enviar outra pergunta ou clicar em Parar — só "Nova conversa" troca de conversa; a recusa em voo depois de Nova conversa avisa "recusado" (não "terminou com erro"); escrita presa em `executando` após queda da API não bloqueia mais a re-proposta.
 - **O Terminal não grava na base de conhecimento**: sem curadoria, não grava aprendizados nem interpretações (`propostas`) — antes, com o `dsjob`, um usuário só do Terminal conseguia gravar "interpretação aprovada" vista pelo agente DataStage.
 - Decisão em voo depois de "Nova conversa" não injeta mais o card na conversa nova; o card que está **executando** não vira "expirado · nada foi executado" quando o prazo passa durante a execução; o mesmo comando em execução bloqueia uma nova proposta (sem execução dupla).
 - Retenção automática de verdade: a purga roda também ao conversar com o Terminal e antes da checagem de escrita (antes dependia de abrir a auditoria).

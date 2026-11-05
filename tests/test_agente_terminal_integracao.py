@@ -302,3 +302,9 @@ def test_previa_do_prompt_usa_as_ferramentas_reais_do_terminal(cliente, bancos, 
         ferramentas, pares = rot._ferramentas_do("terminal")
     assert ("banco_consulta" in ferramentas) is tem_banco and bool(pares) is tem_banco
     assert "servidor_exec" in ferramentas and "dsjob" in ferramentas
+
+
+def test_propor_escrita_varre_as_escritas_presas_antes_de_checar_repeticao():
+    fonte = open(os.path.join(os.path.dirname(__file__), "..", "api", "services", "agentes_terminal.py"), encoding="utf-8").read()
+    fn = fonte.split("        def _fn(cur):\n            varrer_propostas_vencidas(cur)", 1)[1][:400]
+    assert fn.lstrip().startswith("varrer_interrompidos(cur)") and fn.index("varrer_interrompidos") < fn.index("proposta_repetida")

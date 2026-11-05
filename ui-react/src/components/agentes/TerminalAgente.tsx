@@ -38,6 +38,9 @@ export function TerminalAgente({ agente, sonda, cadastroTexto, onRecarregarSonda
   const [statusTexto, setStatusTexto] = useState<string | null>(null)
   const [decidindo, setDecidindo] = useState<ReadonlySet<string>>(() => new Set())
   const pedidoRef = useRef(0)
+  // Conversa ≠ pedido: enviar outra pergunta ou "Parar" NÃO troca de conversa — uma decisão em voo continua dona do seu card.
+  // Só "Nova conversa" incrementa este contador (2ª rodada do QA da F5).
+  const conversaRef = useRef(0)
   const servidores = useQuery<{ servidores: Servidor[] }>({
     queryKey: ['agentes-terminal-servidores'], queryFn: () => apiFetch('/agentes/terminal/servidores'), retry: false,
   })
@@ -87,7 +90,7 @@ export function TerminalAgente({ agente, sonda, cadastroTexto, onRecarregarSonda
     if (!atual) return
     try {
       const r = await apiFetch<{ comando: ComandoApi }>(`/agentes/terminal/comandos/${encodeURIComponent(cmdId)}`)
-      if (pedidoRef.current !== conversa) return  // "Nova conversa" no meio: o card não volta para a conversa nova
+      if (conversaRef.current !== conversa) return  // "Nova conversa" no meio: o card não volta para a conversa nova
       setMensagens(m => substituirComando(m, reidratar(atual, r.comando, new Date())))
     } catch {
       /* sem estado novo: o card fica como está (a próxima ação reconsulta) */
@@ -97,7 +100,7 @@ export function TerminalAgente({ agente, sonda, cadastroTexto, onRecarregarSonda
   async function decidir(cmdId: string, decisao: 'confirmar' | 'recusar') {
     const atual = comandoAtual(cmdId)
     if (!atual || decidindo.has(cmdId)) return  // duplo clique = uma decisão (o servidor também garante)
-    const conversa = pedidoRef.current  // a decisão pertence a ESTA conversa; depois de "Nova conversa" o resultado só vira toast
+    const conversa = conversaRef.current  // a decisão pertence a ESTA conversa; depois de "Nova conversa" o resultado só vira toast
     setDecidindo(s => new Set(s).add(cmdId))
     try {
       const corpo = decisao === 'confirmar' ? { cmd_id: cmdId, hash: atual.hash ?? '' } : { cmd_id: cmdId }
@@ -105,8 +108,9 @@ export function TerminalAgente({ agente, sonda, cadastroTexto, onRecarregarSonda
         method: 'POST', body: JSON.stringify(corpo),
       })
       const res = r.resultado
-      if (pedidoRef.current !== conversa) {
-        toast.info(res.estado === 'executado' ? 'O comando confirmado foi executado (veja na auditoria).' : 'O comando confirmado terminou com erro.')
+      if (conversaRef.current !== conversa) {
+        toast.info(res.estado === 'recusado' ? 'O comando foi recusado (veja na auditoria).'
+          : res.estado === 'executado' ? 'O comando confirmado foi executado (veja na auditoria).' : 'O comando confirmado terminou com erro.')
         return
       }
       setMensagens(m => substituirComando(m, {
@@ -122,7 +126,7 @@ export function TerminalAgente({ agente, sonda, cadastroTexto, onRecarregarSonda
     } catch (e) {
       const { texto, reidratar: deveReidratar } = textoDoErroDeDecisao(codigoDoErro(e))
       toast.error(texto)
-      if (deveReidratar && pedidoRef.current === conversa) await reidratarCard(cmdId, conversa)
+      if (deveReidratar && conversaRef.current === conversa) await reidratarCard(cmdId, conversa)
     } finally {
       setDecidindo(s => { const n = new Set(s); n.delete(cmdId); return n })
     }
@@ -130,6 +134,7 @@ export function TerminalAgente({ agente, sonda, cadastroTexto, onRecarregarSonda
 
   function nova() {
     pedidoRef.current++
+    conversaRef.current++
     setMensagens([])
     setConversaId(null)
     setEnviando(false)

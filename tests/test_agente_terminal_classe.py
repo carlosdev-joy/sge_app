@@ -504,3 +504,46 @@ def test_gnu_grep_real_nao_vaza_segredo_de_nome_com_maiusculas(tmp_path):
     assert "app.py" in saida, "o arquivo comum precisa continuar visível (senão o teste não prova nada)"
     for rel in segredos:
         assert rel.split("/")[-1] not in saida, f"{rel} vazou: {saida}"
+
+
+# ── F5, 2ª rodada do QA: logs de autenticação (regra ancorada em /var/log) e rotação `dateext` ─────────────────
+
+LOGS_AUTH = ["auth.log", "auth.log.1", "auth.log.2.gz", "secure", "secure-20261101", "sudo.log", "sudo.log-20261101",
+             "btmp", "btmp-20261101", "btmp.1", "wtmp", "lastlog"]
+
+
+@pytest.mark.parametrize("nome", LOGS_AUTH)
+def test_log_de_autenticacao_e_proibido_ler_direto_inclusive_rotacionado(nome):
+    assert cls.caminho_sensivel(f"/var/log/{nome}"), nome
+    assert classificar(f"cat /var/log/{nome}").classe == "proibido", nome
+
+
+@pytest.mark.parametrize("nome", LOGS_AUTH)
+def test_busca_recursiva_em_var_log_exclui_os_logs_de_autenticacao(nome):
+    argv = classificar("grep -r -a -e x /var/log").argv
+    for v in _variantes(nome):
+        assert _excluido(argv, v), v
+    assert _excluido(argv, "audit", diretorio=True) and _excluido(argv, "AUDIT", diretorio=True)
+
+
+def test_logs_comuns_de_var_log_continuam_buscaveis():
+    argv = classificar("grep -r -a -e x /var/log").argv
+    for comum in ("syslog", "messages", "dpkg.log", "kern.log", "airflow-scheduler.log"):
+        assert not cls.caminho_sensivel(f"/var/log/{comum}") and not _excluido(argv, comum), comum
+
+
+@pytest.mark.skipif(not shutil.which("grep"), reason="sem GNU grep")
+def test_gnu_grep_real_em_var_log_nao_vaza_log_de_autenticacao(tmp_path):
+    raiz = tmp_path / "log"
+    (raiz / "audit").mkdir(parents=True)
+    vazaveis = ["auth.log", "secure", "secure-20261101", "sudo.log", "btmp", "wtmp", "lastlog", "audit/audit.log", "Auth.log.1"]
+    for rel in vazaveis:
+        (raiz / rel).write_text("CANARIO_LOG_77\n", encoding="utf-8")
+    (raiz / "syslog").write_text("CANARIO_LOG_77 comum\n", encoding="utf-8")
+    v = classificar("grep -r -a -e CANARIO_LOG_77 /var/log")
+    assert v.classe == "leitura", v
+    argv = [str(raiz) if a == "/var/log" else a for a in v.argv]
+    saida = subprocess.run(argv, capture_output=True, text=True, timeout=20).stdout
+    assert "syslog" in saida, "o log comum continua visível (senão o teste não prova nada)"
+    for rel in vazaveis:
+        assert f"{raiz}/{rel}:" not in saida, f"{rel} vazou: {saida}"

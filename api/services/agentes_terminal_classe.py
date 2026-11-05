@@ -107,7 +107,7 @@ _SENSIVEL_BASE = re.compile(
     r".*\.(cfg|ini|properties|conf|bak|old|orig|dump|swp))$")
 _SENSIVEL_TRECHO = re.compile(
     r"(?i)(^|/)(\.ssh|\.gnupg|\.aws|\.kube|\.docker|secrets?|\.git|private|keys|vault)(/|$)|^/proc/|^/sys/|^/etc/(shadow|gshadow|sudoers)|/environ$|"
-    r"^/var/log/(btmp|wtmp|lastlog|auth\.log|secure|sudo\.log|audit)(/|\.|$)")
+    r"^/var/log/(btmp|wtmp|lastlog|auth\.log|secure|sudo\.log|audit)(/|\.|-|$)")  # `-AAAAMMDD`: rotação `dateext` (RHEL)
 
 
 def caminho_sensivel(caminho: str) -> bool:
@@ -319,7 +319,11 @@ _GLOBS_SENSIVEIS = (
     "settings.py", "local_settings.py", "*.p8", "*.ppk", "*.gpg", "*.asc", "*.cfg", "*.ini", "*.properties", "*.conf", "*.bak",
     "*.old", "*.orig", "*.dump", "*.swp",
 )
-_DIRS_SENSIVEIS = (".ssh", ".gnupg", ".aws", ".kube", ".docker", ".git", "secret", "secrets", "private", "keys", "vault")
+# Logs de autenticação (regra ANCORADA em /var/log de `_SENSIVEL_TRECHO`): o `--exclude` só vê o NOME, então valem em qualquer pasta
+# — mais largo que a denylist, nunca mais estreito (2ª rodada do QA da F5: `grep -r /var/log` despejava auth.log/secure/btmp/audit).
+_GLOBS_LOGS_SENSIVEIS = tuple(f"{n}{suf}" for n in ("btmp", "wtmp", "lastlog", "auth.log", "secure", "sudo.log") for suf in ("", ".*", "-*"))
+_GLOBS_SENSIVEIS = _GLOBS_SENSIVEIS + _GLOBS_LOGS_SENSIVEIS
+_DIRS_SENSIVEIS = (".ssh", ".gnupg", ".aws", ".kube", ".docker", ".git", "secret", "secrets", "private", "keys", "vault", "audit")
 
 
 def _glob_sem_caixa(g: str) -> str:
