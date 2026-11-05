@@ -24,15 +24,34 @@ Detalhes de cada fase: `agente-terminal-f1.md` … `agente-terminal-f5.md` (os n
 controla por nome) e as versões 198–201 da develop entram como registros históricos.
 
 ## Deploy em produção
-1. `scripts/deploy.sh` (puxa a `main`): aplicar as migrations **153** e **154** (6c, `[s/N]` → s); atualizar **API** e **`dist/`**.
-   `config/` → responder **n**. Sem `dags/`, sem dependência nova (paramiko já existe).
-2. Variáveis da API (sem segredo no Git):
-   - `DS_SSH_*` — já existem (Console DataStage). `AF_SSH_HOST/PORT/USER/PASSWORD|KEY_FILE` — servidor Orquestra/Airflow
-     (sem elas aparece "não configurado").
-   - `<PREFIXO>_SSH_KNOWN_HOSTS` (ou `DS_SSH_KNOWN_HOSTS`) — **obrigatório**: sem ele a conexão falha fechada.
-     **Nunca** usar `TERMINAL_SSH_AUTO_ADD=1` em produção.
-   - Opcionais: `TERMINAL_RAIZES_<ID>` (pastas de leitura), `TERMINAL_CONTAINERS_<ID>` (containers de `docker logs`).
-   - Conta SSH de **menor privilégio**, sem grupo `docker`.
+0. **Antes do deploy (preparar no host):**
+   - Conferir o que vai junto: `python sql/migrate.py --dry-run` deve listar só **153** e **154**. Se listar 143–152, os cards do
+     PIO ainda não foram publicados e vão junto neste deploy.
+   - Conferir que nenhum agente ou permissão já usa os ids reservados pelo Terminal:
+     `SELECT agente_id FROM dbo.etl_agente WHERE agente_id IN ('terminal','escrita') OR agente_id LIKE '%[_]escrita'`
+     e procurar `agente_terminal`/`agente_terminal_escrita` nas permissões de usuários e perfis (esperado: nada).
+   - **known_hosts e chave precisam existir DENTRO do container** `orquestra-api`, que hoje só monta `dags/`, `dsx/` e `api/`.
+     Ver como o Console DataStage resolve o `DS_SSH_KNOWN_HOSTS` hoje. Se estiver vazio (o Terminal **recusa** sem known_hosts),
+     gerar o arquivo no host (`ssh-keyscan -p <porta> <host> > /opt/airflow/ssh/known_hosts`, conferindo a impressão digital
+     com quem administra o servidor). Depois, montar a pasta só-leitura no serviço `orquestra-api` do `docker-compose.yaml` do
+     servidor: `- /opt/airflow/ssh:/opt/orquestra/ssh:ro` em `volumes:`. As variáveis apontam para o caminho **do container**
+     (`DS_SSH_KNOWN_HOSTS=/opt/orquestra/ssh/known_hosts`; `AF_SSH_KEY_FILE=/opt/orquestra/ssh/<chave>`, se usar chave).
+   - Preencher o `.env` do host **antes** do passo 1 (assim o `up -d` da etapa 7 já sobe com elas):
+     - `DS_SSH_*` já existem (Console DataStage).
+     - `AF_SSH_HOST/PORT/USER/PASSWORD|KEY_FILE` e `AF_SSH_KNOWN_HOSTS` para o servidor Orquestra/Airflow. Sem elas, ele
+       aparece "não configurado" e só o DataStage fica disponível.
+     - Opcionais: `TERMINAL_RAIZES_<ID>` (pastas de leitura) e `TERMINAL_CONTAINERS_<ID>` (containers de `docker logs`).
+     - **Nunca** `TERMINAL_SSH_AUTO_ADD=1` em produção. Conta SSH de **menor privilégio**, sem grupo `docker`.
+1. `scripts/deploy.sh` (puxa a `main`):
+   - migrations **153** e **154** na etapa 6c (`[s/N]` → **s**);
+   - **"docker-compose.yaml mudou no repo. Sobrescrever?"** → **s**, com backup automático. Sem isso, as variáveis `AF_SSH_*` e
+     `TERMINAL_*` **não chegam ao container**: o Airflow fica "não configurado" e as restrições `TERMINAL_CONTAINERS_*`/`RAIZES_*`
+     são ignoradas em silêncio (viram "qualquer container"/pastas padrão). Se o compose do servidor tiver ajustes locais,
+     responder **n** e copiar à mão o bloco "Agente Terminal" (variáveis do `orquestra-api`), mais o volume do passo 0;
+   - `config/` → **n**;
+   - API e **`dist/`** atualizados. Sem `dags/`, sem dependência nova (paramiko já existe).
+2. Se o `.env` ou o compose forem mexidos **depois** do deploy: `docker compose up -d orquestra-api` (recria só a API).
+   Conferir com `docker exec orquestra-api printenv | grep -c '^AF_SSH_\|^TERMINAL_'`, que só conta as variáveis, sem mostrar valores.
 3. Ligar: Admin › IA › Agentes → Terminal (`agente_terminal_enabled`); escrita (`agente_terminal_escrita_enabled`) só se desejado.
    Conceder `agente_terminal` / `agente_terminal_escrita` aos usuários → **relogin**.
 
