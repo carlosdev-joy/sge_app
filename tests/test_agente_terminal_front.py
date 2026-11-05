@@ -33,18 +33,6 @@ def test_harness_da_logica_pura_roda_no_node():
     assert r.stdout.strip() == "ok"
 
 
-def test_previa_so_abre_com_agente_terminal_e_simulado():
-    fonte = codigo(PAGINA)
-    assert "params.get('agente') === 'terminal' && params.get('simulado') === '1'" in fonte
-    assert "<AgentesReal />" in fonte  # sem os parâmetros, a tela real é a de sempre
-
-
-def test_simulador_nao_fala_com_a_rede():
-    for nome in ("TerminalSimulado.tsx", "TerminalChat.tsx", "ComandoBloco.tsx", "ConfirmarComando.tsx"):
-        assert "apiFetch" not in codigo(COMP / nome), nome
-    assert "apiFetch" not in codigo(FRONT / "lib" / "terminalSimulado.ts")
-
-
 def test_enter_no_campo_nao_confirma_comando():
     chat = codigo(COMP / "TerminalChat.tsx")
     # o Enter do textarea só ENVIA a mensagem; confirmar é botão próprio do card
@@ -73,21 +61,6 @@ def test_cores_de_paleta_com_par_claro_escuro_fora_do_terminal():
     assert "bg-amber-50" in chat and "dark:bg-amber-900/30" in chat
 
 
-def test_previa_nasce_somente_leitura():
-    """QA F1 (M1): escrita só com `escrita=1` explícito — o padrão é o seguro."""
-    assert "podeEscrever={params.get('escrita') === '1'}" in codigo(PAGINA)
-
-
-def test_decidir_descarta_resultado_apos_nova_conversa():
-    """QA F1 (I1): confirmar + 'Nova conversa' não pode ressuscitar o comando."""
-    sim = codigo(COMP / "TerminalSimulado.tsx")
-    corpo = sim.split("function decidir", 1)[1].split("function nova", 1)[0]
-    assert "const minha = conversa.current" in corpo
-    assert "if (minha !== conversa.current) return" in corpo
-    assert "podeDecidir(alvo.comando" in corpo  # mesma régua da tela (M3)
-    assert "setDecidindo(new Set())" in sim.split("function nova", 1)[1]
-
-
 def test_foco_e_relogio_seguem_a_proposta_viva():
     """QA F1 (I2/I3): campo não rouba o foco do card; relógio atualiza ao ligar."""
     chat = codigo(COMP / "TerminalChat.tsx")
@@ -102,11 +75,58 @@ def test_texto_secundario_do_terminal_tem_contraste():
     assert "text-gray-500" not in codigo(COMP / "ComandoBloco.tsx").replace("text-gray-500 select-none", "")
 
 
-def test_enviar_nao_invalida_decisao_pendente():
-    """QA F1 rodada 2 (N1): só `nova()` incrementa o contador; enviar durante a
-    confirmação não pode deixar o card preso em "Executando…"."""
-    sim = codigo(COMP / "TerminalSimulado.tsx")
-    assert len(re.findall(r"conversa\.current\+\+", sim)) == 1
-    assert "conversa.current++" in sim.split("function nova", 1)[1]
-    assert "++conversa.current" not in sim
-    assert "geracao" not in sim
+# ── F5: o Terminal REAL (a prévia `?simulado=1` saiu) ─────────────────────────────────────────────────────────────
+
+AGENTE = COMP / "TerminalAgente.tsx"
+
+
+def test_a_pagina_abre_o_terminal_real_para_o_agente_terminal_e_nao_ha_mais_previa():
+    fonte = codigo(PAGINA)
+    assert "agente.id === 'terminal' ? (" in fonte and "<TerminalAgente" in fonte and "<PainelConversa" in fonte
+    assert "simulado" not in fonte and "TerminalSimulado" not in fonte
+    assert not (COMP / "TerminalSimulado.tsx").exists()
+
+
+def test_o_container_reaproveita_sonda_stream_e_fallback():
+    fonte = codigo(AGENTE)
+    assert "conversarPorStream(agente.id" in fonte and "rotaStreamAusente(e)" in fonte
+    assert "<AvisoSonda" in fonte and "infoSonda?.bloqueia" in fonte
+    assert "apiFetch" in fonte
+
+
+def test_nova_conversa_descarta_resposta_atrasada():
+    fonte = codigo(AGENTE)
+    enviar = fonte.split("async function enviar", 1)[1].split("function comandoAtual", 1)[0]
+    assert "const meu = ++pedidoRef.current" in enviar and "if (r === null || abandonado()) return" in enviar
+    assert "pedidoRef.current++" in fonte.split("function nova", 1)[1]
+
+
+def test_confirmar_manda_so_cmd_id_e_hash_e_reidrata_depois_de_erro():
+    fonte = codigo(AGENTE)
+    decidir = fonte.split("async function decidir", 1)[1].split("function nova", 1)[0]
+    assert "{ cmd_id: cmdId, hash: atual.hash ?? '' }" in decidir and "comando:" not in decidir.split("const corpo", 1)[1].split("\n", 1)[0]
+    assert "textoDoErroDeDecisao(codigoDoErro(e))" in decidir and "await reidratarCard(cmdId, conversa)" in decidir
+    assert "if (!atual || decidindo.has(cmdId)) return" in decidir, "duplo clique = uma decisão"
+    assert "/agentes/terminal/comandos/" in fonte
+
+
+def test_a_escrita_so_aparece_para_quem_o_catalogo_libera():
+    assert "podeEscrever={!!agente.escrita}" in codigo(AGENTE)
+
+
+def test_o_card_rotula_o_motivo_como_alegacao_e_avisa_multilinha():
+    card = codigo(COMP / "ConfirmarComando.tsx")
+    assert "Alegação do assistente" in card and "data-terminal-multilinha" in card and "todas serão executadas" in card
+
+
+def test_decisao_em_voo_so_e_descartada_por_nova_conversa_nao_por_enviar_ou_parar():
+    """2ª rodada do QA da F5: o guarda da decisão é a CONVERSA (só "Nova conversa" troca), não o pedido (enviar/Parar)."""
+    fonte = codigo(AGENTE)
+    nova = fonte.split("function nova()", 1)[1].split("\n  }", 1)[0]
+    parar = fonte.split("onParar={() => {", 1)[1].split("}}", 1)[0]
+    enviar = fonte.split("async function enviar", 1)[1].split("async function", 1)[0] if "async function enviar" in fonte else ""
+    assert "conversaRef.current++" in nova
+    assert "conversaRef" not in parar and "conversaRef" not in enviar
+    decidir = fonte.split("async function decidir", 1)[1].split("function nova", 1)[0]
+    assert "const conversa = conversaRef.current" in decidir and "pedidoRef" not in decidir
+    assert "res.estado === 'recusado'" in decidir, "recusa em voo não vira toast de 'confirmado'"

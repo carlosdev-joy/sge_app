@@ -8,7 +8,8 @@
 // depois de enviar; "executando" tem texto; selo "Somente leitura"/"Escrita habilitada"
 // tem texto, não só cor.
 import { useEffect, useRef, useState } from 'react'
-import { SendHorizontal, ShieldCheck, TriangleAlert, MessageSquarePlus } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Loader2, SendHorizontal, ShieldCheck, Square, TriangleAlert, MessageSquarePlus, Server } from 'lucide-react'
 import type { MensagemTerminal } from '../../lib/terminalComando'
 import { MAX_ENTRADA, entradaValida, estadoEfetivo } from '../../lib/terminalComando'
 import { EXEMPLOS_TERMINAL } from '../../lib/terminalSimulado'
@@ -18,36 +19,43 @@ interface Props {
   mensagens: MensagemTerminal[]
   enviando: boolean
   podeEscrever: boolean
-  servidor: string
+  /** Com `onServidor`, um seletor; sem ele (F5), só a lista — quem escolhe o servidor de cada comando é o agente. */
+  servidor?: string
   servidores: { id: string; label: string }[]
+  /** Progresso da rodada em curso (stream): "Consultando o servidor…", "Consultando o banco…". */
+  statusTexto?: string | null
+  /** Aviso acima do terminal (ex.: sonda do gateway de IA). */
+  aviso?: ReactNode
   decidindo: ReadonlySet<string>
   erro?: string | null
   bloqueado?: boolean
   motivoBloqueio?: string
-  onServidor: (id: string) => void
+  onServidor?: (id: string) => void
   onEnviar: (texto: string) => void
   onDecidir: (cmdId: string, decisao: 'confirmar' | 'recusar') => void
   onNova: () => void
+  /** Abandona a rodada em curso (a resposta que chegar depois é descartada). */
+  onParar?: () => void
 }
 
 export function TerminalChat({
   mensagens, enviando, podeEscrever, servidor, servidores, decidindo, erro, bloqueado, motivoBloqueio,
-  onServidor, onEnviar, onDecidir, onNova,
+  onServidor, onEnviar, onDecidir, onNova, statusTexto, aviso, onParar,
 }: Props) {
   const [texto, setTexto] = useState('')
   const [agora, setAgora] = useState(() => new Date())
   const campo = useRef<HTMLTextAreaElement>(null)
   const fim = useRef<HTMLDivElement>(null)
   // Proposta VIVA (não vencida no relógio do front): governa o relógio e o foco.
-  const temProposta = mensagens.some(m => 'comando' in m && estadoEfetivo(m.comando, agora) === 'proposto')
+  const temProposta = mensagens.some(m => m.papel === 'comando' && estadoEfetivo(m.comando, agora) === 'proposto')
 
   // Relógio só enquanto há proposta viva (contagem regressiva do card). Ao ligar, atualiza
   // `agora` na hora: com a página aberta há tempo, o 1º quadro não pode mostrar prazo velho.
   useEffect(() => {
     if (!temProposta) return
-    setAgora(new Date())
+    const agoraJa = setTimeout(() => setAgora(new Date()), 0)  // 1º quadro com o relógio atual (sem setState síncrono no efeito)
     const t = setInterval(() => setAgora(new Date()), 1000)
-    return () => clearInterval(t)
+    return () => { clearTimeout(agoraJa); clearInterval(t) }
   }, [temProposta])
 
   useEffect(() => { fim.current?.scrollIntoView({ block: 'end' }) }, [mensagens.length, enviando])
@@ -64,14 +72,23 @@ export function TerminalChat({
     <section className="relative flex flex-col h-full min-h-0 rounded-lg border border-edge bg-panel overflow-hidden"
              aria-label="Terminal do agente" data-terminal>
       <header className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-edge">
-        <label className="flex items-center gap-2 text-[13px] text-dim">
-          Servidor
-          <select value={servidor} onChange={e => onServidor(e.target.value)}
-                  className="h-8 rounded-md border border-edge bg-panel text-ink text-[13px] px-2
-                             focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1A5FA8]">
-            {servidores.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-          </select>
-        </label>
+        {onServidor ? (
+          <label className="flex items-center gap-2 text-[13px] text-dim">
+            Servidor
+            <select value={servidor} onChange={e => onServidor(e.target.value)}
+                    className="h-8 rounded-md border border-edge bg-panel text-ink text-[13px] px-2
+                               focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1A5FA8]">
+              {servidores.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          </label>
+        ) : (
+          <span className="flex flex-wrap items-center gap-1.5 text-[13px] text-dim" data-terminal-servidores>
+            <Server className="w-4 h-4" aria-hidden="true" />
+            {servidores.length === 0 ? 'Nenhum servidor configurado' : servidores.map(s => (
+              <span key={s.id} className="px-2 py-0.5 rounded-full border border-edge bg-canvas text-ink text-[12px]">{s.label}</span>
+            ))}
+          </span>
+        )}
         {podeEscrever ? (
           <span data-terminal-modo="escrita"
                 className="inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-full border
@@ -87,7 +104,7 @@ export function TerminalChat({
             <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" /> Somente leitura
           </span>
         )}
-        <button type="button" onClick={onNova} disabled={mensagens.length === 0 || enviando}
+        <button type="button" onClick={onNova} disabled={mensagens.length === 0}
                 title={mensagens.length === 0 ? 'A conversa ainda está vazia' : 'Começar uma conversa do zero'}
                 className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-edge bg-panel text-ink
                            text-[13px] font-medium hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed
@@ -96,6 +113,7 @@ export function TerminalChat({
         </button>
       </header>
 
+      {aviso}
       {/* Corpo do terminal: fundo fixo escuro nos dois temas. */}
       <div className="flex-1 min-h-0 overflow-y-auto bg-gray-950 text-gray-200 px-3 py-3 flex flex-col gap-3 font-mono"
            role="log" aria-live="polite" aria-label="Histórico do terminal" tabIndex={0}>
@@ -125,10 +143,30 @@ export function TerminalChat({
           if (m.papel === 'assistente') {
             return <p key={m.id} className="font-sans text-[13px] text-gray-300 whitespace-pre-wrap break-words">{m.texto}</p>
           }
+          if (m.papel === 'nota') {
+            return (
+              <div key={m.id} className="font-sans text-[12px] text-gray-400 border-l-2 border-gray-700 pl-2" data-terminal-nota>
+                <span className="text-gray-300">{m.rotulo}</span>{m.detalhe ? <span className="font-mono"> · {m.detalhe}</span> : null}
+                {m.sql && <pre className="mt-1 font-mono text-gray-300 whitespace-pre-wrap break-words">{m.sql}</pre>}
+              </div>
+            )
+          }
           return <ComandoBloco key={m.id} cmd={m.comando} agora={agora} podeEscrever={podeEscrever}
+                               rotuloServidor={servidores.find(s => s.id === m.comando.servidor)?.label}
                                decidindo={decidindo.has(m.comando.cmd_id)} onDecidir={onDecidir} />
         })}
-        {enviando && <p className="font-sans text-[13px] text-gray-400" data-terminal-executando>Consultando o servidor…</p>}
+        {enviando && (
+          <div className="flex items-center gap-3 font-sans text-[13px] text-gray-400" data-terminal-executando>
+            <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            <span>{statusTexto || 'Pensando…'}</span>
+            {onParar && (
+              <button type="button" onClick={onParar}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400">
+                <Square className="w-3 h-3" aria-hidden="true" /> Parar
+              </button>
+            )}
+          </div>
+        )}
         {erro && <p role="alert" className="font-sans text-[13px] text-red-300">{erro}</p>}
         <div ref={fim} />
       </div>

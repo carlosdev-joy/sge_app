@@ -107,7 +107,7 @@ _SENSIVEL_BASE = re.compile(
     r".*\.(cfg|ini|properties|conf|bak|old|orig|dump|swp))$")
 _SENSIVEL_TRECHO = re.compile(
     r"(?i)(^|/)(\.ssh|\.gnupg|\.aws|\.kube|\.docker|secrets?|\.git|private|keys|vault)(/|$)|^/proc/|^/sys/|^/etc/(shadow|gshadow|sudoers)|/environ$|"
-    r"^/var/log/(btmp|wtmp|lastlog|auth\.log|secure|sudo\.log|audit)(/|\.|$)")
+    r"^/var/log/(btmp|wtmp|lastlog|auth\.log|secure|sudo\.log|audit)(/|\.|-|$)")  # `-AAAAMMDD`: rotação `dateext` (RHEL)
 
 
 def caminho_sensivel(caminho: str) -> bool:
@@ -304,14 +304,35 @@ _SIMPLES: dict[str, _Cmd] = {
 
 # Excludes injetados em buscas recursivas: o `grep -r /opt/app` nunca despeja `.env`/chaves, mesmo que o
 # caminho inicial seja liberado (o usuário não pode passar `--include`/`--exclude`: não estão no conjunto).
-_GLOBS_EXCLUIDOS = (".envrc", ".my.cnf", ".s3cfg", ".boto", ".vault-token", "auth.json", ".dockerconfigjson", "_netrc", ".terraformrc",
-                    "vault.*", "appsettings*", "wp-config*", "settings.py", "local_settings.py", "*.p8", "*.ppk", "*.gpg", "*.asc", ".env*", "*.env", "*.env.*", "env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.truststore",
-                    "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*", "*.kdbx", "*.keytab", ".netrc", ".pgpass", ".htpasswd", ".npmrc",
-                    ".pypirc", "credentials*", "secrets*", "shadow*", "*password*", "*senha*", "*fernet*", "*.cfg", "*.ini", "*.properties",
-                    "*.conf", "*.bak", "*.old", "*.orig", "*.dump", "*.tfstate*", "*.tfvars", "docker-compose*", "webserver_config*",
-                    "kubeconfig*", "DSParams", "*odbc*.ini")
-_DIRS_EXCLUIDOS = (".ssh", ".gnupg", ".aws", ".kube", ".docker", ".git", "secrets", "secret", "private", "keys", "vault")
-_EXCLUDES_GREP = tuple(f"--exclude={g}" for g in _GLOBS_EXCLUIDOS) + tuple(f"--exclude-dir={d}" for d in _DIRS_EXCLUIDOS)
+# Busca RECURSIVA (`grep -r`): tudo que a denylist proíbe de ler DIRETO também não pode vir de carona (auditoria da F5, MÉDIO). Duas
+# armadilhas: (1) `--exclude` do GNU grep DIFERENCIA maiúsculas mesmo com `-i` — por isso cada glob vira classes de caixa
+# (`[Ss][Ee][Cc]…`); (2) a lista de globs divergia de `_SENSIVEL_BASE`/`_SENSIVEL_TRECHO` — o teste
+# `test_excludes_cobrem_tudo_que_a_denylist_proibe` prende as duas fontes juntas.
+_GLOBS_SENSIVEIS = (
+    ".env", ".env.*", "env", "env.*", "*.env", "*.env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.truststore",
+    "*.kdbx", "*.keytab", "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", ".netrc", "_netrc", ".pgpass", ".git-credentials",
+    ".htpasswd", ".npmrc", ".pypirc", ".dockercfg", ".dockerconfigjson", ".envrc", ".my.cnf", ".s3cfg", ".boto", ".vault-token",
+    ".terraformrc", "auth.json", "credential", "credential.*", "credentials", "credentials.*", "secret", "secret.*", "secrets",
+    "secrets.*", "*_secret", "*_secret.*", "*_secrets", "*_secrets.*", "shadow", "shadow-", "gshadow", "gshadow-", "sudoers",
+    "authorized_keys", "known_hosts", ".*_history", "fernet*", "*password*", "*senha*", "kubeconfig*", "*.tfstate", "*.tfstate.*",
+    "*.tfvars", "docker-compose*", "webserver_config*", "dsparams", "*odbc*.ini", "vault.*", "appsettings*", "wp-config*",
+    "settings.py", "local_settings.py", "*.p8", "*.ppk", "*.gpg", "*.asc", "*.cfg", "*.ini", "*.properties", "*.conf", "*.bak",
+    "*.old", "*.orig", "*.dump", "*.swp",
+)
+# Logs de autenticação (regra ANCORADA em /var/log de `_SENSIVEL_TRECHO`): o `--exclude` só vê o NOME, então valem em qualquer pasta
+# — mais largo que a denylist, nunca mais estreito (2ª rodada do QA da F5: `grep -r /var/log` despejava auth.log/secure/btmp/audit).
+_GLOBS_LOGS_SENSIVEIS = tuple(f"{n}{suf}" for n in ("btmp", "wtmp", "lastlog", "auth.log", "secure", "sudo.log") for suf in ("", ".*", "-*"))
+_GLOBS_SENSIVEIS = _GLOBS_SENSIVEIS + _GLOBS_LOGS_SENSIVEIS
+_DIRS_SENSIVEIS = (".ssh", ".gnupg", ".aws", ".kube", ".docker", ".git", "secret", "secrets", "private", "keys", "vault", "audit")
+
+
+def _glob_sem_caixa(g: str) -> str:
+    """`secret*` → `[Ss][Ee][Cc][Rr][Ee][Tt]*`: o fnmatch do grep passa a ignorar maiúsculas."""
+    return "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in g)
+
+
+_EXCLUDES_GREP = tuple(f"--exclude={_glob_sem_caixa(g)}" for g in _GLOBS_SENSIVEIS) + \
+    tuple(f"--exclude-dir={_glob_sem_caixa(d)}" for d in _DIRS_SENSIVEIS)
 
 
 # ── comandos com sintaxe própria ────────────────────────────────────────────

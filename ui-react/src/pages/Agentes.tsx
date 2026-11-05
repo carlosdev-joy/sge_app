@@ -34,7 +34,7 @@ import { ChatAgente } from '../components/agentes/ChatAgente'
 import { CuradoriaAprendizados } from '../components/agentes/CuradoriaAprendizados'
 import { GaleriaAgentes, GaleriaCarregando } from '../components/agentes/GaleriaAgentes'
 import { GrafoJobAgente } from '../components/agentes/GrafoJobAgente'
-import { TerminalSimulado } from '../components/agentes/TerminalSimulado'
+import { TerminalAgente } from '../components/agentes/TerminalAgente'
 import { IndicadorProjeto } from '../components/agentes/IndicadorProjeto'
 import { toast } from '../components/ui/Toast'
 import { useAuthStore } from '../store/auth'
@@ -477,7 +477,7 @@ function PainelConversa({ agente, sonda, cadastroTexto, onRecarregarSonda, recar
   )
 }
 
-function AgentesReal() {
+export default function Agentes() {
   const [params, setParams] = useSearchParams()
   const agenteParam = params.get('agente')
   const matricula = useAuthStore(s => s.user?.matricula ?? '')
@@ -583,7 +583,17 @@ function AgentesReal() {
         </button>
       </header>
 
-      {/* `key`: trocar de agente descarta a conversa anterior por completo. */}
+      {/* `key`: trocar de agente descarta a conversa anterior por completo. O Terminal tem tela própria (spec agente-terminal F5). */}
+      {agente.id === 'terminal' ? (
+        <TerminalAgente
+          key={agente.id}
+          agente={agente}
+          sonda={status.data?.estado}
+          cadastroTexto={catalogo.data?.cadastro_texto}
+          onRecarregarSonda={() => { void status.refetch() }}
+          recarregandoSonda={status.isFetching}
+        />
+      ) : (
       <PainelConversa
         key={agente.id}
         agente={agente}
@@ -592,19 +602,7 @@ function AgentesReal() {
         onRecarregarSonda={() => { void status.refetch() }}
         recarregandoSonda={status.isFetching}
       />
+      )}
     </div>
   )
-}
-
-/**
- * F1 da spec docs/spec-agente-terminal.md: o Terminal só abre, com dados SIMULADOS, em
- * `?agente=terminal&simulado=1`. Sem os dois parâmetros nada muda na tela real; a
- * F2 cria o agente no catálogo e a F5 troca o simulador pela API.
- */
-export default function Agentes() {
-  const [params] = useSearchParams()
-  if (params.get('agente') === 'terminal' && params.get('simulado') === '1') {
-    return <TerminalSimulado podeEscrever={params.get('escrita') === '1'} />
-  }
-  return <AgentesReal />
 }
