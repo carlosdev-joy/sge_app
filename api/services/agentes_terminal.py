@@ -13,13 +13,17 @@ registro e a consulta. Toda função recebe o cursor — quem chama abre/fecha a
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import re
 import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
 
 from services import agentes_ferramentas as af
+from services import agentes_terminal_classe as cls
+from services import agentes_terminal_ssh as tssh
 from services.ssh_arquivos import cortar_utf16
 
 CLASSES = ("leitura", "escrita", "proibido")
@@ -45,6 +49,9 @@ LIMITE_PADRAO = 50
 LIMITE_MAX = 200
 
 
+log = logging.getLogger(__name__)
+
+
 class AuditoriaInvalida(ValueError):
     """Entrada recusada (classe/estado fora do conjunto, data inválida...)."""
 
@@ -58,19 +65,52 @@ _MASCARA = "••••"
 # falso positivo vira só "bloqueado". `-p` NÃO é tratado em geral (é "porta"/"parents"/`-print`): só nos
 # clientes que o usam como senha (mysql*, mariadb), em `sshpass` e em `docker login`; `-P` em sqlcmd/bcp.
 _V = r"""(?:"[^"]*"|'[^']*'|[^\s'"]+)"""
+# Palavra-chave de segredo dentro de um NOME (DB_PASS, KEY_PASSWORD, private_key…). Limites `{0,40}` nos dois lados e
+# `{0,200}` nos "tudo até aqui" (`[^|;&\n]{0,200}?`): sem limite, cada ocorrência da palavra-chave varria a linha inteira
+# e uma linha de 64 KB travava a API por 7–18 s (auditoria da F3, 1ª e 2ª rodadas).
+_NOME_SEGREDO = (r"[A-Za-z0-9_]{0,40}(?:pass(?:word|wd|phrase)?|pwd|senha|secret|token|api[_-]?key|credential|private[_-]?key|"
+                 r"access[_-]?key|fernet|session[_-]?id)[A-Za-z0-9_]{0,40}")
+_ASPA = r"""["']?"""  # a chave pode vir entre aspas (JSON/YAML): "db_pass": "x"
 _PADROES_SEGREDO = (
     re.compile(r"(?i)(://[^/\s:@]+:)[^/\s]+(@)"),                                        # url user:senha@host (senha pode ter @)
     re.compile(r"(?i)(\bbearer\s+)" + _V),                                              # Authorization: Bearer X
-    re.compile(r"(?i)(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-[a-z-]*(?:auth|token|key|secret)[a-z-]*)\s*[:=]\s*)(?!bearer\b)[^'\"\n]+"),
-    re.compile(r"(?i)(\b(?:password|passwd|senha|secret|token|api[_-]?key)\s*:\s*)" + _V),  # "password: x" (cabeçalho/arquivo)
+    re.compile(r"(?i)(\b(?:authorization|proxy-authorization|cookie|set-cookie|x-[a-z-]{0,30}(?:auth|token|key|secret)[a-z-]{0,30})\s*[:=]\s*)(?!bearer\b)[^'\"\n]+"),
+    re.compile(r"(?i)(\b" + _NOME_SEGREDO + _ASPA + r"\s*:\s*)" + _V),                    # "password: x", "DB_PASS": "x" (YAML/JSON/cabeçalho)
+    re.compile(r"(?i)(\b" + _ASPA + r"auth" + _ASPA + r"\s*[:=]\s*)" + _V),                # "auth": "<base64>" (~/.docker/config.json)
     re.compile(r"(?i)(\s(?:-u|--user|--basic-auth)[\s=]+[^\s:'\"]+:)\S+"),                  # curl -u user:senha (até o fim do token)
-    re.compile(r"(?i)(--(?:password|passwd|pass|pwd|token|secret|api-key|apikey|client-secret|access-key|secret-key)(?:=|\s+))" + _V),
-    re.compile(r"(?i)(\b(?:mysql|mysqldump|mysqladmin|mysqlcheck|mariadb)\b[^|;&\n]*?\s-p)(?=[^\s=/-])" + _V),  # mysql -pSENHA
-    re.compile(r"(\b(?:sqlcmd|bcp)\b[^|;&\n]*?\s-P\s*)" + _V),                            # sqlcmd -P SENHA
+    re.compile(r"(?i)(--[a-z0-9-]{0,30}(?:password|passwd|pass|pwd|token|secret|api-?key|credential)[a-z0-9-]{0,30}(?:=|\s+))" + _V),  # --db-pass x
+    re.compile(r"(?i)(\b(?:mysql|mysqldump|mysqladmin|mysqlcheck|mariadb)\b[^|;&\n]{0,200}?\s-p)(?=[^\s=/-])" + _V),  # mysql -pSENHA
+    re.compile(r"(\b(?:sqlcmd|bcp)\b[^|;&\n]{0,200}?\s-P\s*)" + _V),                       # sqlcmd -P SENHA
     re.compile(r"(?i)(\bsshpass\s+-p\s*)" + _V),                                          # sshpass -p SENHA
-    re.compile(r"(?i)(\blogin\b[^|;&\n]*?\s-p\s+)" + _V),                                 # docker login -p SENHA
-    re.compile(r"(?i)(\b[A-Za-z0-9_]*(?:pass|pwd|secret|token|apikey|api_key|credential)[A-Za-z0-9_]*\s*=\s*)" + _V),  # KEY_PASS=x
+    re.compile(r"(?i)(\blogin\b[^|;&\n]{0,200}?\s-p\s+)" + _V),                            # docker login -p SENHA
+    re.compile(r"(?i)(\b" + _NOME_SEGREDO + _ASPA + r"\s*=\s*)" + _V),                    # KEY_PASS=x, fernet_key = x
+    # Connection strings: "Server=h;Password=x;" / "pwd=x"
+    re.compile(r"(?i)(\b(?:password|pwd)\s*=\s*)[^;\s'\"]+"),
 )
+# Formas pelo FORMATO do valor (a saída de logs/arquivos traz isso sem palavra-chave por perto).
+_FORMATOS_SEGREDO = (
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{0,}"),               # JWT
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),                                               # chave de acesso AWS
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),                                              # token GitHub
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),                                               # token GitHub (fine-grained)
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"),                                                   # token GitLab
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),                                               # token Slack
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),                                                      # chave OpenAI/Anthropic
+    re.compile(r"\bhvs\.[A-Za-z0-9_-]{20,}"),                                                   # token do Vault
+    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),                                                     # chave de API Google
+    re.compile(r"\bnpm_[A-Za-z0-9]{30,}"),                                                       # token npm
+    # Chave privada: corpo inteiro até o END, OU (saída cortada, sem END) até 8 KB depois do cabeçalho. UM padrão com alternância:
+    # a tentativa que falha o END consome o trecho no fallback, então N cabeçalhos repetidos custam ~N/8192 varreduras, não N
+    # (com dois padrões separados, 2200 cabeçalhos em 64 KB levavam 1,2 s).
+    re.compile(r"-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----(?:[\s\S]{0,8192}?-----END [A-Z ]{0,30}PRIVATE KEY-----|[\s\S]{0,8192})"),
+    re.compile(r"PuTTY-User-Key-File-\d:[\s\S]{0,8192}?Private-MAC:[ \t]*\S{0,200}"),              # chave PuTTY (.ppk)
+)
+# Valor na LINHA SEGUINTE ("password:\n  hunter2"; block scalar `password: |`; "- name: DB_PASSWORD\n  value: hunter2") — só na saída.
+_MULTILINHA_SEGREDO = (
+    re.compile(r"(?im)^([ \t-]{0,20}" + _ASPA + _NOME_SEGREDO + _ASPA + r"[ \t]*[:=][ \t]*(?:[|>][-+]?[ \t]*)?\n(?:[ \t]*\n){0,3}[ \t]+)\S[^\n]{0,500}"),
+    re.compile(r"(?im)(\bname[ \t]*:[ \t]*" + _NOME_SEGREDO + r"[ \t]*\n[ \t-]{0,20}value[ \t]*:[ \t]*)[^\n]{1,500}"),
+)
+MAX_LINHA_SAIDA = 8192  # linha maior que isto é cortada ANTES da redação (defesa extra contra regex lenta em linha gigante)
 
 
 def redigir_comando(comando: str) -> str:
@@ -211,6 +251,10 @@ def listar(cur, *, matricula: str | None = None, estado: str | None = None, clas
         onde.append("criado_em < ?")
         args.append(d1)
     filtro = (" WHERE " + " AND ".join(onde)) if onde else ""
+    try:
+        varrer_interrompidos(cur)  # a consulta do admin nunca mostra "em andamento" eterno (best-effort, mesma conexão)
+    except Exception:  # noqa: BLE001
+        pass
     cur.execute(f"SELECT COUNT(*) FROM dbo.etl_agente_terminal_cmd{filtro}", args)
     total = int(cur.fetchone()[0])
     cur.execute(
@@ -229,3 +273,204 @@ def listar(cur, *, matricula: str | None = None, estado: str | None = None, clas
             item[k] = item[k].isoformat() if item[k] else None
         itens.append(item)
     return {"total": total, "limite": limite, "offset": offset, "itens": itens}
+
+
+# ═══════════ Ferramenta `servidor_exec` (F3): LEITURA no servidor ═══════════
+#
+# Fluxo: classificar (determinístico, `agentes_terminal_classe`) → AUDITAR → executar → finalizar.
+#   • leitura  → registra `executando`, roda os TOKENS re-citados, finaliza `executado`/`falhou`;
+#   • proibido → registra `bloqueado` (nunca roda);
+#   • escrita  → NÃO roda e NÃO registra `proposto` (a confirmação é a F4; sem a rota de confirmar e sem
+#     quem expire propostas, uma linha `proposto` ficaria órfã). O modelo recebe o aviso.
+# "Sem auditoria, sem execução": se o registro falhar (tabela ausente, banco fora), o comando NÃO roda.
+# A saída passa por `af.redigir` (campos "nome: valor") e por `redigir_comando` (formas de linha de comando)
+# ANTES de qualquer corte — a lição da 15ª rodada do dsjob — e só então pelos filtros em Python (o shell não
+# tem pipe: grep/head/tail da saída são feitos aqui).
+
+MAX_LINHAS_SAIDA = 2000
+MAX_FILTRO = 100
+TEXTO_ESCRITA_F3 = ("Este comando altera o servidor (ou não é um comando de leitura reconhecido) e a execução com "
+                    "confirmação ainda não está disponível. Não foi executado nem registrado. Use um comando de "
+                    "leitura (ls, cat, tail, head, grep, find, ps, df, docker ps/logs, journalctl, airflow dags list…).")
+
+
+def _inteiro(valor, minimo: int, maximo: int) -> int | None:
+    """Inteiro dentro da faixa, ou None. `True`/`False`, `inf`/`nan` (o JSON do modelo aceita `Infinity`) e texto
+    inválido NUNCA levantam — antes, `int(float('inf'))` estourava `OverflowError` DEPOIS do registro e deixava a linha
+    de auditoria presa em `executando`."""
+    if isinstance(valor, bool):
+        return None
+    try:
+        n = int(valor)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return n if minimo <= n <= maximo else None
+
+
+def filtrar_saida(texto: str, *, filtrar: str | None = None, primeiras: int | None = None,
+                  ultimas: int | None = None) -> tuple[str, int]:
+    """(texto filtrado, linhas descartadas). `filtrar` é substring LITERAL, sem regex (nada de ReDoS) e sem
+    diferenciar caixa; depois `primeiras`/`ultimas` (no máximo um dos dois)."""
+    linhas = (texto or "").splitlines()
+    total = len(linhas)
+    if filtrar:
+        alvo = filtrar.lower()
+        linhas = [l for l in linhas if alvo in l.lower()]
+    if primeiras:
+        linhas = linhas[:primeiras]
+    elif ultimas:
+        linhas = linhas[-ultimas:]
+    if len(linhas) > MAX_LINHAS_SAIDA:
+        linhas = linhas[:MAX_LINHAS_SAIDA]
+    return "\n".join(linhas), total - len(linhas)
+
+
+def redigir_saida(texto: str) -> str:
+    """Segredos fora da SAÍDA: campos "nome: valor" (`af.redigir`), formas de linha de comando que apareçam em `ps`,
+    `docker ps`, logs… (`redigir_comando`), formatos conhecidos (JWT, AWS, GitHub, Slack, chave privada) e valores na
+    linha seguinte. Sempre ANTES de cortar/filtrar. Entrada limitada a 128 KB (o executor já corta em 64 KB)."""
+    t = (texto or "")[:131072]
+    if any(len(l) > MAX_LINHA_SAIDA for l in t.split("\n")):
+        t = "\n".join(l if len(l) <= MAX_LINHA_SAIDA else l[:MAX_LINHA_SAIDA] + " …[linha cortada]" for l in t.split("\n"))
+    for rx in _MULTILINHA_SEGREDO:  # PRIMEIRO: `af.redigir` mascara a linha da palavra-chave e esconderia o padrão
+        t = rx.sub(lambda m: m.group(1) + _MASCARA, t)
+    # Os padrões DESTE módulo primeiro: `af.redigir` (feito para "campo: valor" de dsjob) engole o resto da linha e deixa a aspa
+    # do valor sem fechar (`"db_pass":"x••••`), o que fazia o padrão de JSON deixar de casar. Depois dele, sobra a rede de segurança.
+    t = af.redigir(redigir_comando(t))
+    for rx in _FORMATOS_SEGREDO:
+        t = rx.sub(_MASCARA, t)
+    return t
+
+
+def _gravar(abrir_conn, fn):
+    """Conexão curta + commit; levanta se falhar (quem chama decide — aqui, falhar = não executar)."""
+    conn, cur = abrir_conn()
+    try:
+        r = fn(cur)
+        conn.commit()
+        return r
+    finally:
+        for x in (cur, conn):
+            try:
+                x.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _resposta(comando: str, servidor: str, res: tssh.ResultadoExec | None, corpo: str, descartadas: int = 0) -> str:
+    cab = f"$ {comando}\n[servidor: {servidor}"
+    if res is not None:
+        cab += f" · código de saída: {res.exit_code if res.exit_code is not None else 'n/d'} · {res.duracao_ms} ms"
+    cab += "]"
+    notas = []
+    if res is not None and (res.estourou_tempo or res.exit_code in (124, 137)):
+        notas.append(f"[interrompido: passou do limite de {tssh.TIMEOUT_PADRAO_S} s]")
+    if res is not None and res.truncada:
+        notas.append("[saída cortada no servidor: passou do limite de tamanho]")
+    if descartadas:
+        notas.append(f"[{descartadas} linha(s) fora do filtro/limite]")
+    return "\n".join([cab, af._truncar(corpo), *notas]).strip()
+
+
+async def ferramenta_servidor_exec(abrir_conn, args: dict, *, matricula: str | None, conversa_id: str | None,
+                                   ssh_max: int, espera_max_s: float) -> dict:
+    """Executa UM comando de LEITURA no servidor pedido. Devolve `{"texto": ...}` para o modelo; nunca levanta
+    por regra de negócio (recusas e falhas viram texto nomeado)."""
+    matricula = (matricula or "").strip()
+    if not matricula:
+        return {"texto": "Não foi possível identificar o usuário desta conversa — comando não executado."}
+    disponiveis = tssh.servidores()
+    if not disponiveis:
+        return {"texto": "Nenhum servidor está configurado para o Terminal nesta instância (peça ao administrador)."}
+    pedido = str(args.get("servidor") or "").strip().lower() or next(iter(disponiveis))
+    srv = disponiveis.get(pedido)
+    if srv is None:
+        return {"texto": f"Servidor '{pedido[:30]}' não está configurado. Disponíveis: {', '.join(disponiveis)}."}
+    bruto = str(args.get("comando") or "").strip()
+    if not bruto:
+        return {"texto": "Informe o comando em args.comando."}
+    if len(bruto) > cls.MAX_COMANDO:
+        return {"texto": f"Comando maior que {cls.MAX_COMANDO} caracteres — não executado."}
+
+    texto, _hash, redigido = preparar_comando(bruto)
+    veredito = (cls.Veredito("proibido", "bloqueado: o comando contém segredo (senha/token/chave) — nunca é executado")
+                if redigido else cls.classificar(texto, raizes=srv.raizes, containers=srv.containers))
+
+    if veredito.classe == "escrita":
+        return {"texto": f"{TEXTO_ESCRITA_F3} Motivo: {veredito.motivo}."}
+
+    # Parse dos filtros ANTES de registrar: nada que possa levantar fica entre o registro e a execução.
+    filtrar = str(args.get("filtrar") or "").strip()[:MAX_FILTRO] or None
+    primeiras = _inteiro(args.get("primeiras"), 1, MAX_LINHAS_SAIDA)
+    ultimas = _inteiro(args.get("ultimas"), 1, MAX_LINHAS_SAIDA) if primeiras is None else None
+    linha = cls.linha_de_execucao(veredito.argv) if veredito.classe == "leitura" else ""
+
+    _gravar_seguro(abrir_conn, varrer_interrompidos)  # best-effort: linhas de execuções que a API não chegou a fechar
+    try:
+        reg = _gravar(abrir_conn, lambda cur: registrar(
+            cur, conversa_id=conversa_id, matricula=matricula, servidor=srv.id, comando=texto,
+            classe=veredito.classe, motivo=veredito.motivo))
+    except Exception as e:  # noqa: BLE001 — sem auditoria, sem execução
+        log.warning("terminal: auditoria indisponível (%s) — comando NÃO executado", type(e).__name__)
+        return {"texto": "A auditoria do Terminal está indisponível — por segurança o comando não foi executado."}
+
+    if veredito.classe == "proibido":
+        return {"texto": f"$ {texto}\n{veredito.motivo}. Nada foi executado."}
+
+    res: tssh.ResultadoExec | None = None
+    try:
+        res = await tssh.executar(srv, linha, teto_sessoes=ssh_max, espera_max_s=espera_max_s)
+    except af.ServidorOcupado as e:
+        _finalizar_seguro(abrir_conn, reg["cmd_id"], "falhou", saida=str(e))
+        return {"texto": af.redigir(str(e))}
+    except tssh.TerminalSshErro as e:
+        _finalizar_seguro(abrir_conn, reg["cmd_id"], "falhou", saida=str(e))
+        return {"texto": f"{e} Comando não executado."}
+    except asyncio.CancelledError:
+        _finalizar_seguro(abrir_conn, reg["cmd_id"], "falhou", saida="cancelado (orçamento da rodada)")
+        raise
+    except Exception as e:  # noqa: BLE001
+        _finalizar_seguro(abrir_conn, reg["cmd_id"], "falhou", saida=f"erro inesperado ({type(e).__name__})")
+        return {"texto": f"Falha ao executar no servidor ({type(e).__name__}) — tente de novo."}
+
+    bruto_saida = res.stdout + (("\n" + res.stderr) if res.stderr.strip() else "")
+    limpo = redigir_saida(bruto_saida)  # ANTES de cortar/filtrar
+    corpo, descartadas = filtrar_saida(limpo, filtrar=filtrar, primeiras=primeiras, ultimas=ultimas)
+    ok = res.exit_code == 0 and not res.estourou_tempo
+    _finalizar_seguro(abrir_conn, reg["cmd_id"], "executado" if ok else "falhou", codigo_saida=res.exit_code,
+                      duracao_ms=res.duracao_ms, saida=corpo)
+    notas = []
+    if any(a.startswith("--exclude=") for a in veredito.argv):
+        notas.append("[busca recursiva: arquivos sensíveis (.env, chaves, *.cfg, *.conf…) são omitidos — a ausência de ocorrência pode ser por isso]")
+    if args.get("primeiras") not in (None, "") and args.get("ultimas") not in (None, ""):
+        notas.append("[`primeiras` e `ultimas` juntos: só `primeiras` foi aplicado]")
+    return {"texto": _resposta(texto, srv.id, res, corpo, descartadas) + ("\n" + "\n".join(notas) if notas else "")}
+
+
+def varrer_interrompidos(cur, minutos: int = 5) -> int:
+    """Leitura que ficou `executando` há mais de `minutos` (a API caiu/foi reiniciada entre `registrar` e `finalizar`; 5 min porque o pior caso
+    legítimo — fila 30 s + conexão ~40 s + sessão 10 s + execução 30 s — chega a ~110 s)
+    vira `falhou` — auditoria nunca fica "em andamento" para sempre. Só `leitura`: `executando` de ESCRITA é da F4 e tem
+    outra regra. Idempotente. Não faz commit."""
+    cur.execute(
+        "UPDATE dbo.etl_agente_terminal_cmd SET estado = 'falhou', saida_resumo = 'interrompido: a API não registrou o fim da execução', "
+        "executado_em = GETDATE() WHERE estado = 'executando' AND classe = 'leitura' AND criado_em < DATEADD(minute, ?, GETDATE())",
+        [-abs(int(minutos))])
+    return max(0, cur.rowcount or 0)
+
+
+def _gravar_seguro(abrir_conn, fn) -> None:
+    try:
+        _gravar(abrir_conn, fn)
+    except Exception as e:  # noqa: BLE001
+        log.warning("terminal: tarefa de manutenção da auditoria falhou (%s)", type(e).__name__)
+
+
+def _finalizar_seguro(abrir_conn, cmd_id: str, estado: str, *, codigo_saida=None, duracao_ms=None, saida=None) -> None:
+    """Fecha o registro; se o banco falhar AGORA o comando já rodou — só registra o aviso no log."""
+    try:
+        if not _gravar(abrir_conn, lambda cur: finalizar(cur, cmd_id, estado, codigo_saida=codigo_saida,
+                                                         duracao_ms=duracao_ms, saida=saida)):
+            log.warning("terminal: %s já não estava `executando` ao finalizar como %s (varrido como interrompido?)", cmd_id, estado)
+    except Exception as e:  # noqa: BLE001
+        log.warning("terminal: não foi possível finalizar %s em %s (%s)", cmd_id, estado, type(e).__name__)

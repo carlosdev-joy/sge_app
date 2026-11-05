@@ -99,6 +99,10 @@ Migration de dados da F2 (`NNN_agente_terminal.sql`, com coluna `redigido` e CHE
 | 6 | Credencial SSH com poder maior que o desejado | Escalada | Usuário de serviço de menor privilégio no servidor alvo; documentar o usuário necessário; sem `sudo` no allowlist |
 | 7 | Carga/lentidão (comandos longos, saída enorme) | Trava a API | Timeout por comando, teto de bytes, semáforo SSH, orçamento da rodada (`ORCAMENTO_AGENTE_S`) |
 | 8 | `docker` no host exposto pela leitura (`docker inspect` mostra env com segredos) | Vazamento | `docker inspect` fora da allowlist ou com redação de `Env`; testado na F3 |
+| 9 | **Conta SSH compartilhada = escalada horizontal de leitura** (auditoria da F3): o que o Terminal lê é o que a conta de serviço enxerga, não o que o usuário veria | Vazamento entre usuários/sistemas (LGPD) | Conta de menor privilégio por servidor, sem grupo `docker`; `TERMINAL_RAIZES_*` e `TERMINAL_CONTAINERS_*` restritos; denylist de nomes e redação de saída como camadas extras; documentar na release note |
+| 10 | Fechar o canal SSH não mata o processo remoto (sem pty) | Processos órfãos no servidor | `timeout -k 2 N` embrulhando o comando; fallback documentado onde não existe |
+| 11 | Saída de comandos gravada no banco (`saida_resumo`) com dado pessoal de logs | LGPD | Redigida e limitada a 4000 caracteres; retenção/purga de 180 dias na F5 |
+| 12 | known_hosts ausente → MITM captura a senha SSH | Credencial exposta | known_hosts obrigatório (falha fechada); `TERMINAL_SSH_AUTO_ADD=1` só no DEV |
 
 ## 8. Smoke pós-deploy (DEV)
 a) Admin habilita `agente_terminal_enabled`, concede `agente_terminal` a um usuário `desenvolvedor`; relogin; o agente aparece no catálogo.

@@ -524,9 +524,10 @@ async def agentes_terminal_auditoria(
         offset: int = Query(default=0, ge=0, le=1_000_000),
         _admin: dict = Depends(get_admin_user)):
     try:
-        with _conexao() as (_conn, cur):
+        with _conexao() as (conn, cur):
             dados = aterm.listar(cur, matricula=matricula, estado=estado, classe=classe,
                                  desde=desde, ate=ate, limite=limite, offset=offset)
+            conn.commit()  # `listar` varre execuções interrompidas (UPDATE idempotente): sem commit, o ROLLBACK ao fechar a desfaria
     except aterm.AuditoriaInvalida as e:
         raise HTTPException(status_code=422, detail={"code": "auditoria_filtro_invalido", "message": str(e)})
     except Exception as e:  # noqa: BLE001
@@ -830,7 +831,8 @@ def _preparar_conversa(body: dict, user: dict, ag: dict | None = None) -> dict:
                 projeto_atual=projeto_atual, provedor_cfg=provedor_cfg,
                 identidade=identidade, campo_identidade=campo, ssh_max=ssh_max,
                 acao_editar=acao_editar, matricula=matricula,
-                validade_fatos_dias=_validade_dias(agentes_cfg), falhas_anteriores=falhas_anteriores)}
+                validade_fatos_dias=_validade_dias(agentes_cfg), falhas_anteriores=falhas_anteriores,
+                conversa_id=conversa_id)}
 
 
 async def _rodar_e_gravar(ctx: dict, emit_status=None) -> dict:
