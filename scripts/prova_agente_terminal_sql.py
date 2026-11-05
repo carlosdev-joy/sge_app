@@ -1,6 +1,6 @@
 """Prova da auditoria do agente Terminal no SQL Server REAL do DEV (spec docs/spec-agente-terminal.md, F2).
 
-Roda a migration 197 DUAS vezes, exercita `registrar`/`iniciar`/`finalizar`/`listar` com o driver pyodbc
+Roda a migration 153 DUAS vezes, exercita `registrar`/`iniciar`/`finalizar`/`listar` com o driver pyodbc
 de verdade (binding de parâmetros, GETDATE, COALESCE com NULL) e tenta inserir as combinações que os CHECKs
 devem recusar — TUDO dentro de uma transação que termina em ROLLBACK (nada fica gravado; ele confere isso).
 
@@ -10,11 +10,11 @@ Por que existe: os testes de unidade usam dublê de cursor e NÃO executam T-SQL
 Como rodar (DEV; o container da API tem pyodbc e MSSQL_CONN_STR):
     C=orquestra-api
     docker cp api/services/agentes_terminal.py $C:/tmp/agentes_terminal_f2.py
-    docker cp sql/migrations/197_agente_terminal.sql $C:/tmp/197_agente_terminal.sql
+    docker cp sql/migrations/153_agente_terminal.sql $C:/tmp/153_agente_terminal.sql
     docker cp scripts/prova_agente_terminal_sql.py $C:/tmp/prova_f2.py
     docker exec $C sh -c 'cd /app && python /tmp/prova_f2.py'
-    docker exec $C rm -f /tmp/agentes_terminal_f2.py /tmp/197_agente_terminal.sql /tmp/prova_f2.py
-Mexeu em `agentes_terminal.py` ou na 197? Rode de novo. Nunca aponte para produção.
+    docker exec $C rm -f /tmp/agentes_terminal_f2.py /tmp/153_agente_terminal.sql /tmp/prova_f2.py
+Mexeu em `agentes_terminal.py` ou na 153? Rode de novo. Nunca aponte para produção.
 """
 import sys, os, re, uuid, importlib.util
 sys.path.insert(0, "/app")
@@ -33,11 +33,11 @@ def deve_falhar(m, fn):
 try:
     cur.execute("SELECT OBJECT_ID('dbo.etl_agente_terminal_cmd','U')"); antes = cur.fetchone()[0]
     print("tabela existia antes:", antes is not None)
-    sql = open("/tmp/197_agente_terminal.sql", encoding="utf-8").read()
+    sql = open("/tmp/153_agente_terminal.sql", encoding="utf-8").read()
     for rodada in (1, 2):                       # idempotência: roda 2×
         for b in re.split(r"^\s*GO\s*$", sql, flags=re.M):
             if b.strip(): cur.execute(b)
-        ok(f"migration 197 rodada {rodada}")
+        ok(f"migration 153 rodada {rodada}")
     cur.execute("SELECT COUNT(*) FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('dbo.etl_agente_terminal_cmd')"); ok(f"CHECKs criados: {cur.fetchone()[0]}")
     cur.execute("SELECT COUNT(*) FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.etl_agente_terminal_cmd') AND name LIKE 'IX_%'"); ok(f"índices: {cur.fetchone()[0]}")
 

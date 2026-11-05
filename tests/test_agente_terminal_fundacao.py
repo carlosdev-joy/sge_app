@@ -1,7 +1,7 @@
 """Agente Terminal, F2 (fundação) — spec docs/spec-agente-terminal.md.
 
 Catálogo, RBAC (uso × escrita), interruptores, auditoria (`agentes_terminal`), rota admin e
-migrations 197/198. Banco e SQL Server são dublês: nada aqui executa comando em servidor.
+migrations 153 (auditoria) e 154 (versão 2.6.13) — na `main`; na `develop` são 197–201. Banco e SQL Server são dublês: nada aqui executa comando em servidor.
 """
 from __future__ import annotations
 
@@ -483,7 +483,7 @@ def test_auditoria_sem_a_migration_degrada_em_503_nomeando_a_migration(cliente):
     c, estado = cliente
     estado["cur"] = _Cur(tabela_ausente=True)
     r = c.get("/agentes/terminal/auditoria")
-    assert r.status_code == 503 and "197_agente_terminal" in r.json()["detail"]["message"]
+    assert r.status_code == 503 and "153_agente_terminal" in r.json()["detail"]["message"]
 
 
 def test_config_admin_grava_os_dois_interruptores_e_zero_desliga(cliente):
@@ -501,14 +501,14 @@ def test_config_admin_get_traz_recurso_e_kill_switch_da_escrita(cliente):
     assert ag["datastage"]["recurso_escrita"] is None and ag["datastage"]["config_escrita"] is None
 
 
-# ═══════════ 5. migrations 197 (auditoria) e 198 (versão) ═══════════════
+# ═══════════ 5. migrations 153 (auditoria) e 154 (versão) ═══════════════
 
 def _sql(nome):
     return (MIGS / nome).read_text(encoding="utf-8")
 
 
-def test_migration_197_idempotente_e_alinhada_ao_service():
-    sql = _sql("197_agente_terminal.sql")
+def test_migration_153_idempotente_e_alinhada_ao_service():
+    sql = _sql("153_agente_terminal.sql")
     assert "IF OBJECT_ID('dbo.etl_agente_terminal_cmd', 'U') IS NULL" in sql
     assert sql.count("IF NOT EXISTS (SELECT 1 FROM sys.indexes") == 3
     assert not re.search(r"CREATE\s+(UNIQUE\s+)?(NONCLUSTERED\s+)?INDEX[^;]*\bWHERE\b", sql, re.I), "sem índice filtrado"
@@ -535,19 +535,6 @@ def test_migration_197_idempotente_e_alinhada_ao_service():
     assert aterm.NASCE_EM == {"escrita": "proposto", "leitura": "executando", "proibido": "bloqueado"}
     assert all(e in aterm.ESTADOS for e in aterm.NASCE_EM.values())
     assert set(aterm.DE_ONDE) <= set(aterm.ESTADOS_FINAIS)
-
-
-def test_migration_198_versao_funcional_idempotente():
-    sql = _sql("198_versao_agente_terminal_fundacao.sql")
-    assert "ELSE IF EXISTS (SELECT 1 FROM dbo.etl_versao_ferramenta WHERE titulo = @titulo)" in sql
-    assert "SET @nova = CONCAT(@maior, '.', @menor + 1, '.0');" in sql
-    assert "config_key = 'app_version'" in sql and "config_key = 'app_release_name'" in sql
-    assert "docs/release-notes/agente-terminal-f2.md" in sql
-    assert (RAIZ / "docs/release-notes/agente-terminal-f2.md").is_file()
-    assert sql.rstrip().endswith("GO") and "enviar" not in "198_versao_agente_terminal_fundacao.sql"
-    titulos = [m.group(1) for p in sorted(MIGS.glob("*_versao_*.sql"))
-               if (m := re.search(r"DECLARE @titulo NVARCHAR\(200\) = N'([^']+)';", p.read_text(encoding="utf-8")))]
-    assert titulos.count("Agente Terminal — fundação") == 1 and len(set(titulos)) == len(titulos)
 
 
 def test_front_e_back_concordam_nos_recursos_e_chaves():

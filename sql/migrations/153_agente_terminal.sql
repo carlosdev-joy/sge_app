@@ -1,4 +1,4 @@
--- sql/migrations/197_agente_terminal.sql
+-- sql/migrations/153_agente_terminal.sql
 -- F2 da spec docs/spec-agente-terminal.md: auditoria do agente "Terminal".
 -- Uma linha por comando que o Claude PROPÕE ou executa no servidor — leitura,
 -- escrita (com confirmação) e bloqueado — com quem pediu, o que rodou e o que

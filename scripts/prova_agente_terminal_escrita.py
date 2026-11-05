@@ -1,18 +1,18 @@
 """Prova do agente Terminal — ESCRITA com confirmação — com SQL Server E SSH REAIS no DEV (spec docs/spec-agente-terminal.md, F4).
 
 Roda `ferramenta_servidor_exec` (propor) e `confirmar_comando`/`recusar_comando` contra:
-  • o SQL Server do DEV (a migration 197 é criada DENTRO de uma transação; tudo termina em ROLLBACK — nada fica gravado);
+  • o SQL Server do DEV (a migration 153 é criada DENTRO de uma transação; tudo termina em ROLLBACK — nada fica gravado);
   • o `sshd-amostra` (bash real): cada cenário tenta criar/alterar um arquivo em /tmp e a prova confere NO SERVIDOR se o efeito
     aconteceu (ou não) — propor não escreve; hash errado, outro usuário, proposta vencida, recusada e replay NÃO escrevem;
     confirmar escreve UMA vez; o shell recebe exatamente o texto do card ($HOME, &&, aspas); o processo remoto morre no timeout.
 
 Como rodar (DEV; o container da API tem pyodbc, paramiko, MSSQL_CONN_STR e DS_SSH_*):
     C=orquestra-api
-    docker exec $C sh -c 'rm -rf /tmp/f4 /tmp/f4_services'
-    docker cp api/services $C:/tmp/f4_services && docker cp sql/migrations/197_agente_terminal.sql $C:/tmp/197_agente_terminal.sql
+    docker exec $C rm -rf /tmp/f4 && docker cp api $C:/tmp/f4 && docker cp sql/migrations/153_agente_terminal.sql $C:/tmp/153_agente_terminal.sql
     docker cp scripts/prova_agente_terminal_escrita.py $C:/tmp/prova_escrita.py
-    docker exec $C sh -c 'mkdir -p /tmp/f4 && mv /tmp/f4_services /tmp/f4/services && cd /tmp/f4 && PYTHONPATH=/tmp/f4:/app python /tmp/prova_escrita.py'
-    docker exec $C rm -rf /tmp/f4 /tmp/f4_services /tmp/197_agente_terminal.sql /tmp/prova_escrita.py
+    docker exec $C sh -c 'cd /tmp/f4 && PYTHONPATH=/tmp/f4 python /tmp/prova_escrita.py'
+    docker exec $C rm -rf /tmp/f4 /tmp/153_agente_terminal.sql /tmp/prova_escrita.py
+(copia a `api/` INTEIRA da branch — ver a nota em prova_agente_terminal_ssh.py)
 Nunca aponte para produção: escreve em /tmp do servidor de teste (e limpa depois).
 """
 import asyncio
@@ -89,10 +89,10 @@ def main() -> int:
     cur.execute("SELECT OBJECT_ID('dbo.etl_agente_terminal_cmd','U')")
     existia = cur.fetchone()[0] is not None
     try:
-        for b in re.split(r"^\s*GO\s*$", open("/tmp/197_agente_terminal.sql", encoding="utf-8").read(), flags=re.M):
+        for b in re.split(r"^\s*GO\s*$", open("/tmp/153_agente_terminal.sql", encoding="utf-8").read(), flags=re.M):
             if b.strip():
                 cur.execute(b)
-        ok(f"migration 197 aplicada dentro da transação (tabela já existia antes: {existia})")
+        ok(f"migration 153 aplicada dentro da transação (tabela já existia antes: {existia})")
         fach = _Fachada(conn)
 
         def abrir():

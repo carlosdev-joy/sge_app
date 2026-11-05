@@ -10,9 +10,10 @@ bytes fecha o canal; caminho sensível nunca roda.
 
 Como rodar (DEV; o container da API tem paramiko e as variáveis DS_SSH_* do sshd-amostra):
     C=orquestra-api
-    docker exec $C rm -rf /tmp/f3 && docker cp api/services $C:/tmp/f3_services && docker cp scripts/prova_agente_terminal_ssh.py $C:/tmp/prova_ssh.py
-    docker exec $C sh -c 'mkdir -p /tmp/f3 && rm -rf /tmp/f3/services && mv /tmp/f3_services /tmp/f3/services && cd /tmp/f3 && PYTHONPATH=/tmp/f3:/app python /tmp/prova_ssh.py'
-    docker exec $C rm -rf /tmp/f3 /tmp/f3_services /tmp/prova_ssh.py
+    docker exec $C rm -rf /tmp/f3 && docker cp api $C:/tmp/f3 && docker cp scripts/prova_agente_terminal_ssh.py $C:/tmp/prova_ssh.py
+    docker exec $C sh -c 'cd /tmp/f3 && PYTHONPATH=/tmp/f3 python /tmp/prova_ssh.py'
+    docker exec $C rm -rf /tmp/f3 /tmp/prova_ssh.py
+(copia a `api/` INTEIRA da branch: misturar só `services/` com o `/app` do container quebra quando as linhas divergem — main × develop)
 Nunca aponte para produção: ela escreve em /tmp do servidor de teste (e limpa depois).
 """
 import dataclasses

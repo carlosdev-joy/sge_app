@@ -40,7 +40,7 @@ NASCE_EM = {"escrita": "proposto", "leitura": "executando", "proibido": "bloquea
 DE_ONDE = {"executado": ("executando",), "falhou": ("executando",),
            "recusado": ("proposto",), "expirado": ("proposto",)}
 
-# Larguras das colunas NVARCHAR (migration 197) — contam UTF-16.
+# Larguras das colunas NVARCHAR (migration 153) — contam UTF-16.
 MAX_COMANDO = 2000
 MAX_MOTIVO = 500
 MAX_SAIDA = 4000

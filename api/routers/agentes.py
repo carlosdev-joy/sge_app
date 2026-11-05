@@ -545,7 +545,7 @@ async def agentes_terminal_auditoria(
         if _tabela_ausente(e):
             raise HTTPException(status_code=503, detail={
                 "code": "auditoria_indisponivel",
-                "message": "Auditoria do Terminal indisponível: aplique a migration 197_agente_terminal."})
+                "message": "Auditoria do Terminal indisponível: aplique a migration 153_agente_terminal."})
         raise
     return {"sucesso": True, **dados}
 
@@ -562,7 +562,7 @@ def _http_confirmacao(e: "aterm.ConfirmacaoErro") -> HTTPException:
 def _tabela_terminal_ausente() -> HTTPException:
     return HTTPException(status_code=503, detail={
         "code": "auditoria_indisponivel",
-        "message": "Auditoria do Terminal indisponível: aplique a migration 197_agente_terminal."})
+        "message": "Auditoria do Terminal indisponível: aplique a migration 153_agente_terminal."})
 
 
 @router.post("/agentes/terminal/confirmar", tags=["agentes"])

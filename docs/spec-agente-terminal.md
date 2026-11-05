@@ -1,5 +1,5 @@
 # Spec: Agente "Terminal" (chat estilo terminal) — Orquestra
-Data: 2026-11-04 · Status: F1–F4 na develop; F5 em PR (deploy pendente)
+Data: 2026-11-04 · Status: concluída — F1–F5 na develop (#538–#543); levada à `main` como 2.6.13 (migrations 153/154, ver `docs/release-notes/agente-terminal-main.md`)
 
 Base: `origin/develop` (5739862a). Reaproveita `docs/spec-agentes-datastage.md`, `docs/spec-agentes-admin.md` e `docs/spec-agentes-ferramenta-banco.md`.
 
