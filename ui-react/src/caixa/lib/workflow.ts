@@ -179,8 +179,12 @@ export interface FotoCard1 {
   pago: string;
   /** Contatos separados; `null` = ausente (NULL, vazio, espaços ou zero). */
   contato: { email: string | null; celular: string | null; residencial: string | null };
-  /** Só o Card 4 (críticas por certificado). */
+  /** Agência da venda, como a foto traz (Cards 1–6). É o endereço da AGÊNCIA, nunca o do
+   *  segurado; fotos anteriores à mudança da extração vêm sem ele (`undefined`). */
+  agencia?: AgenciaDaFoto;
+  /** Só o Card 4 (críticas por certificado). `codSituacao` é `DES_COD_SIT_CONTRATO` (um código). */
   subSituacao?: string;
+  codSituacao?: string;
   criticas?: number;
   quitacao?: string | null;
   /** Só o Card 5 (Emitidas, VG + AP): o que a foto sabe do contrato emitido. */
@@ -191,6 +195,16 @@ export interface FotoCard1 {
   devolucao?: DevolucaoCard7;
   /** Só o Card 8 (Sensibilizações, VG + AP): o último movimento da identificação e a proposta. */
   sensibilizacao?: SensibilizacaoCard8;
+}
+
+/** Nome e endereço da agência na foto. Campo ausente na fonte fica vazio. `cep` já vem com
+ *  oito posições e hífen (`01310-100`). */
+export interface AgenciaDaFoto {
+  nome: string;
+  endereco: string;
+  cidade: string;
+  uf: string;
+  cep: string;
 }
 
 /** Card 8: a foto guarda o ÚLTIMO movimento de cada identificação (últimos 12 meses). O estado do

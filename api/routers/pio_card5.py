@@ -40,7 +40,7 @@ from db import get_db_conn
 from deps import require_perm
 from routers.pio import _filtro_da_busca
 from routers.pio_card1 import (
-    _LIMITE_MAXIMO, _LIMITE_PADRAO, _data_iso, _dinheiro, _idade, _identificar,
+    _LIMITE_MAXIMO, _LIMITE_PADRAO, _agencia, _data_iso, _dinheiro, _idade, _identificar,
     _resposta_base, _telefone, _texto,
 )
 from routers.pio_card4 import _busca_sem_zeros, _documento, _inteiro_texto
@@ -74,6 +74,7 @@ _NOMES = (
     "NOM_CIDADE_AGENCIA", "SIG_UF_AGENCIA", "NOM_SUB_SITUACAO", "SIT_CONTRATO",
     "DES_COD_SIT_CONTRATO", "DTH_CANCELAMENTO", "MOT_CANCELAMENTO", "DES_EMAIL",
     "COD_DDD_CONTATO", "COD_CONTATO", "TIP_CONTATO",
+    "NOM_AGENCIA", "DES_ENDERECO_AGENCIA", "CEP_AGENCIA",
 )
 _COLUNAS_LISTA = tuple(f"f.{n}" for n in _NOMES)
 
@@ -112,8 +113,7 @@ def _item(linha, referencia: date | None) -> dict:
         "renda": None,
         "cidade": "",
         "uf": "",
-        "cidade_agencia": _texto(r["NOM_CIDADE_AGENCIA"]) or "",
-        "uf_agencia": _texto(r["SIG_UF_AGENCIA"]) or "",
+        **_agencia(r),
         "nascimento": r["DTH_NASCIMENTO"],
         "situacao": "",
         "assinatura": "",

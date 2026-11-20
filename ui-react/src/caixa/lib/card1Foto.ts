@@ -4,7 +4,7 @@
 // (`tests/test_pio_card1_front.py`). Os hooks de leitura ficam em `pioCard1.ts`,
 // que reexporta este módulo — os componentes importam de um lugar só.
 
-import type { FotoCard1, PropostaWorkflow, SituacaoDevolucao, StatusWorkflow } from "./workflow";
+import type { AgenciaDaFoto, FotoCard1, PropostaWorkflow, SituacaoDevolucao, StatusWorkflow } from "./workflow";
 import { regiaoDaUf } from "./regiao";
 import type { AtualDoFluxo } from "./fluxoProposta";
 
@@ -79,8 +79,15 @@ export interface ItemCard1 {
   premio: number | null;
   imp_segurada: number | null;
   renda: number | null;
+  /** Endereço do SEGURADO: a extração deixou de preencher (vêm vazios). */
   cidade: string;
   uf: string;
+  /** Agência da venda (Cards 1–6). Ausentes em fotos anteriores à nova extração. */
+  nome_agencia?: string;
+  endereco_agencia?: string;
+  cidade_agencia?: string;
+  uf_agencia?: string;
+  cep_agencia?: string;
   idade: number | null;
   situacao: string;
   assinatura: string;
@@ -89,6 +96,8 @@ export interface ItemCard1 {
   /** Só o Card 4 (críticas): situação da venda, nº de mensagens do certificado
    *  e data de quitação (`null` = não informada). */
   sub_situacao?: string;
+  /** Só o Card 4: `DES_COD_SIT_CONTRATO` (0, 1, 9, E…), como veio. */
+  cod_situacao?: string;
   criticas?: number;
   quitacao?: string | null;
   /** Só o Card 5: tom do selo, segmento (VG/AP), emissão e dados do cancelamento. */
@@ -214,6 +223,66 @@ export function dataHoraBr(iso: string | null): string {
   return `${dataBr(data)}${hora ? ` ${hora.slice(0, 5)}` : ""}`.trim();
 }
 
+/** A agência do item, ou `undefined` quando a foto não traz nome, endereço nem CEP dela (foto
+ *  antiga). Cidade/UF sozinhas NÃO montam a agência: os Cards 7 e 8 só mandam essas duas, e o
+ *  Resumo deles não ganha um "Endereço da Agência" feito de uma UF solta. */
+function agenciaDoItem(item: ItemCard1): AgenciaDaFoto | undefined {
+  if (!item.nome_agencia && !item.endereco_agencia && !item.cep_agencia) return undefined;
+  return {
+    nome: item.nome_agencia ?? "", endereco: item.endereco_agencia ?? "",
+    cidade: item.cidade_agencia ?? "", uf: item.uf_agencia ?? "", cep: item.cep_agencia ?? "",
+  };
+}
+
+/** Cards cuja fonte NÃO mudou no contrato de 19/11/2026 (7 e 8): a lista deles segue como era. */
+const SEM_REGIAO_DE_AGENCIA: StatusWorkflow[] = [STATUS_CARD7, STATUS_CARD8];
+
+/** "0001 · AG CENTRO": número e nome da agência; sem nome, só o número. */
+export function rotuloDaAgencia(numero: string, foto: FotoCard1 | undefined): string {
+  const nome = foto?.agencia?.nome ?? "";
+  return numero && nome ? `${numero} · ${nome}` : numero || nome;
+}
+
+/** "AV PAULISTA 1000 · SAO PAULO/SP · CEP 01310-100", só com as partes que a foto traz.
+ *  `null` quando não há nenhuma: a tela omite o campo em vez de mostrar um rótulo vazio. */
+export function enderecoDaAgencia(foto: FotoCard1 | undefined): string | null {
+  const a = foto?.agencia;
+  if (!a) return null;
+  const local = a.cidade && a.uf ? `${a.cidade}/${a.uf}` : a.cidade || a.uf;
+  const partes = [a.endereco, local, a.cep ? `CEP ${a.cep}` : ""].filter(Boolean);
+  return partes.length ? partes.join(" · ") : null;
+}
+
+/** A linha "Região" da lista. Nos cards da foto a região é a da AGÊNCIA e o rótulo diz isso;
+ *  nos registros sem foto (busca legada) e nos Cards 7 e 8 a linha segue como sempre foi. */
+export function regiaoDaLista(proposta: PropostaWorkflow): { rotulo: string; valor: string } {
+  if (!proposta.foto || SEM_REGIAO_DE_AGENCIA.includes(proposta.status)) return { rotulo: "Região", valor: proposta.region };
+  return { rotulo: "Região da agência", valor: proposta.region || "Não informada" };
+}
+
+/** Rótulo da data de venda no Resumo. No Card 6 a origem preenche a venda com a data de
+ *  QUITAÇÃO, e a tela diz isso. */
+export function rotuloDataDeVenda(foto: FotoCard1 | undefined): string {
+  return foto?.rejeitada ? "Data de Venda (quitação):" : "Data de Venda:";
+}
+
+/** Situação do Card 4: a descrição recebida, com o código ao lado; só o código quando a
+ *  descrição não veio. Nenhum código é traduzido aqui. */
+export function situacaoDaAnalise(foto: FotoCard1): string {
+  const descricao = foto.subSituacao ?? "";
+  const codigo = foto.codSituacao ?? "";
+  if (descricao && codigo) return `${descricao} (cód. ${codigo})`;
+  return descricao || (codigo ? `Código ${codigo}` : "Não informado");
+}
+
+/** A linha de situação da LISTA do Card 4 (críticas): com a extração cobrindo as situações
+ *  0, 1, 9 e E, o certificado diz em qual está. `null` nos demais cards (não há a linha). */
+export function situacaoNaLista(proposta: PropostaWorkflow): string | null {
+  const foto = proposta.foto;
+  if (!foto || foto.criticas === undefined) return null;
+  return situacaoDaAnalise(foto);
+}
+
 /** Item da foto → o formato que a lista e os diálogos já sabem exibir.
  *
  *  O telefone da lista segue a regra do Enviar: residencial se houver, senão o
@@ -230,8 +299,10 @@ export function propostaDoCard1(
     assinatura: item.assinatura,
     pago: item.pago,
     contato: item.contato,
+    ...(agenciaDoItem(item) ? { agencia: agenciaDoItem(item) } : {}),
     ...(item.criticas === undefined ? {} : {
-      subSituacao: item.sub_situacao ?? "", criticas: item.criticas, quitacao: item.quitacao ?? null,
+      subSituacao: item.sub_situacao ?? "", codSituacao: item.cod_situacao ?? "",
+      criticas: item.criticas, quitacao: item.quitacao ?? null,
     }),
     ...(item.sensibilizacao === undefined ? {} : {
       sensibilizacao: {
@@ -280,7 +351,8 @@ export function propostaDoCard1(
     product: item.produto,
     phone: item.contato.residencial ?? item.contato.celular ?? "",
     email: item.contato.email ?? "",
-    region: regiaoDaUf(item.uf),
+    // Região da AGÊNCIA: a foto não traz mais o endereço do segurado, e os dois não se misturam.
+    region: regiaoDaUf(SEM_REGIAO_DE_AGENCIA.includes(status) ? item.uf : item.uf_agencia),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
     daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 || status === STATUS_CARD6 || status === STATUS_CARD7 || status === STATUS_CARD8 ? 0 : item.dias_pendente,
@@ -413,7 +485,7 @@ export function estadoDaFoto(foto: FotoCard1): { rotulo: string; valor: string }
   }
   if (foto.criticas !== undefined) {
     return [
-      { rotulo: "Situação", valor: foto.subSituacao || "Não informado" },
+      { rotulo: "Situação", valor: situacaoDaAnalise(foto) },
       { rotulo: "Críticas", valor: String(foto.criticas) },
       { rotulo: "Quitação", valor: foto.quitacao ? dataBr(foto.quitacao) : "Não informada" },
     ];

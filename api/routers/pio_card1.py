@@ -25,6 +25,11 @@ passar a multiplicar linhas por JOIN, a quantidade acompanha (risco conhecido).
 
 ⚠️ **O prêmio é somado em `Decimal`.** `float` acumula erro de centavo.
 
+⚠️ **Endereço = AGÊNCIA** (contrato de 19/11/2026). A extração não preenche mais
+`NOM_LOGRADOURO/BAIRRO/CIDADE/UF/NUM_CEP` (do segurado); a foto traz `NOM_AGENCIA`,
+`DES_ENDERECO_AGENCIA`, `NOM_CIDADE_AGENCIA`, `SIG_UF_AGENCIA` e `CEP_AGENCIA`. São
+conceitos diferentes: nada de COALESCE entre eles. Fotos antigas vêm com os novos `NULL`.
+
 ⚠️ Os telefones da FAT são `int` (DDD e número). O mapeamento da DET legada faz
 `.strip()` neles — aqui não: `NULL`, `0` e texto vazio são "sem contato".
 
@@ -72,7 +77,8 @@ _COLUNAS_ITEM = (
     "ID_FOTO", "COD_PROPOSTA", "COD_VENDA", "NOM_PESSOA", "COD_CPF",
     "NUM_AGENCIA", "NUM_MATRICULA", "DTH_VENDA", "DTA_NASCIMENTO",
     "NOM_PRODUTO", "AREA_PRODUTO", "VLR_PREMIO", "VLR_IMP_SEGURADA",
-    "VLR_RENDA_FORMAL", "NOM_CIDADE", "NOM_UF",
+    "VLR_RENDA_FORMAL",
+    "NOM_AGENCIA", "DES_ENDERECO_AGENCIA", "NOM_CIDADE_AGENCIA", "SIG_UF_AGENCIA", "CEP_AGENCIA",
     "STA_SITUACAO", "STA_ASSINATURA", "STA_PAGO",
     "NUM_DDD_TEL_RES", "NUM_TEL_RES", "NUM_DDD_TEL_CEL", "NUM_TEL_CEL",
     "DES_EMAIL", "DIAS_PENDENTE",
@@ -114,6 +120,30 @@ def _telefone(ddd, numero) -> str | None:
     prefixo = "".join(c for c in str(ddd if ddd is not None else "") if c.isdigit())
     prefixo = "" if not prefixo or set(prefixo) == {"0"} else prefixo
     return f"({prefixo}) {formatado}" if prefixo else formatado
+
+
+def _cep(valor) -> str:
+    """`CEP_AGENCIA` é `int` na origem e perde os zeros à esquerda: volta a oito posições
+    (`1310100` → `01310-100`). `NULL`, zero e valor com mais de oito dígitos são ausência —
+    nunca um CEP inventado por truncamento."""
+    digitos = "".join(c for c in str(valor if valor is not None else "") if c.isdigit())
+    if not digitos or len(digitos) > 8 or set(digitos) == {"0"}:
+        return ""
+    digitos = digitos.zfill(8)
+    return f"{digitos[:5]}-{digitos[5:]}"
+
+
+def _agencia(r: dict) -> dict:
+    """Nome e endereço da AGÊNCIA, como a foto traz (Cards 1–6). Não é o endereço do
+    segurado e os dois nunca se misturam (sem COALESCE). Foto anterior à nova extração
+    vem com tudo `NULL` → campos vazios, e a tela omite."""
+    return {
+        "nome_agencia": _texto(r.get("NOM_AGENCIA")) or "",
+        "endereco_agencia": _texto(r.get("DES_ENDERECO_AGENCIA")) or "",
+        "cidade_agencia": _texto(r.get("NOM_CIDADE_AGENCIA")) or "",
+        "uf_agencia": (_texto(r.get("SIG_UF_AGENCIA")) or "").upper(),
+        "cep_agencia": _cep(r.get("CEP_AGENCIA")),
+    }
 
 
 def _idade(nascimento, referencia: date) -> int | None:
@@ -231,8 +261,11 @@ def _item(linha) -> dict:
         "premio": _dinheiro(r["VLR_PREMIO"]),
         "imp_segurada": _dinheiro(r["VLR_IMP_SEGURADA"]),
         "renda": _dinheiro(r["VLR_RENDA_FORMAL"]),
-        "cidade": _texto(r["NOM_CIDADE"]) or "",
-        "uf": _texto(r["NOM_UF"]) or "",
+        # Endereço do SEGURADO: a extração deixou de preencher NOM_CIDADE/NOM_UF. Os campos
+        # ficam vazios (contrato da lista) e a geografia passa a ser a da agência.
+        "cidade": "",
+        "uf": "",
+        **_agencia(r),
         "nascimento": r["DTA_NASCIMENTO"],
         "situacao": _texto(r["STA_SITUACAO"]) or "",
         "assinatura": _texto(r["STA_ASSINATURA"]) or "",
