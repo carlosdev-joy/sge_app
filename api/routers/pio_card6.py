@@ -22,6 +22,8 @@ motivo). Aqui não há filtro por motivo; se vier, deduplicar por `NUM_SIVPF` pr
 se somam como "novas rejeições": são estoques do ano. Sem GETDATE/MAX/janela de datas aqui.
 ⚠️ A origem não filtra `STA_CRITICA` e usa `>= início do ano` sem limite superior (datas futuras
 poderiam entrar): regra da CARGA, preservada.
+⚠️ **`DTH_VENDA` deriva de `DATA_QUITACAO` na origem** (contrato de 19/11/2026): a tela rotula a
+data como "Data de Venda (quitação)".
 ⚠️ UF/cidade da query são da AGÊNCIA DE COBRANÇA, não do segurado: campos próprios
 (`uf_agencia`/`cidade_agencia`); `uf`/`cidade` ficam vazios.
 ⚠️ `DIAS_VENDA_DECLINIO` usa `DATA_QUITACAO` como início (regra da query) e é por certificado.
@@ -39,7 +41,7 @@ from db import get_db_conn
 from deps import require_perm
 from routers.pio import _filtro_da_busca
 from routers.pio_card1 import (
-    _LIMITE_MAXIMO, _LIMITE_PADRAO, _data_iso, _dinheiro, _idade, _identificar,
+    _LIMITE_MAXIMO, _LIMITE_PADRAO, _agencia, _data_iso, _dinheiro, _idade, _identificar,
     _resposta_base, _telefone, _texto,
 )
 from routers.pio_card4 import _busca_sem_zeros, _documento, _inteiro_texto
@@ -74,6 +76,7 @@ _COLUNAS_LISTA = (
     "COUNT_BIG(*)", "MIN(f.DTH_QUITACAO)", "MIN(f.DTH_DECLINIO)", "MIN(f.DIAS_VENDA_DECLINIO)",
     "MIN(f.DES_EMAIL)", "MIN(f.COD_DDD_TELEFONE)", "MIN(f.COD_TELEFONE)",
     "MIN(f.COD_DDD_CELULAR)", "MIN(f.NUM_CELULAR)",
+    "MIN(f.NOM_AGENCIA)", "MIN(f.DES_ENDERECO_AGENCIA)", "MIN(f.CEP_AGENCIA)",
 )
 _NOMES = (
     "ID_FOTO", "NUM_SIVPF", "NOM_PESSOA", "COD_CPF_CNPJ", "NOM_PESSOA_PROD",
@@ -82,6 +85,7 @@ _NOMES = (
     "SIG_UF_AGENCIA", "NOM_SUB_SITUACAO", "QTD_MOTIVOS", "DTH_QUITACAO", "DTH_DECLINIO",
     "DIAS_VENDA_DECLINIO", "DES_EMAIL", "COD_DDD_TELEFONE", "COD_TELEFONE",
     "COD_DDD_CELULAR", "NUM_CELULAR",
+    "NOM_AGENCIA", "DES_ENDERECO_AGENCIA", "CEP_AGENCIA",
 )
 
 
@@ -106,8 +110,7 @@ def _item(linha) -> dict:
         # Geografia da AGÊNCIA DE COBRANÇA: campos próprios; uf/cidade ficam vazios.
         "cidade": "",
         "uf": "",
-        "cidade_agencia": _texto(r["NOM_CIDADE_AGENCIA"]) or "",
-        "uf_agencia": _texto(r["SIG_UF_AGENCIA"]) or "",
+        **_agencia(r),
         "nascimento": nasc,
         "situacao": "",
         "assinatura": "",

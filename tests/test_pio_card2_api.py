@@ -46,7 +46,8 @@ def _linha(id_foto=1, proposta="SIM01", premio=Decimal("100.25"), ddd_cel=11,
     """Uma linha na ordem de `_COLUNAS_ITEM`."""
     return (id_foto, proposta, 9000000 + id_foto, "CLIENTE FICTICIO", None, "0001",
             "M000001", venda, nasc, "Vida Simulado", "Vida", premio,
-            Decimal("50000.00"), Decimal("4000"), "Cidade Teste", "SP",
+            Decimal("50000.00"), Decimal("4000"),
+            "AG TESTE                                ", "AV TESTE 100", "CIDADE AGENCIA", "sp", 1310100,
             "AT", assinatura, "N", ddd_res, res, ddd_cel, cel, email, 7)
 
 

@@ -40,6 +40,8 @@ import {
   STATUS_CARD7,
   STATUS_CARD8,
   seloDaProposta,
+  regiaoDaLista,
+  situacaoNaLista,
   STATUS_DE_FOTO,
   useResumoCard1,
   usePropostasCard1,
@@ -301,11 +303,16 @@ export default function ProposalWorkflowSheet() {
                   <span className="text-dim">Valor:</span> {proposta.value}
                 </div>
                 <div>
-                  <span className="text-dim">Região:</span> {proposta.region}
+                  <span className="text-dim">{regiaoDaLista(proposta).rotulo}:</span> {regiaoDaLista(proposta).valor}
                 </div>
                 <div>
                   <span className="text-dim">Corretor:</span> {proposta.broker}
                 </div>
+                {situacaoNaLista(proposta) && (
+                  <div className="col-span-2">
+                    <span className="text-dim">Situação:</span> {situacaoNaLista(proposta)}
+                  </div>
+                )}
                 {proposta.daysInPending > 0 && (
                   <div className="col-span-2 text-red-600 dark:text-red-400 font-medium">
                     ⏱️ {proposta.daysInPending} dias em pendência

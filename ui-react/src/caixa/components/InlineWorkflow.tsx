@@ -54,6 +54,8 @@ import {
   STATUS_CARD7,
   STATUS_CARD8,
   seloDaProposta,
+  regiaoDaLista,
+  situacaoNaLista,
   podeGerenciarDevolucao,
   STATUS_DE_FOTO,
   useResumoCard1,
@@ -502,8 +504,9 @@ export default function InlineWorkflow() {
                               {proposta.product} - {proposta.value}
                             </p>
                             <p>
-                              Região: {proposta.region} | Faixa: {proposta.ageRange}
+                              {regiaoDaLista(proposta).rotulo}: {regiaoDaLista(proposta).valor} | Faixa: {proposta.ageRange}
                             </p>
+                            {situacaoNaLista(proposta) && <p>Situação: {situacaoNaLista(proposta)}</p>}
                             {statusAtual === "in_analysis" && proposta.analiseSubStatus && (
                               <p className="text-red-600 dark:text-red-400 font-medium">
                                 {SUB_STATUS_ANALISE[proposta.analiseSubStatus]}

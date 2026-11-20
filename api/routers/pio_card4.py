@@ -37,7 +37,7 @@ from db import get_db_conn
 from deps import require_perm
 from routers.pio import _filtro_da_busca
 from routers.pio_card1 import (
-    _LIMITE_MAXIMO, _LIMITE_PADRAO, _data_iso, _dinheiro, _idade, _identificar,
+    _LIMITE_MAXIMO, _LIMITE_PADRAO, _agencia, _data_iso, _dinheiro, _idade, _identificar,
     _resposta_base, _telefone, _texto,
 )
 
@@ -72,6 +72,8 @@ _COLUNAS_LISTA = (
     "COUNT_BIG(*)", "MIN(f.DTH_QUITACAO)", "MIN(f.DES_EMAIL)",
     "MIN(f.COD_DDD_TELEFONE)", "MIN(f.COD_TELEFONE)",
     "MIN(f.COD_DDD_CELULAR)", "MIN(f.NUM_CELULAR)",
+    "MIN(f.NOM_AGENCIA)", "MIN(f.DES_ENDERECO_AGENCIA)", "MIN(f.CEP_AGENCIA)",
+    "MIN(f.DES_COD_SIT_CONTRATO)",
 )
 _NOMES = (
     "ID_FOTO", "NUM_SIVPF", "NOM_PESSOA", "COD_CPF_CNPJ", "NOM_PESSOA_PROD",
@@ -79,6 +81,7 @@ _NOMES = (
     "DES_RAMO_PRODUTO", "VLR_CONTRATO", "VLR_IS_VENDA", "NOM_CIDADE_AGENCIA",
     "SIG_UF_AGENCIA", "NOM_SUB_SITUACAO", "QTD_CRITICAS", "DTH_QUITACAO", "DES_EMAIL",
     "COD_DDD_TELEFONE", "COD_TELEFONE", "COD_DDD_CELULAR", "NUM_CELULAR",
+    "NOM_AGENCIA", "DES_ENDERECO_AGENCIA", "CEP_AGENCIA", "DES_COD_SIT_CONTRATO",
 )
 
 
@@ -130,13 +133,14 @@ def _item(linha, referencia: date | None) -> dict:
         # nos Cards 1–3) ficam vazios aqui.
         "cidade": "",
         "uf": "",
-        "cidade_agencia": _texto(r["NOM_CIDADE_AGENCIA"]) or "",
-        "uf_agencia": _texto(r["SIG_UF_AGENCIA"]) or "",
+        **_agencia(r),
         "nascimento": nasc,
         "situacao": "",
         "assinatura": "",
         "pago": "",
+        # A descrição vai como veio (0, 1, 9, E…): a tela não restringe nem traduz situação.
         "sub_situacao": _texto(r["NOM_SUB_SITUACAO"]) or "",
+        "cod_situacao": (_texto(r["DES_COD_SIT_CONTRATO"]) or "").upper(),
         "criticas": int(r["QTD_CRITICAS"] or 0),
         "quitacao": _data_iso(r["DTH_QUITACAO"]),
         "contato": {

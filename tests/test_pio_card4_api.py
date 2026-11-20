@@ -37,12 +37,14 @@ FOTO = (date(2026, 10, 29), LOTE, datetime(2026, 10, 29, 7, 41, 30))
 
 
 def _linha(id_foto=1, cert=Decimal("1000000000001"), cpf=Decimal("1234567890"), tipo="PF",
-           criticas=2, quitacao=None, ddd_cel=11, cel=Decimal("912345678"), email="x@example.com"):
+           criticas=2, quitacao=None, ddd_cel=11, cel=Decimal("912345678"), email="x@example.com",
+           sub="Em Crítica", cod="1", cep=20040002):
     """Uma linha na ordem de `_COLUNAS_LISTA`."""
     return (id_foto, cert, "CLIENTE FICTICIO", cpf, tipo, 316, Decimal("12345"),
             date(2026, 10, 16), date(1980, 5, 10), "VIDA SIMULADA", "Vida em Grupo",
             Decimal("100.25"), Decimal("50000.00"), "CIDADE AGENCIA", "RJ",
-            "Em Crítica", criticas, quitacao, email, None, None, ddd_cel, cel)
+            sub, criticas, quitacao, email, None, None, ddd_cel, cel,
+            "AG CENTRO", "RUA TESTE 10", cep, cod)
 
 
 class Cursor:

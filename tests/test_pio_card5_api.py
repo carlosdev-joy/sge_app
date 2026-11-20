@@ -42,7 +42,8 @@ def _linha(id_foto=1, seg="VG", num=Decimal("1000000000001"), cod="3", sub="Inte
     return (id_foto, seg, num, "CLIENTE FICTICIO", cpf, tipo, 316, Decimal("12345"),
             date(2026, 10, 16), date(2026, 10, 18), date(1980, 5, 10), "VIDA SIMULADA",
             "Vida em Grupo", premio, Decimal("50000.00"), "CIDADE AGENCIA", "RJ", sub, sit,
-            cod, canc, motivo, "x@example.com", ddd, fone, tip_contato)
+            cod, canc, motivo, "x@example.com", ddd, fone, tip_contato,
+            "AG CENTRO", "RUA TESTE 10", 20040002)
 
 
 class Cursor:

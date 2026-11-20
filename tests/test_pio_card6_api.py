@@ -40,7 +40,8 @@ def _linha(id_foto=1, cert=Decimal("1000000000001"), cpf=Decimal("1234567890"), 
     return (id_foto, cert, "CLIENTE FICTICIO", cpf, tipo, 316, Decimal("12345"),
             date(2026, 10, 1), date(1980, 5, 10), "VIDA SIMULADA", "Vida em Grupo",
             premio, Decimal("50000.00"), "CIDADE AGENCIA", "RJ", "Não Aceita",
-            motivos, date(2026, 10, 8), declinio, dias, email, None, None, ddd_cel, cel)
+            motivos, date(2026, 10, 8), declinio, dias, email, None, None, ddd_cel, cel,
+            "AG CENTRO", "RUA TESTE 10", 20040002)
 
 
 class Cursor:

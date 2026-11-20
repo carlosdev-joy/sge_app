@@ -210,3 +210,70 @@ def test_foto_desatualizada_nao_gera_texto_fixo_so_o_tooltip():
         assert "não é de hoje" not in corpo, arq
         assert "foto de {" not in corpo, arq
     assert "title={titulo}" in _fonte(CAIXA / "components" / "Card1Valor.tsx")
+
+
+# ═══════════ contrato de 19/11/2026: endereço = AGÊNCIA ══════════════════════
+
+AG = "nome_agencia: 'AG CENTRO', endereco_agencia: 'AV PAULISTA 1000', cidade_agencia: 'SAO PAULO', uf_agencia: 'SP', cep_agencia: '01310-100'"
+
+
+def test_regiao_vem_da_uf_da_agencia_e_o_rotulo_diz_isso(rodar):
+    r = rodar(ITEM + f"""
+      const nova = m.propostaDoCard1(item({{cidade: '', uf: '', {AG}}}), null, null);
+      const antiga = m.propostaDoCard1(item({{cidade: '', uf: ''}}), null, null);
+      const pessoa = m.propostaDoCard1(item({{uf: 'RS'}}), null, null);
+      const legado = {{...nova, foto: undefined, region: 'Sul'}};
+      return [m.regiaoDaLista(nova), m.regiaoDaLista(antiga), pessoa.region, m.regiaoDaLista(legado), antiga.foto.agencia === undefined];""")
+    assert r[0] == {"rotulo": "Região da agência", "valor": "Sudeste"}
+    assert r[1] == {"rotulo": "Região da agência", "valor": "Não informada"}   # foto antiga
+    assert r[2] == ""        # a UF do segurado nunca vira região: os conceitos não se misturam
+    assert r[3] == {"rotulo": "Região", "valor": "Sul"}                        # registro sem foto
+    assert r[4] is True
+
+
+def test_agencia_e_endereco_so_com_o_que_a_foto_traz(rodar):
+    r = rodar(ITEM + f"""
+      const f = (o) => m.propostaDoCard1(item({{cidade: '', uf: '', ...o}}), null, null).foto;
+      return [
+        m.rotuloDaAgencia('0001', f({{{AG}}})), m.enderecoDaAgencia(f({{{AG}}})),
+        m.rotuloDaAgencia('0001', f({{}})), m.enderecoDaAgencia(f({{}})),
+        m.enderecoDaAgencia(f({{uf_agencia: 'RJ'}})), m.enderecoDaAgencia(f({{cidade_agencia: 'NITEROI', cep_agencia: '24020-000'}})),
+        m.rotuloDaAgencia('', f({{nome_agencia: 'AG X'}})), m.enderecoDaAgencia(undefined),
+      ];""")
+    assert r == ["0001 · AG CENTRO", "AV PAULISTA 1000 · SAO PAULO/SP · CEP 01310-100",
+                 "0001", None, "RJ", "NITEROI · CEP 24020-000", "AG X", None]
+
+
+def test_card4_mostra_descricao_e_codigo_sem_traduzir(rodar):
+    r = rodar(ITEM + """
+      const f = (sub, cod) => m.propostaDoCard1(item({criticas: 2, sub_situacao: sub, cod_situacao: cod, quitacao: null}), null, null, m.STATUS_CARD4).foto;
+      return [m.situacaoDaAnalise(f('Pendente', '0')), m.situacaoDaAnalise(f('Erro', 'E')),
+              m.situacaoDaAnalise(f('', '9')), m.situacaoDaAnalise(f('Em Crítica', '')), m.situacaoDaAnalise(f('', '')),
+              m.estadoDaFoto(f('Pendente', '0'))[0]];""")
+    assert r[:5] == ["Pendente (cód. 0)", "Erro (cód. E)", "Código 9", "Em Crítica", "Não informado"]
+    assert r[5] == {"rotulo": "Situação", "valor": "Pendente (cód. 0)"}
+
+
+def test_situacao_na_lista_so_no_card4(rodar):
+    r = rodar(ITEM + """
+      const c4 = m.propostaDoCard1(item({criticas: 2, sub_situacao: 'Recusada', cod_situacao: '9', quitacao: null}), null, null, m.STATUS_CARD4);
+      const c1 = m.propostaDoCard1(item(), null, null);
+      return [m.situacaoNaLista(c4), m.situacaoNaLista(c1), m.situacaoNaLista({...c1, foto: undefined})];""")
+    assert r == ["Recusada (cód. 9)", None, None]
+
+
+def test_card6_rotula_a_data_de_venda_como_quitacao(rodar):
+    r = rodar(ITEM + """
+      const rej = m.propostaDoCard1(item({motivos: 2, sub_situacao: 'Não Aceita'}), null, null, m.STATUS_CARD6).foto;
+      const c1 = m.propostaDoCard1(item(), null, null).foto;
+      return [m.rotuloDataDeVenda(rej), m.rotuloDataDeVenda(c1), m.rotuloDataDeVenda(undefined)];""")
+    assert r == ["Data de Venda (quitação):", "Data de Venda:", "Data de Venda:"]
+
+
+def test_telas_usam_as_regras_puras_e_nao_o_rotulo_antigo():
+    lista = _fonte(CAIXA / "components" / "InlineWorkflow.tsx") + _fonte(CAIXA / "components" / "ProposalWorkflowSheet.tsx")
+    assert lista.count("situacaoNaLista(proposta) &&") == 2
+    assert lista.count("regiaoDaLista(proposta).rotulo") == 2 and "Região: {proposta.region}" not in lista
+    detalhe = _fonte(CAIXA / "components" / "ProposalDetailDialog.tsx")
+    for regra in ("rotuloDataDeVenda(foto)", "rotuloDaAgencia(proposal.agency, foto)", "enderecoDaAgencia(foto)"):
+        assert regra in detalhe

@@ -9,7 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { toast } from "../../components/ui/Toast";
 import ProposalTimeline from "./ProposalTimeline";
 import { passosDoFluxo } from "../lib/fluxoProposta";
-import { atualDoFluxo } from "../lib/card1Foto";
+import { atualDoFluxo, enderecoDaAgencia, rotuloDaAgencia, rotuloDataDeVenda } from "../lib/card1Foto";
 import PendenciasCard4 from "./PendenciasCard4";
 import MotivosCard6 from "./MotivosCard6";
 import DevolucaoCard7 from "./DevolucaoCard7";
@@ -134,11 +134,15 @@ export default function ProposalDetailDialog({ proposal, foto, open, onClose }: 
           <Secao titulo="Dados da Venda">
             <div className="bg-canvas p-6 rounded-lg border border-edge">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <CampoInfo rotulo="Data de Venda:" valor={proposal.date} />
+                <CampoInfo rotulo={rotuloDataDeVenda(foto)} valor={proposal.date} />
                 <CampoInfo rotulo="Matrícula do Indicador:" valor={proposal.indicatorId} />
-                <CampoInfo rotulo="Agência:" valor={proposal.agency} />
+                <CampoInfo rotulo="Agência:" valor={rotuloDaAgencia(proposal.agency, foto)} />
                 {/* Card 1: o número da proposta entra em Dados da Venda. */}
                 {foto && <CampoInfo rotulo={foto.devolucao ? (foto.devolucao.segmento === "AP" ? "Bilhete:" : "Proposta/Certificado:") : foto.emitida || foto.rejeitada ? "Proposta/Certificado:" : "Nº da Proposta:"} valor={proposal.number} />}
+                {/* Endereço da AGÊNCIA (não do segurado). Foto antiga não traz: o campo some. */}
+                {enderecoDaAgencia(foto) && (
+                  <CampoInfo rotulo="Endereço da Agência:" valor={enderecoDaAgencia(foto) ?? ""} className="md:col-span-2" />
+                )}
                 {/* Card 1: "Usuário" sai da tela (pedido do Carlos em 27/10, que
                     prevaleceu sobre "desativar" do chamado). O valor era derivado
                     da matrícula, não vinha da foto. Os outros cards o mantêm. */}

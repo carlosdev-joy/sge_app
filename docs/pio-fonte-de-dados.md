@@ -277,6 +277,7 @@ O caminho é sempre o mesmo: coluna → `api/routers/pio.py` (campo do JSON) →
 | Produto | `product` | `NOM_PRODUTO` |
 | Valor (ao lado do produto) | `value` | **`VLR_PREMIO`** — é o prêmio, não a renda |
 | Região | `region` | `NOM_UF` → região do IBGE (`caixa/lib/regiao.ts`) |
+| Região da agência (cards da foto, desde 19/11/2026) | `region` | `SIG_UF_AGENCIA` → região do IBGE. O endereço do segurado não vem mais na extração; ver `docs/release-notes/pio-contrato-agencia.md` |
 | Faixa | `ageRange` | `DATEDIFF(year, DTA_NASCIMENTO, hoje)` + " anos" |
 
 ⚠️ **"Faixa" mostra a idade exata, não uma faixa.** As propostas de exemplo
