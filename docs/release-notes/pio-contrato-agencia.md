@@ -26,6 +26,24 @@ Os nomes das tabelas e a conexão não mudam; mudam as colunas lidas e o que a t
   uma, a lista do card fica "indisponível" (nunca zero); o número do card (AGG) não é afetado.
 - As queries de carga dos Cards 4 a 6 têm o ano **2026 fixo**: revisar antes da virada para 2027 (carga, não aplicação).
 
+## Conferir ANTES do deploy (SQL14 / DMDB41)
+```sql
+-- 1. As colunas novas existem nas seis FAT? (NULL = falta; a lista do card ficaria indisponível)
+SELECT t.n AS tabela, COL_LENGTH(t.n, 'NOM_AGENCIA') AS nom, COL_LENGTH(t.n, 'DES_ENDERECO_AGENCIA') AS ende,
+       COL_LENGTH(t.n, 'NOM_CIDADE_AGENCIA') AS cid, COL_LENGTH(t.n, 'SIG_UF_AGENCIA') AS uf, COL_LENGTH(t.n, 'CEP_AGENCIA') AS cep
+FROM (VALUES ('dbo.FAT_ORQ_CARD01_FOTO'), ('dbo.FAT_ORQ_CARD02_FOTO'), ('dbo.FAT_ORQ_CARD03_FOTO'),
+             ('dbo.FAT_ORQ_CARD04_FOTO'), ('dbo.FAT_ORQ_CARD05_FOTO'), ('dbo.FAT_ORQ_CARD06_FOTO')) t(n);
+SELECT COL_LENGTH('dbo.FAT_ORQ_CARD04_FOTO', 'DES_COD_SIT_CONTRATO') AS cod_sit_card4;
+
+-- 2. Card 4: um certificado com mais de uma situação/agência na mesma foto? (esperado: nenhuma linha.
+--    A lista mostra UMA situação por certificado; se houver linha aqui, avisar antes de validar.)
+DECLARE @d date, @l uniqueidentifier;
+SELECT TOP (1) @d = DTA_MOVIMENTO, @l = LOTE_ID FROM dbo.CTL_ORQ_CARD04_LOTE
+WHERE STATUS = 'PUBLICADO' ORDER BY DTA_MOVIMENTO DESC, DTH_PUBLICACAO DESC;
+SELECT NUM_SIVPF FROM dbo.FAT_ORQ_CARD04_FOTO WHERE DTA_MOVIMENTO = @d AND LOTE_ID = @l
+GROUP BY NUM_SIVPF HAVING COUNT(DISTINCT DES_COD_SIT_CONTRATO) > 1 OR COUNT(DISTINCT NOM_AGENCIA) > 1;
+```
+
 ## Deploy (produção — exige autorização própria)
 `scripts/deploy_prod.sh`: migration 155 → **s**; `config/` → **n**. Atualiza `api/` (reiniciar `orquestra-api`) e
 `dist/`. Sem tabela nova, sem `dags/`, sem variável de ambiente.

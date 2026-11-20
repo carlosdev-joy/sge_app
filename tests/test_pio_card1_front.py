@@ -241,7 +241,7 @@ def test_agencia_e_endereco_so_com_o_que_a_foto_traz(rodar):
         m.rotuloDaAgencia('', f({{nome_agencia: 'AG X'}})), m.enderecoDaAgencia(undefined),
       ];""")
     assert r == ["0001 · AG CENTRO", "AV PAULISTA 1000 · SAO PAULO/SP · CEP 01310-100",
-                 "0001", None, "RJ", "NITEROI · CEP 24020-000", "AG X", None]
+                 "0001", None, None, "NITEROI · CEP 24020-000", "AG X", None]   # UF solta não é endereço
 
 
 def test_card4_mostra_descricao_e_codigo_sem_traduzir(rodar):
@@ -277,3 +277,16 @@ def test_telas_usam_as_regras_puras_e_nao_o_rotulo_antigo():
     detalhe = _fonte(CAIXA / "components" / "ProposalDetailDialog.tsx")
     for regra in ("rotuloDataDeVenda(foto)", "rotuloDaAgencia(proposal.agency, foto)", "enderecoDaAgencia(foto)"):
         assert regra in detalhe
+
+
+def test_cards_7_e_8_nao_mudam_regiao_vazia_e_sem_endereco_de_agencia(rodar):
+    """A fonte dos Cards 7 e 8 não mudou: eles mandam cidade/UF da agência desde sempre e a tela
+    nunca as mostrou. Seguem com "Região: " (vazia) e sem "Endereço da Agência"."""
+    r = rodar(ITEM + """
+      const it = item({cidade: '', uf: '', cidade_agencia: 'SAO PAULO', uf_agencia: 'SP'});
+      return [m.STATUS_CARD7, m.STATUS_CARD8].map((st) => {
+        const p = m.propostaDoCard1(it, null, null, st);
+        return [m.regiaoDaLista(p), m.enderecoDaAgencia(p.foto), m.rotuloDaAgencia('0001', p.foto), p.foto.agencia === undefined];
+      });""")
+    for caso in r:
+        assert caso == [{"rotulo": "Região", "valor": ""}, None, "0001", True]

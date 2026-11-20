@@ -223,14 +223,19 @@ export function dataHoraBr(iso: string | null): string {
   return `${dataBr(data)}${hora ? ` ${hora.slice(0, 5)}` : ""}`.trim();
 }
 
-/** A agência do item, ou `undefined` quando a foto não traz NENHUM dado dela (foto antiga). */
+/** A agência do item, ou `undefined` quando a foto não traz nome, endereço nem CEP dela (foto
+ *  antiga). Cidade/UF sozinhas NÃO montam a agência: os Cards 7 e 8 só mandam essas duas, e o
+ *  Resumo deles não ganha um "Endereço da Agência" feito de uma UF solta. */
 function agenciaDoItem(item: ItemCard1): AgenciaDaFoto | undefined {
-  const agencia: AgenciaDaFoto = {
+  if (!item.nome_agencia && !item.endereco_agencia && !item.cep_agencia) return undefined;
+  return {
     nome: item.nome_agencia ?? "", endereco: item.endereco_agencia ?? "",
     cidade: item.cidade_agencia ?? "", uf: item.uf_agencia ?? "", cep: item.cep_agencia ?? "",
   };
-  return Object.values(agencia).some(Boolean) ? agencia : undefined;
 }
+
+/** Cards cuja fonte NÃO mudou no contrato de 19/11/2026 (7 e 8): a lista deles segue como era. */
+const SEM_REGIAO_DE_AGENCIA: StatusWorkflow[] = [STATUS_CARD7, STATUS_CARD8];
 
 /** "0001 · AG CENTRO": número e nome da agência; sem nome, só o número. */
 export function rotuloDaAgencia(numero: string, foto: FotoCard1 | undefined): string {
@@ -249,9 +254,9 @@ export function enderecoDaAgencia(foto: FotoCard1 | undefined): string | null {
 }
 
 /** A linha "Região" da lista. Nos cards da foto a região é a da AGÊNCIA e o rótulo diz isso;
- *  nos registros sem foto (busca legada) segue sendo a do segurado. */
+ *  nos registros sem foto (busca legada) e nos Cards 7 e 8 a linha segue como sempre foi. */
 export function regiaoDaLista(proposta: PropostaWorkflow): { rotulo: string; valor: string } {
-  if (!proposta.foto) return { rotulo: "Região", valor: proposta.region };
+  if (!proposta.foto || SEM_REGIAO_DE_AGENCIA.includes(proposta.status)) return { rotulo: "Região", valor: proposta.region };
   return { rotulo: "Região da agência", valor: proposta.region || "Não informada" };
 }
 
@@ -347,7 +352,7 @@ export function propostaDoCard1(
     phone: item.contato.residencial ?? item.contato.celular ?? "",
     email: item.contato.email ?? "",
     // Região da AGÊNCIA: a foto não traz mais o endereço do segurado, e os dois não se misturam.
-    region: regiaoDaUf(item.uf_agencia),
+    region: regiaoDaUf(SEM_REGIAO_DE_AGENCIA.includes(status) ? item.uf : item.uf_agencia),
     ageRange: item.idade === null ? "" : `${item.idade} anos`,
     broker: item.matricula,
     daysInPending: status === STATUS_CARD3 || status === STATUS_CARD5 || status === STATUS_CARD6 || status === STATUS_CARD7 || status === STATUS_CARD8 ? 0 : item.dias_pendente,
